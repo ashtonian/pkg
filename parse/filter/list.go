@@ -189,7 +189,8 @@ func ListRelationScope(s RelationScope) ListOption {
 
 // ListStartParam sets the starting parameter index offset. Use this when the
 // SQL query has preceding parameters (e.g., SET clause args in an UPDATE).
-// The filter's first placeholder will be startParam+1.
+// The filter's first placeholder will be startParam+1. A negative offset is
+// an error from Build.
 func ListStartParam(n int) ListOption {
 	return func(c *listConfig) { c.startParam = n }
 }

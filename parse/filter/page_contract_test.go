@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPageJSONShape(t *testing.T) {
@@ -82,5 +85,32 @@ func TestNewPageTruncatesAndMintsCursor(t *testing.T) {
 	}
 	if last.PageInfo.HasNextPage || !last.PageInfo.EndCursor.IsZero() {
 		t.Fatalf("final page must have no next cursor, got HasNextPage=%v EndCursor=%q", last.PageInfo.HasNextPage, last.PageInfo.EndCursor)
+	}
+}
+
+// No page reports a direction it has no cursor for: an empty one, whose
+// cursor outlived the rows on its side, reports none, so the client starts
+// again from the first page.
+func TestNewPage_EveryFlagHasItsCursor(t *testing.T) {
+	t.Parallel()
+	type row struct{ ID string }
+	keys := []CursorKey{{Name: "id", Column: "id", Direction: SortAsc}}
+	get := func(r row, _ string) (any, error) { return r.ID, nil }
+	plans := map[string]CursorPlan{
+		"first page":                 {Keys: keys},
+		"forward seek with a cursor": {Keys: keys, HasCursor: true},
+		"reverse seek":               {Keys: keys, HasCursor: true, Reverse: true},
+	}
+	for name, plan := range plans {
+		for _, rows := range [][]row{nil, {}, {{"a"}}, {{"a"}, {"b"}}, {{"a"}, {"b"}, {"c"}}} {
+			page, err := NewPage(rows, 2, plan, get)
+			require.NoError(t, err)
+			info := page.PageInfo
+			assert.Equal(t, info.HasNextPage, !info.EndCursor.IsZero(), "%s, %d rows: has_next_page iff end_cursor", name, len(rows))
+			assert.Equal(t, info.HasPrevPage, !info.StartCursor.IsZero(), "%s, %d rows: has_prev_page iff start_cursor", name, len(rows))
+			if len(rows) == 0 {
+				assert.Equal(t, PageInfo{}, info, "%s: an empty page reports no direction", name)
+			}
+		}
 	}
 }

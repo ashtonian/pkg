@@ -476,6 +476,7 @@ func (rt rowTenant) match(col string, typ core.FieldType) string {
 // WithStartParam sets the starting parameter index offset. The first generated
 // placeholder will be startParam+1. For example, WithStartParam(3) produces
 // $4, $5, ... (Postgres) or ?4, ?5, ... (SQLite). Default is 0 (first param $1).
+// A negative offset is an error from Build.
 func WithStartParam(n int) SQLBuilderOption {
 	return func(c *sqlBuilderConfig) { c.startParam = n }
 }
@@ -484,6 +485,15 @@ func WithStartParam(n int) SQLBuilderOption {
 // (RelationScope).
 func WithRelationScope(s RelationScope) SQLBuilderOption {
 	return func(c *sqlBuilderConfig) { c.scope, c.related = s.tenancy(), s.policies() }
+}
+
+// checkStartParam refuses a negative placeholder offset: the first
+// placeholder, n+1, would be one no dialect numbers.
+func checkStartParam(n int) error {
+	if n < 0 {
+		return fmt.Errorf("filter: start parameter %d is negative: the first placeholder is the offset plus one", n)
+	}
+	return nil
 }
 
 // SQLBuilder generates parameterized SQL from a filter AST using a dialect.
@@ -571,6 +581,9 @@ func (b *SQLBuilder) Build(ast *FilterAST) (*SQLResult, error) {
 // build is Build with the schema's computed columns resolved for the
 // builder's dialect.
 func (b *SQLBuilder) build(ast *FilterAST, exprs columnExprs) (*SQLResult, error) {
+	if err := checkStartParam(b.startParam); err != nil {
+		return nil, err
+	}
 	if err := b.scope.check(); err != nil {
 		return nil, err
 	}

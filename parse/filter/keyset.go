@@ -644,8 +644,13 @@ type Page[T any] struct {
 // has_prev_page, and mints start and end cursors. value resolves a key's
 // value from a row by row column (e.g. CursorValueByTag with the "db" tag).
 // A cursor that cannot be minted is an error — a page that reports more
-// rows but carries no cursor strands the client.
+// rows but carries no cursor strands the client. An empty page reports
+// neither direction: it has no row to mint a cursor from, so a client
+// whose cursor outlived its rows starts again from the first page.
 func NewPage[T any](items []T, limit int, plan CursorPlan, value func(item T, column string) (any, error)) (*Page[T], error) {
+	if len(items) == 0 {
+		return &Page[T]{Items: items}, nil
+	}
 	hasMore := len(items) > limit
 	if hasMore {
 		items = items[:limit]
@@ -663,9 +668,6 @@ func NewPage[T any](items []T, limit int, plan CursorPlan, value func(item T, co
 	} else {
 		page.PageInfo.HasNextPage = hasMore
 		page.PageInfo.HasPrevPage = plan.HasCursor
-	}
-	if len(items) == 0 {
-		return page, nil
 	}
 	if page.PageInfo.HasNextPage {
 		last := items[len(items)-1]

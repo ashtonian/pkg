@@ -59,6 +59,11 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 
 	for _, field := range walk.Fields {
 		tags := &field.Tags
+		if len(tags.Enum) > 0 {
+			if err := enumField(g, field); err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			}
+		}
 		fieldName := field.External
 		if tags.Parse.Filter && fieldName == "" && tags.Relation != "" {
 			// : virtual relation fields conventionally carry
@@ -139,25 +144,23 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		}
 
 		if tags.Order != "" {
-			if n, err := strconv.Atoi(tags.Order); err == nil {
-				fs.Order = n
+			n, err := strconv.Atoi(tags.Order)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: order:%q is not an integer", field.GoName, tags.Order)
 			}
+			fs.Order = n
 		}
 
-		if fs.Facetable {
-			if t := facetValueType(fs); unkeyedFacetTypes[t] {
-				return nil, fmt.Errorf("field %s: %s values have no facet key every backend reads alike", field.GoName, t)
+		if tags.Facet != "" {
+			if !fs.Facetable {
+				return nil, fmt.Errorf("field %s: facet:%q on a field without the facet capability", field.GoName, tags.Facet)
 			}
-			if tags.Facet != "" {
-				facetSchema, err := ParseFacetTag(tags.Facet)
-				if err != nil {
-					return nil, fmt.Errorf("field %s: %w", field.GoName, err)
-				}
-				if facetSchema != nil {
-					facetSchema.Field = fieldName
-					fs.FacetSchema = facetSchema
-				}
+			facetSchema, err := ParseFacetTag(tags.Facet)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: facet:%q: %w", field.GoName, tags.Facet, err)
 			}
+			facetSchema.Field = fieldName
+			fs.FacetSchema = facetSchema
 		}
 
 		if tags.Relation != "" {
@@ -187,6 +190,12 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		}
 		if err := checkOperators(fs); err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+		}
+		// After storage, which can make a document field a scalar.
+		if fs.Facetable {
+			if err := checkFacet(fs, fs.facetConfig()); err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			}
 		}
 		if isScalarArray(fs) {
 			fs.Element = newElement(fs)
@@ -266,6 +275,9 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 			}
 		}
 		if !tags.Parse.Sort {
+			if tags.SortDefault != "" {
+				return nil, fmt.Errorf("field %s: sort_default:%q on a field without the sort capability", field.GoName, tags.SortDefault)
+			}
 			continue
 		}
 		if tags.Relation != "" {
@@ -316,11 +328,14 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 		}
 
 		if defaultTag := tags.SortDefault; defaultTag != "" {
-			defaultField = fieldName
-			if defaultTag == string(SortDesc) {
-				defaultDir = SortDesc
-			} else {
-				defaultDir = SortAsc
+			if defaultField != "" {
+				return nil, fmt.Errorf("field %s: sort_default:%q: %s already declares the default sort", field.GoName, defaultTag, defaultField)
+			}
+			switch SortDirection(defaultTag) {
+			case SortAsc, SortDesc:
+				defaultField, defaultDir = fieldName, SortDirection(defaultTag)
+			default:
+				return nil, fmt.Errorf("field %s: sort_default:%q is neither %q nor %q", field.GoName, defaultTag, SortAsc, SortDesc)
 			}
 		}
 	}
@@ -393,14 +408,6 @@ func DefaultFilterOps() map[core.FieldType][]FilterOperator {
 	return out
 }
 
-// unkeyedFacetTypes are the value types whose PostgreSQL text differs from
-// their canonical text: interval follows the session's IntervalStyle, inet
-// writes a host's /32, and both network types write an IPv4-compatible IPv6
-// address in dotted form. A terms facet's key is that text.
-var unkeyedFacetTypes = map[core.FieldType]bool{
-	core.FieldTypeInterval: true, core.FieldTypeInet: true, core.FieldTypeCIDR: true,
-}
-
 // sortable reports whether a keyset can order and resume on a field: a scalar
 // type, or a struct whose value reduces to one (driver.Valuer,
 // encoding.TextMarshaler — see CursorValue).
@@ -450,4 +457,35 @@ func addDocSortPaths(g *core.SchemaGenerator, fields map[string]*SortFieldSchema
 		fields[n] = k
 	}
 	return nil
+}
+
+// enumField refuses an enum on a field whose values are not strings: the
+// allowlist is text, compared with a string value or each element of an
+// array of strings, and on any other type it would be read and never
+// checked.
+func enumField(g *core.SchemaGenerator, field *core.Field) error {
+	if field.Tags.Geo != "" {
+		return errEnumType(core.FieldTypeGeo, "")
+	}
+	info, err := g.FieldType(field)
+	if err != nil {
+		return err
+	}
+	if !enumApplies(info.Type, info.Elem) {
+		return errEnumType(info.Type, info.Elem)
+	}
+	return nil
+}
+
+// enumApplies reports whether an enum constrains values of t (elements of
+// elem for an array): string fields and arrays of strings.
+func enumApplies(t, elem core.FieldType) bool {
+	return t == core.FieldTypeString || t == core.FieldTypeArray && elem == core.FieldTypeString
+}
+
+func errEnumType(t, elem core.FieldType) error {
+	if t == core.FieldTypeArray {
+		t = core.FieldType("array of " + string(elem))
+	}
+	return fmt.Errorf("enum on a %s field; enum takes string fields and arrays of strings", t)
 }

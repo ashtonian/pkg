@@ -13,6 +13,10 @@ import (
 // MaxPathDepth bounds how many members deep a declared path may reach.
 const MaxPathDepth = 8
 
+// MaxPathMemberLen bounds a path member's length in characters: a member
+// is written into the path's SQL and into the schema document.
+const MaxPathMemberLen = 64
+
 // PathDecl declares a typed member of a document field, for paths a struct
 // tag cannot carry — such as a tenant's custom fields, declared per request.
 type PathDecl struct {
@@ -35,6 +39,9 @@ type PathDecl struct {
 	// terms, counting each row once per distinct element.
 	Facet *FacetSchema
 	Label string
+	// Enum is the member's allowlist, as a column's enum tag: a string
+	// member or an array of strings only.
+	Enum []string
 }
 
 // WithPaths returns a copy of s with decls added as fields; s is unchanged,
@@ -124,6 +131,9 @@ func newPathField(doc *FieldSchema, segs []string, d PathDecl, kind reflect.Kind
 			}
 		}
 	}
+	if len(d.Enum) > 0 && !enumApplies(d.Type, d.Elem) {
+		return nil, errEnumType(d.Type, d.Elem)
+	}
 	f := &FieldSchema{
 		ExternalName:     doc.ExternalName + "." + strings.Join(segs, "."),
 		Column:           doc.RowColumn(),
@@ -133,6 +143,7 @@ func newPathField(doc *FieldSchema, segs []string, d PathDecl, kind reflect.Kind
 		Path:             p,
 		Indexed:          d.Indexed,
 		Label:            d.Label,
+		EnumValues:       slices.Clone(d.Enum),
 	}
 	if d.Type == core.FieldTypeArray {
 		f.Elem = d.Elem
@@ -216,15 +227,18 @@ func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want 
 		elem, elemKind, isArray := scalarElements(m.Type)
 		switch {
 		case pathTypes[info.Type] || isArray:
-			d := PathDecl{Path: strings.Join(segs, "."), Type: info.Type, Indexed: m.Tags.Indexed, Label: m.Tags.Label, Sort: want == core.CapabilitySort}
+			d := PathDecl{Path: strings.Join(segs, "."), Type: info.Type, Indexed: m.Tags.Indexed, Label: m.Tags.Label, Sort: want == core.CapabilitySort, Enum: slices.Clone(m.Tags.Enum)}
 			kind := info.NumberKind
 			if isArray {
 				d.Type, d.Elem, kind = core.FieldTypeArray, elem, elemKind
 			}
+			if want == core.CapabilityFilter && m.Tags.Facet != "" && !caps.Facet {
+				return nil, nil, fmt.Errorf("member %s: facet:%q on a member without the facet capability", d.Path, m.Tags.Facet)
+			}
 			if want == core.CapabilityFilter && caps.Facet {
 				fs, err := ParseFacetTag(m.Tags.Facet)
 				if err != nil {
-					return nil, nil, fmt.Errorf("member %s: %w", d.Path, err)
+					return nil, nil, fmt.Errorf("member %s: facet:%q: %w", d.Path, m.Tags.Facet, err)
 				}
 				if fs == nil {
 					fs = &FacetSchema{Type: FacetTerms}
@@ -496,8 +510,8 @@ func setPathFacet(f *FieldSchema, facet *FacetSchema) error {
 	if facet == nil {
 		return nil
 	}
-	if f.DataType == core.FieldTypeArray && facet.Type != FacetTerms {
-		return fmt.Errorf("an array member's facet is terms, not %s", facet.Type)
+	if err := checkFacet(f, facet); err != nil {
+		return err
 	}
 	cfg := *facet
 	cfg.Field = f.ExternalName

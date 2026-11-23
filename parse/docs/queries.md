@@ -112,11 +112,11 @@ A document column's typed members are filterable as dotted fields — `{"attrs.c
 
 | Declaration | Where | Paths |
 |---|---|---|
-| Struct (object) column | members tagged `parse:"filter"` / `parse:"sort"` / `parse:"facet"` (nested structs too, each step tagged) | `<column>.<member>`, by the members' JSON names; `filter_ops`, `facet`, `indexed` and `label` on a member apply to its path |
+| Struct (object) column | members tagged `parse:"filter"` / `parse:"sort"` / `parse:"facet"` (nested structs too, each step tagged) | `<column>.<member>`, by the members' JSON names; `filter_ops`, `facet`, `indexed`, `label` and `enum` on a member apply to its path |
 | Map, `any` or `json.RawMessage` column | `paths:"color:string:filter+sort+facet;size:int:filter+indexed;dims.w:float"` | each `member.path:type[:caps]`; caps `filter` (implied), `sort`, `facet` (terms) and `indexed` |
 | Per request (tenant custom fields) | `resource.WithPaths(filter.PathDecl{Path: "custom.tier", Type: core.FieldTypeString, Sort: true, Facet: &filter.FacetSchema{Type: filter.FacetTerms}})` — or, below a resource, `schema.WithPaths` / `sorts.WithPaths(schema, …)` | a copy-on-write view that parses, lists and updates like the resource, with the relations it declared; the shared resource is unchanged. A view declares no relations and is no relation's target: `Relate` refuses both |
 
-Members are identifiers (`[A-Za-z0-9_-]+`), at most `filter.MaxPathDepth` (8) deep, typed string, int, float, decimal, bool, timestamp or uuid, or an array of one of those (`tags:[]string`, or a struct member of slice type). Operators default to the type's column defaults plus the NULL tests.
+Members are identifiers of 1 to `filter.MaxPathMemberLen` (64) characters of `[A-Za-z0-9_-]`, at most `filter.MaxPathDepth` (8) deep, typed string, int, float, decimal, bool, timestamp or uuid, or an array of one of those (`tags:[]string`, or a struct member of slice type). Operators default to the type's column defaults plus the NULL tests.
 
 A path's value is the member when it has the declared JSON kind:
 
@@ -277,7 +277,7 @@ Underneath, `NewListQuery(filterSchema, sortSchema, dialect)` returns a `*ListQu
 | `Facets` | One `WITH base AS … UNION ALL` facet query (`ListFacets`); scan with `ScanFacetUnion` |
 | `Sort` | The parsed sort |
 
-`NewPage(rows, res.Limit, res.Cursor, value)` truncates the fetched rows, restores presentation order after a backward seek, sets `has_next_page` / `has_prev_page`, and mints `start_cursor` / `end_cursor` (only toward pages that exist). `value(row, column)` resolves a key column; `CursorValueByTag(row, "db", column)` does it by struct tag. Keys are the sort fields plus the primary key declared on the resource; NULL sorts greatest (`NULLS LAST` ascending, `NULLS FIRST` descending) and seeks are NULL-aware. Cursors carry a generation and are capped at 4 KiB; a token from another sort or generation fails with E2082.
+`NewPage(rows, res.Limit, res.Cursor, value)` truncates the fetched rows, restores presentation order after a backward seek, sets `has_next_page` / `has_prev_page`, and mints `start_cursor` / `end_cursor` (only toward pages that exist): a flag is set exactly when its cursor is. An empty page sets neither, even after a seek: a cursor replayed after the rows on its side were deleted, or under another filter, has no row to mint a cursor from, so the client starts again from the first page. `value(row, column)` resolves a key column; `CursorValueByTag(row, "db", column)` does it by struct tag. Keys are the sort fields plus the primary key declared on the resource; NULL sorts greatest (`NULLS LAST` ascending, `NULLS FIRST` descending) and seeks are NULL-aware. Cursors carry a generation and are capped at 4 KiB; a token from another sort or generation fails with E2082.
 
 A statement the list builder does not write, such as a search ordered by a computed rank, pages the same way from its own keys. Each `filter.CursorKey` names the key, what it orders by (`Column` of `Table`, which the dialect quotes, a computed `Expr`, or a document member's `Path`), the result column a token reads it from (`Column`), its type and direction, and whether it can be NULL. `filter.OrderByKeys(dialect, keys, reverse)` renders the `ORDER BY`; `filter.SeekPredicate(dialect, keys, token, bind)` checks the token against the keys (`ValidateCursor`, E2082 for a token minted under other keys), normalizes its values and renders the rows strictly after it, binding every value through `bind`; `CursorPlan{Keys: keys}.Token` mints the next token from a page's last row. Keys may mix directions; NULL placement and seeks follow the rules above.
 
@@ -325,7 +325,7 @@ parse: accounts: computed column "group_ids" for dialect sqlite: unsupported SQL
 
 `filter.ListSearch` adds a predicate without changing sort order. PostgreSQL uses `to_tsvector` / `plainto_tsquery`; SQLite uses a LIKE phrase match. These have different tokenization and matching behavior. Tag string fields with `parse:"search"`; search never orders the page, and the PostgreSQL text search configuration is `english` unless `core.WithSearchLanguage` names another. A custom expression must produce text for the chosen dialect.
 
-`filter.ListFacets` builds aggregations for fields tagged `parse:"facet"`. Use `facet:"terms:20"` for the top terms or `facet:"range:0-50,50-100,100+"` for ranges. `ListWithCount` and facets share the filter, policy, and search population, excluding the page cursor. Execute the returned statements separately and scan the facet union with `filter.ScanFacetUnion`. The base page does not automatically execute counts, facets, or includes.
+`filter.ListFacets` builds aggregations for fields tagged `parse:"facet"`. Use `facet:"terms:20"` for the top terms or `facet:"range:0-50,50-100,100+"` for ranges. A terms facet takes a type every backend keys alike, a range facet a number field, and its ranges are half-open and disjoint, so a value counts in at most one bucket ([the facet tag](schema-configuration.md)). `ListWithCount` and facets share the filter, policy, and search population, excluding the page cursor. Execute the returned statements separately and scan the facet union with `filter.ScanFacetUnion`. The base page does not automatically execute counts, facets, or includes.
 
 `filter.ResolveInclude(ctx, field, ownerKeys, lookup, opts...)` resolves the same include projection on non-SQL stores. The `IncludeLookup` supplies a batched iterator of owner/target pairs matching the lookup predicate; parse resolves target visibility, orders distinct keys and reports truncated owners. The SQL and non-SQL paths share the include options.
 
@@ -350,7 +350,7 @@ A `parse.Resource` declares its primary key once with `parse.PrimaryKey` (defaul
 | `ListPolicy(pc)` | `*PolicyConstraints` | none | Server-side constraints ANDed with the filter; each names a [policy field](#policy-fields) |
 | `ListNow(t)` | `time.Time` | one reading of the config's clock | The instant the `ListFilter` JSON, the policy and the related policies resolve relative tokens against: the request's |
 | `ListRelationScope(s)` | `RelationScope` | none | How the filter, count and facets reach related rows ([relation scope](#relation-scope)) |
-| `ListStartParam(n)` | int | `0` | Offset the main fragment after `n` earlier arguments; standalone count/facet statements keep independent numbering |
+| `ListStartParam(n)` | int | `0` | Offset the main fragment after `n` earlier arguments; standalone count/facet statements keep independent numbering. Negative is an error from `Build` |
 
 ### Relation scope
 
@@ -380,14 +380,14 @@ The zero value scopes no tenant: a relation declaring a tenant column fails clos
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `WithStartParam(n)` | int | `0` | First placeholder is `n+1` (e.g. after an UPDATE's SET arguments) |
+| `WithStartParam(n)` | int | `0` | First placeholder is `n+1` (e.g. after an UPDATE's SET arguments); negative is an error from `Build` |
 | `WithRelationScope(s)` | `RelationScope` | none | How the filter reaches related rows ([relation scope](#relation-scope)) |
 
 Facet, include, and flat-query options:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `WithFacetRelationScope(s)` | `RelationScope` | none | How relation facets reach related rows; a `RowTenant` is projected beside the owner's key |
+| `WithFacetRelationScope(s)` | `RelationScope` | none | How relation facets reach related rows; a `RowTenant` is projected beside the owner's keys. Each relation facet joins its junction on its own relation's owner key (`RelationSchema.OwnerKey`), each distinct key projected once |
 | `WithFacetFrom(from)` | string | the schema's table | The facets' base rows: an aliased table or a join whose columns the filter and the fields name. A relation facet still reads the owner's key as `Name.<pk>` |
 | `WithIncludeRelationScope(s)` | `RelationScope` | none | How the include reads related rows; a `RowTenant` joins the owner's table, which `WithIncludeOwner` names. `ResolveInclude` refuses a `RowTenant` |
 | `WithIncludeOwner(owner)` | `*ResourceSchema` | none | The owner's schema, whose table a `RowTenant` reads |

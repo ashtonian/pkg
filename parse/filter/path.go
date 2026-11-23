@@ -56,7 +56,10 @@ func (p *JSONPath) document(d dialect.Dialect) string {
 	return columnSQL(d, p.Table, p.Column, p.Expr)
 }
 
-var pathSegment = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+// pathMemberChars are the characters a path member is made of.
+const pathMemberChars = `[A-Za-z0-9_-]`
+
+var pathSegment = regexp.MustCompile(`^` + pathMemberChars + `{1,` + strconv.Itoa(MaxPathMemberLen) + `}$`)
 
 // pathTypes are the member types a path may declare, and the scalars a
 // `storage:"scalar:<type>"` struct may be held as.
@@ -82,7 +85,7 @@ func (p *JSONPath) validate(t, elem core.FieldType, maxDepth int) error {
 	}
 	for _, s := range p.Segments {
 		if !pathSegment.MatchString(s) {
-			return fmt.Errorf("path member %q is not an identifier ([A-Za-z0-9_-]+)", s)
+			return fmt.Errorf("path member %q is not an identifier: 1 to %d of %s", s, MaxPathMemberLen, pathMemberChars)
 		}
 	}
 	switch p.Storage {
