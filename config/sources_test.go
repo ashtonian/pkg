@@ -967,3 +967,17 @@ func TestSources_NarrowingATypedDefaultMap(t *testing.T) {
 		assert.Equal(t, map[string]bool{"example.com": true}, load(t, "origins: null\n", "origins: {example.com: true}\n").Origins)
 	})
 }
+
+// A stored entry whose value is a typed section keeps the section's
+// koanf:"-" fields as a provider's does, under a higher file's key too.
+func TestSources_EntryTypedSectionKeepsItsUnkeyedFields(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "section: {host: f}\n")
+	stored := WithBaseEntries(func(context.Context) (map[string]any, error) {
+		return map[string]any{"section": unkeyedOf("e"), `by_name["c"]`: unkeyedOf("e")}, nil
+	})
+	got, err := Load[unkeyedConfig](t.Context(), stored, WithFile(file))
+	require.NoError(t, err)
+	assertUnkeyedKept(t, unkeyedOf("e"), got.Section, "f")
+	assertUnkeyedKept(t, unkeyedOf("e"), got.ByName["c"], "e")
+}

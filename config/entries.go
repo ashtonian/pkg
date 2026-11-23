@@ -119,5 +119,5 @@ func (l *loader) addEntries(ctx context.Context, name string, p providerSource, 
 	} else if len(invalid) > 0 {
 		return fmt.Errorf("loading %s: %w", name, joinKeyErrors(invalid))
 	}
-	return l.merge(name, tree, constant(src))
+	return l.mergeSource(name, tree, editsUnkeyed(edits), constant(src))
 }
