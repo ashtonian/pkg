@@ -246,6 +246,32 @@ test('a subject its branch does not back stays a floor in a complete path', () =
   assert.equal(noFeature.breaking, false);
 });
 
+// release-please drops a branch commit it cannot parse, so its merge's entry
+// lacks that commit's type, notes and references; a merge whose own pull
+// request sets an override is read as the override instead.
+test('a merge missing what release-please cannot read of a branch commit is named', () => {
+  const subject = 'feat(parse)!: refuse repeated cursor members (#287)';
+  const problem = "release-please cannot parse it (unexpected token '(' at 4:19, valid tokens [)])";
+  const unreadable = [{ sha: 'b2', subject: 'fix(parse)!: read a BLOB as no decimal', problems: [problem] }];
+  const branches = new Map([['m1', { ...summary(['feat', 'fix'], true), unreadable }]]);
+  const own = { mergeCommitOid: 'm1', body: 'BEGIN_COMMIT_OVERRIDE\nfeat(parse)!: both\n\nBREAKING CHANGE: both breaks.\nEND_COMMIT_OVERRIDE' };
+  const cases = [
+    { name: 'the merge listed here', commits: [commit('m1', subject), commit('b1', 'feat(parse)!: refuse repeated members')], warned: 1 },
+    { name: 'only its branch commits listed here', commits: [commit('b1', 'feat(parse)!: refuse repeated members')], warned: 1 },
+    { name: "its own pull request's override", commits: [commit('m1', 'feat(parse)!: both', { pullRequest: own })], warned: 0 },
+    { name: 'another merge', commits: [commit('m2', 'fix(parse): close rows (#300)')], warned: 0 },
+  ];
+  for (const tc of cases) {
+    const warnings = [];
+    keep(tc.commits, { m1: [subject, 'b1', 'b2'], m2: ['fix(parse): close rows (#300)'] }, { options: { branches, warn: m => warnings.push(m) } });
+    const named = warnings.filter(m => m.includes('cannot read'));
+    assert.equal(named.length, tc.warned, tc.name);
+    if (tc.warned > 0) {
+      assert.equal(named[0], `m1 (${subject}) is missing what release-please cannot read of its branch commit b2 (fix(parse)!: read a BLOB as no decimal): ${problem}`, tc.name);
+    }
+  }
+});
+
 test('typeRanker follows changelog-sections', () => {
   const stock = typeRanker();
   assert.deepEqual(['feat', 'fix', 'perf', 'docs', 'chore', 'Co-authored-by'].map(stock), [2, 1, 1, 0, 0, 0]);

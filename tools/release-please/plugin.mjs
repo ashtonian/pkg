@@ -5,6 +5,7 @@ import { ROOT_PROJECT_PATH } from 'release-please/build/src/manifest.js';
 import { ManifestPlugin } from 'release-please/build/src/plugin.js';
 import { CommitExclude } from 'release-please/build/src/util/commit-exclude.js';
 import { CommitSplit } from 'release-please/build/src/util/commit-split.js';
+import { messageProblems } from './commit-messages.mjs';
 import { firstParentCommits, typeRanker } from './first-parent.mjs';
 import { escapeNotes } from './release-body.mjs';
 
@@ -128,13 +129,14 @@ const isConventional = entry => /^[a-z]+$/.test(entry.type);
 const listKey = commits => commits.map(commit => commit.sha).join(' ');
 
 // branchSummaries maps each merge to its non-merge branch commits, reverted
-// ones aside: their shas, the types release-please's parser gives them and
-// whether one breaks.
+// ones aside: their shas, the types release-please's parser gives them,
+// whether one breaks, and what release-please loses of each it cannot read
+// whole.
 function branchSummaries({ mergeOf, branchCommits = new Map(), revertedWithin = new Set() }) {
   const summaries = new Map();
   for (const [sha, { message }] of branchCommits) {
     const merge = mergeOf.get(sha);
-    if (!summaries.has(merge)) summaries.set(merge, { shas: [], types: [], breaking: false });
+    if (!summaries.has(merge)) summaries.set(merge, { shas: [], types: [], breaking: false, unreadable: [] });
     const summary = summaries.get(merge);
     summary.shas.push(sha);
     if (revertedWithin.has(sha)) continue;
@@ -142,6 +144,8 @@ function branchSummaries({ mergeOf, branchCommits = new Map(), revertedWithin = 
       summary.types.push(entry.type);
       summary.breaking ||= entry.breaking;
     }
+    const problems = messageProblems(message);
+    if (problems.length > 0) summary.unreadable.push({ sha, subject: message.split('\n')[0], problems });
   }
   return summaries;
 }

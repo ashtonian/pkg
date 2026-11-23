@@ -223,6 +223,29 @@ test("a branch commit missing from a path's commits keeps the merge subject a fl
   }
 });
 
+// #289: release-please could not parse a branch commit, so its merge's entry
+// lost the commit's BREAKING CHANGE while the job passed.
+test('a branch commit release-please cannot parse is named with its merge, unless reverted on the branch', async () => {
+  const subject = 'feat(parse)!: refuse repeated cursor members (#287)';
+  const blob = "fix(parse)!: read a BLOB as no decimal\n\nso\nparse_decimal(CAST('10.50' AS BLOB)) was '10.5'.\n\nBREAKING CHANGE: a BLOB is NULL.";
+  const branch = [['b1', 'feat(parse)!: refuse repeated members', ['parse/cursor.go']], ['b2', blob, ['parse/sqlite.go']]];
+  const run = async history => {
+    const warnings = [];
+    const built = new FirstParentPlugin(github, 'main', { parse: {} }, history, { ...quiet, warn: m => warnings.push(m) });
+    const commits = raw(subject, branch, ['b1', 'b2']);
+    await built.preconfigure({}, { parse: commits }, {});
+    built.processCommits(parseConventionalCommits(commits, quiet));
+    return warnings;
+  };
+
+  assert.deepEqual(await run(landedBatch(subject, branch)), [
+    `m1 (${subject}) is missing what release-please cannot read of its branch commit b2 (fix(parse)!: read a BLOB as no decimal): ` +
+      "release-please cannot parse it (unexpected token '(' at 4:19, valid tokens [)]), so the release notes get none of its type, BREAKING CHANGE notes or issue references",
+  ]);
+  const reverted = { ...landedBatch(subject, branch), revertedWithin: new Set(['b2']) };
+  assert.deepEqual(await run(reverted), []);
+});
+
 test("a branch commit touching only a path's exclude-paths leaves it complete", async () => {
   const subject = 'feat(parse)!: stream rows (#9)';
   const branch = [

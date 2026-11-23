@@ -123,6 +123,8 @@ go test -tags=unit -run '^$' -bench . ./...
 
 `./...` stops at the [example server](../examples/server/), a module of its own: `make parse-example-check` from the repository root tests it against this working tree.
 
+`go test` writes a CPU or memory profile for one package at a time. From the repository root, `tools/bench-parse.sh <dir>` runs each package's benchmarks on its own and writes `benchmarks.txt`, `cpu.pprof` and `allocs.pprof` under `<dir>/<package directory>/`, as CI does for main; `BENCH_COUNT` and `BENCH_TIME` set `-count` (default 3) and `-benchtime` (default 1s).
+
 `go test -tags=concurrency -race ./...` is the quick race check: it builds only the tests that run parse code on several goroutines (files tagged `concurrency`). Parse starts no goroutines of its own, so the race detector can fail no other unit test.
 
 SQLite cases run locally. PostgreSQL and PostGIS tests run against the servers `PARSE_POSTGRES_DSN` and `PARSE_POSTGIS_DSN` name, and skip when the variable is unset; see [database test helpers](../internal/dbtest/). From a repository checkout, `make parse-postgres-up` starts one PostGIS server that serves both and prints the two exports. A named server that is unavailable fails the test within `PARSE_TEST_TIMEOUT` of the first fixture call: a Go duration, 30 seconds by default, that also bounds each PostgreSQL test of `parsepgx`; raise it on a contended host. Skipped backend tests are not a backend verification result: with `PARSE_REQUIRE_PG=1` an unset variable fails each test that asks for its server instead, which is how CI's PostgreSQL jobs run.
