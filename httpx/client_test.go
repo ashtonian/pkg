@@ -357,12 +357,20 @@ func TestClientComposesRetryOptions(t *testing.T) {
 					defer server.Close()
 					client := must(ctor.newClient(tc.opts...))
 					defer client.CloseIdleConnections()
-					response, err := client.Get(server.URL)
+					req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
 					if err != nil {
 						t.Fatal(err)
 					}
-					response.Body.Close()
-					if got := attempts.Load(); got != tc.want {
+					response, err := client.Do(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					err = response.Body.Close()
+					if err != nil {
+						t.Fatal(err)
+					}
+					got := attempts.Load()
+					if got != tc.want {
 						t.Errorf("origin received %d attempts, want %d", got, tc.want)
 					}
 				})
@@ -380,8 +388,9 @@ func TestClientComposesBaseAndLimiterOptions(t *testing.T) {
 	))
 	defer client.CloseIdleConnections()
 	limiter := client.Transport.(*LimiterTransport)
-	if got := cap(limiter.sem); got != 2 || limiter.timeout != time.Second {
-		t.Errorf("limiter capacity %d, timeout %s; want 2, 1s", got, limiter.timeout)
+	capacity := cap(limiter.sem)
+	if capacity != 2 || limiter.timeout != time.Second {
+		t.Errorf("limiter capacity %d, timeout %s; want 2, 1s", capacity, limiter.timeout)
 	}
 	base := limiter.Unwrap().(*http.Transport)
 	if base.MaxIdleConns != 12 || base.MaxIdleConnsPerHost != 5 {
