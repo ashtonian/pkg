@@ -84,13 +84,14 @@ func Example() {
 
 ## API
 
-- `Codec httpx.Codec` — `ContentType()` is `httpx.ContentTypeProtobuf`; `Encode` and `Decode` take a `proto.Message` and fail on anything else.
+- `Codec httpx.Codec` — `ContentType()` is `httpx.ContentTypeProtobuf`. `Encode` takes a `proto.Message`. `Decode` takes a `proto.Message` or a pointer to a message pointer (`**pb.Message`, or a pointer to a defined pointer type), allocating the message when the pointer is nil; anything else fails.
 - Importing the package calls `httpx.RegisterCodec(Codec)`.
 
 ## Caveats
 
 - Only 2xx responses are decoded. Check `resp.StatusCode`, and close every non-nil `resp.Body`, including when `err` reports a decoding failure.
-- Decode with a pointer message type (`httpx.Do[*pb.Message]`): the helpers allocate the message and hand the codec a `*pb.Message`.
+- Decode with a pointer message type (`httpx.Do[*pb.Message]`). The helpers decode a `T` through a `*T`, so the codec receives a `**pb.Message` and allocates the message; `httpx.DecodeResponse(resp, proto.Codec, &msg)` with `var msg *pb.Message` decodes the same way. Protobuf has no null: an empty body is a zero-valued message, never a nil pointer.
+- Importing the module advertises `application/protobuf` on every typed request in the process. Give endpoints that decode plain Go types their own selection with `httpx.WithResponseCodecs(httpx.JSON)`, so an origin preferring protobuf doesn't answer them in it.
 - The module requires the parent `httpx` module at a published version; inside this repository the Go workspace supplies it.
 
 ## References
