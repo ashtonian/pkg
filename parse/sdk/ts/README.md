@@ -74,7 +74,7 @@ The client calls the routes a server built on the Go module serves; the [example
 | `listAll(opts)` | `list` repeated with `cursor = page_info.end_cursor` while `page_info.has_next_page`, each page on the transport `list` would take | The list route |
 | `patch(id, input)` | `PATCH /{resource}/{id}` with a JSON Merge Patch body (`application/json`) | `parsehttp.ParsePatch` (or `Resource.ParsePatchRequest`), `Resource.BuildUpdate(…, parse.ByID(id), …)` |
 | `patchMany(ids, input)` | `PATCH /{resource}?id[]=…&id[]=…` with a JSON Merge Patch body (`application/json`) | `parsehttp.Query`, `parsehttp.ParsePatch`, `Resource.BuildUpdate(…, parse.ByIDs(ids…), …)`; a key that updated no row is an item of `failed` |
-| `facets(fields, opts)` | `OPTIONS /{resource}?facets=a,b&filter=` → `facets` | `Resource.ParseList`, `Resource.BuildList`, the plan's `Facets` statement |
+| `facets(fields, opts)` | `OPTIONS /{resource}?facets=a,b&filter=` → `facets` | `parsehttp.ParseFacets` (or `Resource.ParseFacets`), `Resource.BuildFacets`; `cursor`, `sort`, `page_size`, `include_total`, `include` or `fields` is E2067 |
 | `schema()` | `GET /{schemaPrefix}/{name}/schema` | `parsehttp.SchemaHandler` |
 | `schemas()` | `GET /{schemaPrefix}/schemas` → `{ schemas: […] }` | `parsehttp.SchemaListHandler` |
 
@@ -113,6 +113,8 @@ const counts = await products.facets(["category"], { filter: { price: { $lt: 20 
 const page = await products.list({ filter: { price: { $lt: 20 } }, facets: ["category"] });
 // page.facets: the same counts beside every page of the list
 ```
+
+`facets` sends `OPTIONS`, the method of a CORS preflight too: the server's handler must receive an `OPTIONS` that is not a preflight (one without `Access-Control-Request-Method`), so a layer in front of the application that answers every `OPTIONS` itself breaks `facets`. A facets request has no body form, so `maxURLLength` does not apply to it; counts under a filter too large for a URL come from `list` over `POST` with `facets`.
 
 ## Large filters
 

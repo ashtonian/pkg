@@ -411,3 +411,14 @@ func TestServer_RequestBodies(t *testing.T) {
 		assert.NotContains(t, logs.String(), `"level":"ERROR"`, tt.method)
 	}
 }
+
+// A facets request refuses the list parameters that shape a page instead of
+// validating and ignoring them.
+func TestServer_FacetsRefusePageParameters(t *testing.T) {
+	srv := testServer(t)
+	for _, query := range []string{"facets=category&cursor=x", "facets=category&sort=name", "facets=category&page_size=2"} {
+		var body parsehttp.Body
+		assert.Equal(t, http.StatusUnprocessableEntity, call(t, srv, http.MethodOptions, "/api/products?"+query, "", &body), query)
+		assert.Equal(t, filter.ECodeInvalidListParam.String(), body.Code, "%s: %s", query, body.Message)
+	}
+}

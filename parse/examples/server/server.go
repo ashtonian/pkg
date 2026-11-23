@@ -108,24 +108,19 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 func (s *server) facets(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
 	defer cancel()
-	q, err := parsehttp.Query(r)
+	req, err := parsehttp.ParseFacets(r, s.products)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	req, err := s.products.ParseList(q)
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	plan, err := s.products.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+	query, err := s.products.BuildFacets(filter.SQLiteDialect{}, req, parse.Scope{})
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
 	counts := map[string][]filter.FacetBucket{}
-	if plan.Facets != nil {
-		counts, err = s.facetCounts(ctx, plan.Facets)
+	if query != nil {
+		counts, err = s.facetCounts(ctx, query)
 		if err != nil {
 			s.fail(w, r, err)
 			return

@@ -53,9 +53,15 @@ func TestParseList_AListParameterIsGivenOnce(t *testing.T) {
 
 func assertListParam(t *testing.T, err error, name string) {
 	t.Helper()
-	require.ErrorIs(t, err, filter.ECodeInvalidListParam)
+	assertListParamNamed(t, err, name)
+	assert.ErrorContains(t, err, "given 2 times")
+}
+
+// assertListParamNamed asserts err is E2067 naming parameter name.
+func assertListParamNamed(t *testing.T, err error, name string) {
+	t.Helper()
+	require.ErrorIs(t, err, filter.ECodeInvalidListParam, name)
 	pe, ok := errors.AsType[*core.ParseError](err)
 	require.True(t, ok)
 	assert.Equal(t, name, pe.Details[core.DetailParameter])
-	assert.Contains(t, pe.Message, "given 2 times")
 }

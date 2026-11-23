@@ -53,3 +53,16 @@ func Query(r *http.Request) (url.Values, error) {
 	}
 	return q, nil
 }
+
+// ParseFacets reads a facets request from r's query string, decoded by
+// Query (Resource.ParseFacets): facets, the filters, search and
+// include_deleted; a list parameter that shapes a page is E2067. The SDK
+// sends it as OPTIONS /{resource}?facets=…, so the route must reach an
+// OPTIONS that is not a CORS preflight, and it has no body form.
+func ParseFacets[T any](r *http.Request, res *parse.Resource[T]) (*parse.ListRequest, error) {
+	q, err := Query(r)
+	if err != nil {
+		return nil, err
+	}
+	return res.ParseFacets(q)
+}

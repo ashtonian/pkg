@@ -15,9 +15,11 @@ A list endpoint built on this package reads the `filter.Param*` query parameters
 | `include_total` | `ParamIncludeTotal` | Populate `page_info.total_count` |
 | `include_deleted` | `ParamIncludeDeleted` | Include soft-deleted rows |
 | `search` | `ParamSearch` | Free-text search |
-| `facets` | `ParamFacets` | Facet fields (on `OPTIONS`) |
+| `facets` | `ParamFacets` | Facet fields: on a list, or alone on `OPTIONS` (below) |
 | `fields` | `ParamFields` | Response field mask: the fields each item returns ([field mask](queries.md#field-mask)) |
 | `include` | `ParamInclude` | Relation fields whose related IDs the page carries in `_relations` |
+
+Facet counts alone are an `OPTIONS /{resource}?facets=…` request, read by `parsehttp.ParseFacets` (`Resource.ParseFacets`) and compiled by `Resource.BuildFacets` into the facet statement a list page asking for the same facets carries. It takes `facets`, the filters, `search` and `include_deleted`; `cursor`, `sort`, `page_size`, `include_total`, `include` and `fields` shape a page and are E2067. Two things follow from the method. `OPTIONS` is also a CORS preflight's, so the handler must receive an `OPTIONS` that is not a preflight (no `Access-Control-Request-Method`): a layer in front of the application that answers every `OPTIONS` itself never reaches it, and the SDK receives an empty answer. And a facets request has no body form: counts under a filter too large for a URL come from a list over `POST` that asks for `facets`, whose every page carries them.
 
 Each list parameter is given once: a repeat is E2067 naming it, from `Resource.ParseList` and `ParseRequestFilter` alike, where `q.Get` would otherwise read the first and drop the rest. `facets`, `fields` and `include` take their names comma-separated in one value. A flat field parameter may repeat: `status=a&status=b` is the set `{"status":{"$in":["a","b"]}}`.
 
