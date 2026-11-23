@@ -665,6 +665,64 @@ func TestSources_TypedSectionKeepsPrivatelySquashedFields(t *testing.T) {
 	assert.Equal(t, privatelySquashed{sectionBase{"h"}, 1}, got.Section)
 }
 
+type portServers struct {
+	Ports map[int]editServer `koanf:"ports"`
+}
+
+type portServersDefaulted struct {
+	Ports map[int]editServer `koanf:"ports"`
+}
+
+func (c *portServersDefaulted) SetDefaults() {
+	c.Ports = map[int]editServer{80: {"a", 1}, 443: {"b", 2}}
+}
+
+// An integer-keyed map merges by key whichever default layer set it: a
+// higher source or a key edit sets one entry's key, and the other entries
+// and fields keep their values.
+func TestSources_IntegerKeyedMapMergesFromEveryDefaultLayer(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "ports: {80: {port: 9}}\n")
+	typed := map[string]any{"ports": map[int]editServer{80: {"a", 1}, 443: {"b", 2}}}
+	want := map[int]editServer{80: {"a", 9}, 443: {"b", 2}}
+	for name, load := range map[string]func() (map[int]editServer, error){
+		"WithDefaults and a file": func() (map[int]editServer, error) {
+			got, err := Load[portServers](t.Context(), WithDefaults(typed), WithFile(file))
+			if err != nil {
+				return nil, err
+			}
+			return got.Ports, nil
+		},
+		"SetDefaults and a file": func() (map[int]editServer, error) {
+			got, err := Load[portServersDefaulted](t.Context(), WithFile(file))
+			if err != nil {
+				return nil, err
+			}
+			return got.Ports, nil
+		},
+		"WithDefaults and a key edit": func() (map[int]editServer, error) {
+			got, err := DecodeKey[portServers](t.Context(), `ports["80"].port`, 9, WithDefaults(typed))
+			if err != nil {
+				return nil, err
+			}
+			return got.Ports, nil
+		},
+		"SetDefaults and a key edit": func() (map[int]editServer, error) {
+			got, err := DecodeKey[portServersDefaulted](t.Context(), `ports["80"].port`, 9)
+			if err != nil {
+				return nil, err
+			}
+			return got.Ports, nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := load()
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+		})
+	}
+}
+
 type ownTextKeys struct {
 	Timeouts map[time.Duration]string `koanf:"timeouts"`
 	Levels   map[slog.Level]string    `koanf:"levels"`

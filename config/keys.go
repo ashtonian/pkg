@@ -215,20 +215,20 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 }
 
 // mapValues follows the values of map v into element type elem; its keys are
-// the caller's and stay as written. A typed map keyed by strings or integers
-// becomes a wholeMap keyed by their text, as a map[string]any from a file
-// is, so a higher source can set one entry, or one key within an entry.
+// the caller's and stay as written. A typed map whose keys' text decodes
+// back to them becomes a wholeMap keyed by that text (see textKeyedMap), as
+// a map[string]any from a file is keyed, so a higher source can set one
+// entry, or one key within an entry.
 func (w *keyWalk) mapValues(elem reflect.Type, v reflect.Value, path keyPath) any {
 	if v.IsNil() {
 		return v.Interface()
 	}
-	if t := v.Type(); t != mapStringAnyType && t != wholeMapType && keysAsText(t.Key()) {
-		out := make(map[string]any, v.Len())
-		for it := v.MapRange(); it.Next(); {
-			k := keyText(it.Key())
-			out[k] = w.elem(t.Elem(), elem, it.Value(), path.key(k)).Interface()
+	if t := v.Type(); t != mapStringAnyType && t != wholeMapType {
+		if m, ok := textKeyedMap(v, func(k string, e reflect.Value) any {
+			return w.elem(t.Elem(), elem, e, path.key(k)).Interface()
+		}); ok {
+			return m
 		}
-		return wholeMap(out)
 	}
 	out := reflect.MakeMapWithSize(v.Type(), v.Len())
 	for _, k := range v.MapKeys() {
@@ -238,6 +238,23 @@ func (w *keyWalk) mapValues(elem reflect.Type, v reflect.Value, path keyPath) an
 }
 
 var wholeMapType = reflect.TypeFor[wholeMap]()
+
+// textKeyedMap is typed map v in its merge shape when its keys' text
+// decodes back to them (keysAsText): a wholeMap keyed by that text, holding
+// entry(key text, value) for each entry. ok is false for any other key
+// type; a source carries such a map with its own keys, and it replaces what
+// lies beneath it whole.
+func textKeyedMap(v reflect.Value, entry func(key string, value reflect.Value) any) (m wholeMap, ok bool) {
+	if !keysAsText(v.Type().Key()) {
+		return nil, false
+	}
+	m = make(wholeMap, v.Len())
+	for it := v.MapRange(); it.Next(); {
+		k := keyText(it.Key())
+		m[k] = entry(k, it.Value())
+	}
+	return m, true
+}
 
 // keysAsText reports a map key type whose text, as keyText writes it,
 // decodes back to the key: a string or integer kind with no text methods of
