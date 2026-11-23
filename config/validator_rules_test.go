@@ -23,14 +23,6 @@ type keysWithoutDiveCfg struct {
 	Limits map[string]int `koanf:"limits" validate:"keys,min=1,endkeys"`
 }
 
-type elementRuleItem struct {
-	Port int `koanf:"port" validate:"min=1,maxx=9"`
-}
-
-type elementRuleCfg struct {
-	Items map[string]elementRuleItem `koanf:"items" validate:"dive"`
-}
-
 // A validate tag the default validator cannot read fails every load and
 // key check with ErrSchema naming the field, before any source is read,
 // rather than panicking in the middle of the load.
@@ -57,10 +49,6 @@ func TestDefaultValidator_RefusesUnreadableRules(t *testing.T) {
 	assert.Contains(t, err.Error(), "field Limits of config.keysWithoutDiveCfg")
 	assert.Contains(t, err.Error(), "'keys' tag must be immediately preceded by the 'dive' tag")
 
-	_, err = Load[elementRuleCfg](t.Context())
-	require.ErrorIs(t, err, ErrSchema, "an element's rules are read past a dive")
-	assert.Contains(t, err.Error(), "field Port of config.elementRuleItem")
-	assert.Contains(t, err.Error(), "'maxx'")
 }
 
 // A reloader whose type has an unreadable rule is never built, so nothing
@@ -139,10 +127,6 @@ type unreadTextCfg struct {
 	Addr unreadText `koanf:"addr"`
 }
 
-type unreadPointerCfg struct {
-	Inner *unreadInner `koanf:"inner"`
-}
-
 type unreadEmbedded struct {
 	Port int `koanf:"port" validate:"requird"`
 }
@@ -151,19 +135,18 @@ type unreadEmbeddedCfg struct {
 	unreadEmbedded `koanf:",squash"`
 }
 
-type unreadKeysItem struct {
-	Port int `koanf:"port" validate:"maxx=9"`
+type unreadSectionCfg struct {
+	Outer unreadOuter `koanf:"outer"`
 }
 
-type unreadKeysCfg struct {
-	Items map[string]unreadKeysItem `koanf:"items" validate:"dive,keys,min=1,endkeys"`
+type unreadOuter struct {
+	Inner unreadInner `koanf:"inner"`
 }
 
-// The pre-check reads the tags the default validator descends to, as it
-// descends, not as config's schema does: a struct config skips (koanf:"-")
-// or decodes whole from text is still validated field by field, and so are
-// an embedded struct, a pointer's struct and, past a dive and its keys
-// rules, a map's struct values.
+// The pre-check reads the tags the default validator reads on every
+// validation, as it descends, not as config's schema does: a struct config
+// skips (koanf:"-") or decodes whole from text is still validated field by
+// field, and so are an embedded struct and a section's sections.
 func TestDefaultValidator_RefusesUnreadableRulesItDescendsTo(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -172,9 +155,8 @@ func TestDefaultValidator_RefusesUnreadableRulesItDescendsTo(t *testing.T) {
 	}{
 		{"koanf skipped struct", loadErrOpts[unreadSkippedCfg], "field Port of config.unreadInner"},
 		{"text unmarshaler struct", loadErrOpts[unreadTextCfg], "field Host of config.unreadText"},
-		{"pointer to struct", loadErrOpts[unreadPointerCfg], "field Port of config.unreadInner"},
 		{"embedded struct", loadErrOpts[unreadEmbeddedCfg], "field Port of config.unreadEmbedded"},
-		{"map values past keys", loadErrOpts[unreadKeysCfg], "field Port of config.unreadKeysItem"},
+		{"nested section", loadErrOpts[unreadSectionCfg], "field Port of config.unreadInner"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			read := 0
@@ -248,6 +230,115 @@ func TestDefaultValidator_LeavesUnreadRulesAlone(t *testing.T) {
 	keyed, err := Decode[unreadKeyedCfg](t.Context(), map[string]any{"keyed": map[string]any{"ab": 1}})
 	require.NoError(t, err)
 	assert.Equal(t, 1, keyed.Keyed[unreadKey{Name: "ab"}])
+}
+
+// libInner's rule is registered on a validator other than config's, as a
+// library's own type may carry.
+type libInner struct {
+	Host string `validate:"lib_host"`
+}
+
+type behindPointerCfg struct {
+	Name   string    `koanf:"name"`
+	Handle *libInner `koanf:"-"`
+}
+
+type behindSliceCfg struct {
+	Items []libInner `koanf:"items" validate:"dive"`
+}
+
+type behindMapCfg struct {
+	Items map[string]libInner `koanf:"items" validate:"dive,keys,min=1,endkeys"`
+}
+
+type behindArrayCfg struct {
+	Items [1]libInner `koanf:"-" validate:"dive"`
+}
+
+type behindOmitEmptyCfg struct {
+	Lib libInner `koanf:"-" validate:"omitempty"`
+}
+
+// valuerInner is validated as the string it returns, not as its fields.
+type valuerInner struct {
+	Host string `validate:"lib_host"`
+}
+
+func (v valuerInner) ValidatorValue() any { return v.Host }
+
+type behindValuerCfg struct {
+	Lib valuerInner `koanf:"-"`
+}
+
+// The validator reads a struct behind a pointer, a collection or an
+// interface, or beneath omitempty, only when a value puts one there, and a
+// struct that names its own ValidatorValue never: the pre-check leaves
+// their tags alone, and a config that leaves them out loads. A value that
+// does put one there meets the tag when validation does, as ErrSchema.
+func TestDefaultValidator_LeavesNilableEdgesToValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		empty func(context.Context) error
+		set   func(context.Context) error
+	}{
+		{"pointer", func(ctx context.Context) error {
+			_, err := Decode[behindPointerCfg](ctx, map[string]any{"name": "x"})
+			return err
+		}, func(ctx context.Context) error {
+			_, err := Load[behindPointerCfg](ctx, WithPostLoad(func(_ context.Context, c *behindPointerCfg) error {
+				c.Handle = &libInner{Host: "h"}
+				return nil
+			}))
+			return err
+		}},
+		{"slice", func(ctx context.Context) error {
+			_, err := Decode[behindSliceCfg](ctx, nil)
+			return err
+		}, func(ctx context.Context) error {
+			_, err := Decode[behindSliceCfg](ctx, map[string]any{"items": []any{map[string]any{"host": "h"}}})
+			return err
+		}},
+		{"map", func(ctx context.Context) error {
+			_, err := Decode[behindMapCfg](ctx, nil)
+			return err
+		}, func(ctx context.Context) error {
+			_, err := Decode[behindMapCfg](ctx, map[string]any{"items": map[string]any{"a": map[string]any{"host": "h"}}})
+			return err
+		}},
+		{"array", nil, func(ctx context.Context) error {
+			_, err := Decode[behindArrayCfg](ctx, nil)
+			return err
+		}},
+		{"omitempty", func(ctx context.Context) error {
+			_, err := Decode[behindOmitEmptyCfg](ctx, nil)
+			return err
+		}, func(ctx context.Context) error {
+			_, err := Load[behindOmitEmptyCfg](ctx, WithPostLoad(func(_ context.Context, c *behindOmitEmptyCfg) error {
+				c.Lib.Host = "h"
+				return nil
+			}))
+			return err
+		}},
+		{"validator value", func(ctx context.Context) error {
+			_, err := Load[behindValuerCfg](ctx, WithPostLoad(func(_ context.Context, c *behindValuerCfg) error {
+				c.Lib.Host = "h"
+				return nil
+			}))
+			return err
+		}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.empty != nil {
+				require.NoError(t, tc.empty(t.Context()))
+			}
+			if tc.set != nil {
+				var err error
+				require.NotPanics(t, func() { err = tc.set(t.Context()) })
+				require.ErrorIs(t, err, ErrSchema)
+				assert.Contains(t, err.Error(), "Undefined validation function 'lib_host' on field 'Host'")
+			}
+		})
+	}
 }
 
 type applyDiveOnIntCfg struct {

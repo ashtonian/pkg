@@ -622,12 +622,13 @@ const validatorPackage = "github.com/go-playground/validator/v10."
 // validateDefault validates cfg with the default validator. The validator
 // panics on a rule it cannot apply — a dive on a field that is not a
 // collection, min=abc, len or oneof on a kind they do not measure,
-// required_if with an odd number of params, an unreadable tag beneath an
-// interface, which [defaultRules] cannot see — wherever validation meets
-// it. Such a panic is the declaration's fault, not the value's, and is
-// returned as an ErrSchema carrying the validator's message, which names
-// the field when the validator does. A panic raised in the caller's own
-// code, such as a method a validateFn rule calls, is left to propagate.
+// required_if with an odd number of params, an unreadable tag in a struct
+// behind a pointer, a collection or an interface, which [defaultRules]
+// leaves to the value — wherever validation meets it. Such a panic is the
+// declaration's fault, not the value's, and is returned as an ErrSchema
+// carrying the validator's message, which names the field when the
+// validator does. A panic raised in the caller's own code, such as a method
+// a validateFn rule calls, is left to propagate.
 func validateDefault(ctx context.Context, cfg any) (err error) {
 	returned := false
 	defer func() {
@@ -679,10 +680,10 @@ func panicText(r any) string {
 	return fmt.Sprintf("a %T", r)
 }
 
-// defaultRules refuses a validate tag the default validator would meet in
-// a value of T and cannot read — an undefined rule, keys without dive, an
-// empty rule — which it would otherwise panic on in the middle of a load.
-// Each tag is parsed once per type, and no rule runs.
+// defaultRules refuses a validate tag the default validator would meet on
+// every validation of a value of T and cannot read — an undefined rule,
+// keys without dive, an empty rule — which it would otherwise panic on in
+// the middle of a load. Each tag is parsed once per type, and no rule runs.
 func defaultRules(t reflect.Type) error {
 	e := schemaMetadata(t)
 	if e.err != nil {
@@ -693,25 +694,25 @@ func defaultRules(t reflect.Type) error {
 }
 
 // unreadableRules parses, with v's own parser, the validate tag of every
-// field v meets validating a value of root. It descends as go-playground
-// does, not as config's schema graph does:
+// field v reads on every validation of a value of root, whatever the value
+// holds: the fields of root and of each struct it holds by value, as
+// go-playground descends to them —
 //
-//   - into every exported or embedded field not tagged validate:"-", those
+//   - every exported or embedded field not tagged validate:"-", those
 //     tagged koanf:"-" and the structs that decode themselves from text
 //     included;
-//   - through pointers into a field's struct, time.Time and types
-//     convertible to it aside, once its rules pass: v reads every tag of a
-//     struct it meets, and goes on into the fields' values unless the rules
-//     reaching the struct say structonly; nostructlevel stops before it;
-//   - past a dive only, into a list's elements and a map's values with the
-//     rules after it, and into a map's keys with those between keys and
-//     endkeys.
+//   - into a field's struct, time.Time and types convertible to it aside,
+//     once its rules pass: v reads every tag of a struct it meets, and goes
+//     on into the fields' values unless the rules reaching the struct say
+//     structonly; nostructlevel stops before it.
 //
-// An interface's dynamic value is not known here; a tag v meets beneath one
-// fails when validation reaches it (see [validateDefault]).
+// A struct v reaches only when a value puts it there is left to validation
+// (see [validateDefault]): one behind a pointer, a map, a slice, an array
+// or an interface, one beneath an omitempty or omitzero rule, and one whose
+// value v replaces with its own ValidatorValue.
 func unreadableRules(root reflect.Type, v *validator.Validate) error {
 	w := ruleWalk{v: v, read: map[reflect.Type][]readRules{}, walked: map[reflect.Type]bool{}}
-	w.value(root, nil)
+	w.fields(root, true)
 	return errors.Join(w.errs...)
 }
 
@@ -731,61 +732,22 @@ type readRules struct {
 	rules []string
 }
 
-// value walks what v meets in a value of type t when rules, a field's rules
-// from the one v reaches next, are still to run on it.
+// value walks the struct a field of type t holds by value, which v meets on
+// every validation unless rules, the field's rules, stop it first.
 func (w *ruleWalk) value(t reflect.Type, rules []string) {
-	t = derefType(t)
-	nested := t.Kind() == reflect.Struct && !t.ConvertibleTo(timeType)
-	for i, rule := range rules {
+	if t.Kind() != reflect.Struct || t.ConvertibleTo(timeType) || t.Implements(validatorValuer) {
+		return
+	}
+	for _, rule := range rules {
 		switch rule {
-		case "nostructlevel", "endkeys":
+		case "nostructlevel", "endkeys", "dive", "omitempty", "omitzero":
 			return
 		case "structonly":
-			if nested {
-				w.fields(t, false)
-			}
-			return
-		case "dive":
-			w.elements(t, rules[i+1:])
+			w.fields(t, false)
 			return
 		}
 	}
-	if nested {
-		w.fields(t, true)
-	}
-}
-
-// elements walks what a dive reaches in a value of type t with rules, those
-// after the dive. A dive on any other kind panics when v runs it.
-func (w *ruleWalk) elements(t reflect.Type, rules []string) {
-	switch t.Kind() {
-	case reflect.Slice, reflect.Array:
-		w.value(t.Elem(), rules)
-	case reflect.Map:
-		if len(rules) == 0 || rules[0] != "keys" {
-			w.value(t.Elem(), rules)
-			return
-		}
-		// The keys' rules run to endkeys, where v stops, or to the tag's end.
-		end := slices.Index(rules, "endkeys")
-		if end < 0 {
-			end = len(rules) - 1
-		}
-		w.value(t.Key(), rules[1:end+1])
-		if rest := rules[end+1:]; len(rest) > 0 {
-			w.value(t.Elem(), rest)
-			return
-		}
-		// With no rules left for the values, v still reads a struct value's
-		// fields, through one pointer.
-		elem := t.Elem()
-		if elem.Kind() == reflect.Pointer {
-			elem = elem.Elem()
-		}
-		if elem.Kind() == reflect.Struct {
-			w.value(elem, nil)
-		}
-	}
+	w.fields(t, true)
 }
 
 // fields reads the validate tags of struct t's fields as v does on meeting
@@ -832,9 +794,13 @@ func (w *ruleWalk) parse(t reflect.Type) []readRules {
 	return fields
 }
 
-// timeType is time.Time, whose fields v never reads, nor those of a type
-// convertible to it.
-var timeType = reflect.TypeFor[time.Time]()
+var (
+	// timeType is time.Time, whose fields v never reads, nor those of a
+	// type convertible to it.
+	timeType = reflect.TypeFor[time.Time]()
+	// validatorValuer is a type whose value v validates in place of its own.
+	validatorValuer = reflect.TypeFor[validator.Valuer]()
+)
 
 // unreadableRule parses tag as v does when it first meets a struct, and
 // returns what v panicked with when it could not. Validating a nil value
