@@ -18,11 +18,11 @@ func (namedCodec) Decode(_ []byte, _ any) error { return nil }
 func isolateCodecs(t *testing.T) {
 	t.Helper()
 	codecs.mu.Lock()
-	saved := maps.Clone(codecs.m)
+	saved, keys, accept := maps.Clone(codecs.m), codecs.keys, codecs.accept
 	codecs.mu.Unlock()
 	t.Cleanup(func() {
 		codecs.mu.Lock()
-		codecs.m = saved
+		codecs.m, codecs.keys, codecs.accept = saved, keys, accept
 		codecs.mu.Unlock()
 	})
 }
@@ -39,9 +39,9 @@ func TestRegisteredCodecsAreOrderedByContentType(t *testing.T) {
 	if !slices.IsSorted(types) || !slices.Contains(types, "application/aa-test") {
 		t.Fatalf("content types = %v, want sorted and complete", types)
 	}
-	first := registeredAccept()
+	first := codecs.acceptValue()
 	for range 20 {
-		if got := registeredAccept(); got != first {
+		if got := codecs.acceptValue(); got != first {
 			t.Fatalf("Accept changed between requests: %q vs %q", first, got)
 		}
 	}

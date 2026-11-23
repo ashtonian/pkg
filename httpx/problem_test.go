@@ -198,8 +198,8 @@ func TestTypedProblemErrors(t *testing.T) {
 			if errors.As(err, &p) != tt.wantProblem || (err != nil) != tt.wantError || got != resp {
 				t.Fatalf("response=%p err=%v", got, err)
 			}
-			if tt.wantProblem && !strings.Contains(req.Header.Get("Accept"), ContentTypeProblemJSON) {
-				t.Fatalf("Accept=%q", req.Header.Get("Accept"))
+			if tt.wantProblem && !strings.Contains(got.Request.Header.Get("Accept"), ContentTypeProblemJSON) {
+				t.Fatalf("Accept=%q", got.Request.Header.Get("Accept"))
 			}
 			if tt.status != 200 && !tt.wantError && body.closed != 0 {
 				t.Fatal("unselected body was closed")

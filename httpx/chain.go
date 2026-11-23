@@ -56,14 +56,28 @@ func (c Chain) Prepend(funcs ...TransportFunc) Chain {
 }
 
 // Build applies all transport functions to the base transport.
-// If base is nil, a default [NewBaseTransport] is used.
+// If base is nil, a default [NewBaseTransport] is used. A layer that returns
+// no transport, nil or an interface holding a nil value, fails the build
+// with ErrInvalidConfig naming its index: an http.Client would otherwise
+// send through http.DefaultTransport and bypass the layers below it. To stop
+// the background work of the caches WithCacheT layers construct, use
+// [Chain.BuildWithLifecycle].
 func (c Chain) Build(base http.RoundTripper) (http.RoundTripper, error) {
+	return c.build(base, nil)
+}
+
+// build applies the chain, registering what it constructs with life when
+// life is not nil.
+func (c Chain) build(base http.RoundTripper, life *Lifecycle) (_ http.RoundTripper, err error) {
+	owner := &buildOwner{}
+	defer owner.stopOnError(&err)
 	if base == nil {
 		b, err := NewBaseTransport()
 		if err != nil {
 			return nil, err
 		}
 		base = b
+		owner.ownBase(b)
 	}
 
 	// Apply in order: first is innermost
@@ -75,9 +89,16 @@ func (c Chain) Build(base http.RoundTripper) (http.RoundTripper, error) {
 		if err != nil {
 			return nil, fmt.Errorf("httpx: chain layer %d: %w", i, err)
 		}
+		if isNil(next) {
+			return nil, invalidConfig("chain: layer %d returned no transport", i)
+		}
+		owner.adopt(next, base)
 		base = next
 	}
 
+	if err := owner.finish(life); err != nil {
+		return nil, err
+	}
 	return base, nil
 }
 
@@ -85,10 +106,14 @@ func (c Chain) Build(base http.RoundTripper) (http.RoundTripper, error) {
 // If base is nil, a default [NewBaseTransport] is used. A negative timeout is
 // rejected; zero disables the client timeout.
 func (c Chain) Client(base http.RoundTripper, timeout time.Duration) (*http.Client, error) {
+	return c.client(base, timeout, nil)
+}
+
+func (c Chain) client(base http.RoundTripper, timeout time.Duration, life *Lifecycle) (*http.Client, error) {
 	if timeout < 0 {
 		return nil, invalidConfig("chain: client timeout must be >= 0, got %s", timeout)
 	}
-	transport, err := c.Build(base)
+	transport, err := c.build(base, life)
 	if err != nil {
 		return nil, err
 	}
@@ -107,10 +132,11 @@ func WithCompressionT(opts ...CompressionOption) TransportFunc {
 	}
 }
 
-// WithCacheT returns a TransportFunc that adds caching.
+// WithCacheT returns a TransportFunc that adds caching. The chain build that
+// receives the cache owns it; see [Chain.BuildWithLifecycle].
 func WithCacheT(store CacheStore, opts ...CacheOption) TransportFunc {
 	return func(base http.RoundTripper) (http.RoundTripper, error) {
-		return asRoundTripper(NewCacheTransport(base, store, opts...))
+		return newLayerCache(base, store, opts...)
 	}
 }
 

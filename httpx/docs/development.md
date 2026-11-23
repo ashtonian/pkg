@@ -62,6 +62,7 @@ not an application throughput guarantee.
 | `client.go` | `NewClient`, `Option`s and the fixed layer order |
 | `standard.go` | `NewStandard`, `MustNewStandard` |
 | `chain.go` | `Chain`, `TransportFunc`, `With*T` layer functions, presets |
+| `lifecycle.go` | `Lifecycle`, `WithLifecycle`, `Chain.BuildWithLifecycle` / `ClientWithLifecycle`: what a build owns and how it is released |
 | `egress.go` | `EgressPolicy`, `WithEgressPolicy`, resolved-address enforcement |
 | `base.go` | `NewBaseTransport` and `BaseOption`s (timeout matrix, pooling) |
 | `transport.go` | Shared interfaces (`CacheStore`, `CachedResponse`, `MetricsHook`, `LoggingHook`, `AuthProvider`), content types, `RetryCause` |

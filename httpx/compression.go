@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -42,19 +44,48 @@ type CompressionTransport struct {
 	base        http.RoundTripper
 	Pool        *BufferPool
 	Encodings   []string              // Priority order for Accept-Encoding
-	compressors map[string]Compressor // Registered compressors by encoding
-	configErrs  []error
+	compressors map[string]Compressor // By lowercase content coding
+	options     compressionOptions
 }
+
+// compressionOptions is what the options asked for. NewCompressionTransport
+// resolves it once every option has applied, so no option's effect depends
+// on where it appears relative to another.
+type compressionOptions struct {
+	// encodings is WithEncodings' advertisement, used when selected.
+	encodings []string
+	selected  bool
+	// overrides are this transport's own implementations, by coding: the
+	// last WithCompressor or level option for a coding wins.
+	overrides map[string]Compressor
+	// added are WithCompressor's codings in option order, advertised ahead
+	// of the defaults when no WithEncodings selects the list.
+	added []string
+	errs  []error
+}
+
+func (o *compressionOptions) override(encoding string, c Compressor) {
+	if o.overrides == nil {
+		o.overrides = make(map[string]Compressor)
+	}
+	o.overrides[encoding] = c
+}
+
+// defaultEncodings are advertised, in this order, when registered.
+var defaultEncodings = []string{EncodingBrotli, EncodingGzip, EncodingDeflate}
 
 // CompressionOption configures a CompressionTransport.
 type CompressionOption func(*CompressionTransport)
 
 // NewCompressionTransport creates a new compression transport.
 //
-// By default, it advertises registered brotli, gzip and deflate encodings,
-// in that order without quality weights. The server chooses the encoding.
-// Select other registered encodings with WithEncodings or add an
-// implementation with WithCompressor.
+// By default, it advertises the encodings added with WithCompressor and then
+// the registered brotli, gzip and deflate encodings, in that order without
+// quality weights. The server chooses the encoding. WithEncodings replaces
+// that list. Each advertised encoding uses this transport's own
+// implementation when WithCompressor or a level option supplied one, and
+// the registered compressor otherwise; the order of the options never
+// changes which implementation is used.
 // The transport automatically decompresses complete response bodies. Partial
 // representations retain their encoding and byte offsets; Range and HEAD
 // requests do not receive an automatic Accept-Encoding header.
@@ -67,133 +98,147 @@ func NewCompressionTransport(base http.RoundTripper, opts ...CompressionOption) 
 		return nil, invalidConfig("compression: base transport is nil")
 	}
 
-	t := &CompressionTransport{
-		base:        base,
-		Pool:        defaultPool,
-		compressors: make(map[string]Compressor),
-	}
-
-	// Build default encodings list based on what's registered
-	// Priority: brotli > gzip > deflate
-	var encodings []string
-	if HasCompressor(EncodingBrotli) {
-		encodings = append(encodings, EncodingBrotli)
-	}
-	if HasCompressor(EncodingGzip) {
-		encodings = append(encodings, EncodingGzip)
-	}
-	if HasCompressor(EncodingDeflate) {
-		encodings = append(encodings, EncodingDeflate)
-	}
-	t.Encodings = encodings
-
-	// Initialize compressors from registry for default encodings
-	for _, enc := range encodings {
-		if c, ok := GetCompressor(enc); ok {
-			t.compressors[enc] = c
-		}
-	}
-
+	t := &CompressionTransport{base: base, Pool: defaultPool}
 	for _, opt := range opts {
 		opt(t)
 	}
+	o := &t.options
 	if t.Pool == nil {
-		t.configErrs = append(t.configErrs, invalidConfig("compression: WithCompressionPool requires a non-nil pool"))
-	}
-	if err := errors.Join(t.configErrs...); err != nil {
-		return nil, err
+		o.errs = append(o.errs, invalidConfig("compression: WithCompressionPool requires a non-nil pool"))
 	}
 
+	encodings := o.encodings
+	if !o.selected {
+		encodings = slices.Clone(o.added)
+		for _, enc := range defaultEncodings {
+			if HasCompressor(enc) && !slices.Contains(encodings, enc) {
+				encodings = append(encodings, enc)
+			}
+		}
+	}
+	t.compressors = maps.Clone(o.overrides)
+	if t.compressors == nil {
+		t.compressors = make(map[string]Compressor, len(encodings))
+	}
+	for _, enc := range encodings {
+		if _, ok := t.compressors[enc]; ok {
+			continue
+		}
+		c, ok := GetCompressor(enc)
+		if !ok {
+			o.errs = append(o.errs, invalidConfig("compression: WithEncodings: no compressor registered or supplied for %q", enc))
+			continue
+		}
+		t.compressors[enc] = c
+	}
+	t.Encodings = encodings
+	if err := errors.Join(o.errs...); err != nil {
+		return nil, err
+	}
+	t.options = compressionOptions{}
 	return t, nil
 }
 
-// WithEncodings sets the advertised encoding list without quality weights.
-// Each encoding needs a registered compressor or an earlier WithCompressor
-// option; an unavailable encoding makes construction fail.
+// contentCoding returns encoding as the transport compares it: content
+// codings are case-insensitive (RFC 9110 §8.4.1).
+func contentCoding(encoding string) string {
+	return strings.ToLower(strings.TrimSpace(encoding))
+}
+
+// WithEncodings sets the advertised encoding list, in this order and
+// without quality weights; the last WithEncodings wins. It selects which
+// encodings are advertised, never their implementation: each needs a
+// registered compressor or one this transport was given with WithCompressor
+// or a level option, wherever that option appears, or construction fails.
+// Encodings compare case-insensitively; naming one twice is an error.
 func WithEncodings(encodings ...string) CompressionOption {
 	return func(t *CompressionTransport) {
-		var validEncodings []string
+		o := &t.options
+		o.selected = true
+		o.encodings = o.encodings[:0:0]
 		for _, enc := range encodings {
-			if c, ok := GetCompressor(enc); ok {
-				t.compressors[enc] = c
-				validEncodings = append(validEncodings, enc)
-			} else if _, exists := t.compressors[enc]; exists {
-				// Already have a custom compressor for this encoding
-				validEncodings = append(validEncodings, enc)
-			} else {
-				t.configErrs = append(t.configErrs, invalidConfig("compression: WithEncodings: no compressor registered for %q", enc))
+			enc = contentCoding(enc)
+			switch {
+			case enc == "":
+				o.errs = append(o.errs, invalidConfig("compression: WithEncodings: empty encoding"))
+			case slices.Contains(o.encodings, enc):
+				o.errs = append(o.errs, invalidConfig("compression: WithEncodings: %q listed twice", enc))
+			default:
+				o.encodings = append(o.encodings, enc)
 			}
 		}
-		t.Encodings = validEncodings
 	}
 }
 
-// WithCompressor registers a custom compressor for an encoding.
-// This can also be used to override built-in compressors.
+// WithCompressor gives this transport its own implementation of an
+// encoding, used instead of the registered one wherever the option appears.
+// It can override a built-in compressor. Without WithEncodings, the encoding
+// is advertised ahead of the registered defaults; with it, list the encoding
+// there to advertise it. Either way the transport decodes responses in it.
 func WithCompressor(encoding string, c Compressor) CompressionOption {
 	return func(t *CompressionTransport) {
+		o := &t.options
+		encoding = contentCoding(encoding)
 		if encoding == "" || c == nil {
-			t.configErrs = append(t.configErrs, invalidConfig("compression: WithCompressor requires an encoding and a non-nil compressor"))
+			o.errs = append(o.errs, invalidConfig("compression: WithCompressor requires an encoding and a non-nil compressor"))
 			return
 		}
-		t.compressors[encoding] = c
-		// Add to encodings if not already present
-		found := false
-		for _, enc := range t.Encodings {
-			if enc == encoding {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Encodings = append([]string{encoding}, t.Encodings...)
+		o.override(encoding, c)
+		if !slices.Contains(o.added, encoding) {
+			o.added = append(o.added, encoding)
 		}
 	}
 }
 
-// WithBrotliLevel sets the brotli compression level (0-11).
-// Requires brotli to be registered via import _ "github.com/ashtonian/pkg/httpx/compress/brotli"
+// WithBrotliLevel sets the brotli compression level (0-11). It is this
+// transport's brotli implementation, like WithCompressor for br: the last of
+// the two wins. Requires brotli to be registered via
+// import _ "github.com/ashtonian/pkg/httpx/compress/brotli".
 func WithBrotliLevel(level int) CompressionOption {
 	return func(t *CompressionTransport) {
+		o := &t.options
 		if level < 0 || level > 11 {
-			t.configErrs = append(t.configErrs, invalidConfig("compression: WithBrotliLevel must be within [0, 11], got %d", level))
+			o.errs = append(o.errs, invalidConfig("compression: WithBrotliLevel must be within [0, 11], got %d", level))
 			return
 		}
 		c, ok := GetCompressor(EncodingBrotli)
 		if !ok {
-			t.configErrs = append(t.configErrs, invalidConfig("compression: WithBrotliLevel: brotli is not registered (import github.com/ashtonian/pkg/httpx/compress/brotli)"))
+			o.errs = append(o.errs, invalidConfig("compression: WithBrotliLevel: brotli is not registered (import github.com/ashtonian/pkg/httpx/compress/brotli)"))
 			return
 		}
 		lc, ok := c.(interface{ WithLevel(int) Compressor })
 		if !ok {
-			t.configErrs = append(t.configErrs, invalidConfig("compression: WithBrotliLevel: registered brotli compressor does not support levels"))
+			o.errs = append(o.errs, invalidConfig("compression: WithBrotliLevel: registered brotli compressor does not support levels"))
 			return
 		}
-		t.compressors[EncodingBrotli] = lc.WithLevel(level)
+		o.override(EncodingBrotli, lc.WithLevel(level))
 	}
 }
 
 // WithGzipLevel sets the gzip compression level: gzip.HuffmanOnly (-2),
-// gzip.DefaultCompression (-1), or 0 through 9.
+// gzip.DefaultCompression (-1), or 0 through 9. It is this transport's gzip
+// implementation, like WithCompressor for gzip: the last of the two wins.
 func WithGzipLevel(level int) CompressionOption {
 	return func(t *CompressionTransport) {
 		if !validDeflateLevel(level) {
-			t.configErrs = append(t.configErrs, invalidConfig("compression: WithGzipLevel must be within [%d, %d], got %d", gzip.HuffmanOnly, gzip.BestCompression, level))
+			t.options.errs = append(t.options.errs, invalidConfig("compression: WithGzipLevel must be within [%d, %d], got %d", gzip.HuffmanOnly, gzip.BestCompression, level))
 			return
 		}
-		t.compressors[EncodingGzip] = newGzipCompressor(level)
+		t.options.override(EncodingGzip, newGzipCompressor(level))
 	}
 }
 
 // WithDeflateLevel sets the deflate compression level: flate.HuffmanOnly
-// (-2), flate.DefaultCompression (-1), or 0 through 9.
+// (-2), flate.DefaultCompression (-1), or 0 through 9. It is this
+// transport's deflate implementation, like WithCompressor for deflate: the
+// last of the two wins.
 func WithDeflateLevel(level int) CompressionOption {
 	return func(t *CompressionTransport) {
 		if !validDeflateLevel(level) {
-			t.configErrs = append(t.configErrs, invalidConfig("compression: WithDeflateLevel must be within [%d, %d], got %d", flate.HuffmanOnly, flate.BestCompression, level))
+			t.options.errs = append(t.options.errs, invalidConfig("compression: WithDeflateLevel must be within [%d, %d], got %d", flate.HuffmanOnly, flate.BestCompression, level))
 			return
 		}
-		t.compressors[EncodingDeflate] = newDeflateCompressor(level)
+		t.options.override(EncodingDeflate, newDeflateCompressor(level))
 	}
 }
 
@@ -232,7 +277,7 @@ func (t *CompressionTransport) RoundTrip(req *http.Request) (*http.Response, err
 	if resp.StatusCode == http.StatusPartialContent || resp.Header.Get("Content-Range") != "" {
 		return resp, nil // byte ranges refer to the encoded representation
 	}
-	encoding := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
+	encoding := contentCoding(resp.Header.Get("Content-Encoding"))
 	c, ok := t.compressors[encoding]
 	if !ok {
 		return resp, nil // identity, stacked or unknown codings reach the caller as sent
@@ -262,9 +307,10 @@ func bodiless(req *http.Request, resp *http.Response) bool {
 	return resp.StatusCode >= 100 && resp.StatusCode < 200
 }
 
-// Compress compresses data using the specified encoding.
+// Compress compresses data using the specified encoding, compared
+// case-insensitively.
 func (t *CompressionTransport) Compress(data []byte, encoding string) ([]byte, error) {
-	c, ok := t.compressors[encoding]
+	c, ok := t.compressors[contentCoding(encoding)]
 	if !ok {
 		return nil, fmt.Errorf("httpx: unsupported encoding: %s", encoding)
 	}

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"sort"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,17 +13,9 @@ import (
 // HedgingTransport implements request hedging for tail latency reduction.
 type HedgingTransport struct {
 	base    http.RoundTripper
-	delay   atomic.Int64 // nanoseconds; use getDelay/setDelay
+	delay   time.Duration
 	max     int
 	hedgeIf func(*http.Request) bool
-}
-
-func (t *HedgingTransport) getDelay() time.Duration {
-	return time.Duration(t.delay.Load())
-}
-
-func (t *HedgingTransport) setDelay(d time.Duration) {
-	t.delay.Store(int64(d))
 }
 
 // HedgingOption configures a HedgingTransport.
@@ -42,10 +34,10 @@ func NewHedgingTransport(base http.RoundTripper, delay time.Duration, opts ...He
 	}
 
 	t := &HedgingTransport{
-		base: base,
-		max:  2,
+		base:  base,
+		delay: delay,
+		max:   2,
 	}
-	t.setDelay(delay)
 
 	// Default: only hedge GET requests
 	t.hedgeIf = func(req *http.Request) bool {
@@ -95,16 +87,26 @@ func WithHedgeIf(fn func(*http.Request) bool) HedgingOption {
 // alive until the caller finishes with its body, so a delayed or streaming
 // body stays readable.
 func (t *HedgingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if !t.hedgeIf(req) {
+	if !t.eligible(req) {
 		return t.base.RoundTrip(req)
 	}
+	return t.hedge(req, t.delay)
+}
 
-	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
-		// A hedge runs beside the first attempt, so it needs its own copy of
-		// the body before the first has finished sending it; a body without
-		// GetBody is sent once, unhedged.
-		return t.base.RoundTrip(req)
+// eligible reports whether req is hedged: the predicate selects it and its
+// body, if any, can be replayed. A hedge runs beside the first attempt, so
+// it needs its own copy of the body before the first has finished sending
+// it; a body without GetBody is sent once, unhedged.
+func (t *HedgingTransport) eligible(req *http.Request) bool {
+	if !t.hedgeIf(req) {
+		return false
 	}
+	return req.Body == nil || req.Body == http.NoBody || req.GetBody != nil
+}
+
+// hedge sends an eligible req, launching a further attempt each delay
+// while one is pending, up to the cap.
+func (t *HedgingTransport) hedge(req *http.Request, delay time.Duration) (*http.Response, error) {
 	first := req.Clone(req.Context())
 	body := newReplayBody(first, 0)
 
@@ -143,7 +145,7 @@ func (t *HedgingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	launch(first)
 	pending := 1
-	timer := time.NewTimer(t.getDelay())
+	timer := time.NewTimer(delay)
 	defer timer.Stop()
 
 	for {
@@ -171,7 +173,7 @@ func (t *HedgingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			launch(next)
 			pending++
 			if len(cancels) < t.max {
-				timer.Reset(t.getDelay())
+				timer.Reset(delay)
 			}
 
 		case <-req.Context().Done():
@@ -184,74 +186,128 @@ func (t *HedgingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 // AdaptiveHedgingTransport adjusts hedge delay based on observed latencies.
 type AdaptiveHedgingTransport struct {
 	*HedgingTransport
-	mu         sync.RWMutex
-	latencies  []time.Duration
-	percentile float64
-	maxSamples int
+	window *latencyWindow
 }
+
+// The adaptive delay starts at adaptiveInitialDelay and, once
+// adaptiveMinSamples latencies are recorded, is the configured percentile
+// of the last adaptiveWindow, recomputed every adaptiveRecomputeEvery
+// samples.
+const (
+	adaptiveInitialDelay   = 100 * time.Millisecond
+	adaptiveWindow         = 1000
+	adaptiveMinSamples     = 10
+	adaptiveRecomputeEvery = 64
+)
 
 // NewAdaptiveHedgingTransport creates a hedging transport that adapts delay based on latency.
 //
 // percentile selects the observed latency used as the hedge delay and must be
-// within (0, 1].
+// within (0, 1]. The latencies are those of the requests the transport
+// hedges, from the first attempt until a response arrives; requests it does
+// not hedge, and calls that end in an error or cancellation, are not
+// counted.
 func NewAdaptiveHedgingTransport(base http.RoundTripper, percentile float64, opts ...HedgingOption) (*AdaptiveHedgingTransport, error) {
 	if !(percentile > 0 && percentile <= 1) {
 		return nil, invalidConfig("adaptive hedging: percentile must be within (0, 1], got %v", percentile)
 	}
-	inner, err := NewHedgingTransport(base, 100*time.Millisecond, opts...)
+	inner, err := NewHedgingTransport(base, adaptiveInitialDelay, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return &AdaptiveHedgingTransport{
 		HedgingTransport: inner,
-		percentile:       percentile,
-		maxSamples:       1000,
-		latencies:        make([]time.Duration, 0, 1000),
+		window:           newLatencyWindow(percentile, adaptiveWindow, adaptiveInitialDelay),
 	}, nil
 }
 
 // RoundTrip implements http.RoundTripper with adaptive delay.
 func (t *AdaptiveHedgingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Update delay atomically based on observed latencies.
-	t.HedgingTransport.setDelay(t.calculateDelay())
-
+	// The delay controls only eligible requests, so only they train it.
+	if !t.eligible(req) {
+		return t.base.RoundTrip(req)
+	}
 	start := time.Now()
-	resp, err := t.HedgingTransport.RoundTrip(req)
-	t.recordLatency(time.Since(start))
-
+	resp, err := t.hedge(req, t.window.delay())
+	if err == nil {
+		t.window.record(time.Since(start))
+	}
 	return resp, err
 }
 
-func (t *AdaptiveHedgingTransport) recordLatency(d time.Duration) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+// latencyWindow holds the last len(samples) latencies and publishes their
+// percentile, so a request reads its delay with one atomic load and
+// recording never waits on it. A recording claims its slot with an atomic
+// counter. Every adaptiveRecomputeEvery samples (every sample until then)
+// the recording that reaches the boundary asks for a recomputation. Only one
+// runs at a time, into an owned scratch buffer; a request made while one runs
+// is taken up by the running computer when it finishes, so none is lost.
+type latencyWindow struct {
+	percentile float64
+	samples    []atomic.Int64 // nanoseconds; negative until first written
+	recorded   atomic.Uint64
+	published  atomic.Int64 // nanoseconds
+	pending    atomic.Bool  // a recomputation was requested and not yet begun
 
-	if len(t.latencies) >= t.maxSamples {
-		// Remove oldest sample
-		t.latencies = t.latencies[1:]
-	}
-	t.latencies = append(t.latencies, d)
+	mu      sync.Mutex // held while computing; guards scratch
+	scratch []time.Duration
 }
 
-func (t *AdaptiveHedgingTransport) calculateDelay() time.Duration {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	if len(t.latencies) < 10 {
-		return t.HedgingTransport.getDelay()
+func newLatencyWindow(percentile float64, size int, initial time.Duration) *latencyWindow {
+	w := &latencyWindow{
+		percentile: percentile,
+		samples:    make([]atomic.Int64, size),
+		scratch:    make([]time.Duration, 0, size),
 	}
-
-	// Sort latencies to find percentile - O(n log n)
-	sorted := make([]time.Duration, len(t.latencies))
-	copy(sorted, t.latencies)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-
-	idx := int(float64(len(sorted)) * t.percentile)
-	if idx >= len(sorted) {
-		idx = len(sorted) - 1
+	for i := range w.samples {
+		w.samples[i].Store(-1)
 	}
+	w.published.Store(int64(initial))
+	return w
+}
 
-	return sorted[idx]
+func (w *latencyWindow) delay() time.Duration {
+	return time.Duration(w.published.Load())
+}
+
+func (w *latencyWindow) record(d time.Duration) {
+	n := w.recorded.Add(1)
+	w.samples[(n-1)%uint64(len(w.samples))].Store(int64(d))
+	if n < adaptiveMinSamples || (n > adaptiveRecomputeEvery && n%adaptiveRecomputeEvery != 0) {
+		return
+	}
+	w.pending.Store(true)
+	// Whoever holds mu checks pending again after unlocking, so a request
+	// that finds mu held is never stranded.
+	for w.pending.Load() {
+		if !w.mu.TryLock() {
+			return
+		}
+		for w.pending.Swap(false) {
+			w.recompute()
+		}
+		w.mu.Unlock()
+	}
+}
+
+// recompute publishes the window's percentile: the sample at 0-based index
+// ⌊percentile·n⌋ of the n sorted samples, the largest when that is n. The
+// caller holds mu.
+func (w *latencyWindow) recompute() {
+	w.scratch = w.scratch[:0]
+	for i := range w.samples {
+		// A slot claimed but not yet written still reads negative or its
+		// previous value; either is at most one in-flight sample per
+		// concurrent recording.
+		if v := w.samples[i].Load(); v >= 0 {
+			w.scratch = append(w.scratch, time.Duration(v))
+		}
+	}
+	if len(w.scratch) < adaptiveMinSamples {
+		return
+	}
+	slices.Sort(w.scratch)
+	w.published.Store(int64(w.scratch[min(int(float64(len(w.scratch))*w.percentile), len(w.scratch)-1)]))
 }
 
 // CloseIdleConnections forwards to the wrapped transport.

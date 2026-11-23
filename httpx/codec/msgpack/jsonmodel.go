@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -105,11 +106,25 @@ func encodeJSONValue(enc *wire.Encoder, value any) error {
 			if u, err := strconv.ParseUint(string(v), 10, 64); err == nil {
 				return enc.EncodeUint(u)
 			}
-			return fmt.Errorf("msgpack JSON integer is outside the 64-bit range")
+			// encoding/json writes a float64 from 2^64 up to 1e21 in integer
+			// syntax. Only that float's own spelling is sent as the float: it
+			// decodes to the same float64 over both codecs and no integer
+			// target accepts it over either. Any other integer this large
+			// would round, so it is refused.
+			if f, err := v.Float64(); err == nil && strconv.FormatFloat(f, 'f', -1, 64) == string(v) {
+				return enc.EncodeFloat64(f)
+			}
+			return fmt.Errorf("msgpack JSON integer is outside the 64-bit range and is not a float64 as encoding/json writes one")
 		}
+		// A fraction or exponent makes the number a float: MessagePack's
+		// float carries that, as JSON's syntax does for a typed decoder,
+		// so an integer target refuses it over both codecs.
 		f, err := v.Float64()
 		if err != nil {
 			return fmt.Errorf("msgpack JSON number: %w", err)
+		}
+		if !exactFloat(string(v), f) {
+			return fmt.Errorf("msgpack JSON number: an integer written with a fraction or exponent has no exact float64 form; write it as an integer")
 		}
 		return enc.EncodeFloat64(f)
 	case []any:
@@ -138,6 +153,56 @@ func encodeJSONValue(enc *wire.Encoder, value any) error {
 	default:
 		return enc.Encode(v)
 	}
+}
+
+// exactFloat reports whether f, the float64 nearest a JSON number literal
+// written with a fraction or exponent, carries the value the literal names
+// whenever that value is an integer in the 64-bit range, the values an
+// integer-valued receiver could hold exactly. Fractions and integers
+// outside that range round to float64 over both codecs, so they pass.
+func exactFloat(literal string, f float64) bool {
+	integer, ok := integerLiteral(literal)
+	if !ok {
+		return true
+	}
+	if i, err := strconv.ParseInt(integer, 10, 64); err == nil {
+		return f >= math.MinInt64 && f < math.MaxInt64 && int64(f) == i
+	}
+	if u, err := strconv.ParseUint(integer, 10, 64); err == nil {
+		return f >= 0 && f < math.MaxUint64 && uint64(f) == u
+	}
+	return true
+}
+
+// integerLiteral returns, in decimal, the integer a JSON number literal
+// denotes when it denotes a non-zero integer of at most 20 digits, the most
+// a 64-bit integer has. It works on the literal's digits, so an exponent of
+// any size costs nothing.
+func integerLiteral(literal string) (string, bool) {
+	sign, s := "", literal
+	if rest, ok := strings.CutPrefix(s, "-"); ok {
+		sign, s = "-", rest
+	}
+	exponent := 0
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		e, err := strconv.Atoi(s[i+1:])
+		if err != nil || e > 1<<20 || e < -(1<<20) {
+			return "", false // no 20-digit integer has an exponent this large
+		}
+		exponent, s = e, s[:i]
+	}
+	whole, fraction, _ := strings.Cut(s, ".")
+	digits := strings.TrimLeft(whole+fraction, "0")
+	significant := strings.TrimRight(digits, "0")
+	if significant == "" {
+		return "", false // zero, which float64 holds exactly
+	}
+	// The value is significant × 10^shift.
+	shift := exponent - len(fraction) + len(digits) - len(significant)
+	if shift < 0 || len(significant)+shift > 20 {
+		return "", false
+	}
+	return sign + significant + strings.Repeat("0", shift), true
 }
 
 func (jsonCodec) Decode(data []byte, v any) error {
@@ -187,6 +252,19 @@ func writeJSONValue(out *bytes.Buffer, value any) error {
 			}
 		}
 		out.WriteByte(']')
+	case float32, float64:
+		data, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		out.Write(data)
+		// A MessagePack float stays a float in JSON syntax, so an integer
+		// target refuses 1000.0 over this codec as it does over JSON. -0
+		// is how encoding/json writes a negative-zero float64, which this
+		// codec encodes as a float.
+		if !bytes.ContainsAny(data, ".eE") && string(data) != "-0" {
+			out.WriteString(".0")
+		}
 	default:
 		data, err := json.Marshal(value)
 		if err != nil {

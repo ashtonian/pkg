@@ -133,11 +133,12 @@ func archive(ctx context.Context, out, version, dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// A failed archive is removed, never left for a consumer to download.
 	if err := createWorkingTreeArchive(ctx, zf, module.Version{Path: path, Version: version}, dir); err != nil {
-		return "", errors.Join(err, zf.Close())
+		return "", errors.Join(err, zf.Close(), os.Remove(zipPath))
 	}
 	if err := zf.Close(); err != nil {
-		return "", err
+		return "", errors.Join(err, os.Remove(zipPath))
 	}
 	if err := checkPublicArchive(zipPath, path+"@"+version+"/"); err != nil {
 		return "", errors.Join(err, os.Remove(zipPath))

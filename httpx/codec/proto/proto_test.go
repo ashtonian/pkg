@@ -33,10 +33,40 @@ func TestProtoCodecNonProtoValue(t *testing.T) {
 		t.Error("expected error for non-proto value")
 	}
 
-	// Test that decoding to a non-proto value returns an error
-	err = Codec.Decode([]byte{}, new(string))
-	if err == nil {
-		t.Error("expected error for non-proto value")
+	for _, v := range []any{new(string), new(*string), (**wrapperspb.StringValue)(nil), nil} {
+		if err := Codec.Decode([]byte{}, v); err == nil {
+			t.Errorf("decoding into %T: expected an error", v)
+		}
+	}
+}
+
+type stringValuePtr *wrapperspb.StringValue
+
+// A message pointer decodes in place, allocated when nil, through every
+// spelling the typed helpers and DecodeResponse pass.
+func TestProtoCodecDecodesThroughAMessagePointer(t *testing.T) {
+	data, err := protobuf.Marshal(wrapperspb.String("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg *wrapperspb.StringValue
+	if err := Codec.Decode(data, &msg); err != nil || msg.GetValue() != "hello" {
+		t.Fatalf("**StringValue: %v, %v", msg, err)
+	}
+	existing := wrapperspb.String("old")
+	kept := existing
+	if err := Codec.Decode(data, &kept); err != nil || kept != existing || existing.GetValue() != "hello" {
+		t.Fatalf("an existing message was replaced or not decoded: %v, %v", kept, err)
+	}
+	var defined stringValuePtr
+	if err := Codec.Decode(data, &defined); err != nil || defined == nil || (*wrapperspb.StringValue)(defined).GetValue() != "hello" {
+		t.Fatalf("defined pointer: %v, %v", defined, err)
+	}
+
+	resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {httpx.ContentTypeProtobuf}}, Body: io.NopCloser(bytes.NewReader(data))}
+	var explicit *wrapperspb.StringValue
+	if err := httpx.DecodeResponse(resp, Codec, &explicit); err != nil || explicit.GetValue() != "hello" {
+		t.Fatalf("DecodeResponse: %v, %v", explicit, err)
 	}
 }
 
@@ -56,9 +86,13 @@ func TestDoDecodesIntoAGeneratedMessage(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, "https://api.example.com/msg", nil)
 	msg, _, err := httpx.Do[*wrapperspb.StringValue](client, req)
 	if err != nil {
-		t.Fatalf("Do[*T] must hand the codec a *T: %v", err)
+		t.Fatalf("Do[*T]: %v", err)
 	}
 	if msg.GetValue() != "hello" {
 		t.Fatalf("decoded %q", msg.GetValue())
+	}
+	defined, _, err := httpx.Do[stringValuePtr](client, req)
+	if err != nil || (*wrapperspb.StringValue)(defined).GetValue() != "hello" {
+		t.Fatalf("Do[stringValuePtr]: %v, %v", defined, err)
 	}
 }

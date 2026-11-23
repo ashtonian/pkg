@@ -12,3 +12,6 @@ coverage.*
 # TypeScript dependencies and generated SDK output
 node_modules/
 /parse/sdk/ts/dist/
+
+# Python bytecode from the tools/ tests
+__pycache__/

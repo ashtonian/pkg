@@ -42,6 +42,7 @@ Constructors validate durations, counts, levels, thresholds and required provide
 | `WithBaseTransport(opts...)` | `...BaseOption` | `NewBaseTransport()` defaults | Tunes the base `*http.Transport`; the last call wins |
 | `WithTransport(rt)` | `http.RoundTripper` | none | Replaces the base transport; other base settings do not apply and combining with a base egress policy is rejected |
 | `WithJar(jar)` | `http.CookieJar` | nil | Cookie jar of the client |
+| `WithLifecycle(l)` | `*Lifecycle` | none | Registers the caches and base transport the builder constructs with `l`; `l.Close()` releases them. Nil or closed is rejected |
 | `WithCompression(opts...)` | `...CompressionOption` | off (`NewStandard`: on) | Adds response compression negotiation and decoding |
 | `WithCache(store, opts...)` | `CacheStore`, `...CacheOption` | off | Adds `CacheTransport`; a nil store uses `NewMemoryCache()` |
 | `WithCircuitBreaker(opts...)` | `...CircuitOption` | off | Adds `CircuitTransport` |
@@ -84,31 +85,31 @@ regardless of option order. See [egress policy](egress.md).
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `WithEncodings(names...)` | `...string` | registered members of `br`, `gzip`, `deflate`, in that order | Advertised encoding list, without quality weights; an unavailable name is rejected |
-| `WithGzipLevel(level)` | `int` | `gzip.DefaultCompression` | Level for `Compress`, within [-2, 9] |
-| `WithDeflateLevel(level)` | `int` | `flate.DefaultCompression` | Level for `deflate` (zlib), within [-2, 9] |
-| `WithBrotliLevel(level)` | `int` | brotli default | Within [0, 11]; requires the `compress/brotli` module |
-| `WithCompressor(name, c)` | `string`, `Compressor` | none | Adds or overrides an encoding for this transport; nil is rejected |
+| `WithEncodings(names...)` | `...string` | `WithCompressor` encodings in option order, then registered members of `br`, `gzip`, `deflate`, in that order | Advertised encoding list in this order, without quality weights; the last one wins. Selects advertisement only, never an implementation. Each name needs a registered compressor or one this transport was given; an unavailable, empty or repeated name is rejected |
+| `WithGzipLevel(level)` | `int` | `gzip.DefaultCompression` | Level for `Compress`, within [-2, 9]; this transport's gzip implementation |
+| `WithDeflateLevel(level)` | `int` | `flate.DefaultCompression` | Level for `deflate` (zlib), within [-2, 9]; this transport's deflate implementation |
+| `WithBrotliLevel(level)` | `int` | brotli default | Within [0, 11]; requires the `compress/brotli` module; this transport's brotli implementation |
+| `WithCompressor(name, c)` | `string`, `Compressor` | none | This transport's implementation of an encoding, adding or overriding one; nil is rejected. Advertised ahead of the defaults unless `WithEncodings` sets the list |
 | `WithCompressionPool(pool)` | `*BufferPool` | `DefaultBufferPool()` (32 KiB) | Buffers for `CompressionTransport.Compress` |
 
-`deflate` is the zlib format (RFC 9110 §8.4.1.2); a body without a zlib header decodes as raw DEFLATE. Decoding starts on the first body read; HEAD, 1xx, 204, 205 and 304 responses pass through untouched. Range requests receive no automatic `Accept-Encoding`; 206 or `Content-Range` responses preserve encoded bytes and headers. A complete 200 response to a range request is decoded normally. Request bodies are compressed only when the caller explicitly uses `Compress` and sets the corresponding request headers.
+The options compose in any order. A transport's own implementation (`WithCompressor` or a level option; for one encoding the last of these wins) is used wherever `WithEncodings` appears. Encoding names compare case-insensitively, as content codings do (RFC 9110 §8.4.1). `deflate` is the zlib format (RFC 9110 §8.4.1.2); a body without a zlib header decodes as raw DEFLATE. Decoding starts on the first body read; HEAD, 1xx, 204, 205 and 304 responses pass through untouched. Range requests receive no automatic `Accept-Encoding`; 206 or `Content-Range` responses preserve encoded bytes and headers. A complete 200 response to a range request is decoded normally. Request bodies are compressed only when the caller explicitly uses `Compress` and sets the corresponding request headers.
 
 ### Cache
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `WithCacheIdentityHeaders(names...)` | `...string` | none (`Authorization` and `Cookie` always partition) | Extra headers included in the cache key, such as `X-API-Key`; the application must configure all identity headers |
-| `WithStaleIfError(d)` | `time.Duration` | 0 (off) | Serve stale after an inner transport error (including local refusal) or 5xx; caller cancellation/deadlines remain errors |
-| `WithStaleWhileRevalidate(d)` | `time.Duration` | 0 (off) | Serve stale for up to `d` while revalidating in the background |
+| `WithStaleIfError(d)` | `time.Duration` | 0 (off) | Serve stale after an inner transport error (including local refusal) or 5xx, within the request's `max-age` / `min-fresh`; caller cancellation/deadlines remain errors |
+| `WithStaleWhileRevalidate(d)` | `time.Duration` | 0 (off) | Serve stale for up to `d` while revalidating in the background, within the request's `max-age` / `min-fresh` |
 | `WithMaxCacheBodyBytes(n)` | `int64` | `DefaultMaxCacheBodyBytes` (1 MiB) | Largest stored body; larger responses stream through unstored |
 | `WithMaxRetention(d)` | `time.Duration` | `DefaultMaxRetention` (24 h) | Longest an entry is kept, including entries kept only to revalidate |
-| `WithRevalidation(timeout, n)` | `time.Duration`, `int` | `DefaultRevalidateTimeout` (30 s), `DefaultMaxConcurrentRevalidates` (8) | Timeout and concurrency of background revalidations; `Close` stops them |
+| `WithRevalidation(timeout, n)` | `time.Duration`, `int` | `DefaultRevalidateTimeout` (30 s), `DefaultMaxConcurrentRevalidates` (8) | Timeout and concurrency of background revalidations; `CacheTransport.Close`, or the builder's `Lifecycle.Close`, stops them |
 | `WithCacheHook(h)` | `MetricsHook` | the `WithMetrics` hook, else none | Receives `OnCacheHit` / `OnCacheMiss` |
 | `WithOnCacheError(fn)` | `func(context.Context, *CacheError)` | nil | Synchronous bounded storage-failure event; must be quick, concurrent-safe and non-reentrant |
 | `WithMaxEntries(n)` (`NewMemoryCache`) | `int` | `DefaultMemoryCacheMaxEntries` (1024) | Entry cap; least recently used evicted first |
 | `WithMaxBytes(n)` (`NewMemoryCache`) | `int64` | `DefaultMemoryCacheMaxBytes` (64 MiB) | Byte cap over bodies, headers and keys |
 
-Cache keys use the effective URL (including `Request.Host`), plus hashed
+Cache keys use the effective URL without its fragment (including `Request.Host`), plus hashed
 `Authorization`, `Cookie` and configured identity headers. Other credentials
 are not detected automatically. Invalidation applies within the request's
 partition; coalescing and invalidation coordination are local to one
@@ -118,7 +119,9 @@ The cache supports explicit freshness, validators, `Vary`, corrected `Age`,
 request cache directives and permitted stale reuse. Storage is limited to
 eligible GETs and the documented status codes, with one `Vary` variant per
 primary key. Caller-conditional, range, HEAD and body-bearing GET requests
-bypass caching. See [supported HTTP policy](caching.md#supported-http-policy)
+bypass caching. A request carrying `only-if-cached` never reaches the origin:
+it receives a usable stored response or a synthetic 504, as does any request
+the cache would bypass. See [supported HTTP policy](caching.md#supported-http-policy)
 for storage, revalidation, stale fallback and invalidation boundaries.
 `CacheStore` receives context and returns errors on every operation. Failed
 storage maintenance preserves received responses; uncertain mutations disable
@@ -162,7 +165,7 @@ One `gobreaker` two-step breaker per origin (scheme, host, port): an outcome adm
 | `delay` (argument) | `time.Duration` | — (required, > 0) | Wait before each further attempt |
 | `WithMaxHedgedRequests(n)` | `int` | 2 | Total attempts this hedge call may launch, including the first, >= 2 |
 | `WithHedgeIf(fn)` | `func(*http.Request) bool` | GET only | Which requests are hedged; a custom predicate owns replay safety |
-| `percentile` (adaptive argument) | `float64` | — (required, in (0, 1]) | Percentile of the last 1000 completed calls, including errors; starts at 100 ms and adapts after 10 samples |
+| `percentile` (adaptive argument) | `float64` | — (required, in (0, 1]) | Percentile of the latencies of the last 1000 hedged requests that got a response: the sample at 0-based index ⌊percentile·n⌋ of the n sorted, the largest at 1. Starts at 100 ms, adapts after 10 samples, then is recomputed every 64 |
 
 The first response wins and keeps its context until its body is done; the other attempts are cancelled and their bodies drained and closed. A hedge runs beside the first attempt, so it needs its own copy of the body: a request body without `GetBody` is sent once, unhedged.
 
@@ -245,8 +248,9 @@ With the `Chain` API, pass `WithRetryHook` / `WithCacheHook` explicitly: only `N
 | `WithMaxResponseBytes(n)` | `int64` | `DefaultMaxResponseBytes` (10 MiB) | Largest body `Get` / `Post` / `Put` / `Patch` / `Do` / `DecodeResponse` / `DecodeProblem` read; must be >= 1 |
 | `WithProblemErrors()` | — | off | Typed request helpers return `*Problem` for accepted non-2xx problem responses; HEAD and other media types retain default behavior |
 | `WithProblemMediaTypes(types...)` | `...string` | `application/problem+json` always accepted | Additional exact JSON media types for problem decoding; no wildcards or parameters; does not itself enable typed problem errors |
+| `WithResponseCodecs(codecs...)` | `...Codec` | every registered codec | The codecs a typed request helper advertises in its automatic `Accept`, in this order, and may decode a success with; other media types return `ErrNoCodec`. Repeated options add; empty, nil or duplicate media types are `ErrInvalidConfig`. `DecodeResponse` and `DecodeProblem` ignore it |
 
-By default, typed request helpers decode only 2xx representations; non-2xx responses, HEAD, 204 and 205 return zero `T`, the live response and a nil error. `DecodeResponse` instead decodes the supplied body with the supplied codec regardless of status or content type; the caller chooses when to call it. A larger body returns `ErrResponseTooLarge` and the response still reads the whole body (close it). After decoding, `resp.Body` holds the bytes read. When `T` is a pointer (`Do[*pb.Msg]`), the codec decodes into a newly allocated pointee. `Post` / `Put` / `Patch` encode a non-`io.Reader` body as JSON.
+By default, typed request helpers decode only 2xx representations; non-2xx responses, HEAD, 204 and 205 return zero `T`, the live response and a nil error. `DecodeResponse` instead decodes the supplied body with the supplied codec regardless of status or content type; the caller chooses when to call it. A larger body returns `ErrResponseTooLarge` and the response still reads the whole body (close it). After decoding, `resp.Body` holds the bytes read; after a body read error the helper returns the response with that error, and `resp.Body` replays the bytes received before failing the same way. `T` decodes through a `*T`, as `DecodeResponse(resp, codec, &v)` does: JSON `null` leaves a pointer `T` nil, and the protobuf codec allocates the message for `Do[*pb.Msg]`. Response media types match case-insensitively, ignoring parameters. The automatic `Accept` is set on a copy of the request, never on the caller's. `Post` / `Put` / `Patch` encode a non-`io.Reader` body as JSON.
 
 `DecodeProblem` accepts selected problem media types regardless of status and
 uses the same bounded body read. `Problem` contains the five RFC 9457 members
@@ -279,7 +283,7 @@ httpx defines sentinels, not E-codes; match them with `errors.Is`.
 | `ErrRateLimited` | `RateLimitTransport` | Respect the rate budget; consider `WithWait` |
 | `ErrLimiterTimeout` | `LimiterTransport` | Release open bodies, reduce concurrency or revise the acquisition budget |
 | `ErrResponseTooLarge` | `Get`, `Post`, `Put`, `Patch`, `Do`, `DecodeResponse`, `DecodeProblem`, `ReadAtMost` | Use a deliberate larger bound or stream the body |
-| `ErrNoCodec` | typed request helpers | Register the response content type's codec or decode explicitly |
+| `ErrNoCodec` | typed request helpers | Register or select the response media type's codec, or decode explicitly; a malformed `Content-Type` also returns it |
 | `ErrDestinationRefused` | `EgressPolicy` and guarded dialing | Review destination and trusted network configuration; never retried or counted as a circuit failure |
 | `ErrAuthRefresh` | token acquisition and refresh | Classify the wrapped cause; repair credentials or persistence; error text excludes callback details |
 | `ErrTokenSourceClosed` | a closed token source | Stop using the source or construct an owned replacement |
@@ -299,6 +303,7 @@ that is separate from retrying the current call.
 - `NewClient(opts...) (*http.Client, error)` — the fixed decorator stack
 - `NewStandard(opts...) (*http.Client, error)` / `MustNewStandard(opts...)` — defaults plus overrides
 - `NewChain(fns...) Chain`, `Chain.Build(base)`, `Chain.Client(base, timeout)` — explicit order, first innermost; presets `DefaultChain()`, `ResilientChain()`, `APIClientChain()`
+- `Chain.BuildWithLifecycle(l, base)`, `Chain.ClientWithLifecycle(l, base, timeout)`, `WithLifecycle(l)` — register what a build constructs with a `Lifecycle`; `(*Lifecycle).Close() error` releases it (see [lifecycle](composition.md#optional-builders-and-lifecycle))
 - `NewBaseTransport(opts...) (*http.Transport, error)`
 - `NewCompressionTransport`, `NewCacheTransport`, `NewCircuitTransport`, `NewRetryTransport`, `NewHedgingTransport`, `NewAdaptiveHedgingTransport`, `NewLimiterTransport`, `NewRateLimitTransport`, `NewAuthTransport`, `NewTokenTransport`, `NewMetricsTransport`, `NewLoggingTransport` — one decorator each, `(base, ...) (*T, error)`
 - `NewTokenSource(token, expiry, refresh, opts...) (*RefreshingTokenSource, error)` — shared context-aware refresh
@@ -314,7 +319,7 @@ that is separate from retrying the current call.
 - `DrainAndClose(ctx, body, maxDrainBytes) CleanupResult` — bounded remaining-body cleanup and separate drain/close observations
 - `ParseOrigin(url) (Origin, error)`, `OriginOf(*url.URL) Origin`
 - `TransportStack(client) []http.RoundTripper` — the layers, outer to inner
-- `RegisterCodec`, `GetCodec`, `HasCodec`, `RegisteredCodecs`; `RegisterCompressor`, `GetCompressor`, `HasCompressor`, `RegisteredEncodings`
+- `RegisterCodec`, `GetCodec`, `HasCodec`, `RegisteredCodecs` — keyed by media type, case-insensitive, parameters ignored; `RegisterCompressor`, `GetCompressor`, `HasCompressor`, `RegisteredEncodings`
 - `NewBufferPool(size) (*BufferPool, error)`, `DefaultBufferPool() *BufferPool`
 
 ### Interfaces

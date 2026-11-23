@@ -111,7 +111,7 @@ credential values, user IDs and arbitrary origin names.
 | Unexpected cached value | Effective authority, all identity dimensions, `Vary`, freshness and `Cache-Status` |
 | `ErrResponseTooLarge` | Decoded response size; use a deliberate larger bound or stream it |
 | `ErrNoCodec` | Response content type and installed optional codec |
-| Shutdown waits | Open bodies and cache background refreshes; cancel work and close the cache before idle connections |
+| Shutdown waits | Open bodies and cache background refreshes; cancel work and close the cache, or the builder's `Lifecycle`, before idle connections |
 
 See [errors](reference.md#errors), [auth options](reference.md#auth), and
 [observability options](reference.md#metrics-and-logging).

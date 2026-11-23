@@ -88,7 +88,9 @@
 // transfers cleanup ownership; no second deferred Close is needed.
 // EOF, read error or Close releases limiter slots and hedge winner contexts.
 // Call [CacheTransport.Close] to stop background refreshes before closing
-// idle transport connections with http.Client.CloseIdleConnections.
+// idle transport connections with http.Client.CloseIdleConnections. A builder
+// owns the caches and base transport it constructs: give it a [Lifecycle]
+// ([WithLifecycle], [Chain.BuildWithLifecycle]) and close that instead.
 //
 // # Optional modules
 //

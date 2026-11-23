@@ -27,7 +27,10 @@ upstream=$(go env GOPROXY)
 # -trimpath keeps the scratch module cache's path out of build cache keys,
 # so the consumer's dependencies hit the shared build cache.
 export GOWORK=off GOFLAGS='-mod=mod -modcacherw -trimpath' GOMODCACHE="$tmp/modcache"
-export GOPRIVATE='' GONOPROXY='' GONOSUMDB="$httpx_module"
+# GOENV=off keeps the user's go env file out: an empty variable does not
+# override it, and a GOPRIVATE there adds a cache-only lookup pass that
+# answers a nested module's path with its cached parent.
+export GOENV=off GOPRIVATE='' GONOPROXY='' GONOSUMDB="$httpx_module"
 export GOPROXY="file://$tmp/proxy,$upstream"
 
 # These ZIPs describe the working tree, so their sums can differ from an
