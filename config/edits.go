@@ -71,32 +71,12 @@ func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, alias
 			return nil, nil, unknown(notRead(p, "key must be concrete"))
 		}
 		parent = n
-		if n.kind == nodeDynamic {
-			if s.kind == segKey {
-				*s = memberSegment(s.name)
-			}
-			continue
+		former, err := spellSegment(n, p, i)
+		if err != nil {
+			return nil, nil, unknown(err)
 		}
-		switch {
-		case n.kind == nodeBranch && n.collects(*s):
-			*s = memberSegment(s.name)
-		case n.kind == nodeBranch:
-			// A field spelled as a map key is left as written: walkTo
-			// refuses it.
-			if f, alias := n.lookup(s.name); f != nil && s.kind == segField {
-				written := s.name
-				s.name = f.key
-				if alias {
-					aliased = append(aliased, aliasNote(schema, p[:i].field(written), p[:i+1]))
-				}
-			}
-		case n.kind == nodeMap && s.kind == segKey:
-			text, err := n.keys.canonical(s.name)
-			if err != nil {
-				return nil, nil, unknown(notRead(p, "%s is keyed by %s, which the entry's key does not decode into", p[:i], typeText{n.typ.Key()}))
-			}
-			s.name, n = text, n.elem
-			continue
+		if former != "" {
+			aliased = append(aliased, aliasNote(schema, p[:i].field(former), p[:i+1]))
 		}
 		// The cursor starts at p[:i], so a fault names where it is.
 		_, next, err := n.walkTo(cursor{path: slices.Clip(p[:i])}, p[i:i+1])
@@ -111,6 +91,39 @@ func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, alias
 		n = next
 	}
 	return parent, aliased, nil
+}
+
+// spellSegment spells p[i], a segment of a key at n, in place, the one way
+// this package prints it: a field by its key, not a former name or another
+// letter case; a key n's remain field collects, or one beneath an
+// interface, as a field wherever it can be one; and a map entry by the text
+// of the key it decodes to (see keyCodec), which must read back to that key.
+// [*] and an index are left as written. former is the former name a field
+// was named by, or "". resolveSchemaPath and applierPrefix spell every
+// segment through it, so a key and an applier's prefix are spelled alike.
+func spellSegment(n *schemaNode, p keyPath, i int) (former string, err error) {
+	s := &p[i]
+	switch {
+	case n.kind == nodeDynamic && s.kind == segKey, n.kind == nodeBranch && n.collects(*s):
+		*s = memberSegment(s.name)
+	case n.kind == nodeBranch && s.kind == segField:
+		// A field spelled as a map key is left as written: walkTo refuses
+		// it.
+		if f, alias := n.lookup(s.name); f != nil {
+			written := s.name
+			s.name = f.key
+			if alias {
+				return written, nil
+			}
+		}
+	case n.kind == nodeMap && s.kind == segKey:
+		text, err := n.keys.canonical(s.name)
+		if err != nil {
+			return "", notRead(p, "%s is keyed by %s, which the entry's key does not decode into", p[:i], typeText{n.typ.Key()})
+		}
+		s.name = text
+	}
+	return "", nil
 }
 
 // aliasNote is how a load reports a key written under a former field name:

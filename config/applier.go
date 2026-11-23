@@ -39,9 +39,13 @@ type Applier[T any] struct {
 	// a section (db), one value (logging.level), an entry
 	// (features["audit"]), a key a koanf:",remain" field collects
 	// (plugins.foo), the keys a sensitive remain field collects, which Diff
-	// compares whole (vault[*]), or a pattern (features[*].gate). It owns
-	// every key at or beneath them unless another applier's prefix is more
-	// specific: longer, or as long with more literal map keys and indexes.
+	// compares whole (vault[*]), or a pattern (features[*].gate). Each is
+	// spelled as CanonicalKey spells a key, so it names what Diff names:
+	// main.port is primary.port when main is primary's former name, and
+	// by_port["010"] is by_port["8"]; a map entry whose key does not read
+	// back as it decodes fails construction with ErrKey. It owns every key
+	// at or beneath them unless another applier's prefix is more specific:
+	// longer, or as long with more literal map keys and indexes.
 	Prefixes []string
 	// ApplyInitial applies the first load once, before the constructor
 	// returns: every key the applier owns, as a change from nothing. Its
@@ -253,11 +257,12 @@ func newApplication(root *schemaNode, hooks []applierHook) (*application, error)
 	return a, nil
 }
 
-// applierPrefix parses and checks one prefix against the config's schema: it
-// must name a key Diff can report, spelled as Diff spells it. A key a remain
-// field collects is a member of its section (plugins.foo); one a sensitive
-// remain field collects is not, since Diff compares that field whole, at
-// section[*], which a prefix may name.
+// applierPrefix parses and checks one prefix against the config's schema,
+// and spells it as Diff spells the keys it names (see spellSegment): it must
+// name a key Diff can report. A key a remain field collects is a member of
+// its section (plugins.foo); one a sensitive remain field collects is not,
+// since Diff compares that field whole, at section[*], which a prefix may
+// name.
 func applierPrefix(root *schemaNode, s string) (keyPath, error) {
 	p, err := parseKeyPath(s)
 	if err != nil {
@@ -276,9 +281,10 @@ func applierPrefix(root *schemaNode, s string) (keyPath, error) {
 				return nil, fmt.Errorf("%w %s: %s is a struct; own it, or name a key it holds", ErrKey, p, at.path.orRoot())
 			case n.collects(*seg) && whole:
 				return nil, fmt.Errorf("%w %s: it reaches beneath %s, which is sensitive and compared whole", ErrKey, p, at.path.any())
-			case n.collects(*seg):
-				*seg = memberSegment(seg.name)
 			}
+		}
+		if _, err := spellSegment(n, p, i-1); err != nil {
+			return nil, err
 		}
 		c, next, err := root.walkTo(cursor{}, p[:i])
 		if err != nil {
