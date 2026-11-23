@@ -12,6 +12,8 @@ set, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{})
 plan, err := products.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID(id), scope) // complete, scoped UPDATE
 ```
 
+When applying a patch to a Go row, writes to promoted fields copy the embedded pointers along the field's path. A caller holding the original row or its embedded pointer can still read the old value, even if a later operation fails. Export an embedded pointer if its promoted fields need in-memory patching. An unexported embedded pointer cannot be replaced on the copy, so writing through it returns E2076.
+
 A field tagged `parse:"server"` is a column only the server sets — a credential's fingerprint, a flag the issuer flips. `ParseMergePatch` refuses it, so no request body reaches it; `products.ParseServerMergePatch(body)` admits it alongside the patchable fields, for the server's own writes, and the result applies through `ApplyValidatedPatch` and `BuildPatchSQL` like any patch. A server field the field-name tag hides (`json:"-"`) is addressed by its column and can only be set by a top-level replace.
 
 `BuildPatchSQL` folds each column's ordered operations into one expression; merge-patch objects merge into the stored document (nested nulls delete keys, siblings survive); `add`, `replace` and `remove` on a member of a JSON document write that member of the stored document (siblings survive) under RFC 6902's preconditions; `array_append` appends atomically. Operations SQL cannot express — `move`, `copy`, `test`, an array element below a field — fail with E2068 / E2070 and apply through `ApplyValidatedPatch`. See [SQL compilation](#sql-compilation).

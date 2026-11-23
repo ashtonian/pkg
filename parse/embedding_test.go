@@ -170,3 +170,63 @@ func TestEmbeddedWireType_PatchAllocatesANilEmbed(t *testing.T) {
 	assert.ErrorContains(t, err, "nil pointer", "a key under a nil embed is not there")
 	assert.Equal(t, reflect.TypeFor[devicePointer](), reflect.TypeOf(got))
 }
+
+type PatchDetails struct {
+	Name string `json:"name" db:"name" parse:"patch" patch_ops:"replace,test"`
+	Rank int    `json:"rank" db:"rank" parse:"patch"`
+}
+
+type privatePatchFields struct {
+	Extra string `json:"extra" db:"extra" parse:"patch"`
+}
+
+type patchPointerRow struct {
+	ID string `json:"id" db:"id"`
+	*PatchDetails
+	*privatePatchFields
+}
+
+func TestPatchPreservesPromotedFields(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"direct", `[{"op":"replace","path":"/name","value":"after"},{"op":"replace","path":"/rank","value":2}]`},
+		{"document", `[{"op":"test","path":"/name","value":"before"},{"op":"replace","path":"/name","value":"after"},{"op":"replace","path":"/rank","value":2}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, err := parse.NewResource[patchPointerRow]("rows")
+			require.NoError(t, err)
+			pr, err := parse.NewResource[*patchPointerRow]("rows")
+			require.NoError(t, err)
+			before := PatchDetails{"before", 1}
+			row := patchPointerRow{ID: "a", PatchDetails: &before}
+			out, err := r.ApplyPatch([]byte(tc.body), row)
+			require.NoError(t, err)
+			require.Equal(t, PatchDetails{"before", 1}, before)
+			require.Equal(t, PatchDetails{"after", 2}, *out.PatchDetails)
+			outPtr, err := pr.ApplyPatch([]byte(tc.body), &row)
+			require.NoError(t, err)
+			require.Equal(t, PatchDetails{"before", 1}, before)
+			require.Equal(t, *out.PatchDetails, *outPtr.PatchDetails)
+		})
+	}
+	t.Run("later operation fails", func(t *testing.T) {
+		r, err := parse.NewResource[patchPointerRow]("rows")
+		require.NoError(t, err)
+		before := PatchDetails{Name: "before"}
+		row := patchPointerRow{ID: "a", PatchDetails: &before}
+		_, err = r.ApplyPatch([]byte(`[{"op":"replace","path":"/name","value":"after"},{"op":"replace","path":"/extra","value":"x"}]`), row)
+		require.ErrorContains(t, err, "unexported embedded")
+		require.Equal(t, "before", before.Name)
+	})
+	t.Run("unexported pointer cannot be detached", func(t *testing.T) {
+		r, err := parse.NewResource[patchPointerRow]("rows")
+		require.NoError(t, err)
+		fields := &privatePatchFields{Extra: "before"}
+		row := patchPointerRow{ID: "a", privatePatchFields: fields}
+		_, err = r.ApplyPatch([]byte(`[{"op":"replace","path":"/extra","value":"after"}]`), row)
+		require.ErrorContains(t, err, "unexported embedded")
+		require.Equal(t, "before", fields.Extra)
+	})
+}

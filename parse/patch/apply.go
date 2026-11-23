@@ -238,7 +238,7 @@ func (a *Applier[T]) settable(rv reflect.Value, name, path string) (reflect.Valu
 			Path:    path,
 		}
 	}
-	fv, err := field.Settable(rv)
+	fv, err := detachedField(rv, field)
 	if err == nil && !fv.CanSet() {
 		err = fmt.Errorf("field %s cannot be set", field.GoName)
 	}
@@ -246,6 +246,27 @@ func (a *Applier[T]) settable(rv reflect.Value, name, path string) (reflect.Valu
 		return reflect.Value{}, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchFieldNotFound.String(), Message: fmt.Sprintf("patch field %q is not writable: %v", name, err), Path: path, Cause: err}
 	}
 	return fv, nil
+}
+
+// detachedField copies the embedded pointers along the write path. A shallow
+// copy of the row still shares those pointees with the caller. Copying from
+// the current row preserves earlier writes to siblings of this field.
+func detachedField(v reflect.Value, field *core.Field) (reflect.Value, error) {
+	for _, index := range field.Route {
+		if v.Kind() == reflect.Pointer {
+			if !v.CanSet() {
+				return reflect.Value{}, fmt.Errorf("field %s: cannot detach the unexported embedded %s it is promoted from", field.GoName, v.Type().Elem())
+			}
+			parent := reflect.New(v.Type().Elem())
+			if !v.IsNil() {
+				parent.Elem().Set(v.Elem())
+			}
+			v.Set(parent)
+			v = parent.Elem()
+		}
+		v = v.Field(index)
+	}
+	return v, nil
 }
 
 // assignStoredJSON stores a declared JSON column's value with the decoder SQL
