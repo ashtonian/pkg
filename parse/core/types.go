@@ -26,13 +26,14 @@ const (
 	FieldTypeGeo       FieldType = "geo"
 )
 
-// IsKeyType reports a type a key may have: a string, a UUID or an integer.
-// A key is compared as stored, column to column and against bound values,
-// on every backend alike; a decimal's or a float's stored form is not its
-// value, and a time's is not on SQLite.
+// IsKeyType reports a type a key column may have, and a relation, a key
+// set or a membership may compare by: a scalar, whose equality tells rows
+// apart. A document, an array, a geometry or an opaque value has none to
+// identify a row by.
 func IsKeyType(t FieldType) bool {
 	switch t {
-	case FieldTypeString, FieldTypeUUID, FieldTypeInt:
+	case FieldTypeString, FieldTypeUUID, FieldTypeInt, FieldTypeFloat, FieldTypeDecimal, FieldTypeBool,
+		FieldTypeTimestamp, FieldTypeDate, FieldTypeTime, FieldTypeInterval, FieldTypeInet, FieldTypeCIDR, FieldTypeMACAddr:
 		return true
 	}
 	return false

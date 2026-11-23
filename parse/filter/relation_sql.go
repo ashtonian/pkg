@@ -58,9 +58,9 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	if rel.TargetTable != "" {
 		sb.WriteString(" JOIN ")
 		writeTable(&sb, d, rel.TargetTable, related)
-		sb.WriteString(" ON " + correlation(d, related, rel.TargetKeys, join, rel.TargetColumns))
+		sb.WriteString(" ON " + correlation(d, related, rel.TargetKeys, join, rel.TargetColumns, rel.TargetTypes))
 	}
-	sb.WriteString(" WHERE " + correlation(d, join, rel.SourceColumns, b.schema.Name, rel.OwnerColumns()))
+	sb.WriteString(" WHERE " + correlation(d, join, rel.SourceColumns, b.schema.Name, rel.OwnerColumns(), rel.SourceTypes))
 
 	// A policy-scoped relation declares no tenant column on its target:
 	// the policy below decides which target rows are visible.
@@ -108,17 +108,6 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	}
 	sb.WriteByte(')')
 	return sb.String(), nil
-}
-
-// correlation equates the columns of left with those of right position by
-// position, `l1 = r1 AND l2 = r2`, each qualified by its alias: a key of
-// several columns correlates as all of its columns.
-func correlation(d Dialect, leftAlias string, left []string, rightAlias string, right []string) string {
-	terms := make([]string, len(left))
-	for i := range left {
-		terms[i] = qualified(d, leftAlias, left[i]) + " = " + qualified(d, rightAlias, right[i])
-	}
-	return strings.Join(terms, " AND ")
 }
 
 // joinTenantType is the declared type of a relation's join-table tenant

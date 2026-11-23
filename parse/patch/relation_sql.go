@@ -68,25 +68,28 @@ const relationTarget = "target__"
 //	add:                  INSERT … ON CONFLICT DO NOTHING
 //	remove:               DELETE FROM j WHERE <source in owners> [AND tenant = t] AND <target in values> <visible>
 //
-// A set of one-column keys is `col = ANY($n)` / `col <> ALL($n)` on
-// PostgreSQL and `col IN (SELECT value FROM json_each(?n))` / `NOT IN` on
-// SQLite; a set of keys of several columns is the row value of the columns
-// IN / NOT IN the keys (dialect.KeySet). Each op value is a target key: a
-// scalar for a one-column target key, a core.Key of a value per target
-// column for a longer one. With a target table (RelationSchema.TargetTable)
-// the insert selects the owner rows and the visible target rows, and
-// <visible> holds a delete to pairs whose target the request may see, so
-// pairs it cannot see stay. Without one, PostgreSQL's insert reads its rows
-// as the pair table's own row type (jsonb_populate_recordset), which types
-// each key as its column.
+// A set of keys is the row value of its columns IN / NOT IN the keys,
+// bound as one parameter (RelationDialect.KeyIn): each column and each
+// key's value compare as a filter compares the column's type
+// (RelationSchema.SourceTypes, TargetTypes), so a decimal stored as "1.50"
+// is the pair of 1.5. Each op value is a target key: a scalar for a
+// one-column target key, a core.Key of a value per target column for a
+// longer one. Every key is written in its type's canonical form
+// (core.NormalizeScalar), the form the pair table's unique key compares.
+// With a target table (RelationSchema.TargetTable) the insert selects the
+// owner rows and the visible target rows, and <visible> holds a delete to
+// pairs whose target the request may see, so pairs it cannot see stay.
+// Without one, PostgreSQL's insert reads its rows as the pair table's own
+// row type (jsonb_populate_recordset), which types each key as its column.
 //
 // No owners need no statements. An operation it cannot render is an error: a
-// relation whose columns do not pair (core.RelationSchema.Check), a
-// tenant-scoped pair table without RenderRelationOpOptions.TenantValue (or
-// Unscoped), an add or remove with no values, a null value, a key of
-// another length than its columns, values or owners of more than one type
-// in a position, or a dialect other than PostgreSQL and SQLite.
-func RenderRelationOp(op RelationPatchOp, d SQLDialect, ownerKeys []core.Key, opts RenderRelationOpOptions) ([]RenderedRelationStatement, error) {
+// relation whose columns do not pair or are not typed
+// (core.RelationSchema.Check), a tenant-scoped pair table without
+// RenderRelationOpOptions.TenantValue (or Unscoped), an add or remove with
+// no values, a null value, a key of another length than its columns, a
+// value its column's type cannot hold, or a dialect other than PostgreSQL
+// and SQLite.
+func RenderRelationOp(op RelationPatchOp, d RelationDialect, ownerKeys []core.Key, opts RenderRelationOpOptions) ([]RenderedRelationStatement, error) {
 	if op.Schema == nil {
 		return nil, errors.New("patch: relation patch op has nil schema")
 	}
@@ -118,11 +121,11 @@ func RenderRelationOp(op RelationPatchOp, d SQLDialect, ownerKeys []core.Key, op
 				op.Field, strings.Join(opts.Owner.Key, ", "), strings.Join(rel.SourceColumns, ", "))
 		}
 	}
-	owners, err := relationKeys(ownerKeys, len(rel.SourceColumns))
+	owners, err := relationKeys(ownerKeys, rel.SourceColumns, rel.SourceTypes)
 	if err != nil {
 		return nil, fmt.Errorf("patch: relation %s: owner keys: %w", op.Field, err)
 	}
-	values, err := relationValueKeys(op.Values, len(rel.TargetColumns))
+	values, err := relationValueKeys(op.Values, rel.TargetColumns, rel.TargetTypes)
 	if err != nil {
 		return nil, fmt.Errorf("patch: relation %s: values: %w", op.Field, err)
 	}
@@ -149,10 +152,10 @@ func RenderRelationOp(op RelationPatchOp, d SQLDialect, ownerKeys []core.Key, op
 	return stmts, nil
 }
 
-// relationValueKeys are a membership op's values as target keys of width
+// relationValueKeys are a membership op's values as target keys of the
 // columns: a one-column key's value is the scalar itself, a longer key's a
 // core.Key (or []any) of a value per column.
-func relationValueKeys(values []any, width int) ([]core.Key, error) {
+func relationValueKeys(values []any, columns []string, types []core.TypeInfo) ([]core.Key, error) {
 	keys := make([]core.Key, len(values))
 	for i, v := range values {
 		switch k := v.(type) {
@@ -161,36 +164,35 @@ func relationValueKeys(values []any, width int) ([]core.Key, error) {
 		case []any:
 			keys[i] = k
 		default:
-			if width != 1 {
-				return nil, fmt.Errorf("value %d is %T; a target key of %d columns is a core.Key", i, v, width)
+			if len(columns) != 1 {
+				return nil, fmt.Errorf("value %d is %T; a target key of %d columns is a core.Key", i, v, len(columns))
 			}
 			keys[i] = core.Key{v}
 		}
 	}
-	return relationKeys(keys, width)
+	return relationKeys(keys, columns, types)
 }
 
-// relationKeys are keys as one parameter binds them: each of width values,
-// each a database scalar (a driver.Valuer's value, an integer as int64 or
-// uint64, a float as float64, a string, a boolean), a position's values all
-// of one type, none null.
-func relationKeys(keys []core.Key, width int) ([]core.Key, error) {
+// relationKeys are keys as one parameter binds them: a value per column,
+// each in its column's type's canonical form (core.NormalizeScalar), a
+// driver.Valuer read as the value it stands for, none null.
+func relationKeys(keys []core.Key, columns []string, types []core.TypeInfo) ([]core.Key, error) {
 	out := make([]core.Key, len(keys))
-	kinds := make([]reflect.Type, width)
 	for i, k := range keys {
-		if len(k) != width {
-			return nil, fmt.Errorf("key %d has %d values for %d columns", i, len(k), width)
+		if len(k) != len(columns) {
+			return nil, fmt.Errorf("key %d has %d values for %d columns", i, len(k), len(columns))
 		}
-		out[i] = make(core.Key, width)
+		out[i] = make(core.Key, len(k))
 		for j, part := range k {
-			v, err := relationKey(part)
-			if err != nil {
-				return nil, fmt.Errorf("key %d: %w", i, err)
+			v, err := driverScalar(part)
+			if err == nil {
+				v, err = core.NormalizeScalar(types[j].Type, types[j].NumberKind, v)
 			}
-			if t := reflect.TypeOf(v); kinds[j] == nil {
-				kinds[j] = t
-			} else if t != kinds[j] {
-				return nil, fmt.Errorf("key %d is %s where key 0 is %s; keys are of one type", i, t, kinds[j])
+			if err != nil {
+				if len(columns) == 1 {
+					return nil, fmt.Errorf("key %d: %w", i, err)
+				}
+				return nil, fmt.Errorf("key %d: column %s: %w", i, columns[j], err)
 			}
 			out[i][j] = v
 		}
@@ -198,7 +200,26 @@ func relationKeys(keys []core.Key, width int) ([]core.Key, error) {
 	return out, nil
 }
 
-func relationKey(k any) (any, error) {
+// driverScalar is k as the database binds it: a driver.Valuer's value,
+// else k; null is no value.
+func driverScalar(k any) (any, error) {
+	if valuer, ok := k.(driver.Valuer); ok {
+		v, err := valuer.Value()
+		if err != nil {
+			return nil, err
+		}
+		k = v
+	}
+	if k == nil {
+		return nil, errors.New("null is not a key")
+	}
+	return k, nil
+}
+
+// tenantScalar is a tenant value as a JSON record binds it: a database
+// scalar (a driver.Valuer's value, an integer as int64 or uint64, a float
+// as float64, a string, a boolean).
+func tenantScalar(k any) (any, error) {
 	if valuer, ok := k.(driver.Valuer); ok {
 		v, err := valuer.Value()
 		if err != nil {
@@ -224,10 +245,24 @@ func relationKey(k any) (any, error) {
 	return nil, fmt.Errorf("%T is not a key: keys are strings, numbers or booleans", k)
 }
 
+// RelationDialect is the dialect a relation patch's statements are written
+// for: an SQLDialect that compares key columns as filters compare their
+// types (filter.Dialect is one).
+type RelationDialect interface {
+	SQLDialect
+	// KeyIn renders the key columns of table, qualified by alias and typed
+	// by types, as a row IN keys (NOT IN when member is false), the keys
+	// bound as one parameter.
+	KeyIn(table, alias string, columns []string, types []core.TypeInfo, keys []core.Key, member bool, bind func(any) string) (string, error)
+	// KeyOperand renders what a key column, read as expr and typed t,
+	// compares by.
+	KeyOperand(expr string, t core.TypeInfo) string
+}
+
 // relationRenderer renders one membership change's statements.
 type relationRenderer struct {
 	rel            *core.RelationSchema
-	d              SQLDialect
+	d              RelationDialect
 	opts           RenderRelationOpOptions
 	owners, values []core.Key
 	hasTenant      bool
@@ -236,7 +271,7 @@ type relationRenderer struct {
 // statement accumulates one statement's arguments, numbering placeholders
 // as they are bound.
 type statement struct {
-	d    SQLDialect
+	d    RelationDialect
 	args []any
 }
 
@@ -245,48 +280,20 @@ func (s *statement) bind(v any) string {
 	return s.d.Placeholder(len(s.args))
 }
 
-// in is the membership of columns of table, each qualified by column, in
-// keys, bound as one parameter. One column is `col = ANY($n)` on
-// PostgreSQL, the parameter typed as the column's array, and json_each rows
-// on SQLite, compared under the column's affinity; several are the row
-// value of the columns in the keys (dialect.KeySet).
-func (s *statement) in(table string, column func(string) string, columns []string, keys []core.Key, member bool) (string, error) {
-	if len(columns) > 1 {
-		return dialect.KeySet(s.d, rowValue(column, columns), table, columns, keys, member, s.bind)
-	}
-	col := column(columns[0])
-	values := make([]any, len(keys))
-	for i, k := range keys {
-		values[i] = k[0]
-	}
-	arr, err := s.d.MarshalValue(values, core.TypeInfo{Type: core.FieldTypeArray})
-	if err != nil {
-		return "", err
-	}
-	param := s.bind(arr)
-	switch k := dialect.KindOf(s.d); k {
-	case dialect.KindPostgres:
-		if member {
-			return col + " = ANY(" + param + ")", nil
-		}
-		return col + " <> ALL(" + param + ")", nil
-	case dialect.KindSQLite:
-	default:
-		return "", dialect.Unsupported(k, "a relation key set")
-	}
-	if member {
-		return col + " IN (SELECT value FROM json_each(" + param + "))", nil
-	}
-	return col + " NOT IN (SELECT value FROM json_each(" + param + "))", nil
+// in is the membership of columns of table, each qualified by alias and
+// typed by types, in keys, bound as one parameter (RelationDialect.KeyIn).
+func (s *statement) in(table, alias string, columns []string, types []core.TypeInfo, keys []core.Key, member bool) (string, error) {
+	return s.d.KeyIn(table, alias, columns, types, keys, member, s.bind)
 }
 
-// rowValue is the columns, each qualified by column: one column itself,
-// several a parenthesized row value.
-func rowValue(column func(string) string, columns []string) string {
-	if len(columns) == 1 {
-		return column(columns[0])
+// keyOperands are the columns, each qualified by column, as they compare
+// by their types (RelationDialect.KeyOperand).
+func keyOperands(d RelationDialect, column func(string) string, columns []string, types []core.TypeInfo) []string {
+	operands := make([]string, len(columns))
+	for i, c := range columns {
+		operands[i] = d.KeyOperand(column(c), types[i])
 	}
-	return "(" + columnList(column, columns) + ")"
+	return operands
 }
 
 // columnList is the columns, each qualified by column, comma-separated.
@@ -311,7 +318,7 @@ func (r relationRenderer) delete(keep bool) (RenderedRelationStatement, error) {
 	pairs := r.d.QuoteIdent(rel.JoinTable)
 	column := func(name string) string { return pairs + "." + r.d.QuoteIdent(name) }
 	var sb strings.Builder
-	owners, err := s.in(rel.JoinTable, column, rel.SourceColumns, r.owners, true)
+	owners, err := s.in(rel.JoinTable, rel.JoinTable, rel.SourceColumns, rel.SourceTypes, r.owners, true)
 	if err != nil {
 		return RenderedRelationStatement{}, err
 	}
@@ -320,7 +327,7 @@ func (r relationRenderer) delete(keep bool) (RenderedRelationStatement, error) {
 		sb.WriteString(" AND " + column(rel.TenantColumn) + " = " + s.bind(r.opts.TenantValue))
 	}
 	if !keep || len(r.values) > 0 {
-		targets, err := s.in(rel.JoinTable, column, rel.TargetColumns, r.values, !keep)
+		targets, err := s.in(rel.JoinTable, rel.JoinTable, rel.TargetColumns, rel.TargetTypes, r.values, !keep)
 		if err != nil {
 			return RenderedRelationStatement{}, err
 		}
@@ -332,7 +339,13 @@ func (r relationRenderer) delete(keep bool) (RenderedRelationStatement, error) {
 			return RenderedRelationStatement{}, err
 		}
 		target := func(name string) string { return r.qualified(relationTarget, name) }
-		sb.WriteString(" AND " + rowValue(column, rel.TargetColumns) + " IN (SELECT " + columnList(target, rel.TargetKeys) + " FROM " + r.d.QuoteIdent(rel.TargetTable) + " " + relationTarget)
+		pair := keyOperands(r.d, column, rel.TargetColumns, rel.TargetTypes)
+		row := strings.Join(pair, ", ")
+		if len(pair) > 1 {
+			row = "(" + row + ")"
+		}
+		sb.WriteString(" AND " + row + " IN (SELECT " + strings.Join(keyOperands(r.d, target, rel.TargetKeys, rel.TargetTypes), ", ") +
+			" FROM " + r.d.QuoteIdent(rel.TargetTable) + " " + relationTarget)
 		if visible != "" {
 			sb.WriteString(" WHERE " + strings.TrimPrefix(visible, " AND "))
 		}
@@ -366,8 +379,12 @@ func (r relationRenderer) insert() (RenderedRelationStatement, error) {
 	var sb strings.Builder
 	sb.WriteString("INSERT INTO " + q(rel.JoinTable) + " (" + cols + ") SELECT ")
 	if rel.TargetTable == "" {
-		if err := r.rows(s, &sb); err != nil {
+		pair, and, err := r.rows(s, &sb)
+		if err != nil {
 			return RenderedRelationStatement{}, err
+		}
+		if held := r.held(pair); held != "" {
+			sb.WriteString(and + "NOT " + held)
 		}
 		sb.WriteString(" ON CONFLICT DO NOTHING")
 		return RenderedRelationStatement{SQL: sb.String(), Args: s.args}, nil
@@ -375,19 +392,27 @@ func (r relationRenderer) insert() (RenderedRelationStatement, error) {
 
 	owner := func(name string) string { return r.qualified(relationOwner, name) }
 	target := func(name string) string { return r.qualified(relationTarget, name) }
-	sb.WriteString(columnList(owner, r.opts.Owner.Key) + ", " + columnList(target, rel.TargetKeys))
+	pair := newPair{sources: make([]string, len(r.opts.Owner.Key)), targets: make([]string, len(rel.TargetKeys))}
+	for i, c := range r.opts.Owner.Key {
+		pair.sources[i] = owner(c)
+	}
+	for i, c := range rel.TargetKeys {
+		pair.targets[i] = target(c)
+	}
+	sb.WriteString(strings.Join(pair.sources, ", ") + ", " + strings.Join(pair.targets, ", "))
 	if r.hasTenant {
 		switch {
 		case r.opts.Owner.Tenant != "":
-			sb.WriteString(", " + owner(r.opts.Owner.Tenant))
+			pair.tenant = owner(r.opts.Owner.Tenant)
 		case rel.TargetTenant != "":
-			sb.WriteString(", " + target(rel.TargetTenant))
+			pair.tenant = target(rel.TargetTenant)
 		default:
 			return RenderedRelationStatement{}, fmt.Errorf("relation junction %s is tenant-scoped, but neither its owners nor its targets hold a tenant", rel.JoinTable)
 		}
+		sb.WriteString(", " + pair.tenant)
 	}
 	sb.WriteString(" FROM " + q(r.opts.Owner.Table) + " " + relationOwner + ", " + q(rel.TargetTable) + " " + relationTarget)
-	owners, err := s.in(r.opts.Owner.Table, owner, r.opts.Owner.Key, r.owners, true)
+	owners, err := s.in(r.opts.Owner.Table, relationOwner, r.opts.Owner.Key, rel.SourceTypes, r.owners, true)
 	if err != nil {
 		return RenderedRelationStatement{}, err
 	}
@@ -395,7 +420,7 @@ func (r relationRenderer) insert() (RenderedRelationStatement, error) {
 	if r.hasTenant && r.opts.Owner.Tenant != "" {
 		sb.WriteString(" AND " + owner(r.opts.Owner.Tenant) + " = " + s.bind(r.opts.TenantValue))
 	}
-	targets, err := s.in(rel.TargetTable, target, rel.TargetKeys, r.values, true)
+	targets, err := s.in(rel.TargetTable, relationTarget, rel.TargetKeys, rel.TargetTypes, r.values, true)
 	if err != nil {
 		return RenderedRelationStatement{}, err
 	}
@@ -405,8 +430,49 @@ func (r relationRenderer) insert() (RenderedRelationStatement, error) {
 		return RenderedRelationStatement{}, err
 	}
 	sb.WriteString(visible)
+	if held := r.held(pair); held != "" {
+		sb.WriteString(" AND NOT " + held)
+	}
 	sb.WriteString(" ON CONFLICT DO NOTHING")
 	return RenderedRelationStatement{SQL: sb.String(), Args: s.args}, nil
+}
+
+// newPair is what an insert's select list writes a pair's columns from.
+type newPair struct {
+	sources, targets []string
+	tenant           string
+}
+
+// held is the condition that the pair table holds pair's keys under
+// another spelling, its columns compared as their types compare
+// (RelationDialect.KeyOperand): a decimal stored as "1.50" in a text column
+// is the key 1.5, which the table's unique key, comparing what is stored,
+// would take as a second pair. Empty when every column compares as it is
+// stored, where ON CONFLICT alone keeps a pair once.
+func (r relationRenderer) held(pair newPair) string {
+	rel := r.rel
+	const alias = "held__"
+	column := func(name string) string { return r.qualified(alias, name) }
+	var conds []string
+	spelled := false
+	compare := func(columns, exprs []string, types []core.TypeInfo) {
+		for i, c := range columns {
+			stored := r.d.KeyOperand(column(c), types[i])
+			if stored != column(c) {
+				spelled = true
+			}
+			conds = append(conds, stored+" = "+r.d.KeyOperand(exprs[i], types[i]))
+		}
+	}
+	compare(rel.SourceColumns, pair.sources, rel.SourceTypes)
+	compare(rel.TargetColumns, pair.targets, rel.TargetTypes)
+	if !spelled {
+		return ""
+	}
+	if r.hasTenant {
+		conds = append(conds, column(rel.TenantColumn)+" = "+pair.tenant)
+	}
+	return "EXISTS (SELECT 1 FROM " + r.d.QuoteIdent(rel.JoinTable) + " " + r.d.QuoteIdent(alias) + " WHERE " + strings.Join(conds, " AND ") + ")"
 }
 
 // rows writes the select list and FROM of an insert without a target
@@ -420,20 +486,26 @@ func (r relationRenderer) insert() (RenderedRelationStatement, error) {
 //
 // SQLite types values by the column's affinity on insert, so json_each rows
 // serve, with WHERE true to part the upsert's ON from a join's.
-func (r relationRenderer) rows(s *statement, sb *strings.Builder) error {
+//
+// It returns what the select list writes each column from, and the keyword
+// that adds a condition to the statement written: AND after a WHERE, else
+// WHERE.
+func (r relationRenderer) rows(s *statement, sb *strings.Builder) (newPair, string, error) {
 	switch k := dialect.KindOf(r.d); k {
 	case dialect.KindSQLite:
-		return r.sqliteRows(s, sb)
+		pair, err := r.sqliteRows(s, sb)
+		return pair, " AND ", err
 	case dialect.KindPostgres:
-		return r.postgresRows(s, sb)
+		pair, err := r.postgresRows(s, sb)
+		return pair, " WHERE ", err
 	default:
-		return dialect.Unsupported(k, "a relation insert")
+		return newPair{}, "", dialect.Unsupported(k, "a relation insert")
 	}
 }
 
 // sqliteRows reads a one-column key as each json_each row's value, and a
 // longer key's columns by position from each row's array.
-func (r relationRenderer) sqliteRows(s *statement, sb *strings.Builder) error {
+func (r relationRenderer) sqliteRows(s *statement, sb *strings.Builder) (newPair, error) {
 	bindKeys := func(keys []core.Key) (string, error) {
 		var doc any = keys
 		if len(keys) > 0 && len(keys[0]) == 1 {
@@ -451,37 +523,39 @@ func (r relationRenderer) sqliteRows(s *statement, sb *strings.Builder) error {
 	}
 	ownersParam, err := bindKeys(r.owners)
 	if err != nil {
-		return err
+		return newPair{}, err
 	}
 	valuesParam, err := bindKeys(r.values)
 	if err != nil {
-		return err
+		return newPair{}, err
 	}
-	read := func(alias string, width int) string {
+	read := func(alias string, width int) []string {
 		if width == 1 {
-			return alias + ".value"
+			return []string{alias + ".value"}
 		}
 		positions := make([]string, width)
 		for i := range positions {
 			positions[i] = "json_extract(" + alias + ".value, '$[" + strconv.Itoa(i) + "]')"
 		}
-		return strings.Join(positions, ", ")
+		return positions
 	}
-	sb.WriteString(read("o", len(r.rel.SourceColumns)) + ", " + read("v", len(r.rel.TargetColumns)))
+	pair := newPair{sources: read("o", len(r.rel.SourceColumns)), targets: read("v", len(r.rel.TargetColumns))}
+	sb.WriteString(strings.Join(pair.sources, ", ") + ", " + strings.Join(pair.targets, ", "))
 	if r.hasTenant {
-		sb.WriteString(", " + s.bind(r.opts.TenantValue))
+		pair.tenant = s.bind(r.opts.TenantValue)
+		sb.WriteString(", " + pair.tenant)
 	}
 	sb.WriteString(" FROM json_each(" + ownersParam + ") AS o, json_each(" + valuesParam + ") AS v WHERE true")
-	return nil
+	return pair, nil
 }
 
-func (r relationRenderer) postgresRows(s *statement, sb *strings.Builder) error {
+func (r relationRenderer) postgresRows(s *statement, sb *strings.Builder) (newPair, error) {
 	rel := r.rel
 	var tenantValue any
 	if r.hasTenant {
-		v, err := relationKey(r.opts.TenantValue)
+		v, err := tenantScalar(r.opts.TenantValue)
 		if err != nil {
-			return fmt.Errorf("tenant: %w", err)
+			return newPair{}, fmt.Errorf("tenant: %w", err)
 		}
 		tenantValue = v
 	}
@@ -504,21 +578,27 @@ func (r relationRenderer) postgresRows(s *statement, sb *strings.Builder) error 
 	}
 	ownersJSON, err := json.Marshal(ownerRows)
 	if err != nil {
-		return err
+		return newPair{}, err
 	}
 	valuesJSON, err := json.Marshal(valueRows)
 	if err != nil {
-		return err
+		return newPair{}, err
 	}
-	o := func(name string) string { return r.qualified("o", name) }
-	v := func(name string) string { return r.qualified("v", name) }
-	sb.WriteString(columnList(o, rel.SourceColumns) + ", " + columnList(v, rel.TargetColumns))
+	pair := newPair{sources: make([]string, len(rel.SourceColumns)), targets: make([]string, len(rel.TargetColumns))}
+	for i, c := range rel.SourceColumns {
+		pair.sources[i] = r.qualified("o", c)
+	}
+	for i, c := range rel.TargetColumns {
+		pair.targets[i] = r.qualified("v", c)
+	}
+	sb.WriteString(strings.Join(pair.sources, ", ") + ", " + strings.Join(pair.targets, ", "))
 	if r.hasTenant {
-		sb.WriteString(", " + o(rel.TenantColumn))
+		pair.tenant = r.qualified("o", rel.TenantColumn)
+		sb.WriteString(", " + pair.tenant)
 	}
 	row := "NULL::" + r.d.QuoteIdent(rel.JoinTable)
 	sb.WriteString(" FROM jsonb_populate_recordset(" + row + ", " + s.bind(string(ownersJSON)) + "::jsonb) AS o, jsonb_populate_recordset(" + row + ", " + s.bind(string(valuesJSON)) + "::jsonb) AS v")
-	return nil
+	return pair, nil
 }
 
 // qualified is column of alias, a FROM item of the statement, both quoted.

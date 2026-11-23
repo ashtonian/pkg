@@ -107,11 +107,14 @@ type columnType struct {
 //
 // A key of several columns is a Key of a value per column (ByKey, ByKeys,
 // Resource.Key), and a relation to or from the resource pairs a column
-// with each of them in key order (HasMany, BelongsTo, Through). Each column
-// of a key of several is a string, UUID or integer (core.IsKeyType), the
-// types every backend compares by value. A one-column key may be of
-// another type, which pages and updates by ID take; an update batch and a
-// relation refuse it.
+// with each of them in key order (HasMany, BelongsTo, Through). A key
+// column is of any scalar type (core.IsKeyType): a string, UUID, integer,
+// float, decimal, boolean, date, time of day, timestamp, interval or
+// network value. Every statement compares it by value, as a filter
+// compares its type (a decimal stored as "1.50" is the key 1.5), and Go
+// tells keys apart by their canonical text (core.KeyTextOf). A document,
+// array or geometry column has no equality to identify a row by, and
+// NewResource refuses it as a key column.
 func PrimaryKey(columns ...string) ResourceOption {
 	return func(c *resourceConfig) { c.pk = slices.Clone(columns) }
 }

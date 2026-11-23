@@ -80,7 +80,8 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 	if pairs == nil {
 		return IncludeRows{}, fmt.Errorf("resolving include %s: lookup returned no iterator", field.ExternalName)
 	}
-	key := CursorKey{DataType: field.DataType, NumberKind: field.NumberKind}
+	targetType := rel.TargetTypes[0]
+	key := CursorKey{DataType: targetType.Type, NumberKind: targetType.NumberKind}
 	compare := func(a, b any) int { return CompareKeyValues(key, a, b) }
 	byOwner := map[string][]any{}
 	for pair, err := range pairs {
@@ -90,15 +91,15 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 		if contextErr := ctx.Err(); contextErr != nil {
 			return IncludeRows{}, contextErr
 		}
-		owner, err := CursorValue(projectedValue(pair.Owner))
+		// Named by their canonical texts, the texts SQL names them by.
+		name, err := core.KeyValueText(rel.SourceTypes[0], projectedValue(pair.Owner))
 		if err != nil {
 			return IncludeRows{}, fmt.Errorf("resolving include %s owner: %w", field.ExternalName, err)
 		}
-		target, err := core.NormalizeScalar(field.DataType, field.NumberKind, projectedValue(pair.Target))
+		target, err := core.NormalizeScalar(targetType.Type, targetType.NumberKind, projectedValue(pair.Target))
 		if err != nil {
 			return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, err)
 		}
-		name := core.KeyText(core.Key{owner})
 		values := byOwner[name]
 		at, found := slices.BinarySearchFunc(values, target, compare)
 		if found || at > cfg.maxPerOwner {
@@ -119,7 +120,9 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 		}
 		ids := make([]string, len(values))
 		for i, value := range values {
-			ids[i] = core.KeyText(core.Key{value})
+			if ids[i], err = core.KeyValueText(targetType, value); err != nil {
+				return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, err)
+			}
 		}
 		out.IDs[owner] = ids
 	}

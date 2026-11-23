@@ -1,7 +1,6 @@
 package parse
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"reflect"
@@ -9,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/filter"
 )
 
 // Key is a row's key: a value per key column, in the order PrimaryKey
@@ -38,9 +38,19 @@ type keyColumns struct {
 func (r *Resource[T]) keyColumns() keyColumns {
 	kc := keyColumns{names: r.pk, types: make([]core.TypeInfo, len(r.pk))}
 	for i, column := range r.pk {
-		kc.types[i] = core.TypeOf(r.tableColumns[column])
+		kc.types[i] = r.columnTypeInfo(column)
 	}
 	return kc
+}
+
+// columnTypeInfo is column's type with the storage it declares (SQLType),
+// which reads a network value's canonical text.
+func (r *Resource[T]) columnTypeInfo(column string) core.TypeInfo {
+	info := core.TypeOf(r.tableColumns[column])
+	if t, ok := r.sqlTypes[column]; ok {
+		info.SQLType = t
+	}
+	return info
 }
 
 // normalize is key with each value in its column's canonical form, as a
@@ -65,62 +75,63 @@ func (kc keyColumns) normalize(key Key) (Key, error) {
 	return out, nil
 }
 
-// identity is key, normalized, as a comparable map key: equal for two keys
-// exactly when the database holds them equal. A one-column key is its
-// value; a longer one its text (core.KeyText), canonical for the strings
-// and integers such a key holds (core.IsKeyType).
+// stored is a normalized key as d's database holds it
+// (Dialect.StoredKeyValue): a timestamp at the database's precision.
+func (kc keyColumns) stored(d Dialect, key Key) (Key, error) {
+	out := make(Key, len(key))
+	for i, info := range kc.types {
+		v, err := d.StoredKeyValue(info, key[i])
+		if err != nil {
+			return nil, fmt.Errorf("%w: key column %s: %w", ErrKeyInvalid, kc.names[i], err)
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+// identity is key, normalized, as a map key: its canonical text
+// (core.KeyTextOf), equal for two keys exactly when the database holds
+// them equal — decimals by value, timestamps at the instant, -0 as 0.
+// Keys bound for one database compare there at its precision
+// (keyColumns.stored).
 func (kc keyColumns) identity(key Key) (any, error) {
 	normalized, err := kc.normalize(key)
 	if err != nil {
 		return nil, err
 	}
-	if len(normalized) == 1 {
-		if !reflect.ValueOf(normalized[0]).Comparable() {
-			return nil, fmt.Errorf("key %T is not comparable", normalized[0])
-		}
-		return normalized[0], nil
+	text, err := core.KeyTextOf(kc.types, normalized)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrKeyInvalid, err)
 	}
-	return core.KeyText(normalized), nil
+	return text, nil
 }
 
-// batchType refuses a key an update batch cannot order and compare: one
-// with a column that is no key type (core.IsKeyType).
-func (kc keyColumns) batchType() error {
-	for i, info := range kc.types {
-		if !core.IsKeyType(info.Type) {
-			return fmt.Errorf("update batch key column %s is %s; a batch keys string, UUID and integer columns", kc.names[i], info.Type)
-		}
-	}
-	return nil
-}
-
-// compare orders two normalized keys of batch-typed columns (batchType)
-// column by column: strings by code point, as Dialect.CodePointOrder orders
-// the column, and integers by value.
+// compare orders two normalized keys column by column as a statement
+// ordered by filter.KeyOrder reads them (filter.CompareKeyValues): strings
+// by code point, numbers and decimals by value, timestamps by instant,
+// false before true.
 func (kc keyColumns) compare(a, b Key) int {
-	for i := range kc.names {
-		var c int
-		switch x := a[i].(type) {
-		case string:
-			y, _ := b[i].(string)
-			c = strings.Compare(x, y)
-		case int64:
-			y, _ := b[i].(int64)
-			c = cmp.Compare(x, y)
-		case uint64:
-			y, _ := b[i].(uint64)
-			c = cmp.Compare(x, y)
-		}
-		if c != 0 {
+	for i, info := range kc.types {
+		if c := filter.CompareKeyValues(filter.CursorKey{DataType: info.Type, NumberKind: info.NumberKind}, a[i], b[i]); c != 0 {
 			return c
 		}
 	}
 	return 0
 }
 
+// order is the ORDER BY list that reads the key columns of table in
+// compare's order (filter.KeyOrder).
+func (kc keyColumns) order(d Dialect, table string) string {
+	order := make([]string, len(kc.names))
+	for i, column := range kc.names {
+		order[i] = filter.KeyOrder(d, d.QuoteIdent(table)+"."+d.QuoteIdent(column), kc.types[i])
+	}
+	return strings.Join(order, ", ")
+}
+
 // checkKeyColumns refuses a key of no column, a key column listed twice,
-// one that is no column of model, and, in a key of several columns, one
-// that is no key type (core.IsKeyType).
+// one that is no column of model, and one of no scalar type
+// (core.IsKeyType), whose values have no equality to identify a row by.
 func checkKeyColumns(key []string, columns map[string]reflect.Type, model reflect.Type) error {
 	if len(key) == 0 {
 		return errors.New("the key names no column; PrimaryKey takes one or more")
@@ -133,8 +144,8 @@ func checkKeyColumns(key []string, columns map[string]reflect.Type, model reflec
 		if !ok {
 			return fmt.Errorf("key column %q is not a column of %s", column, model)
 		}
-		if info := core.TypeOf(t); len(key) > 1 && !core.IsKeyType(info.Type) {
-			return fmt.Errorf("key column %q is %s; a key of several columns holds string, UUID and integer columns", column, info.Type)
+		if info := core.TypeOf(t); !core.IsKeyType(info.Type) {
+			return fmt.Errorf("key column %q is %s; a key column is a scalar", column, info.Type)
 		}
 	}
 	return nil

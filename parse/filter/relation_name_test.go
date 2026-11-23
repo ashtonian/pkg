@@ -13,6 +13,7 @@ import (
 
 func TestGenerateFilterSchemaExplicitHiddenRelationName(t *testing.T) {
 	type row struct {
+		ID     string   `json:"-" db:"id"`
 		TagIDs []string `json:"-" db:"-" parse:"filter,facet,include" relation_name:"tag_ids" relation:"row_tags,row_id,tag_id"`
 		Groups []string `json:"-" db:"-" parse:"filter" relation:"row_groups,row_id,group_id"`
 	}
@@ -31,6 +32,7 @@ func TestGenerateFilterSchemaExplicitHiddenRelationName(t *testing.T) {
 
 func TestGenerateFilterSchemaRelationNameDoesNotOverrideVisibleName(t *testing.T) {
 	type row struct {
+		ID   string   `json:"-" db:"id"`
 		Tags []string `json:"tags" db:"-" parse:"filter" relation_name:"tag_ids" relation:"row_tags,row_id,tag_id"`
 	}
 	schema, err := filter.GenerateFilterSchema[row](core.NewSchemaGenerator())
@@ -41,10 +43,12 @@ func TestGenerateFilterSchemaRelationNameDoesNotOverrideVisibleName(t *testing.T
 
 func TestGenerateFilterSchemaRejectsRelationNameCollision(t *testing.T) {
 	type relationFirst struct {
+		ID     string   `json:"-" db:"id"`
 		TagIDs []string `json:"-" db:"-" parse:"filter" relation_name:"tag_ids" relation:"row_tags,row_id,tag_id"`
 		Alias  string   `json:"tag_ids" db:"alias" parse:"filter"`
 	}
 	type scalarFirst struct {
+		ID     string   `json:"-" db:"id"`
 		Alias  string   `json:"tag_ids" db:"alias" parse:"filter"`
 		TagIDs []string `json:"-" db:"-" parse:"filter" relation_name:"tag_ids" relation:"row_tags,row_id,tag_id"`
 	}

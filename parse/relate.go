@@ -25,6 +25,7 @@ type RelatedResource interface {
 	// relations the target declares later included.
 	liveFilterSchema() *filter.ResourceSchema
 	columnType(name string) (reflect.Type, bool)
+	columnTypeInfo(name string) core.TypeInfo
 	columnWire(name string) core.Wire
 	computed(column string) bool
 	isView() bool
@@ -216,6 +217,19 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if err := r.checkRelationKeys(name, rs, rel.target); err != nil {
 		return err
 	}
+	// The source columns hold the owner's columns, the target columns the
+	// target's key, each in its column's type.
+	rs.SourceTypes = make([]core.TypeInfo, len(rs.SourceColumns))
+	for i, c := range rs.OwnerColumns() {
+		rs.SourceTypes[i] = r.columnTypeInfo(c)
+	}
+	rs.TargetTypes = make([]core.TypeInfo, len(rs.TargetColumns))
+	for i, c := range rel.target.PrimaryKeyColumns() {
+		rs.TargetTypes[i] = rel.target.columnTypeInfo(c)
+	}
+	if err := rs.Check(); err != nil {
+		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+	}
 	for _, c := range rs.OwnerColumns() {
 		if r.computed(c) {
 			return computedCorrelation(r.table, name, c)
@@ -350,15 +364,14 @@ func (r *Resource[T]) correlationField(column string) *filter.FieldSchema {
 }
 
 // checkRelationKeys refuses a relation whose rows correlate on a column
-// that is no key (core.IsKeyType): each owner correlation column, each
-// target key column and, for a has-many or belongs-to, each target
-// correlation column. SQL joins them column to column and the resolvers
-// match them as identifiers, so a decimal "1.50" would not meet its 1.5.
-// A has-many's or belongs-to's paired columns must also hold one kind of
-// key, strings (and UUIDs, which a string may hold) or integers, or SQL
-// could not compare them. target is nil for a pair table declared by tag,
-// whose target keys the field's element type declares
-// (filter.GenerateSchema refuses one that is no key).
+// of no scalar type (core.IsKeyType), which has no equality to join by:
+// each owner correlation column, each target key column and, for a
+// has-many or belongs-to, each target correlation column. A has-many's or
+// belongs-to's paired columns must also be of one type, a string and a
+// UUID, which a string may hold, alike, or SQL could not compare them as
+// the type compares. target is nil for a pair table declared by tag, whose
+// target keys the field's element type declares (filter.GenerateSchema
+// refuses one that is no scalar).
 func (r *Resource[T]) checkRelationKeys(name string, rs *core.RelationSchema, target RelatedResource) error {
 	type column struct {
 		table, name string
@@ -385,7 +398,7 @@ func (r *Resource[T]) checkRelationKeys(name string, rs *core.RelationSchema, ta
 			return fmt.Errorf("parse: %s: relation %q: %q is not a column of %s", r.table, name, c.name, c.table)
 		}
 		if info := core.TypeOf(c.typ); !core.IsKeyType(info.Type) {
-			return fmt.Errorf("parse: %s: relation %q: %s.%s is %s; a relation correlates on a string, UUID or integer key", r.table, name, c.table, c.name, info.Type)
+			return fmt.Errorf("parse: %s: relation %q: %s.%s is %s; a relation correlates on scalar keys", r.table, name, c.table, c.name, info.Type)
 		}
 	}
 	if target == nil || rs.Kind == core.ManyToMany {
@@ -404,8 +417,8 @@ func (r *Resource[T]) checkRelationKeys(name string, rs *core.RelationSchema, ta
 	return nil
 }
 
-// keyKind is how SQL compares a key of type t: UUIDs as the text a string
-// key may hold, integers as numbers.
+// keyKind is the type a paired key column of type t compares as: a UUID as
+// the text a string key may hold, any other type as itself.
 func keyKind(t core.FieldType) core.FieldType {
 	if t == core.FieldTypeUUID {
 		return core.FieldTypeString

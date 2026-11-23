@@ -705,6 +705,29 @@
         }
       }
     },
+    "patch_composite_key": {
+      "request": {
+        "method": "PATCH",
+        "path": "/wire_stock/w1/a%2Fb",
+        "content_type": "application/json",
+        "body": {
+          "qty": 3
+        }
+      },
+      "response": {
+        "status": 200,
+        "content_type": "application/json",
+        "body": {
+          "updated": [
+            {
+              "warehouse_id": "w1",
+              "sku": "a/b",
+              "qty": 3
+            }
+          ]
+        }
+      }
+    },
     "patch_many": {
       "request": {
         "method": "PATCH",
@@ -1108,6 +1131,55 @@
               },
               "patch": {
                 "paths": {},
+                "max_operations": 50,
+                "max_relation_values": 1000
+              }
+            },
+            {
+              "version": 1,
+              "resource": "wire_stock",
+              "key": [
+                "warehouse_id",
+                "sku"
+              ],
+              "filter": {
+                "fields": {
+                  "sku": {
+                    "name": "sku",
+                    "data_type": "string",
+                    "operators": [
+                      "eq",
+                      "gt",
+                      "lt",
+                      "gte",
+                      "lte",
+                      "in"
+                    ]
+                  },
+                  "warehouse_id": {
+                    "name": "warehouse_id",
+                    "data_type": "string",
+                    "operators": [
+                      "eq",
+                      "gt",
+                      "lt",
+                      "gte",
+                      "lte",
+                      "in"
+                    ]
+                  }
+                }
+              },
+              "patch": {
+                "paths": {
+                  "/qty": {
+                    "allowed_ops": [
+                      "replace"
+                    ],
+                    "data_type": "int",
+                    "number_kind": "int"
+                  }
+                },
                 "max_operations": 50,
                 "max_relation_values": 1000
               }

@@ -13,6 +13,9 @@ import (
 	"github.com/ashtonian/pkg/parse/filter"
 )
 
+// textKey types a relation column holding a string key.
+var textKey = []core.TypeInfo{{Type: core.FieldTypeString}}
+
 // facetSchemaWithRelation extends facetSchema with a M2M relation field.
 // The relation is tenant-scoped so we can verify the predicate emission.
 func facetSchemaWithRelation() *filter.ResourceSchema {
@@ -29,6 +32,8 @@ func facetSchemaWithRelation() *filter.ResourceSchema {
 			TargetColumns: []string{"tag_id"},
 			OwnerKey:      []string{"id"},
 			TenantColumn:  "tenant_id",
+			SourceTypes:   textKey,
+			TargetTypes:   textKey,
 		},
 	}
 	return rs
@@ -185,11 +190,11 @@ func TestBuildFacetQuery_RelationFacets_OwnKeyEach(t *testing.T) {
 		Fields: map[string]*filter.FieldSchema{
 			"tags": {
 				ExternalName: "tags", DataType: core.FieldTypeString, Facetable: true,
-				Relation: &core.RelationSchema{JoinTable: "doc_tags", SourceColumns: []string{"doc_id"}, TargetColumns: []string{"tag"}, OwnerKey: []string{"id"}},
+				Relation: &core.RelationSchema{JoinTable: "doc_tags", SourceColumns: []string{"doc_id"}, TargetColumns: []string{"tag"}, OwnerKey: []string{"id"}, SourceTypes: textKey, TargetTypes: textKey},
 			},
 			"labels": {
 				ExternalName: "labels", DataType: core.FieldTypeString, Facetable: true,
-				Relation: &core.RelationSchema{JoinTable: "doc_labels", SourceColumns: []string{"doc_code"}, TargetColumns: []string{"label"}, OwnerKey: []string{"code"}},
+				Relation: &core.RelationSchema{JoinTable: "doc_labels", SourceColumns: []string{"doc_code"}, TargetColumns: []string{"label"}, OwnerKey: []string{"code"}, SourceTypes: textKey, TargetTypes: textKey},
 			},
 		},
 	}
@@ -238,7 +243,7 @@ func TestBuildFacetQuery_RelationFacet_TargetKeyOfSeveralColumns(t *testing.T) {
 				FacetSchema: &filter.FacetSchema{Type: filter.FacetTerms, Limit: 10},
 				Relation: &core.RelationSchema{
 					JoinTable: "stock_tags", SourceColumns: []string{"tag_id"}, TargetColumns: []string{"warehouse_id", "sku"},
-					OwnerKey: []string{"id"},
+					OwnerKey: []string{"id"}, SourceTypes: textKey, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeString}, {Type: core.FieldTypeString}},
 				},
 			},
 		},

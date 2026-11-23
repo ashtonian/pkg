@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // KeySet is the set an OpKeyIn node tests a row against: the row's Fields,
@@ -129,14 +128,14 @@ func constraintKeys(c *PolicyConstraint) ([]core.Key, error) {
 }
 
 // keySetField refuses a key column a bound key set cannot test: one that is
-// no plain column, or, for a set, one whose values are not compared by
-// value on every backend (core.IsKeyType).
+// no plain column, or, for a set, one with no equality to compare by
+// (core.IsKeyType).
 func keySetField(f *FieldSchema, op FilterOperator) error {
 	if f.Relation != nil || f.Path != nil || f.Expr != "" || f.Column == "" {
 		return fmt.Errorf("field %s is not a column of %s", f.ExternalName, f.Table)
 	}
 	if op == OpIn && !core.IsKeyType(f.DataType) {
-		return fmt.Errorf("a key set compares string, UUID and integer columns, and %s is %s", f.ExternalName, f.DataType)
+		return fmt.Errorf("a key set compares scalar columns, and %s is %s", f.ExternalName, f.DataType)
 	}
 	return nil
 }
@@ -156,46 +155,21 @@ func (ks *KeySet) expand() *FilterNode {
 }
 
 // buildKeySet compiles an OpKeyIn node: the row value of its columns IN the
-// set, bound as one parameter whatever its length.
+// set, bound as one parameter whatever its length (Dialect.KeyIn).
 func (b *SQLBuilder) buildKeySet(s *buildState, node *FilterNode) (string, error) {
 	ks := node.Keys
 	if ks == nil || len(ks.Fields) < 2 || len(ks.Keys) == 0 || ks.Table == "" {
 		return "", fmt.Errorf("%w: key set node has no table, columns or keys", ErrPolicyInvalid)
 	}
-	exprs := make([]string, len(ks.Fields))
+	columns := make([]string, len(ks.Fields))
+	types := make([]core.TypeInfo, len(ks.Fields))
 	for i, f := range ks.Fields {
-		exprs[i] = FieldExpr(b.dialect, f)
-	}
-	return b.dialect.keySet(ks, "("+strings.Join(exprs, ", ")+")", s.binder(b.dialect))
-}
-
-// keySet is the row value IN the set's keys, bound as one parameter
-// (dialect.KeySet).
-func (d PostgresDialect) keySet(ks *KeySet, row string, bind func(any) string) (string, error) {
-	return dialect.KeySet(d, row, ks.Table, ks.columns(), ks.Keys, true, bind)
-}
-
-// keySet refuses an unsigned key past SQLite's signed integers, then
-// renders the row value IN the set's keys (dialect.KeySet).
-func (d SQLiteDialect) keySet(ks *KeySet, row string, bind func(any) string) (string, error) {
-	for _, k := range ks.Keys {
-		for j, f := range ks.Fields {
-			if err := sqliteIntegers(f, k[j]); err != nil {
-				return "", err
-			}
+		if f.Table != ks.Fields[0].Table {
+			return "", fmt.Errorf("%w: key set spans %s and %s", ErrPolicyInvalid, ks.Fields[0].Table, f.Table)
 		}
+		columns[i], types[i] = f.Column, core.TypeInfo{Type: f.DataType, NumberKind: f.NumberKind}
 	}
-	return dialect.KeySet(d, row, ks.Table, ks.columns(), ks.Keys, true, bind)
-}
-
-// columns are the set's fields' column names, which its rows name their
-// values by.
-func (ks *KeySet) columns() []string {
-	out := make([]string, len(ks.Fields))
-	for i, f := range ks.Fields {
-		out[i] = f.Column
-	}
-	return out
+	return b.dialect.KeyIn(ks.Table, ks.Fields[0].Table, columns, types, ks.Keys, true, s.binder(b.dialect))
 }
 
 // keyText is the compact JSON array of the expressions' texts, the text

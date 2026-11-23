@@ -1,9 +1,11 @@
 // Package parsehttp is parse's net/http adapter. It reads list requests from
-// either transport (ParseList), serves the schema discovery routes
-// (SchemaHandler, SchemaListHandler), and answers parse's request errors
-// (WriteError) and a handler's own JSON (WriteJSON), each encoded before
-// anything is written and sent with its Content-Length. One WithErrorHandler
-// hook receives what any of them could not put in a response.
+// either transport (ParseList), routes one row by a path segment per key
+// column and reads its key (ItemPattern, ItemKey), serves the schema
+// discovery routes (SchemaHandler, SchemaListHandler), and answers parse's
+// request errors (WriteError) and a handler's own JSON (WriteJSON), each
+// encoded before anything is written and sent with its Content-Length. One
+// WithErrorHandler hook receives what any of them could not put in a
+// response.
 package parsehttp
 
 import (

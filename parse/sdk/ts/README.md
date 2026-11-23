@@ -72,15 +72,15 @@ The client calls the routes a server built on the Go module serves; the [example
 | `list(opts)` | `GET /{resource}?filter=&sort=&cursor=&page_size=&include_total=&include_deleted=&search=&include=&facets=&fields=` | `parsehttp.ParseList` (or `Resource.ParseList` over `parsehttp.Query`), `Resource.BuildList`, `Resource.Page` |
 | `list(opts, { method: "POST" })`, or a list URL past `maxURLLength` | `POST /{resource}` with `{"filter": {…}, "sort", "cursor", "page_size", "include_total", "include_deleted", "search", "include": […], "facets": […], "fields": […]}` as `application/json` ([HTTP contract](../../docs/http-errors.md#the-same-request-as-a-post-body)) | The same handler: `parsehttp.ParseList` reads either transport |
 | `listAll(opts)` | `list` repeated with `cursor = page_info.end_cursor` while `page_info.has_next_page`, each page on the transport `list` would take | The list route |
-| `patch(id, input)` | `PATCH /{resource}/{id}` with a JSON Merge Patch body (`application/json`) | `parsehttp.ParsePatch` (or `Resource.ParsePatchRequest`), `Resource.BuildUpdate(…, parse.ByID(id), …)` |
-| `patchMany(ids, input)` | `PATCH /{resource}?id[]=…&id[]=…` with a JSON Merge Patch body (`application/json`) | `parsehttp.Query`, `parsehttp.ParsePatch`, `Resource.BuildUpdate(…, parse.ByIDs(ids…), …)`; a key that updated no row is an item of `failed` |
+| `patch(key, input)` | `PATCH /{resource}/{value}/…` with a JSON Merge Patch body (`application/json`): a path segment per key column, in key order, each escaped on its own with `encodeURIComponent`, so the key `["w1", "a/b"]` is `/stock/w1/a%2Fb` and a one-column key one segment (`/products/p01`) | The route `"PATCH /{resource}/" + parsehttp.ItemPattern(res)`, `parsehttp.ItemKey` (the key, each segment read as its column's text by `Resource.ParseKey`), `parsehttp.ParsePatch` (or `Resource.ParsePatchRequest`), `Resource.BuildUpdate(…, parse.ByKey(key), …)` |
+| `patchMany(ids, input)` | `PATCH /{resource}?id[]=…&id[]=…` with a JSON Merge Patch body (`application/json`), each `id[]` the one value of a key of one column | `parsehttp.Query`, `parsehttp.ParsePatch`, `Resource.BuildUpdate(…, parse.ByIDs(ids…), …)`; a key that updated no row is an item of `failed` |
 | `facets(fields, opts)` | `OPTIONS /{resource}?facets=a,b&filter=` → `facets` | `parsehttp.ParseFacets` (or `Resource.ParseFacets`), `Resource.BuildFacets`; `cursor`, `sort`, `page_size`, `include_total`, `include` or `fields` is E2067 |
 | `schema()` | `GET /{schemaPrefix}/{name}/schema` | `parsehttp.SchemaHandler` |
 | `schemas()` | `GET /{schemaPrefix}/schemas` → `{ schemas: […] }` | `parsehttp.SchemaListHandler` |
 | `validator()` | `schema()`'s request, once per handle | The schema route |
 | `resource(path, opts)` | Nothing: a handle whose calls send the requests above | — |
 
-Members a list leaves zero (an empty `sort`, `include`, `facets` or `fields`, `pageSize: 0`) are not sent, so the server applies its defaults. `fields` is the response field mask, the members each item carries; the schema document lists no maskable names, so `validateBeforeSend` leaves the mask to the server. `patch("")` and `patchMany([])` throw `RangeError` before sending: either would `PATCH` the collection itself. A request carries `Content-Type: application/json` only when it has a body.
+Members a list leaves zero (an empty `sort`, `include`, `facets` or `fields`, `pageSize: 0`) are not sent, so the server applies its defaults. `fields` is the response field mask, the members each item carries; the schema document lists no maskable names, so `validateBeforeSend` leaves the mask to the server. `patch` throws `RangeError` before sending for a key of no value, and for a value no path segment carries: `""` is no segment, and URL parsing drops `"."` and `".."` from a path, escaped or not, so each would `PATCH` another path than the row's. `patchMany([])` throws `RangeError` too: it would `PATCH` the collection itself. A request carries `Content-Type: application/json` only when it has a body.
 
 A list page is `{ items, page_info: { has_next_page, has_prev_page, start_cursor?, end_cursor?, total_count? }, _relations?, _truncated?, facets? }` — Go `filter.Page`. `_relations` carries `include` projections: relation field → owner key → related keys (at most 100 per owner by default), each key its text: a one-column key's value, a key of several columns the compact JSON array of its columns' texts (`["1","a"]`); `_truncated` lists, per relation field, the owners whose ids were cut at that cap. `facets` carries the counts a list's `facets` option asked for, over the matched rows: field → buckets, a terms facet's by count with ties in the field's type order (numbers by value), a range facet's as declared. A server answers them when it runs the list plan's facet statement, as `parsepgx.QueryPage` and the example server do; one that does not serves facets through `facets(fields, opts)` only. A patch returns `{ updated, failed? }`: `failed` lists the keys of a `patchMany` that updated no row, each with the server's `code` and `error`.
 
@@ -144,7 +144,15 @@ const viaPost = await products.list({ filter: { id: { $in: ids } } }, { method: 
 ```typescript
 await products.patch("prod-123", { name: "Updated", labels: { tier: "gold", legacy: null } });
 await products.patchMany(["id1", "id2"], { category: "archive" });
+
+// A key of several columns: the schema's key is ["warehouse_id", "sku"].
+const stock = client.resource<Stock, [string, string]>("stock");
+await stock.patch(["w1", "a/b"], { qty: 3 }); // PATCH /stock/w1/a%2Fb
 ```
+
+`patch` takes the row's key: one value for a key of one column, a tuple of a value per column, in key order, for a key of several (the schema document's `key`). The handle's second type parameter is the key's type (`ResourceKey`), one value (`KeyValue`) by default, so a key of another arity does not compile. A key value is a string, a finite number, a bigint or a boolean, sent as its text: the server reads each segment as its column's text (Go `Resource.ParseKey`), an integer column's as decimal digits, so pass a 64-bit integer past 2^53 as a bigint or a string. With `validateBeforeSend`, a key of another number of values than the schema's `key` columns throws `RangeError` before sending, since the server's item route has a segment per column and would not route it.
+
+`patchMany` names each row by one `id[]` value, which has no form for a key of several columns: a tuple throws `RangeError`, as does, with `validateBeforeSend`, any `patchMany` on a resource whose schema `key` has several columns, and the handle's type takes no tuple. Patch such rows one by one with `patch`.
 
 ## Schema Discovery & Validation
 
@@ -155,6 +163,7 @@ v.operatorsFor("price");    // ["eq", "ne", "gt", "gte", "lt", "lte", "in", "nin
 v.enumValuesFor("category");
 v.fieldsByGroup();          // Map of sidebar group → fields, ordered
 v.includableFields();       // relation fields a list can `include`
+v.keyColumns();             // ["id"]: the key columns, in key order
 ```
 
 The document lists every name the server's filter accepts, the resource's key included whether or not it is tagged, and for each the operators the server takes on it: a field that declares one NULL test (`null`, `not_null`, `exists`) lists all three. `filterableFields()` and `operatorsFor()` read them as listed.
@@ -215,7 +224,7 @@ Three Go-emitted fixtures keep the client on the server's contract; each fails i
 |---|---|---|
 | `testdata/filter_conformance.json` — `{schemas, cases, sort, list}`: the schema documents of the corpus's resources, and filters, sort strings and list query strings with the server's verdict and E-code | `src/filter/conformance.test.ts` | `go test -tags=unit -run TestEmitFilterConformance -update ./parse/` |
 | `testdata/patch_conformance.json` — merge patches with the Go parser's verdict and E-code, and the schema document they are checked against | `src/patch/conformance.test.ts` | `go test -tags=unit -run TestEmitPatchConformance -update ./parse/` |
-| `testdata/sdk_wire.json` — requests parse's Go client built and the answers `parsehttp`'s handlers gave them: a keyset walk, a backward page, a total, a POST list, facets, patches, the schema routes and their 404, a 422 parse error | `src/client.test.ts`, which sends each request and must equal the recorded one | `go test -tags=unit -run TestSDKWireFixture -update ./parse/` |
+| `testdata/sdk_wire.json` — requests parse's Go client built and the answers `parsehttp`'s handlers gave them: a keyset walk, a backward page, a total, a POST list, facets, patches (one of a row keyed by two columns, `/wire_stock/w1/a%2Fb`, routed by `parsehttp.ItemPattern` and read by `parsehttp.ItemKey`), the schema routes and their 404, a 422 parse error | `src/client.test.ts`, which sends each request and must equal the recorded one | `go test -tags=unit -run TestSDKWireFixture -update ./parse/` |
 
 ## Operations
 
@@ -232,7 +241,7 @@ Credentials go in `headers` (`Authorization`), sent with every request to `baseU
 | Import | Contents |
 |---|---|
 | `@ashtonian/parse` | `createClient`, `SchemaValidator`, `SCHEMA_VERSION`, builders and combinators, validators, all types |
-| `@ashtonian/parse/core` | `ApiError`, `ResponseError`, `SchemaResourceError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError`, `ConstraintName`, `ConstraintFailure`, `ErrorBody`, `Problem`, `FieldError`, `FieldType` |
+| `@ashtonian/parse/core` | `ApiError`, `ResponseError`, `SchemaResourceError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError`, `ConstraintName`, `ConstraintFailure`, `ErrorBody`, `Problem`, `FieldError`, `FieldType`, `KeyValue`, `ResourceKey` |
 | `@ashtonian/parse/filter` | `filter`, `and`, `or`, `not`, `sort`, `validateFilter`, `validateSort`, list / facet / schema types |
 | `@ashtonian/parse/patch` | `validatePatch`, patch schema and result types |
 
@@ -251,7 +260,7 @@ Credentials go in `headers` (`Authorization`), sent with every request to `baseU
 | `src/schema.ts` | `ResourceSchema` (the schema document), `SCHEMA_VERSION` |
 | `src/core/errors.ts` | `ApiError`, `ResponseError`, `SchemaResourceError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError` |
 | `src/core/problem.ts` | RFC 9457 `Problem` and `FieldError`: recognition and normalization |
-| `src/core/types.ts` | Shared types: `ErrorBody`, `FieldType`, `RequestOptions` |
+| `src/core/types.ts` | Shared types: `ErrorBody`, `FieldType`, `KeyValue`, `ResourceKey`, `RequestOptions` |
 
 ## References
 

@@ -331,31 +331,36 @@ func MatchLookupRow(cond *LookupCond, column func(name string) (value any, ok bo
 	return false, invalidLookup(fmt.Sprintf("lookup column %q has unknown operator %q", cond.Column, cond.Op))
 }
 
-// lookupEqual is SQL equality of two non-NULL stored values.
-func lookupEqual(a, b any) bool {
-	if isNullValue(a) || isNullValue(b) {
+// lookupEqual is SQL equality of a stored value and a lookup's value, as
+// the lookup's statement compares them (lookupCondSQL): typed by the
+// lookup value's Go type (core.TypeOf), each side read as that type's
+// canonical value (core.NormalizeScalar), so a timestamp compares at its
+// instant whether stored as a time or as its text, a UUID in either case,
+// and a date by its day. Numbers compare by value, a decimal beyond
+// float64's precision ("1.50" is 1.5).
+func lookupEqual(stored, want any) bool {
+	if isNullValue(stored) || isNullValue(want) {
 		return false
 	}
-	if isLookupDecimal(a) || isLookupDecimal(b) {
-		// As SQL compares a decimal lookup value: by value, the other side
-		// read as a decimal ("1.50" is 1.5), beyond float64's precision.
-		c, ok := core.CompareDecimals(a, b)
+	if isLookupDecimal(stored) || isLookupDecimal(want) {
+		c, ok := core.CompareDecimals(stored, want)
 		return ok && c == 0
 	}
-	if c, ok := core.CompareNumbers(a, b); ok {
+	if c, ok := core.CompareNumbers(stored, want); ok {
 		return c == 0
 	}
-	if ta, ok := a.(time.Time); ok {
-		tb, ok := b.(time.Time)
-		return ok && ta.Equal(tb)
+	info := core.TypeOf(reflect.TypeOf(want))
+	if !core.IsKeyType(info.Type) {
+		x, xok := lookupText(stored)
+		y, yok := lookupText(want)
+		return xok && yok && x == y
 	}
-	if ba, ok := a.(bool); ok {
-		bb, ok := b.(bool)
-		return ok && ba == bb
+	x, err := core.NormalizeScalar(info.Type, info.NumberKind, stored)
+	if err != nil {
+		return false
 	}
-	x, xok := lookupText(a)
-	y, yok := lookupText(b)
-	return xok && yok && x == y
+	y, err := core.NormalizeScalar(info.Type, info.NumberKind, want)
+	return err == nil && x == y
 }
 
 func lookupText(v any) (string, bool) {

@@ -349,7 +349,9 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 					if j > 0 {
 						in.WriteString(" AND ")
 					}
-					in.WriteString(qualified(dialect, junctionAlias, rel.SourceColumns[j]) + " = base." + alias)
+					t := rel.SourceTypes[j]
+					source := keyField(rel.SourceColumns[j], qualified(dialect, junctionAlias, rel.SourceColumns[j]), t)
+					in.WriteString(keyOperand(dialect, source) + " = " + keyOperand(dialect, keyField(alias, "base."+alias, t)))
 				}
 				in.WriteString(relatedJoin(dialect, rel, junctionAlias, targetAlias))
 				clause, err := relatedScope(m.field, dialect, scope, cfg.related, st, bindTenant, junctionAlias, targetAlias)
@@ -357,7 +359,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 					return FacetQuery{}, fmt.Errorf("BuildFacetQuery: field %q: %w", m.req.Field, err)
 				}
 				in.WriteString(clause)
-				in.WriteString(" GROUP BY " + strings.Join(junctionColumns(dialect, rel.TargetColumns), ", "))
+				in.WriteString(" GROUP BY " + strings.Join(relationKeyColumns(rel, dialect), ", "))
 			} else {
 				ordered = m.order != ""
 				in.WriteString(m.bucketCol)
@@ -479,11 +481,14 @@ func facetOwnerCount(owner []string, dialect Dialect) string {
 	return dialect.keyText(columns)
 }
 
-// junctionColumns are columns of the junction, each qualified by its alias.
-func junctionColumns(dialect Dialect, columns []string) []string {
-	out := make([]string, len(columns))
-	for i, c := range columns {
-		out[i] = qualified(dialect, junctionAlias, c)
+// relationKeyColumns are the junction's target key columns as a relation
+// facet groups them: a string, UUID or integer column itself, any other
+// type's its canonical text (keyValueText), so equal values make one
+// bucket.
+func relationKeyColumns(rel *core.RelationSchema, dialect Dialect) []string {
+	out := make([]string, len(rel.TargetColumns))
+	for i, c := range rel.TargetColumns {
+		out[i] = includeKey(dialect, qualified(dialect, junctionAlias, c), rel.TargetTypes[i])
 	}
 	return out
 }
@@ -492,7 +497,7 @@ func junctionColumns(dialect Dialect, columns []string) []string {
 // ALL key column lines up with scalar terms facets: one column's text, a
 // longer key's (keyText), the text includes name the key by.
 func relationKeyExpr(rel *core.RelationSchema, dialect Dialect) string {
-	columns := junctionColumns(dialect, rel.TargetColumns)
+	columns := relationKeyColumns(rel, dialect)
 	if len(columns) == 1 {
 		return dialect.textKey(columns[0])
 	}

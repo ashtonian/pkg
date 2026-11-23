@@ -212,6 +212,7 @@ func TestRelationRefusesNullableKeys(t *testing.T) {
 func TestRenderRelationOp_Replace_Clear(t *testing.T) {
 	rel := &core.RelationSchema{
 		JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"},
+		SourceTypes: []core.TypeInfo{{Type: core.FieldTypeString}}, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeString}},
 	}
 	op := patch.RelationPatchOp{
 		Field: "tags", Schema: rel, Verb: patch.RelationVerbReplace, Values: nil,
@@ -234,8 +235,8 @@ func TestRenderRelationOp_Replace_Clear(t *testing.T) {
 // RenderRelationOp refuses what it cannot render rather than trusting the
 // operation: a tenant-scoped pair table without a tenant fails closed.
 func TestRenderRelationOp_RefusesWhatItCannotRender(t *testing.T) {
-	rel := &core.RelationSchema{JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"}}
-	scoped := &core.RelationSchema{JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"}, TenantColumn: "tenant_id"}
+	rel := &core.RelationSchema{JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"}, SourceTypes: []core.TypeInfo{{Type: core.FieldTypeString}}, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeString}}}
+	scoped := &core.RelationSchema{JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"}, TenantColumn: "tenant_id", SourceTypes: []core.TypeInfo{{Type: core.FieldTypeString}}, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeString}}}
 	for name, op := range map[string]patch.RelationPatchOp{
 		"remove with no values":      {Field: "tags", Schema: rel, Verb: patch.RelationVerbRemove},
 		"add with no values":         {Field: "tags", Schema: rel, Verb: patch.RelationVerbAdd, Values: []any{}},
@@ -245,7 +246,7 @@ func TestRenderRelationOp_RefusesWhatItCannotRender(t *testing.T) {
 		"a tenant-scoped pair table": {Field: "tags", Schema: scoped, Verb: patch.RelationVerbAdd, Values: []any{"t1"}},
 		"a value that is not a key":  {Field: "tags", Schema: rel, Verb: patch.RelationVerbAdd, Values: []any{map[string]any{}}},
 	} {
-		for _, d := range []patch.SQLDialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
+		for _, d := range []patch.RelationDialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
 			_, err := patch.RenderRelationOp(op, d, []core.Key{{"w1"}}, patch.RenderRelationOpOptions{})
 			assert.Error(t, err, "%s on %s", name, d.Name())
 		}
@@ -255,6 +256,7 @@ func TestRenderRelationOp_RefusesWhatItCannotRender(t *testing.T) {
 func TestRenderRelationOp_NoOwners(t *testing.T) {
 	rel := &core.RelationSchema{
 		JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"},
+		SourceTypes: []core.TypeInfo{{Type: core.FieldTypeString}}, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeString}},
 	}
 	op := patch.RelationPatchOp{
 		Field: "tags", Schema: rel, Verb: patch.RelationVerbReplace, Values: []any{"t1"},
@@ -272,6 +274,7 @@ func TestRenderRelationOp_TenantOptOut(t *testing.T) {
 	// Schema has TenantColumn empty; opts pass a tenant value but it must be ignored.
 	rel := &core.RelationSchema{
 		JoinTable: "system_tags", SourceColumns: []string{"tag_id"}, TargetColumns: []string{"alias_id"},
+		SourceTypes: []core.TypeInfo{{Type: core.FieldTypeString}}, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeString}},
 	}
 	op := patch.RelationPatchOp{
 		Field: "aliases", Schema: rel, Verb: patch.RelationVerbAdd, Values: []any{"a1"},

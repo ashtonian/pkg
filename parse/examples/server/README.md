@@ -14,7 +14,7 @@ flowchart LR
 
 **Exit points:** Parameterized SQL goes to SQLite; JSON pages, schema documents, facets and native error envelopes go to the HTTP client.
 
-**Failure modes:** Invalid settings fail startup; invalid requests return Parse E-codes; a patch of a missing product is 404 `E4004`, and a batch's missing keys are its `failed` items; a request body the client did not finish sending is 400 `E4001`, logged at WARN; a request that outlives `--request-timeout` is 504 `E5004`, logged at WARN, and a request whose client left is not answered and is logged at DEBUG; any other SQL failure is 500 `E5001`, logged at ERROR; response failures are observed by the handler; an expired shutdown grace forces connections closed.
+**Failure modes:** Invalid settings fail startup; invalid requests return Parse E-codes; a patch of a missing product, or of a key its columns cannot hold, is 404 `E4004`, and a batch's missing keys are its `failed` items; a request body the client did not finish sending is 400 `E4001`, logged at WARN; a request that outlives `--request-timeout` is 504 `E5004`, logged at WARN, and a request whose client left is not answered and is logged at DEBUG; any other SQL failure is 500 `E5001`, logged at ERROR; response failures are observed by the handler; an expired shutdown grace forces connections closed.
 
 **Dependencies:** The example is a module of its own. It imports Parse, replaced by the working tree it sits in, the released `pkg/config` and Kong provider, Kong, and the pure-Go SQLite driver; Parse itself requires none of the CLI and configuration modules. Applications supply their own resource, storage, authenticated scope and authorization policy.
 
@@ -39,12 +39,14 @@ The second request is the same list as a POST body ([HTTP contract](../../docs/h
 | `GET /api/products` | `list` | `parsehttp.ParseList`, `BuildList`, `parsesql.QueryPage`: the page, with the count and facets when asked |
 | `POST /api/products` | `list` over the body transport | The same handler |
 | `OPTIONS /api/products?facets=…` | `facets` | `parsehttp.ParseFacets`, `BuildFacets`: `{"facets": {…}}`; a page parameter (`cursor`, `sort`, `page_size`, …) is 422 `E2067` |
-| `PATCH /api/products/{id}` | `patch` | `parsehttp.ParsePatch`, `BuildUpdate(…, parse.ByID(id), …)`, `parsesql.Update`: a `parsehttp.PatchAnswer`, `{"updated": [product]}`, or 404 `E4004` |
+| `PATCH /api/products/{id}` | `patch` | The pattern is the collection's path, a slash and `parsehttp.ItemPattern(products)`, a wildcard per key column; `parsehttp.ItemKey` reads the key, `parsehttp.ParsePatch` the patch, then `BuildUpdate(…, parse.ByKey(key), …)`, `parsesql.Update`: a `parsehttp.PatchAnswer`, `{"updated": [product]}`, or 404 `E4004` for a key that names no product, one its columns cannot hold included |
 | `PATCH /api/products?id[]=…` | `patchMany` | `parsehttp.Query`, `parsehttp.ParsePatch`, `BuildUpdate(…, parse.ByIDs(…), …)`, `parsesql.Update` for 1 to 100 keys: `{"updated": [...], "failed": [{"id", "code": "E4004", "error"}]}`; no key or more than 100 is 400 `E4001` |
 | `GET /api/{resource}/schema` | `schema` | `parsehttp.SchemaHandler`: the resource's document, or 404 `E2078` |
 | `GET /api/schemas` | `schemas` | `parsehttp.SchemaListHandler`: `{"schemas": [...]}`, every registered resource's document |
 
 The patch routes read no query parameter but a batch's `id[]`, and answer any other with 400 `E4001`: a parameter a patch ignored, a filter meant to narrow it, would let it write rows the client did not mean to.
+
+The item route derives from the resource's key: products, keyed by `id`, are `/api/products/{id}`, and a resource keyed by several columns, `parse.PrimaryKey("warehouse_id", "sku")`, would be `/api/stock/{warehouse_id}/{sku}` from the same code. Each key value is a path segment escaped on its own, so the SKU `a/b` travels as `a%2Fb` and stays in its segment: `PATCH /api/stock/w1/a%2Fb`, as the TypeScript SDK's `patch(["w1", "a/b"], …)` sends it. `ItemKey` reads each segment as its column's text (`Resource.ParseKey`, an integer column's as decimal digits). A batch's `id[]` holds one value per row, so `patchMany` addresses only a key of one column.
 
 `E4001`, `E4004`, `E5001` (internal error) and `E5004` (the request timeout expired) are the example's own codes: parse's catalog holds request errors, and whether a row exists or the server failed is the application's to say. Every other code is parse's ([HTTP contract](../../docs/http-errors.md)).
 
@@ -114,7 +116,7 @@ The unit checks cover explicit flags over environment values, omitted-flag prece
 |---|---|
 | `go.mod` | The example's own module: Kong and the released config modules, Parse replaced by this working tree |
 | `main.go` | Configuration, HTTP lifecycle and seeded SQLite storage |
-| `server.go` | Resource declaration, routes, list (GET and POST), facet, schema, single and batch patch handlers, the example's error codes |
+| `server.go` | Resource declaration, routes (the item route from the key, `parsehttp.ItemPattern`), list (GET and POST), facet, schema, single (key read by `parsehttp.ItemKey`) and batch patch handlers, the example's error codes |
 | `settings_test.go` | Configuration source precedence, bounded shutdown, the log level and the startup entry |
 | `server_test.go` | The request timeout on every request's context |
 | `server_integration_test.go` | Requests against the SQLite HTTP server, one per row of the Routes table |

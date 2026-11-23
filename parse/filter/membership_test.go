@@ -5,7 +5,9 @@ package filter
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -21,6 +23,7 @@ func memberSchema() *ResourceSchema {
 		"parent_id": {ExternalName: "parent_id", Table: "docs", Column: "parent_id", DataType: core.FieldTypeUUID},
 		"count":     {ExternalName: "count", Table: "docs", Column: "count", DataType: core.FieldTypeInt},
 		"at":        {ExternalName: "at", Table: "docs", Column: "at", DataType: core.FieldTypeTimestamp},
+		"doc":       {ExternalName: "doc", Table: "docs", Column: "doc", DataType: core.FieldTypeJSON},
 	}}
 }
 
@@ -159,7 +162,7 @@ func TestMembership_RefusesMalformedLookups(t *testing.T) {
 		"typed nil equality":   {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq("c", (*string)(nil))}},
 		"NULL in a list":       {"id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", "x", nil)}},
 		"unknown operator":     {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{Column: "c", Op: "gt", Value: 1}}},
-		"timestamp field":      {"at", &Lookup{Table: "t", Project: "p"}},
+		"document field":       {"doc", &Lookup{Table: "t", Project: "p"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ApplyPolicyConstraints(memberSchema(), nil, &PolicyConstraints{
@@ -301,9 +304,12 @@ func TestResolveMemberships_LeavesFiltersWithoutMembershipsAlone(t *testing.T) {
 func TestMatchLookupRow(t *testing.T) {
 	id := uuid.MustParse("0198a3c2-7a1e-7c00-8000-00000000000a")
 	dec := decimal.RequireFromString
+	at := time.Date(2026, time.January, 2, 3, 4, 5, 123456000, time.UTC)
+	elsewhere := at.In(time.FixedZone("", 3600))
 	row := map[string]any{
 		"name": "a", "big": int64(9007199254740993), "small": int32(7), "ref": id, "ended": (*string)(nil),
 		"price": "1.50", "wide": dec("12345678901234567890.50"), "ratio": 0.1, "label": "1.5",
+		"at": at, "at_text": "2026-01-02T03:04:05.123456000Z", "device": "d1", "zero": 0.0,
 	}
 	get := func(name string) (any, bool) { v, ok := row[name]; return v, ok }
 	for name, tc := range map[string]struct {
@@ -331,6 +337,11 @@ func TestMatchLookupRow(t *testing.T) {
 		"text compares as text":    {WhereEq("price", "1.5"), false},
 		"decimal against non-text": {WhereEq("name", dec("1")), false},
 		"decimal set by value":     {WhereIn("label", dec("2"), dec("1.50")), true},
+		"timestamp at its instant": {WhereEq("at", elsewhere), true},
+		"timestamp text":           {WhereEq("at_text", elsewhere), true},
+		"timestamp a µs later":     {WhereEq("at", at.Add(time.Microsecond)), false},
+		"device and instant":       {WhereAll(WhereEq("device", "d1"), WhereIn("at_text", at.Add(time.Second), elsewhere)), true},
+		"negative zero":            {WhereEq("zero", math.Copysign(0, -1)), true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := MatchLookupRow(tc.cond, get)

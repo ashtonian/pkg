@@ -53,7 +53,7 @@ type UpdateBatchChunk struct {
 // CheckCurrent verifies the keys of the rows Current returned (Key): each
 // is one of the chunk's Keys, and each of those is returned once.
 func (c UpdateBatchChunk) CheckCurrent(keys []Key) error {
-	if len(keys) != len(c.Keys) || len(c.Keys) == 0 || c.key.batchType() != nil {
+	if len(keys) != len(c.Keys) || len(c.Keys) == 0 {
 		return ErrUpdateBatchTargets
 	}
 	wanted := make(map[any]bool, len(c.Keys))
@@ -106,16 +106,18 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 		return nil, err
 	}
 	key := r.keyColumns()
-	if err := key.batchType(); err != nil {
-		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
-	}
 	ordered := make([]RowUpdate, len(rows))
 	seen := make(map[any]bool, len(rows))
 	for i, row := range rows {
 		if err := r.ownsPatch(row.Patch, fmt.Sprintf("update batch row %d patch", i)); err != nil {
 			return nil, err
 		}
+		// As the database holds the key, so the rows Current returns check
+		// against it and two keys it holds equal are one row's.
 		normalized, err := key.normalize(row.Key)
+		if err == nil {
+			normalized, err = key.stored(d, normalized)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("parse: %s: update batch row %d key: %w", r.table, i, err)
 		}
@@ -237,15 +239,8 @@ func (r *Resource[T]) renderUpdateBatch(d Dialect, exprs map[string]string, rows
 			assignments[assignment.Column] = append(assignments[assignment.Column], "WHEN ("+row.where+") THEN "+assignment.Expression)
 		}
 	}
-	order := make([]string, len(key.names))
-	for i, column := range key.names {
-		order[i] = d.QuoteIdent(r.table) + "." + d.QuoteIdent(column)
-		if key.types[i].Type == core.FieldTypeString {
-			order[i] = d.CodePointOrder(order[i])
-		}
-	}
 	columns := strings.Join(r.columns(d, exprs), ", ")
-	chunk.Current.SQL = "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + strings.Join(currentWhere, " OR ") + " ORDER BY " + strings.Join(order, ", ") + d.RowLock()
+	chunk.Current.SQL = "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + strings.Join(currentWhere, " OR ") + " ORDER BY " + key.order(d, r.table) + d.RowLock()
 	if len(assignments) != 0 {
 		clauses := make([]string, 0, len(assignments))
 		for _, column := range slices.Sorted(maps.Keys(assignments)) {

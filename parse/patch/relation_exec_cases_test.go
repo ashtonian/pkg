@@ -5,6 +5,7 @@ package patch_test
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -20,7 +21,7 @@ import (
 // given as Go strings, as a resource's string key of a uuid column is.
 type relationDB struct {
 	db      *sql.DB
-	dialect patch.SQLDialect
+	dialect patch.RelationDialect
 	// schema creates widgets (id, tenant_id), tags (id, tenant_id,
 	// deleted_at) and widget_tags (widget_id, tag_id, tenant_id), the pair
 	// table keyed on (widget_id, tag_id).
@@ -70,7 +71,7 @@ var relationCases = []struct {
 }
 
 func relationOp(tenant, guarded bool, verb patch.RelationVerb, values []any) (patch.RelationPatchOp, patch.RenderRelationOpOptions) {
-	rel := &core.RelationSchema{JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"}}
+	rel := &core.RelationSchema{JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"}, SourceTypes: []core.TypeInfo{{Type: core.FieldTypeInt, NumberKind: reflect.Int}}, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeUUID}}}
 	var opts patch.RenderRelationOpOptions
 	if tenant {
 		rel.TenantColumn = "tenant_id"

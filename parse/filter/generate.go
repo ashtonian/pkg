@@ -164,16 +164,14 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		}
 
 		if tags.Relation != "" {
-			rel, err := core.ParseRelationTag(tags.Relation)
+			rel, err := g.RelationTag(walk, field)
 			if err != nil {
 				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}
-			if info.Type != core.FieldTypeArray || !core.IsKeyType(info.Elem) {
-				return nil, fmt.Errorf("field %s: relation fields must be slices of string, UUID or integer target IDs, got %s", field.GoName, field.Type)
-			}
-			// Relation operators compare target IDs, so values normalize
-			// and advertise as the element type, not "array".
-			fs.DataType = info.Elem
+			// Relation operators compare target keys, so values normalize
+			// and advertise as the key's type, not "array".
+			fs.DataType = rel.TargetTypes[0].Type
+			fs.NumberKind = rel.TargetTypes[0].NumberKind
 			fs.Elem = ""
 			fs.Relation = rel
 			if tags.FilterOps == "" {

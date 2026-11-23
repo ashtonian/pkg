@@ -14,6 +14,7 @@ import (
 
 func TestHiddenRelationDeclaredPatchName(t *testing.T) {
 	type row struct {
+		ID     string   `json:"-" db:"id"`
 		TagIDs []string `json:"-" db:"-" parse:"patch" relation_name:"tag_ids" relation:"row_tags,row_id,tag_id"`
 	}
 	g := core.NewSchemaGenerator()
@@ -42,6 +43,7 @@ func TestHiddenRelationDeclaredPatchName(t *testing.T) {
 
 func TestRelationPatchNameUsesVisibleTagFirst(t *testing.T) {
 	type row struct {
+		ID     string   `json:"-" db:"id"`
 		TagIDs []string `json:"visible_tags" db:"-" parse:"patch" relation_name:"tag_ids" relation:"row_tags,row_id,tag_id"`
 		Name   string   `json:"name" parse:"patch" relation_name:"ignored"`
 	}
@@ -56,14 +58,17 @@ func TestRelationPatchNameUsesVisibleTagFirst(t *testing.T) {
 func TestDuplicatePatchNamesFailConstruction(t *testing.T) {
 	g := core.NewSchemaGenerator()
 	type relationFirst struct {
+		ID     string   `json:"-" db:"id"`
 		TagIDs []string `json:"-" db:"-" parse:"patch" relation_name:"tag_ids" relation:"row_tags,row_id,tag_id"`
 		Scalar string   `json:"tag_ids" parse:"patch"`
 	}
 	type scalarFirst struct {
+		ID     string   `json:"-" db:"id"`
 		Scalar string   `json:"tag_ids" parse:"patch"`
 		TagIDs []string `json:"-" db:"-" parse:"patch" relation_name:"tag_ids" relation:"row_tags,row_id,tag_id"`
 	}
 	type relations struct {
+		ID       string   `json:"-" db:"id"`
 		TagIDs   []string `json:"-" db:"-" parse:"patch" relation_name:"tag_ids" relation:"row_tags,row_id,tag_id"`
 		OtherIDs []string `json:"-" db:"-" parse:"patch" relation_name:"tag_ids" relation:"row_others,row_id,other_id"`
 	}

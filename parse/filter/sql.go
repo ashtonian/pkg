@@ -120,10 +120,26 @@ type Dialect interface {
 	// equality compares: a decimal through DecimalOrder. `$in` / `$nin`
 	// and a lookup's WhereIn render through it.
 	memberSet(field *FieldSchema, members []any, in bool, bind func(any) string) (string, error)
-	// keySet tests row, the row value of ks.Fields, for membership in ks.Keys,
-	// the set bound as one parameter: a key constraint over several columns
-	// renders through it.
-	keySet(ks *KeySet, row string, bind func(any) string) (string, error)
+	// KeyIn renders the key columns of table, each qualified by alias (none
+	// when "") and typed by types, as a row IN keys — NOT IN when member is
+	// false — the keys bound as one parameter whatever their number. Each
+	// column and each key's value compare as a filter compares the
+	// column's type: a decimal by value, a date by its calendar day. A key
+	// constraint over several columns, an include's owners and a relation
+	// patch's pairs render through it.
+	KeyIn(table, alias string, columns []string, types []core.TypeInfo, keys []core.Key, member bool, bind func(any) string) (string, error)
+
+	// KeyOperand renders what a key column, read as expr and typed t,
+	// compares by: the operand a filter's equality on the type compares,
+	// a decimal through DecimalOrder and a date by its calendar day. Two
+	// key columns are equal where their operands are.
+	KeyOperand(expr string, t core.TypeInfo) string
+
+	// StoredKeyValue is a key column of type t's canonical value
+	// (core.NormalizeScalar) as the database holds it, so two values the
+	// database holds equal have one: a timestamp at the database's
+	// precision.
+	StoredKeyValue(t core.TypeInfo, v any) (any, error)
 
 	// numberKey renders an int, float or decimal field's value as its
 	// terms facet key: the canonical decimal text (core.DecimalText)
