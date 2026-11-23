@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var countedKeyReads atomic.Int32
+var countedKeyReads atomic.Int32 //nolint:gochecknoglobals // the decoder calls UnmarshalText on a zero value it allocates, so only package state reaches a counter
 
 // countedKey counts the texts the decoder hands its UnmarshalText.
 type countedKey int
@@ -82,9 +82,7 @@ func TestKeyCodec_ReadsConcurrently(t *testing.T) {
 						key, canonical, err := c.read(text)
 						if w.key == nil {
 							assert.Error(t, err, text)
-							continue
-						}
-						if assert.NoError(t, err, text) {
+						} else if assert.NoError(t, err, text) {
 							assert.Equal(t, w.key, key.Interface(), text)
 							assert.Equal(t, w.canonical, canonical, text)
 						}

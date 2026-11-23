@@ -50,7 +50,8 @@ func CheckKey[T any](ctx context.Context, key string, value any, opts ...Option)
 // WithDefaults or of value, holds its koanf:"-" fields as in a load. On any error it returns
 // nil. The returned configuration and its collections are caller-owned.
 func DecodeKey[T any](ctx context.Context, key string, value any, opts ...Option) (*T, error) {
-	if err := ended(ctx); err != nil {
+	err := ended(ctx)
+	if err != nil {
 		return nil, err
 	}
 	c, err := newKeyChecker(reflect.TypeFor[T](), buildOptions(opts))
@@ -145,7 +146,8 @@ func CanonicalKey[T any](key string) (string, error) {
 // populator, post-load hook or unknown-input handler runs. On any error the
 // result is nil.
 func DecodeEdits[T any](ctx context.Context, baseline *T, edits map[string]any, opts ...Option) (*T, error) {
-	if err := ended(ctx); err != nil {
+	err := ended(ctx)
+	if err != nil {
 		return nil, err
 	}
 	c, err := newKeyChecker(reflect.TypeFor[T](), buildOptions(opts))
@@ -154,7 +156,8 @@ func DecodeEdits[T any](ctx context.Context, baseline *T, edits map[string]any, 
 	}
 	base, unkeyed := c.defaultsTree(), c.unkeyed
 	if baseline != nil {
-		if base, unkeyed, err = c.baselineTree(reflect.ValueOf(baseline).Elem()); err != nil {
+		base, unkeyed, err = c.baselineTree(reflect.ValueOf(baseline).Elem())
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -246,7 +249,8 @@ func newKeyChecker(t reflect.Type, o *options) (*keyChecker, error) {
 	if err := l.addFlat("WithDefaults", o.defaults, constant(Source{Kind: SourceDefaults})); err != nil {
 		return nil, err
 	}
-	return &keyChecker{root: t, schema: root, defaults: l.k.Raw(), unkeyed: l.unkeyed, options: o}, nil
+	checker := &keyChecker{root: t, schema: root, defaults: l.k.Raw(), unkeyed: l.unkeyed, options: o}
+	return checker, nil
 }
 
 // apply sets entries over base, which it changes, and decodes and validates
@@ -264,13 +268,16 @@ func (c *keyChecker) apply(ctx context.Context, base map[string]any, below unkey
 		}
 	}
 	tree, unset := setEdits(c.schema, func() map[string]any { return base }, edits)
-	if refused = append(refused, unset...); len(refused) > 0 {
-		return nil, nil, &EditsError{Refused: keyErrorValues(refused)}, nil
+	refused = append(refused, unset...)
+	if len(refused) > 0 {
+		batch := &EditsError{Refused: keyErrorValues(refused)}
+		return nil, nil, batch, nil
 	}
 	unkeyed := below.over(tree, editsUnkeyed(edits)) // before mergeTrees settles tree's whole maps
 	mergeTrees(tree, base)
 	result, unknown, err := c.decode(ctx, base, unkeyed)
-	if ctxErr := ended(ctx); ctxErr != nil && (err != nil || unknown != nil) {
+	ctxErr := ended(ctx)
+	if ctxErr != nil && (err != nil || unknown != nil) {
 		return nil, nil, nil, ctxErr
 	}
 	if errors.Is(err, ErrSchema) {
@@ -348,7 +355,8 @@ func (c *keyChecker) decode(ctx context.Context, tree map[string]any, unkeyed un
 // koanf:"-" fields unkeyed holds, as a load decodes its merge. md records
 // the keys of tree no field read. A failure to decode is ErrValidation.
 func (c *keyChecker) decodeTree(tree map[string]any, unkeyed unkeyedSections) (out reflect.Value, md mapstructure.Metadata, err error) {
-	if err := newElementDefaults(c.options, false).fill(c.root, tree); err != nil {
+	err = newElementDefaults(c.options, false).fill(c.root, tree)
+	if err != nil {
 		return reflect.Value{}, md, err
 	}
 	out = reflect.New(c.root)

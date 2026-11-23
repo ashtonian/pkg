@@ -68,11 +68,12 @@ func benchGatewayOptions(hooks ...func(context.Context, *benchGateway) error) []
 }
 
 func benchPortGatewayOptions() []Option {
-	return []Option{
+	opts := []Option{
 		WithBaseProvider(confmap.Provider(benchRoutes(benchRoutePort), ""), nil),
-		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+		WithLogger(slog.New(slog.DiscardHandler)),
 		WithSkipValidation(),
 	}
+	return opts
 }
 
 // The small fixture is a file, the environment and one post-load hook.
@@ -129,7 +130,8 @@ func BenchmarkCanonicalKey(b *testing.B) {
 func benchCanonicalKey[T any](b *testing.B, key string) {
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := CanonicalKey[T](key); err != nil {
+		_, err := CanonicalKey[T](key)
+		if err != nil {
 			b.Fatal(err)
 		}
 	}

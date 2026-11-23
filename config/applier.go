@@ -270,7 +270,8 @@ func applierPrefix(root *schemaNode, s string) (keyPath, error) {
 	}
 	at, n := cursor{}, root
 	for i := 1; i <= len(p); i++ {
-		if seg := &p[i-1]; n.kind == nodeBranch {
+		seg := &p[i-1]
+		if n.kind == nodeBranch {
 			whole := n.remainWhole(at.sensitive())
 			switch {
 			case seg.kind == segAny && whole:
@@ -283,7 +284,8 @@ func applierPrefix(root *schemaNode, s string) (keyPath, error) {
 				return nil, fmt.Errorf("%w %s: it reaches beneath %s, which is sensitive and compared whole", ErrKey, p, at.path.any())
 			}
 		}
-		if _, err := spellSegment(n, p, i-1); err != nil {
+		_, err = spellSegment(n, p, i-1)
+		if err != nil {
 			return nil, err
 		}
 		c, next, err := root.walkTo(cursor{}, p[:i])
@@ -927,8 +929,9 @@ func (a *application) rebase(prev, next reflect.Value, changes []published) (*pe
 	byOwner := make([][]published, len(a.appliers))
 	var unowned []published
 	for _, c := range changes {
-		if i := a.owner(c.path, c.change.Field); i >= 0 {
-			byOwner[i] = append(byOwner[i], c)
+		owner := a.owner(c.path, c.change.Field)
+		if owner >= 0 {
+			byOwner[owner] = append(byOwner[owner], c)
 		} else {
 			unowned = append(unowned, c)
 		}
@@ -1145,7 +1148,8 @@ func (r *Reloader[T]) applyInitial(ctx context.Context, cfg *T, p *applyPlan) ([
 		if !st.hook.initial {
 			continue
 		}
-		if err := ended(ctx); err != nil {
+		err := ended(ctx)
+		if err != nil {
 			return applied, initialApplyError(applied, failures, err)
 		}
 		res, err := st.call(ctx, ApplyEvent[T]{
@@ -1227,5 +1231,6 @@ func abandonedInitial(applied []string, err error) error {
 	if len(applied) == 0 {
 		return fmt.Errorf("config initial load abandoned: %w", err)
 	}
-	return &AbandonedApplyError{Applied: slices.Clone(applied), Err: err}
+	abandoned := &AbandonedApplyError{Applied: slices.Clone(applied), Err: err}
+	return abandoned
 }

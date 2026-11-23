@@ -53,7 +53,8 @@ func TestEntries_LoadWhatCheckKeyAccepts(t *testing.T) {
 	}, got)
 
 	dotted, err := NewMapProvider(func(context.Context) (map[string]any, error) {
-		return map[string]any{"addresses.first.port": 9, "primary.port": 6}, nil
+		values := map[string]any{"addresses.first.port": 9, "primary.port": 6}
+		return values, nil
 	}, ".")
 	require.NoError(t, err)
 	viaDots, err := Load[editConfig](t.Context(), defaults, WithBaseProvider(dotted, nil))
@@ -91,7 +92,8 @@ func TestEntries_Precedence(t *testing.T) {
 	assert.Equal(t, []editServer{{"a", 1}, {"b", 2}}, below.Pool, "and replaces the list they edited")
 
 	later, err := NewMapProvider(func(context.Context) (map[string]any, error) {
-		return map[string]any{"primary": map[string]any{"port": 8}}, nil
+		values := map[string]any{"primary": map[string]any{"port": 8}}
+		return values, nil
 	}, "")
 	require.NoError(t, err)
 	ordered, err := Load[editConfig](t.Context(), WithOverrideEntries(readEntries(entries)), WithOverrideProvider(later, nil))
@@ -233,7 +235,8 @@ func TestWithInvalidEntries_ProviderFieldsJudgedInContext(t *testing.T) {
 		Port   int     `koanf:"port" default:"8" validate:"min=1"`
 	}
 	provider, err := NewMapProvider(func(context.Context) (map[string]any, error) {
-		return map[string]any{"limits": map[string]any{"min": 15, "max": 20}, "port": 0}, nil
+		values := map[string]any{"limits": map[string]any{"min": 15, "max": 20}, "port": 0}
+		return values, nil
 	}, "")
 	require.NoError(t, err)
 	var rejected []KeyError

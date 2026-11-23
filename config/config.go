@@ -183,7 +183,8 @@ func (l *loader) merge(name string, tree map[string]any, label labeler) error {
 // mergeSource is merge for a source whose walk recorded unkeyed, the
 // koanf:"-" fields of the typed sections it sets.
 func (l *loader) mergeSource(name string, tree map[string]any, unkeyed []unkeyedFields, label labeler) error {
-	if err := l.k.Load(confmap.Provider(tree, ""), nil, koanf.WithMergeFunc(koanfMerge)); err != nil {
+	err := l.k.Load(confmap.Provider(tree, ""), nil, koanf.WithMergeFunc(koanfMerge))
+	if err != nil {
 		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 	}
 	l.unkeyed.merge(tree, unkeyed)
@@ -208,7 +209,8 @@ func (l *loader) readProvider(ctx context.Context, name string, p providerSource
 	if p.entries != nil {
 		return l.readEntries(ctx, name, p, src)
 	}
-	if op, ok := p.provider.(OriginProvider); ok && p.parser == nil && (l.provenance || l.inputs != nil) {
+	op, ok := p.provider.(OriginProvider)
+	if ok && p.parser == nil && (l.provenance || l.inputs != nil) {
 		data, annotations, err := op.ReadWithOrigins(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
@@ -278,7 +280,8 @@ func ended(ctx context.Context) error {
 	if err == nil {
 		return nil
 	}
-	if cause := context.Cause(ctx); !errors.Is(cause, err) {
+	cause := context.Cause(ctx)
+	if !errors.Is(cause, err) {
 		return fmt.Errorf("%w: %w", err, cause)
 	}
 	return err
@@ -287,7 +290,8 @@ func ended(ctx context.Context) error {
 // abandoned is why a load whose context has ended stops: ended's error,
 // named for the load. It is nil while ctx has not ended.
 func abandoned(ctx context.Context) error {
-	if err := ended(ctx); err != nil {
+	err := ended(ctx)
+	if err != nil {
 		return fmt.Errorf("loading config abandoned: %w", err)
 	}
 	return nil
@@ -301,11 +305,13 @@ func abandoned(ctx context.Context) error {
 // stage fails as abandoned.
 func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	none := loaded[T]{}
-	if err := abandoned(ctx); err != nil {
+	err := abandoned(ctx)
+	if err != nil {
 		return none, err
 	}
 	root := reflect.TypeFor[T]()
-	if err := o.checkHookTypes(reflect.TypeFor[*T]()); err != nil {
+	err = o.checkHookTypes(reflect.TypeFor[*T]())
+	if err != nil {
 		return none, err
 	}
 	schema, err := loadSchema(root, o)
@@ -334,7 +340,8 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 			return none, err
 		}
 	}
-	if err := abandoned(ctx); err != nil {
+	err = abandoned(ctx)
+	if err != nil {
 		return none, err
 	}
 	layers, read, err := l.readLayers(ctx, o)
@@ -351,7 +358,8 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if o.claimsUnknown() {
 		defaults = l.k.Raw()
 	}
-	if err := l.mergeLayers(ctx, layers, verdicts); err != nil {
+	err = l.mergeLayers(ctx, layers, verdicts)
+	if err != nil {
 		return none, err
 	}
 	o.log().DebugContext(ctx, "config sources loaded", "sources", l.sources)
@@ -360,14 +368,16 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	}
 	var shadowed []Shadow
 	if l.inputs != nil {
-		if err := abandoned(ctx); err != nil {
+		err = abandoned(ctx)
+		if err != nil {
 			return none, err
 		}
 		if shadowed, err = o.judgeShadowed(ctx, root, l.inputs); err != nil {
 			return none, err
 		}
 	}
-	if err := abandoned(ctx); err != nil {
+	err = abandoned(ctx)
+	if err != nil {
 		return none, err
 	}
 
@@ -392,7 +402,8 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
 	}
 	l.unkeyed.apply(schema, reflect.ValueOf(cfg).Elem())
-	if err := abandoned(ctx); err != nil {
+	err = abandoned(ctx)
+	if err != nil {
 		return none, err
 	}
 	if len(unmatchedEnv) > 0 {
@@ -407,7 +418,8 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 			o.log().DebugContext(ctx, "environment variables under the prefix name no config key", "names", unmatchedEnv)
 		}
 	}
-	if err := abandoned(ctx); err != nil {
+	err = abandoned(ctx)
+	if err != nil {
 		return none, err
 	}
 	claimed, unused, additional := l.claimUnknown(merged, defaults, md.Unused, layers)
@@ -425,8 +437,9 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	// what it changed when provenance is on.
 	cv := reflect.ValueOf(cfg).Elem()
 	stage := func(src Source, run func() error) error {
-		if err := abandoned(ctx); err != nil {
-			return err
+		stopped := abandoned(ctx)
+		if stopped != nil {
+			return stopped
 		}
 		if rec == nil {
 			return run()
@@ -458,7 +471,8 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	}
 
 	if err := o.validateConfig(ctx, cfg); err != nil {
-		if stopped := abandoned(ctx); stopped != nil {
+		stopped := abandoned(ctx)
+		if stopped != nil {
 			return none, stopped
 		}
 		return none, err
@@ -474,18 +488,21 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 }
 
 func (o *options) validateConfig(ctx context.Context, cfg any) error {
-	if err := ended(ctx); err != nil {
+	err := ended(ctx)
+	if err != nil {
 		return err
 	}
 	if !o.skipValid {
-		if err := o.fieldRules(ctx, cfg); err != nil {
+		err = o.fieldRules(ctx, cfg)
+		if err != nil {
 			if errors.Is(err, ErrSchema) {
 				return err
 			}
 			return ruleViolation(reflect.ValueOf(cfg), err)
 		}
 		if v, ok := any(cfg).(Validatable); ok {
-			if err := v.Validate(); err != nil {
+			err = v.Validate()
+			if err != nil {
 				return &validationError{
 					msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, err),
 					cause: err,
@@ -504,7 +521,8 @@ func (o *options) fieldRules(ctx context.Context, cfg any) error {
 	case o.skipValid:
 		return nil
 	case o.validator == nil:
-		if err := refuseCycles(cfg); err != nil {
+		err := refuseCycles(cfg)
+		if err != nil {
 			return err
 		}
 		return validateDefault(ctx, cfg)
@@ -522,10 +540,11 @@ func ruleViolation(cfg reflect.Value, err error) error {
 	if errors.As(err, &ve) {
 		summary = fieldErrorSummary(cfg, ve)
 	}
-	return &validationError{
+	violation := &validationError{
 		msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, summary),
 		cause: err,
 	}
+	return violation
 }
 
 // sourcesRead is what reading a load's sources finds beside its layers: the
@@ -545,7 +564,8 @@ func (l *loader) readLayers(ctx context.Context, o *options) ([]*layer, sourcesR
 	read := sourcesRead{files: fileDigests{}}
 	var layers []*layer
 	for i, src := range o.base {
-		if err := abandoned(ctx); err != nil {
+		err := abandoned(ctx)
+		if err != nil {
 			return nil, read, err
 		}
 		y, err := l.readProvider(ctx, fmt.Sprintf("base provider %d", i), src, positionSource(SourceBase, i))
@@ -555,7 +575,8 @@ func (l *loader) readLayers(ctx context.Context, o *options) ([]*layer, sourcesR
 		layers = append(layers, y)
 	}
 	for _, f := range o.files {
-		if err := abandoned(ctx); err != nil {
+		err := abandoned(ctx)
+		if err != nil {
 			return nil, read, err
 		}
 		raw, err := os.ReadFile(f.path)
@@ -577,8 +598,9 @@ func (l *loader) readLayers(ctx context.Context, o *options) ([]*layer, sourcesR
 		layers = append(layers, y)
 		read.files[f.path] = sha256.Sum256(raw)
 	}
-	if err := abandoned(ctx); err != nil {
-		return nil, read, err
+	stopped := abandoned(ctx)
+	if stopped != nil {
+		return nil, read, stopped
 	}
 	if len(o.envPrefixes) > 0 {
 		// Named from T's fields so a key with an underscore in it
@@ -596,7 +618,8 @@ func (l *loader) readLayers(ctx context.Context, o *options) ([]*layer, sourcesR
 		layers = append(layers, y)
 	}
 	for i, src := range o.overrides {
-		if err := abandoned(ctx); err != nil {
+		err := abandoned(ctx)
+		if err != nil {
 			return nil, read, err
 		}
 		y, err := l.readProvider(ctx, fmt.Sprintf("override provider %d", i), src, positionSource(SourceOverride, i))
@@ -854,7 +877,8 @@ func (w *ruleWalk) fields(t reflect.Type, descend bool) {
 	}
 	w.walked[t] = true
 	for _, f := range read.fields {
-		if problem := misappliedDive(f.typ, f.rules); problem != "" {
+		problem := misappliedDive(f.typ, f.rules)
+		if problem != "" {
 			w.errs = append(w.errs, fmt.Errorf("%w: field %s of %s has a validate tag the validator cannot apply: %s", ErrSchema, f.name, gowalker.TypeText(t), problem))
 			continue
 		}
@@ -900,7 +924,7 @@ func stepOf(rule string) ruleStep {
 // rules are read, goes on into its fields: a struct, time.Time and the
 // types convertible to it aside.
 func walksFields(t reflect.Type) bool {
-	return t.Kind() == reflect.Struct && !t.ConvertibleTo(timeType)
+	return t.Kind() == reflect.Struct && !t.ConvertibleTo(reflect.TypeFor[time.Time]())
 }
 
 // structRules is a struct type as the default validator reads it on first
@@ -926,14 +950,16 @@ type readRules struct {
 // once per type for the life of the process, as the validator's own cache
 // keeps it.
 func validatorFields(t reflect.Type) *structRules {
-	if read, ok := readStructs.Load(t); ok {
+	read, ok := readStructs.Load(t)
+	if ok {
 		return read.(*structRules)
 	}
-	read, _ := readStructs.LoadOrStore(t, readStruct(t))
+	read, _ = readStructs.LoadOrStore(t, readStruct(t))
 	return read.(*structRules)
 }
 
-var readStructs sync.Map // reflect.Type → *structRules
+// readStructs holds each struct type's rules: reflect.Type → *structRules.
+var readStructs sync.Map //nolint:gochecknoglobals // process-wide cache of immutable per-type data, bounded by the program's types
 
 // misappliedDive is the dive in rules, a field's rules, that v cannot take
 // on t, the field's type, through pointers as v follows them: a dive on a
@@ -979,7 +1005,8 @@ func misappliedDive(t reflect.Type, rules []string) string {
 			if end < 0 {
 				end = len(after)
 			}
-			if problem := misappliedDive(t.Key(), after[1:end]); problem != "" || end == len(after) {
+			problem := misappliedDive(t.Key(), after[1:end])
+			if problem != "" || end == len(after) {
 				return problem
 			}
 			return misappliedDive(t.Elem(), after[end+1:])
@@ -995,7 +1022,7 @@ func misappliedDive(t reflect.Type, rules []string) string {
 func validatedAsOther(t reflect.Type) bool {
 	base := derefType(t)
 	for {
-		if t.Implements(validatorValuer) {
+		if t.Implements(reflect.TypeFor[validator.Valuer]()) {
 			return true
 		}
 		if t == base {
@@ -1018,7 +1045,8 @@ func readStruct(t reflect.Type) *structRules {
 		}
 		var rules []string
 		if tag != "" {
-			if problem := unreadableRule(defaultValidator(), tag); problem != "" {
+			problem := unreadableRule(defaultValidator(), tag)
+			if problem != "" {
 				// The validator's complaint names the rule by the part before
 				// '=', and the field; a tag holds the source's own text, never
 				// a field's value.
@@ -1032,20 +1060,13 @@ func readStruct(t reflect.Type) *structRules {
 	return read
 }
 
-var (
-	// timeType is time.Time, whose fields v never reads, nor those of a
-	// type convertible to it.
-	timeType = reflect.TypeFor[time.Time]()
-	// validatorValuer is a type whose value v validates in place of its own.
-	validatorValuer = reflect.TypeFor[validator.Valuer]()
-)
-
 // unreadableRule parses tag as v does when it first meets a struct, and
 // returns what v panicked with when it could not. Validating a nil value
 // reaches no rule, so nothing but the parse runs.
 func unreadableRule(v *validator.Validate, tag string) (problem string) {
 	defer func() {
-		if r := recover(); r != nil {
+		r := recover()
+		if r != nil {
 			problem = strings.TrimSuffix(fmt.Sprint(r), " on field ''")
 		}
 	}()
@@ -1127,7 +1148,8 @@ func keyedParam(cfg reflect.Value, root *schemaNode, fe validator.FieldError) (s
 			continue
 		}
 		if fieldValueParamRules[fe.Tag()] && root != nil {
-			if c, n, err := root.walkTo(cursor{}, p); err != nil || c.sensitive() || mayHoldSensitive(n.typ, map[reflect.Type]bool{}) {
+			c, n, err := root.walkTo(cursor{}, p)
+			if err != nil || c.sensitive() || mayHoldSensitive(n.typ, map[reflect.Type]bool{}) {
 				return "", false
 			}
 		}
@@ -1151,11 +1173,13 @@ type paramField struct {
 func ruleFieldParams(fe validator.FieldError) (tokens []string, fields []paramField) {
 	rule, param := fe.Tag(), fe.Param()
 	if !fieldParamRules[rule] && !fieldValueParamRules[rule] && !fieldListParamRules[rule] {
-		return []string{param}, nil
+		tokens = []string{param}
+		return tokens, nil
 	}
 	var parent string
-	if p, ok := parentNamespace(fe.StructNamespace()); ok {
-		parent = p + "."
+	holder, ok := parentNamespace(fe.StructNamespace())
+	if ok {
+		parent = holder + "."
 	}
 	tokens = []string{param}
 	if !fieldParamRules[rule] {
@@ -1195,7 +1219,8 @@ func parentNamespace(ns string) (string, bool) {
 // named by when structNS reaches no key of cfg.
 func validationKey(cfg reflect.Value, root *schemaNode, structNS, ns string) string {
 	p, exact := validatorKey(cfg, structNS)
-	if safe := diagnosticPath(root, p); len(safe) < len(p) {
+	safe := diagnosticPath(root, p)
+	if len(safe) < len(p) {
 		return safe.orRoot()
 	}
 	switch {
@@ -1205,7 +1230,8 @@ func validationKey(cfg reflect.Value, root *schemaNode, structNS, ns string) str
 		return p.String() + " (exact location unavailable)"
 	}
 	// Not a namespace of cfg: the validator's own, past the root's part.
-	if rest, ok := belowValidatorRoot(cfg.Type(), ns); ok {
+	rest, ok := belowValidatorRoot(cfg.Type(), ns)
+	if ok {
 		return rest
 	}
 	return ns

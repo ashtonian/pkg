@@ -261,7 +261,7 @@ func TestJudge_ConcurrentLoadsShareProviderData(t *testing.T) {
 			got, err := Load[pairConfig](context.Background(),
 				WithBaseProvider(src, nil, WithInvalidEntries(nil)),
 				WithOverrideEntries(readEntries(map[string]any{"pair.a": 4, "pair.b": 4})))
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, pairSection{A: 4, B: 4, Hi: 10}, got.Pair)
 		})
 	}
@@ -336,6 +336,7 @@ func TestJudge_AFailureAtACollectionBlamesTheEntriesItHolds(t *testing.T) {
 // as the edit tree makes them.
 func TestJudge_SpineMergesAListEditByElement(t *testing.T) {
 	layer := entryRef{layer: 0, entry: -1}
+	beneath := beneathLayers()
 	onTwo := map[string]any{"pool": listEdit{1: map[string]any{"port": 2}, 2: map[string]any{"host": "c"}}}
 	fresh := map[string]any{"pool": listEdit{0: map[string]any{"port": 2}, 1: map[string]any{"host": "c"}}}
 	for _, tt := range []struct {
@@ -348,21 +349,21 @@ func TestJudge_SpineMergesAListEditByElement(t *testing.T) {
 			base: map[string]any{"pool": []any{map[string]any{"host": "a", "port": 1}, map[string]any{"host": "b"}}},
 			edit: onTwo,
 			want: map[string]entryRef{
-				"pool": layer, "pool[0].host": beneathLayers, "pool[0].port": beneathLayers,
-				"pool[1].host": beneathLayers, "pool[1].port": layer, "pool[2].host": layer, "pool[2].port": beneathLayers,
+				"pool": layer, "pool[0].host": beneath, "pool[0].port": beneath,
+				"pool[1].host": beneath, "pool[1].port": layer, "pool[2].host": layer, "pool[2].port": beneath,
 			},
 		},
 		{
 			name: "over a value that is no list",
 			base: map[string]any{"pool": map[string]any{"host": "a"}},
 			edit: fresh,
-			want: map[string]entryRef{"pool": layer, "pool[0].host": beneathLayers, "pool[0].port": layer, "pool[1].host": layer, "pool[2].host": beneathLayers},
+			want: map[string]entryRef{"pool": layer, "pool[0].host": beneath, "pool[0].port": layer, "pool[1].host": layer, "pool[2].host": beneath},
 		},
 		{
 			name: "over nothing",
 			base: map[string]any{},
 			edit: fresh,
-			want: map[string]entryRef{"pool": layer, "pool[0].host": beneathLayers, "pool[0].port": layer, "pool[1].host": layer},
+			want: map[string]entryRef{"pool": layer, "pool[0].host": beneath, "pool[0].port": layer, "pool[1].host": layer},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

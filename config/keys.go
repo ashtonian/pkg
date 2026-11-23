@@ -159,7 +159,8 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 		f, alias := n.lookup(k)
 		if f == nil {
 			value := written[k]
-			if r := n.remain; r != nil {
+			r := n.remain
+			if r != nil {
 				// The remain field collects it: a value of its element
 				// type, rewritten as a field of that type would be.
 				value = w.elem(out.Type().Elem(), r.sf.Type.Elem(), value, path.member(k))
@@ -225,11 +226,12 @@ func (w *keyWalk) mapValues(declared reflect.Type, v reflect.Value, path keyPath
 	}
 	elem := declared.Elem()
 	t := v.Type()
-	source := t == mapStringAnyType || t == wholeMapType
+	source := t == mapStringAnyType || t == reflect.TypeFor[wholeMap]()
 	if !source {
-		if m, ok := textKeyedMap(v, func(k string, e reflect.Value) any {
+		m, ok := textKeyedMap(v, func(k string, e reflect.Value) any {
 			return w.elem(t.Elem(), elem, e, path.key(k)).Interface()
-		}); ok {
+		})
+		if ok {
 			return m
 		}
 	}
@@ -246,10 +248,12 @@ func (w *keyWalk) mapValues(declared reflect.Type, v reflect.Value, path keyPath
 	out := reflect.MakeMapWithSize(t, v.Len())
 	for _, k := range slices.SortedFunc(slices.Values(v.MapKeys()), func(a, b reflect.Value) int { return strings.Compare(a.String(), b.String()) }) {
 		name := k.String()
-		if text, err := codec.canonical(name); err == nil {
+		text, err := codec.canonical(name)
+		if err == nil {
 			name = text
 		}
-		if prev, dup := written[name]; dup {
+		prev, dup := written[name]
+		if dup {
 			w.spelledTwice(path.key(name), prev, k.String())
 			continue
 		}
@@ -261,14 +265,13 @@ func (w *keyWalk) mapValues(declared reflect.Type, v reflect.Value, path keyPath
 
 // spelledTwice records that a source set the key at under two spellings.
 func (w *keyWalk) spelledTwice(at keyPath, first, second string) {
-	if safe := diagnosticPath(w.schema, at); len(safe) < len(at) {
+	safe := diagnosticPath(w.schema, at)
+	if len(safe) < len(at) {
 		w.twice = append(w.twice, safe.String()+" (sensitive contents)")
 		return
 	}
 	w.twice = append(w.twice, fmt.Sprintf("%s (as %q and %q)", at, first, second))
 }
-
-var wholeMapType = reflect.TypeFor[wholeMap]()
 
 // textKeyedMap is typed map v in its merge shape when its keys' text
 // decodes back to them (keysAsText): a wholeMap keyed by that text, holding

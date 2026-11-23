@@ -57,7 +57,8 @@ func (l *loader) prepare(name string, data map[string]any, label labeler) (*laye
 	if err != nil {
 		return nil, err
 	}
-	return &layer{name: name, label: label, tree: tree, unkeyed: w.unkeyed}, nil
+	y := &layer{name: name, label: label, tree: tree, unkeyed: w.unkeyed}
+	return y, nil
 }
 
 // mergeLayer merges y, with edits, the entries of y that merge, set over
@@ -71,7 +72,8 @@ func (l *loader) mergeLayer(y *layer, edits []edit) (merged map[string]any, refu
 	t := newEditTree(l.k.Raw)
 	var unkeyed []unkeyedFields
 	for i := range edits {
-		if err := t.set(&edits[i]); err != nil {
+		err = t.set(&edits[i])
+		if err != nil {
 			refused = append(refused, refusal{at: i, err: err})
 			continue
 		}
@@ -114,7 +116,8 @@ func (l *loader) mergeLayers(ctx context.Context, layers []*layer, verdicts []en
 			invalid = append(invalid, newKeyError(l.schema, v.kept[r.at].path, false, r.err))
 		}
 		if y.withhold {
-			if err := l.reportWithheld(ctx, y.name, y.report, invalid); err != nil {
+			err = l.reportWithheld(ctx, y.name, y.report, invalid)
+			if err != nil {
 				return err
 			}
 		} else if len(invalid) > 0 {

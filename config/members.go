@@ -19,7 +19,7 @@ type memberKind uint8
 const (
 	memberField     memberKind = iota // a declared field
 	memberCollected                   // one key the remain field collects
-	memberRemain                      // every key the remain field collects, as one value
+	memberRemain                      // every key the remain field collects, as one value, named [*]
 )
 
 // member is one key directly beneath a branch.
@@ -31,24 +31,24 @@ type member struct {
 	branch *schemaNode  // the branch whose remain field holds it: memberCollected, memberRemain
 }
 
-// remainSegment names a sensitive remain field's member: [*], the pattern
-// of every key it collects.
-var remainSegment = segment{kind: segAny}
-
 // memberAt is the member of n, a branch, that s names in a key Diff
 // reports: a field by its key, a key the remain field collects, or [*],
 // which a key holds only for a remain field compared whole.
 func (n *schemaNode) memberAt(s segment) (member, bool) {
 	if s.kind == segField {
-		if f := n.byKey[s.name]; f != nil {
-			return member{kind: memberField, seg: s, field: f}, true
+		f := n.byKey[s.name]
+		if f != nil {
+			field := member{kind: memberField, seg: s, field: f}
+			return field, true
 		}
 	}
 	switch {
 	case n.collects(s):
-		return member{kind: memberCollected, seg: memberSegment(s.name), branch: n}, true
+		collected := member{kind: memberCollected, seg: memberSegment(s.name), branch: n}
+		return collected, true
 	case s.kind == segAny && n.remain != nil:
-		return member{kind: memberRemain, seg: remainSegment, branch: n}, true
+		remain := member{kind: memberRemain, seg: segment{kind: segAny}, branch: n}
+		return remain, true
 	}
 	return member{}, false
 }
@@ -57,7 +57,7 @@ func (n *schemaNode) memberAt(s segment) (member, bool) {
 // or not, as a pattern: the field whole when it is one value
 // (remainField.whole), otherwise any one key it collects.
 func (n *schemaNode) remainMember(sensitive bool) member {
-	m := member{kind: memberRemain, seg: remainSegment, branch: n}
+	m := member{kind: memberRemain, seg: segment{kind: segAny}, branch: n}
 	if !n.remainWhole(sensitive) {
 		m.kind = memberCollected
 	}
@@ -92,7 +92,7 @@ func (n *schemaNode) members(a, b side, whole bool) iter.Seq2[member, [2]reflect
 		if whole {
 			vals := [2]reflect.Value{n.collectedMap(a), n.collectedMap(b)}
 			if vals[0].IsValid() || vals[1].IsValid() {
-				yield(member{kind: memberRemain, seg: remainSegment, ord: ordSeg{n: ord}, branch: n}, vals)
+				yield(member{kind: memberRemain, seg: segment{kind: segAny}, ord: ordSeg{n: ord}, branch: n}, vals)
 			}
 			return
 		}
@@ -264,12 +264,13 @@ func (m member) frame(f frame) frame {
 // sits as a map entry does, named like a credential or not by its key.
 func (m member) site(s site) site {
 	if m.kind == memberField {
-		return site{
+		field := site{
 			named:            m.field.named,
 			desc:             m.field.sf.Tag.Get("desc"),
 			sensitive:        s.sensitive || m.field.tagged,
 			beneathInterface: s.beneathInterface,
 		}
+		return field
 	}
 	r := m.branch.remain
 	next := site{

@@ -88,11 +88,11 @@ func (e *KeyError) namesNothing() bool {
 func newKeyError(schema *schemaNode, key keyPath, unknown bool, cause error) *KeyError {
 	shown := shownPath(schema, key)
 	ke := &KeyError{Key: shown.orRoot(), Unknown: unknown, Err: cause}
-	f, ok := cause.(*keyFault)
-	if !ok {
+	var f *keyFault
+	if !errors.As(cause, &f) {
 		return ke
 	}
-	problem := &keyProblem{sentinel: f.sentinel, key: ke.Key, reason: f.reason()}
+	problem := &keyProblem{unknown: f.unknown, key: ke.Key, reason: f.reason()}
 	if f.namesWithheld(schema) {
 		problem.reason = withheldReason
 	}
@@ -102,7 +102,7 @@ func newKeyError(schema *schemaNode, key keyPath, unknown bool, cause error) *Ke
 		ke.form, ke.reason = formPattern, "is not concrete"
 	case f.pattern:
 		ke.form, ke.reason = formPattern, "holds [*] within its sensitive contents, so it is not concrete"
-	case f.sentinel == ErrValidation:
+	case !f.unknown:
 		ke.reason = problem.reason
 	}
 	if f.suggestion != nil && !withholds(schema, f.suggestion) {
@@ -125,7 +125,7 @@ func unparsedKeyError(key string, err error) *KeyError {
 	var syntax *keySyntaxError
 	switch {
 	case shown != key:
-		ke.Err = &keyProblem{sentinel: ErrKey, key: strconv.Quote(shown), reason: "it does not parse, and the reason quotes it, so it is not shown"}
+		ke.Err = &keyProblem{unknown: true, key: strconv.Quote(shown), reason: "it does not parse, and the reason quotes it, so it is not shown"}
 	case errors.As(err, &syntax):
 		ke.reason += ": " + syntax.reason
 	}
@@ -136,7 +136,8 @@ func unparsedKeyError(key string, err error) *KeyError {
 // field reads, which the walk that found it named as diagnostics may show it
 // (see keyWalk and unusedKey).
 func unknownKeyError(u UnknownKey) *KeyError {
-	return &KeyError{Key: u.Key, Unknown: true, Err: &keyProblem{sentinel: ErrKey, key: u.Key, reason: "no field reads it"}, suggestion: u.Suggestion}
+	ke := &KeyError{Key: u.Key, Unknown: true, Err: &keyProblem{unknown: true, key: u.Key, reason: "no field reads it"}, suggestion: u.Suggestion}
+	return ke
 }
 
 // shownKey is key as diagnostics may show it, the root as $.
@@ -165,10 +166,10 @@ func withholds(schema *schemaNode, key keyPath) bool {
 // given, for a caller that gave the key (FieldFor); newKeyError writes it as
 // diagnostics may show it.
 type keyFault struct {
-	sentinel error   // ErrKey or ErrValidation
-	key      keyPath // the key an ErrKey fault's Error names
-	format   string  // the reason, a verb for each of args
-	args     []faultArg
+	unknown bool    // ErrKey, not ErrValidation (see keySentinel)
+	key     keyPath // the key an ErrKey fault's Error names
+	format  string  // the reason, a verb for each of args
+	args    []faultArg
 	// suggestion is the key an unknown field most likely misspells.
 	suggestion keyPath
 	pattern    bool // the key holds [*] where it must name one value
@@ -176,7 +177,8 @@ type keyFault struct {
 
 // notRead is the fault of key, which config reads nothing at.
 func notRead(key keyPath, format string, args ...faultArg) *keyFault {
-	return &keyFault{sentinel: ErrKey, key: key, format: format, args: args}
+	fault := &keyFault{unknown: true, key: key, format: format, args: args}
+	return fault
 }
 
 // notConcrete is the fault of key, which holds [*] where it must name one
@@ -189,17 +191,27 @@ func notConcrete(key keyPath) *keyFault {
 
 // refuse is the fault of a key that cannot be set as written.
 func refuse(format string, args ...faultArg) *keyFault {
-	return &keyFault{sentinel: ErrValidation, format: format, args: args}
+	fault := &keyFault{format: format, args: args}
+	return fault
 }
 
 func (f *keyFault) Error() string {
-	if f.sentinel == ErrKey {
+	if f.unknown {
 		return fmt.Sprintf("%s %s: %s", ErrKey, f.key.orRoot(), f.reason())
 	}
-	return fmt.Sprintf("%s: %s", f.sentinel, f.reason())
+	return fmt.Sprintf("%s: %s", ErrValidation, f.reason())
 }
 
-func (f *keyFault) Unwrap() error { return f.sentinel }
+func (f *keyFault) Unwrap() error { return keySentinel(f.unknown) }
+
+// keySentinel is the category of a refused key: ErrKey when config reads
+// nothing at it, ErrValidation when it cannot be set as written.
+func keySentinel(unknown bool) error {
+	if unknown {
+		return ErrKey
+	}
+	return ErrValidation
+}
 
 func (f *keyFault) reason() string {
 	texts := make([]any, len(f.args))
@@ -213,7 +225,8 @@ func (f *keyFault) reason() string {
 // short.
 func (f *keyFault) namesWithheld(schema *schemaNode) bool {
 	for _, a := range f.args {
-		if key, ok := a.faultKey(); ok && withholds(schema, key) {
+		key, ok := a.faultKey()
+		if ok && withholds(schema, key) {
 			return true
 		}
 	}
@@ -260,16 +273,16 @@ func (shownText) faultKey() (keyPath, bool) { return nil, false }
 // keyProblem is a keyFault as newKeyError words it: text only, every key in
 // it as diagnostics may show it.
 type keyProblem struct {
-	sentinel error  // ErrKey or ErrValidation
-	key      string // the key an ErrKey problem names
-	reason   string
+	unknown bool   // ErrKey, not ErrValidation (see keySentinel)
+	key     string // the key an ErrKey problem names
+	reason  string
 }
 
 func (p *keyProblem) Error() string {
-	if p.sentinel == ErrKey {
+	if p.unknown {
 		return fmt.Sprintf("%s %s: %s", ErrKey, p.key, p.reason)
 	}
-	return fmt.Sprintf("%s: %s", p.sentinel, p.reason)
+	return fmt.Sprintf("%s: %s", ErrValidation, p.reason)
 }
 
-func (p *keyProblem) Unwrap() error { return p.sentinel }
+func (p *keyProblem) Unwrap() error { return keySentinel(p.unknown) }

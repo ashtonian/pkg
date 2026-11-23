@@ -167,8 +167,8 @@ func TestDecodeEdits_BaselineThatDoesNotMarshal(t *testing.T) {
 	_, err := DecodeEdits(t.Context(), &cfg{Value: failingText{n: -1}}, map[string]any{"port": 1})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "value")
-	assert.NotErrorIs(t, err, ErrValidation)
-	assert.NotErrorIs(t, err, ErrKey)
+	require.NotErrorIs(t, err, ErrValidation)
+	require.NotErrorIs(t, err, ErrKey)
 	var edits *EditsError
 	assert.NotErrorAs(t, err, &edits)
 }
@@ -286,7 +286,7 @@ func TestDecodeEdits_EachRefusedKeyKeepsItsCategory(t *testing.T) {
 	}
 	_, err := DecodeEdits(t.Context(), baseline, map[string]any{"pool[0].port": "not a number"})
 	require.ErrorIs(t, err, ErrValidation)
-	assert.NotErrorIs(t, err, ErrKey)
+	require.NotErrorIs(t, err, ErrKey)
 	var ke *KeyError
 	assert.NotErrorAs(t, err, &ke, "a candidate that fails names no refused key")
 }
@@ -375,8 +375,8 @@ func TestDecodeEdits_OneEditIsDecodeKey(t *testing.T) {
 	require.ErrorAs(t, err, &edits)
 	assert.Equal(t, []string{"floor", "port"}, edits.Keys)
 	assert.Empty(t, edits.Refused)
-	assert.ErrorIs(t, err, ErrValidation)
-	assert.NotErrorIs(t, err, ErrKey)
+	require.ErrorIs(t, err, ErrValidation)
+	require.NotErrorIs(t, err, ErrKey)
 	assert.NotContains(t, err.Error(), "invalid-secret-value")
 	_, err = DecodeKey[keyConfig](t.Context(), "port", "invalid-secret-value")
 	assert.NotContains(t, err.Error(), "invalid-secret-value")

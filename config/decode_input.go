@@ -14,7 +14,8 @@ func (o *options) decodeInput(root *schemaNode, tree map[string]any, out any, ob
 		return md, err
 	}
 	if err := decoder.Decode(tree); err != nil {
-		return md, &decodeFailures{err: decodeErrors(root, tree, err), each: placeDecodeFailures(root, tree, err)}
+		failures := &decodeFailures{err: decodeErrors(root, tree, err), each: placeDecodeFailures(root, tree, err)}
+		return md, failures
 	}
 	return md, nil
 }
@@ -46,17 +47,23 @@ func placeDecodeFailures(root *schemaNode, tree any, err error) []placedFailure 
 	var out []placedFailure
 	var walk func(error)
 	walk = func(e error) {
-		switch u := e.(type) {
-		case *mapstructure.DecodeError:
-			p, _, _, exact := treeKey(root, tree, u.Name())
-			rewritten, _ := withhold(root, tree, u)
+		failure, ok := e.(*mapstructure.DecodeError) //nolint:errorlint // visits every node of the tree; errors.As stops at the first match
+		if ok {
+			p, _, _, exact := treeKey(root, tree, failure.Name())
+			rewritten, _ := withhold(root, tree, failure)
 			out = append(out, placedFailure{at: p, exact: exact, err: rewritten})
-		case interface{ Unwrap() []error }:
-			for _, inner := range u.Unwrap() {
+			return
+		}
+		joined, ok := e.(interface{ Unwrap() []error })
+		if ok {
+			for _, inner := range joined.Unwrap() {
 				walk(inner)
 			}
-		case interface{ Unwrap() error }:
-			walk(u.Unwrap())
+			return
+		}
+		wrapped, ok := e.(interface{ Unwrap() error })
+		if ok {
+			walk(wrapped.Unwrap())
 		}
 	}
 	walk(err)

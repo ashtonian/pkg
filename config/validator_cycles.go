@@ -288,7 +288,7 @@ func validatorValue(v reflect.Value) (reflect.Value, bool) {
 	if v.Kind() == reflect.Interface {
 		t = v.Elem().Type()
 	}
-	if !v.CanInterface() || !t.Implements(validatorValuer) {
+	if !v.CanInterface() || !t.Implements(reflect.TypeFor[validator.Valuer]()) {
 		return reflect.Value{}, false
 	}
 	return reflect.ValueOf(v.Interface().(validator.Valuer).ValidatorValue()), true
@@ -353,7 +353,7 @@ func (w *cycleTypeWalk) value(t reflect.Type, rules []string) bool {
 
 func (w *cycleTypeWalk) walk(t reflect.Type, rules []string) bool {
 	switch {
-	case t.Implements(validatorValuer), t.Kind() == reflect.Interface:
+	case t.Implements(reflect.TypeFor[validator.Valuer]()), t.Kind() == reflect.Interface:
 		return true
 	case t.Kind() == reflect.Pointer:
 		return w.value(t.Elem(), rules)

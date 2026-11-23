@@ -282,7 +282,8 @@ func assertRefsResolve(t *testing.T, doc map[string]any, v any) {
 	t.Helper()
 	switch v := v.(type) {
 	case map[string]any:
-		if _, ok := v["$ref"]; ok {
+		_, isRef := v["$ref"]
+		if isRef {
 			resolved(t, doc, v)
 		}
 		for _, e := range v {
@@ -414,8 +415,8 @@ func TestJSONSchema_RecursiveCollectionsAreReferenced(t *testing.T) {
 		map[string]any{"$ref": "#/$defs/config.schemaRecMap", "type": "object"}, map[string]any{"type": "null"}}}}, resolved(t, doc, m))
 
 	ring := resolved(t, doc, prop(t, doc, "ring"))
-	assert.Equal(t, 2.0, ring["minItems"])
-	assert.Equal(t, 2.0, ring["maxItems"])
+	assert.InDelta(t, 2.0, ring["minItems"], 0)
+	assert.InDelta(t, 2.0, ring["maxItems"], 0)
 	assert.Equal(t, "#/$defs/config.schemaRing", nonNull(t, ring["items"].(map[string]any))["$ref"])
 
 	kids := resolved(t, doc, nonNull(t, prop(t, doc, "kids")))
