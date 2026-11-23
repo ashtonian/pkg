@@ -96,7 +96,7 @@ jobs:
               "parse-postgres": {"go": ["./parse/..."]},
               "cookbook-postgres": {"paths": ["config/examples/cookbook/go.mod", "config/examples/cookbook/go.sum", "config/examples/cookbook/internal/pgtest/**", "config/examples/cookbook/settingsstore/**"], "go": ["./config"]},
               "parse-sdk": ["parse/sdk/**", "parse/testdata/**", "parse/examples/server/README.md", "tools/check-parse-sdk-*"],
-              "parse-benchmarks": {"go": ["./parse/filter"]},
+              "parse-benchmarks": {"paths": ["tools/bench-parse.sh"], "go": ["./parse", "./parse/core", "./parse/filter", "./parse/internal/jsonkeys"]},
               "minimum-go": {"go": ["./httpx/...", "./httpx/oauth2/...", "./httpx/codec/msgpack/...", "./httpx/codec/proto/...", "./httpx/compress/brotli/...", "./gitx/..."]},
               "modules": ["**"],
               "lint": {"paths": [".golangci.yml", "tools/gorules/**"], "go": ["./..."]}
@@ -129,6 +129,7 @@ jobs:
             .release-please-manifest.json
             release-please-config.json
             tools/check-*
+            tools/bench-parse.sh
             tools/release-please/**
             tools/modarchive/**
             tools/doccheck/**
@@ -393,7 +394,7 @@ jobs:
   parse-benchmarks:
     needs: scope
     name: parse benchmark artifacts
-    # On main, only when the change reaches the benchmarked package; the
+    # On main, only when the change reaches a benchmarked package; the
     # nightly run always records them.
     if: github.actor_id == '4212452' && github.event_name != 'pull_request' && contains(needs.scope.outputs.selected, '"parse-benchmarks"')
     permissions:
@@ -409,17 +410,12 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
-      - name: Record parser and cursor benchmarks
-        run: >-
-          go test -tags=unit -run '^$' -bench . -benchmem -count=3
-          -cpuprofile=parse-cpu.prof -memprofile=parse-allocs.prof ./parse/filter | tee parse-benchmarks.txt
+      - name: Record every parse package's benchmarks and profiles
+        run: tools/bench-parse.sh parse-benchmarks
       - uses: ashtonian/go-ci-actions/upload-artifact@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           name: parse-benchmarks-${{ github.sha }}
-          path: |
-            parse-benchmarks.txt
-            parse-cpu.prof
-            parse-allocs.prof
+          path: parse-benchmarks
   minimum-go:
     needs: scope
     name: httpx and gitx (go 1.26)

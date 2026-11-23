@@ -45,8 +45,9 @@ NESTED = {
     "config-release-check": ("config/kongprovider/", "config/examples/cookbook/"),
     "parse-release-check": ("parse/examples/server/",),
 }
-# Prose outside every module, and the SDK's scripts, which its own job runs.
-UNCHECKED = {"CONTRIBUTING.md", "README.md"}
+# Prose outside every module, and the scripts only their own job runs: the
+# parse benchmarks' and the SDK's.
+UNCHECKED = {"CONTRIBUTING.md", "README.md", "tools/bench-parse.sh"}
 SDK_TOOLING = "tools/check-parse-sdk-"
 # golangci-lint's configuration and ruleguard rules: the lint job lints every
 # package when either changes. The rules are a module, so doccheck reads them too.

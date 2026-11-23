@@ -257,8 +257,6 @@ class Scope(unittest.TestCase):
         self.assertEqual(SCOPE_JOBS["test-darwin"]["go"], patterns(make_list("NATIVE_MODULES") + make_list("CONFIG_MODULES")))
         self.assertEqual(SCOPE_JOBS["minimum-go"]["go"], patterns(make_list("HTTPX_MODULES") + ["gitx"]))
         self.assertEqual(SCOPE_JOBS["parse-postgres"]["go"], patterns(make_list("PARSE_MODULES")))
-        self.assertEqual(SCOPE_JOBS["parse-benchmarks"]["go"], ["./parse/filter"])
-        self.assertIn("./parse/filter | tee", job("parse-benchmarks"))
         darwin = re.findall(r"run: make (\S+)", job("test-darwin"))
         self.assertEqual(darwin, ["test-native-unit", "test-native-integration", "test-config"])
 

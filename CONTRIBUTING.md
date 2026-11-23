@@ -65,8 +65,8 @@ superseded run leaves no change unvalidated. The scope lists the workspace's pac
 
 `go-ignore` lists what no workspace Go code reads: `CONTRIBUTING.md`, the root `README.md`,
 changelogs, the Markdown guides in `config/docs`, `gowalker/docs` and `httpx/docs` (parse's
-are read by parse's tests, which render their tables from the code), the SDK, the release-please manifest and configuration, the release and SDK
-scripts, golangci-lint's `.golangci.yml`, and the modules outside the workspace (the cookbook, the Gin example, httpx's
+are read by parse's tests, which render their tables from the code), the SDK, the release-please manifest and configuration, the release, SDK and
+benchmark scripts, golangci-lint's `.golangci.yml`, and the modules outside the workspace (the cookbook, the Gin example, httpx's
 benchmarks, the Parse server example, the ruleguard rules, the archive, documentation and release tooling), whose own checks read them. A change to
 `.golangci.yml` runs lint over every package and nothing else; a change to `tools/gorules/`, a module the
 documentation check reads, runs that check too. A module manifest
@@ -125,7 +125,15 @@ job's release checks and the cookbook lint included, for the push and again from
 merge's first parent, as the PR measured it. The rest run. Anything else, including a
 squash or rebase merge, a direct push, a rerun, a PR run on an older `main`, or missing
 evidence, runs the push's scoped jobs. Benchmark artifacts come from pushes only: a push
-records them when it reaches `parse/filter`, the package they build, reused or not.
+records them, reused or not, when it reaches a parse package with benchmarks or changes
+`tools/bench-parse.sh`, which runs them. The script finds those packages under the `unit`
+tag (`tools/bench-parse.sh --list`: today `parse`, `parse/core`, `parse/filter` and
+`parse/internal/jsonkeys`) and runs each one's benchmarks on its own, since `go test` profiles
+a single package: the `parse-benchmarks-<commit>` artifact holds, per package directory,
+`benchmarks.txt` (`-count=3`, for `benchstat`), `cpu.pprof` and `allocs.pprof`. The
+profiles carry their symbols, so `go tool pprof -top cpu.pprof` reads one without the test
+binary. The scope's package list for the job is a literal like every job's;
+`tools/test_ci_parse_benchmarks.py` fails when it differs from the script's.
 A newer run of the same PR cancels the older one. Runs on `main` all finish: each push is
 measured from the last green run, so a cancelled one would hold the next push's base back,
 and a push waiting behind another is replaced by the next, which covers both. Dispatched
@@ -305,7 +313,7 @@ To change the patterns, replace the secret
 
 ## Parse SQL matrix
 
-Parse requires Go 1.27 and publishes as `github.com/ashtonian/pkg/parse`, with `parse/v…` tags. CI runs unit tests and existing fuzz seeds (under the race detector nightly, and on pull requests only the tests tagged `concurrency`), SQLite integration beside PostgreSQL 17/18 with PostGIS 3.6 under the race detector, and the TypeScript SDK's shared corpora. modernc's SQLite builds without race or checkptr instrumentation: it is C translated to Go, and instrumenting it made the SQLite-backed suites about 30 times slower without checking this repository's code. The SDK release check installs its tarball in a fresh consumer and checks public declarations, runtime subpaths and self-contained JavaScript sourcemaps. The SDK package version follows the Parse release component. CI stores benchmark text and CPU/allocation profiles from main pushes that change the Go code they build, and from the nightly run.
+Parse requires Go 1.27 and publishes as `github.com/ashtonian/pkg/parse`, with `parse/v…` tags. CI runs unit tests and existing fuzz seeds (under the race detector nightly, and on pull requests only the tests tagged `concurrency`), SQLite integration beside PostgreSQL 17/18 with PostGIS 3.6 under the race detector, and the TypeScript SDK's shared corpora. modernc's SQLite builds without race or checkptr instrumentation: it is C translated to Go, and instrumenting it made the SQLite-backed suites about 30 times slower without checking this repository's code. The SDK release check installs its tarball in a fresh consumer and checks public declarations, runtime subpaths and self-contained JavaScript sourcemaps. The SDK package version follows the Parse release component. CI stores the benchmark text, CPU profile and allocation profile of every parse package with benchmarks, from main pushes that change the Go code they build and from the nightly run.
 
 Pull requests replay the checked-in fuzz seeds; the nightly workflow's `parse fuzzing` job generates inputs every night, each run starting from the corpus the last one saved, so it explores inputs the last did not. `go test -fuzz` keeps the inputs that widen coverage under `$(go env GOCACHE)/fuzz/github.com/ashtonian/pkg/parse`, which go-ci-actions does not carry between runs, so the job restores that directory from the GitHub cache entry `parse-fuzz-corpus-*` created last, and saves it under a key of its own run. Before the save, `tools/fuzz_corpus.py` keeps the newest `FUZZ_CORPUS_MAX_ENTRIES` inputs of each target (1000) and then removes the oldest inputs until the corpus is at most `FUZZ_CORPUS_MAX_BYTES` (32 MiB), so one entry is at most 32 MiB; each run restores only the newest entry, and GitHub evicts an entry unused for seven days, so the corpus entries hold at most about eight times that. `tools/fuzz-parse.sh parse` finds each package's fuzz targets under the `unit` tag (`go test -list '^Fuzz'`), so a new target is fuzzed without a list to edit, and `tools/test_ci_parse_fuzz.py` fails on a target in a file that tag does not select. The script splits `FUZZ_BUDGET_SECONDS` (900 in CI) evenly between the targets and runs every one even after one fails. A failing input fails the job with an error annotation naming the target, the input and the command that replays it, prints the input, and is kept for 30 days as the artifact `parse-fuzz-crashers-<sha>-<attempt>`, at its path under `parse/`. Fix the defect and copy the input into the package's `testdata/fuzz/<target>/` in the same change: it is a seed every test run replays from then on. Locally, `FUZZ_BUDGET_SECONDS=120 tools/fuzz-parse.sh parse` fuzzes every target for two minutes in all, and `FUZZ_CRASHERS` (default `fuzz-crashers`) names where failing inputs are copied.
 
