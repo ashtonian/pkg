@@ -78,13 +78,29 @@ export function readHistory(repoDir, ref) {
   for (const sha of mergeOf.keys()) {
     if (parents.get(sha).length === 1) branchCommits.set(sha, { message: messages.get(sha), files: filesOf.get(sha) ?? [] });
   }
-  const revertedWithin = new Set();
-  for (const [sha, merge] of mergeOf) {
-    for (const [, reverted] of messages.get(sha).matchAll(/^This reverts commit ([0-9a-f]{40})/gm)) {
-      if (mergeOf.get(reverted) === merge) revertedWithin.add(sha).add(reverted);
+  const brought = new Map([...mergeOf.keys()].map(sha => [sha, messages.get(sha)]));
+  const revertedWithin = revertsWithin(brought, sha => mergeOf.get(sha));
+  return { mergeOf, messageOf, branchCommits, revertedWithin };
+}
+
+// revertsWithin returns the commits of messageOf (sha to message) that a
+// revert among them undid, with those reverts, pairing them by git's
+// "This reverts commit <sha>" line; with groupOf, only within one group.
+export function revertsWithin(messageOf, groupOf = () => undefined) {
+  const within = new Set();
+  for (const [sha, message] of messageOf) {
+    for (const [, reverted] of message.matchAll(/^This reverts commit ([0-9a-f]{40})/gm)) {
+      if (messageOf.has(reverted) && groupOf(reverted) === groupOf(sha)) within.add(sha).add(reverted);
     }
   }
-  return { mergeOf, messageOf, branchCommits, revertedWithin };
+  return within;
+}
+
+// commitOverride returns what release-please reads in place of each commit of
+// a pull request whose description is body: its BEGIN_COMMIT_OVERRIDE block,
+// trimmed, or '' without one.
+export function commitOverride(body) {
+  return ((body ?? '').split('BEGIN_COMMIT_OVERRIDE')[1] ?? '').split('END_COMMIT_OVERRIDE')[0].trim();
 }
 
 // typeRanker ranks a feature over the other types the changelog shows, and
@@ -110,8 +126,9 @@ export function typeRanker(sections = DEFAULT_SECTIONS) {
 // there, and breaks only if one of them does. That holds for the type when
 // some branch commit of the merge, in any path, ranks as high as the
 // subject's type, and for breaking when one breaks; branches maps each merge
-// to its branch commits' types and whether one breaks. Otherwise the
-// subject's type and "!" are a floor the branch commits can only raise.
+// to its branch commits' types, whether one breaks, and those release-please
+// cannot read whole, which warn names. Otherwise the subject's type and "!"
+// are a floor the branch commits can only raise.
 export function firstParentCommits(commits, history, { headerOf, rank = typeRanker(), complete = new Set(), branches = new Map(), warn = () => {} }) {
   const listed = new Set(commits.map(commit => commit.sha));
   const headers = new Map();
@@ -186,7 +203,29 @@ export function firstParentCommits(commits, history, { headerOf, rank = typeRank
     // change when the entry has no breaking note.
     if (!header.breaking) header.message = header.message.replace(BANG, '$1:');
   }
+  warnUnreadable(commits, history, branches, warn);
   return kept;
+}
+
+// warnUnreadable names each merge here missing what release-please cannot
+// read of one of its branch commits (a branch summary's unreadable), unless
+// the merge's own pull request sets an override, which release-please reads
+// in place of each of its commits.
+function warnUnreadable(commits, history, branches, warn) {
+  const overridden = new Map();
+  for (const commit of commits) {
+    const merge = history.mergeOf.get(commit.sha) ?? commit.sha;
+    overridden.set(merge, overridden.get(merge) || ownOverride(commit, merge));
+  }
+  for (const [merge, isOverridden] of overridden) {
+    if (isOverridden) continue;
+    const subject = history.messageOf.get(merge)?.split('\n')[0];
+    for (const branch of branches.get(merge)?.unreadable ?? []) {
+      for (const problem of branch.problems) {
+        warn(`${merge.slice(0, 7)} (${subject}) is missing what release-please cannot read of its branch commit ${branch.sha.slice(0, 7)} (${branch.subject}): ${problem}`);
+      }
+    }
+  }
 }
 
 // The changelog writer's breakingHeaderPattern, up to the "!".
@@ -197,8 +236,7 @@ const BANG = /^(\w*(?:\(.*\))?)!:(?= )/;
 function ownOverride(commit, merge) {
   const pr = commit.pullRequest;
   if (pr === undefined || pr.mergeCommitOid !== merge) return false;
-  const override = (pr.body ?? '').split('BEGIN_COMMIT_OVERRIDE')[1] ?? '';
-  return override.split('END_COMMIT_OVERRIDE')[0].trim() !== '';
+  return commitOverride(pr.body) !== '';
 }
 
 const isBreaking = note => note.title === BREAKING;

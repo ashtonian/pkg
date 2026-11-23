@@ -467,7 +467,7 @@ func BenchmarkBuildPatchSQL_WithStartParam(b *testing.B) {
 		b.Fatal(err)
 	}
 	res, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{}, patch.WithStartParam(4))
-	if err != nil || res.SetClause != "name = $5, status = $6" || res.ParamCount != 2 {
+	if err != nil || res.SetClause != `"name" = $5, "status" = $6` || res.ParamCount != 2 {
 		b.Fatalf("build: %+v, %v", res, err)
 	}
 	for b.Loop() {

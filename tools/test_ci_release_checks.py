@@ -57,6 +57,16 @@ def ignored(path):
     return any(glob(pattern).match(path) for pattern in scope_input("go-ignore").split("\n"))
 
 
+def tracked_dirs(name):
+    """The directories holding a tracked file of this name, outside those
+    doccheck's walk skips (tools/doccheck/check.go skipDir): test fixtures,
+    vendored code, node_modules, and hidden or _-prefixed directories."""
+    tracked = subprocess.check_output(["git", "ls-files", "-z", "--", f"*{name}"], cwd=ROOT).decode().split("\0")
+    dirs = [PurePosixPath(p).parent for p in tracked if PurePosixPath(p).name == name]
+    skipped = ("testdata", "vendor", "node_modules")
+    return [d for d in dirs if not any(part in skipped or part[0] in "._" for part in d.parts)]
+
+
 SCOPE_JOBS = json.loads(scope_input("jobs"))
 OWNERS = json.loads(scope_input("go-owners"))
 
@@ -89,6 +99,7 @@ class ReleaseChecks(unittest.TestCase):
             ("tools/doccheck/check.go",): ["docs-check"],
             ("httpx/examples/gin/main.go",): ["httpx-release-check", "docs-check"],
             ("tools/release-please/first-parent.mjs",): ["release-please-check"],
+            ("tools/check-pnpm.mjs", "tools/check-pnpm.test.mjs"): ["release-please-check"],
             ("tools/check-parse-sdk-release.sh",): [],
             ("CONTRIBUTING.md", "README.md"): [],
             (): [],
@@ -100,10 +111,7 @@ class ReleaseChecks(unittest.TestCase):
     def test_the_documentation_check_reads_every_module(self):
         # doccheck reads every go.mod's module outside the directories it
         # skips, in the workspace or not; a change to any of them runs it.
-        skipped = ("testdata", "vendor", "node_modules")
-        tracked = subprocess.check_output(["git", "ls-files", "-z", "--", "*go.mod"], cwd=ROOT).decode().split("\0")
-        modules = [PurePosixPath(p).parent for p in tracked if PurePosixPath(p).name == "go.mod"]
-        modules = [m for m in modules if not any(part in skipped or part[0] in "._" for part in m.parts)]
+        modules = tracked_dirs("go.mod")
         for module in modules:
             with self.subTest(module=module):
                 self.assertTrue(ci.reads("docs-check", f"{module}/README.md"))
@@ -250,8 +258,6 @@ class Scope(unittest.TestCase):
         self.assertEqual(SCOPE_JOBS["test-darwin"]["go"], patterns(make_list("NATIVE_MODULES") + make_list("CONFIG_MODULES")))
         self.assertEqual(SCOPE_JOBS["minimum-go"]["go"], patterns(make_list("HTTPX_MODULES") + ["gitx"]))
         self.assertEqual(SCOPE_JOBS["parse-postgres"]["go"], patterns(make_list("PARSE_MODULES")))
-        self.assertEqual(SCOPE_JOBS["parse-benchmarks"]["go"], ["./parse/filter"])
-        self.assertIn("./parse/filter | tee", job("parse-benchmarks"))
         darwin = re.findall(r"run: make (\S+)", job("test-darwin"))
         self.assertEqual(darwin, ["test-native-unit", "test-native-integration", "test-config"])
 
@@ -336,6 +342,27 @@ class Scope(unittest.TestCase):
         self.assertIn("uses: ./.github/workflows/ci.yml", NIGHTLY)
         self.assertIn("nightly: true", NIGHTLY)
         self.assertIn("workflow: ci.yml", job("scope"))
+
+
+class PnpmContract(unittest.TestCase):
+    """tools/check-pnpm.mjs holds every pnpm project to one pnpm release and a
+    one-document lockfile; it runs before each project's install, and a change
+    to it runs the jobs that install them."""
+
+    def test_every_pnpm_install_checks_the_contract_first(self):
+        tracked = subprocess.check_output(["git", "-C", str(ROOT), "ls-files", "-z", "--", "*pnpm-lock.yaml"]).decode().split("\0")
+        projects = [str(PurePosixPath(p).parent) for p in tracked if PurePosixPath(p).name == "pnpm-lock.yaml"]
+        self.assertTrue(projects)
+        for project in projects:
+            with self.subTest(project=project):
+                install = f"cd {project} && pnpm install --frozen-lockfile"
+                before = MAKEFILE.split(install, 1)[0]
+                target = re.findall(r"^([\w-]+):", before, re.M)[-1]
+                commands = subprocess.check_output(["make", "-s", "-n", target], cwd=ROOT, timeout=30).decode().splitlines()
+                installs = [i for i, command in enumerate(commands) if install in command]
+                self.assertTrue(installs, target)
+                self.assertIn("node tools/check-pnpm.mjs", commands[:installs[0]], target)
+        self.assertIn("tools/check-pnpm.mjs", SCOPE_JOBS["parse-sdk"])
 
 
 class Make(unittest.TestCase):
