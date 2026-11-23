@@ -68,13 +68,15 @@ type Dialect interface {
 	// DecimalValue renders a decimal operand as the dialect's exact decimal
 	// value: equal decimals are equal values, whether a column, a document
 	// member (the value PathExpr reads a decimal member as) or a bound
-	// canonical text holds them.
+	// canonical text holds them. FieldExpr reads a decimal through it.
 	DecimalValue(o DecimalOperand) string
 
-	// DecimalOrder renders a decimal operand as what orders decimals
-	// exactly: the exact value itself where the database's own type orders
-	// it, a key read from the operand that orders as the value does where
-	// there is none.
+	// DecimalOrder renders a decimal operand as what compares and orders
+	// decimals exactly: the exact value itself where the database's own
+	// type orders it; where there is none, a key read from the operand that
+	// orders as the value does and is equal exactly where the values are.
+	// Filters compare decimals through it, equality and sets included, as
+	// sorts and keyset seeks do, so one index on it serves them all.
 	DecimalOrder(o DecimalOperand) string
 
 	// TwoValuedCondition renders `field <op> value` a second way, one an
@@ -167,9 +169,9 @@ func DialectFromDSN(dsn string) (Dialect, error) {
 
 // DecimalOperand is what a decimal value is read from: a column, a document
 // member or a bound parameter. A dialect renders it as the exact decimal
-// value (Dialect.DecimalValue) or as what orders it (Dialect.DecimalOrder),
-// each from the operand itself, so the order of a value never re-reads the
-// value's own SQL. Build one with DecimalColumn, DecimalMember or
+// value (Dialect.DecimalValue) or as what compares and orders it
+// (Dialect.DecimalOrder), each from the operand itself, so the key of a
+// value never re-reads the value's own SQL. Build one with DecimalColumn, DecimalMember or
 // DecimalParam; the zero DecimalOperand is none, and a dialect panics on it.
 type DecimalOperand struct {
 	source decimalSource
@@ -215,10 +217,9 @@ func fieldDecimal(d Dialect, f *FieldSchema) DecimalOperand {
 	return DecimalColumn(f.sql(d))
 }
 
-// decimalComparison renders a decimal field's equality or ordering: it
-// compares the field's exact value with its canonical text bound as a
-// parameter, and orders both through Dialect.DecimalOrder. ok is false for
-// any other operator.
+// decimalComparison renders a decimal field's equality or ordering: the
+// field and its canonical text, bound as a parameter, both read through
+// Dialect.DecimalOrder. ok is false for any other operator.
 func decimalComparison(d Dialect, field *FieldSchema, op FilterOperator, value any, bind func(any) string) (sql string, ok bool, err error) {
 	switch op {
 	case OpEq, OpNe, OpGt, OpGte, OpLt, OpLte:
@@ -230,12 +231,8 @@ func decimalComparison(d Dialect, field *FieldSchema, op FilterOperator, value a
 			return "", true, fmt.Errorf("field %s: %w", field.ExternalName, err)
 		}
 	}
-	render := d.DecimalValue
-	if isOrdering(op) {
-		render = d.DecimalOrder
-	}
-	param := func(v any) string { return render(DecimalParam(bind(v))) }
-	return comparison(render(fieldDecimal(d, field)), op, value, param)
+	param := func(v any) string { return d.DecimalOrder(DecimalParam(bind(v))) }
+	return comparison(d.DecimalOrder(fieldDecimal(d, field)), op, value, param)
 }
 
 // comparison renders the operators every dialect spells alike: equality,
