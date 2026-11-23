@@ -217,6 +217,21 @@ class Scope(unittest.TestCase):
         darwin = re.findall(r"run: make (\S+)", job("test-darwin"))
         self.assertEqual(darwin, ["test-native-unit", "test-native-integration", "test-config"])
 
+    def test_cookbook_postgres_runs_the_recipe_on_the_makefile_server(self):
+        cookbook = SCOPE_JOBS["cookbook-postgres"]
+        # The settings-store recipe imports config alone of the workspace.
+        self.assertEqual(cookbook["go"], ["./config"])
+        for path in ("config/examples/cookbook/go.mod", "config/examples/cookbook/go.sum",
+                     "config/examples/cookbook/internal/pgtest/pgtest.go",
+                     "config/examples/cookbook/settingsstore/main_test.go"):
+            with self.subTest(path=path):
+                self.assertTrue(any(glob(p).match(path) for p in cookbook["paths"]))
+        self.assertFalse(any(glob(p).match("config/examples/cookbook/vault/main.go") for p in cookbook["paths"]))
+        image = MAKEFILE.split("\nCOOKBOOK_PG_IMAGE ?= ", 1)[1].split("\n", 1)[0]
+        self.assertIn(f"image: {image}\n", job("cookbook-postgres"))
+        self.assertIn("COOKBOOK_REQUIRE_PG: '1'", job("cookbook-postgres"))
+        self.assertEqual(re.findall(r"run: make (\S+)", job("cookbook-postgres")), ["cookbook-integration"])
+
     def test_go_jobs_cover_what_the_change_reaches(self):
         for name in ("test", "test-darwin", "parse-postgres", "lint"):
             with self.subTest(job=name):

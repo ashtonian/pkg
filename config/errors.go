@@ -119,7 +119,10 @@ type UnknownKeysError struct {
 type UnknownKey struct {
 	// Key names it, or the enclosing sensitive container when its contents
 	// must be withheld: in the package's key grammar for a key (server.prot,
-	// items[0].prot), by its name for a variable (APP_SERVER_PROT).
+	// items[0].prot, server["a.b"] or ["a.b"] for a source key no field's
+	// key could spell), by its name for a variable (APP_SERVER_PROT). A
+	// source key the tree holds in two readings is named by the nearest key
+	// holding it, and at the root by $, the root's name, which is no key.
 	Key string `json:"key"`
 	// Suggestion is what Key most likely misspells, or "" when nothing is
 	// close: the field of the same struct fewest edits away (server.port), or

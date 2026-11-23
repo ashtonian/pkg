@@ -13,6 +13,9 @@ func TestKey_CanonicalGrammar(t *testing.T) {
 		{`items["a.b[0]\\\""].ports[*]`, "items.ports", "ports"},
 		{`map[""]`, "map", ""},
 		{"rows[*][0]", "rows", "rows"},
+		{`["a.b"].port`, "port", "port"},
+		{`[""]`, "", ""},
+		{`["x\"y"][0]`, "", `x"y`},
 	} {
 		t.Run(tt.key, func(t *testing.T) {
 			key, err := ParseKey(tt.key)
@@ -22,9 +25,42 @@ func TestKey_CanonicalGrammar(t *testing.T) {
 			assert.Equal(t, tt.last, key.LastName())
 		})
 	}
-	for _, key := range []string{"", ".x", "a..b", "a[-1]", "a[no]", "a[1", "a[*]x", "a.\"b\""} {
+	for _, key := range []string{"", ".x", "a..b", "a[-1]", "a[no]", "a[1", "a[*]x", "a.\"b\"", "[0]", "[*]", "[0].a", "[*].a", `a.["b"]`, `["a"]x`, `["a"]`[:4]} {
 		_, err := ParseKey(key)
 		assert.ErrorIs(t, err, ErrKey, key)
+	}
+}
+
+// Every key the package writes reads back as itself: fields, map keys of
+// any text, indexes and wildcards, a quoted map key leading among them. A
+// key never leads with an index or a wildcard: the root is a struct.
+func TestKey_StringRoundTrips(t *testing.T) {
+	var segments []Segment
+	for _, name := range []string{"port", "a b", "größe", "$", "x-y"} {
+		segments = append(segments, Segment{Kind: SegmentField, Name: name})
+	}
+	for _, name := range []string{"", "a.b", "a[0]", "a]b", `a"b`, `a\b`, "*", "[*]", "0", "\t", "größe", "port"} {
+		segments = append(segments, Segment{Kind: SegmentKey, Name: name})
+	}
+	segments = append(segments, Segment{Kind: SegmentIndex, Index: 0}, Segment{Kind: SegmentIndex, Index: 12}, Segment{Kind: SegmentAny})
+	var keys []Key
+	for _, a := range segments {
+		if a.Kind == SegmentIndex || a.Kind == SegmentAny {
+			continue
+		}
+		keys = append(keys, Key{a})
+		for _, b := range segments {
+			keys = append(keys, Key{a, b})
+			for _, c := range segments {
+				keys = append(keys, Key{a, b, c})
+			}
+		}
+	}
+	for _, key := range keys {
+		got, err := ParseKey(key.String())
+		if assert.NoError(t, err, key.String()) {
+			assert.Equal(t, key, got, key.String())
+		}
 	}
 }
 

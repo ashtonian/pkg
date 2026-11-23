@@ -150,7 +150,7 @@ func (n *originNode) setter() (int, bool) {
 // list a map stands for as decoding reads it, and then the key no field
 // took.
 func unusedPath(root *schemaNode, tree any, name string) []string {
-	p, used, exact := treeKey(root, tree, name)
+	p, _, used, exact := treeKey(root, tree, name)
 	var raw []string
 	data := tree
 	for _, s := range p {

@@ -56,10 +56,11 @@ Every output names a value the same way:
 | `items[0].port` | a field of a list element |
 | `named["primary"].port` | a field of a map entry; map keys are always quoted |
 | `items[*].port` | any element or entry, in usage tables and `FieldFor` |
+| `["a.b"].port` | a source key at the root that no field's key can spell, as a report of unknown keys names it |
 
 `config.KeyOf(&cfg, &cfg.DB.MaxConns)` returns `"db.max_conns"` from the field itself, so code never spells a key that can drift from its field.
 
-`ParseKey(text)` exposes this grammar as a `Key` of typed `Segment` values. `Key.String()` returns canonical spelling, `Key.Fields()` removes collection selectors, and `Key.LastName()` returns the last field or map key. Malformed or empty keys return `ErrKey`.
+A key begins with a field, or with a quoted map key: the root is a struct, so a key that begins with a map key names a source key no field reads, and none begins with an index or `[*]`. `ParseKey(text)` exposes this grammar as a `Key` of typed `Segment` values, and every key the package writes reads back through it as itself. `Key.String()` returns canonical spelling, `Key.Fields()` removes collection selectors, and `Key.LastName()` returns the last field or map key. Malformed or empty keys return `ErrKey`.
 
 ## Defaults in code
 
@@ -95,7 +96,7 @@ A key that no field decodes fails the load with `ErrValidation`, naming the key 
 unmarshaling config: configuration validation failed: keys no field of main.AppConfig decodes: server.prot (did you mean server.port?)
 ```
 
-`errors.As` reaches an `*UnknownKeysError`, whose `Keys` give each key and its `Suggestion`, for a program to report them in its own words. A suggestion is the field fewest edits away, counting an adjacent transposition as one edit and ignoring case, within a third of the key's length (at least 2) and sharing at least one character in place; a key no field is that close to has none.
+`errors.As` reaches an `*UnknownKeysError`, whose `Keys` give each key and its `Suggestion`, for a program to report them in its own words. Each key and suggestion is written in the key grammar above, so `ParseKey` reads it back to its place. A source key that cannot be a field's key, because it is empty or holds `.`, `[`, `]`, `"`, `\`, `*` or a control character, is named as a map key: `server["a.b"]`, and `["a.b"]` at the root. A key the source tree holds in two readings, such as `port.x` beside a `port` section holding `x`, cannot be placed, so it is named by the nearest key that holds it: `server`. At the root that is the root itself, named `$`; `$` is the root's name in every message, not a key `ParseKey` reads. A suggestion is the field fewest edits away, counting an adjacent transposition as one edit and ignoring case, within a third of the key's length (at least 2) and sharing at least one character in place; a key no field is that close to has none.
 
 The check follows decoding exactly: it looks inside list elements and map entries of structs, through squashed structs, and lets through a map's own keys, anything beneath an interface, and keys a `,remain` field collects. A section no field holds is one key (`legacy`, not `legacy.old`).
 

@@ -26,6 +26,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make tool-check` | Module archive tooling tests and static analysis |
 | `make release-please-check` | The release workflow's release-please runner: first-parent release notes and their release-please wiring ([tools/release-please](tools/release-please/README.md)) |
 | `make cookbook-check` | The [config cookbook](config/examples/cookbook), a module of runnable recipes |
+| `make cookbook-integration` | The cookbook's database tests: the settings-store recipe on SQLite, and on PostgreSQL through `COOKBOOK_POSTGRES_DSN` (`make cookbook-postgres-up` starts a server; see the [cookbook's README](config/examples/cookbook/README.md#build-run-and-test)) |
 | `make ci` | All of the above |
 
 | Make variable | Default | Description |
@@ -48,8 +49,10 @@ superseded run leaves no change unvalidated. The scope lists the workspace's pac
   package that reads it; `tools/test_ci_release_checks.py` fails when a test reads a tracked
   file outside its directory that `go-owners` does not name.
 - The jobs whose packages or paths the change reaches: the Ubuntu suites and lint for any
-  package, macOS for the platform modules, the PostgreSQL legs for parse, Go 1.26 for httpx
-  and gitx, the SDK job for the SDK, the corpora in `parse/testdata` or its check scripts.
+  package, macOS for the platform modules, the PostgreSQL legs for parse, and for the
+  cookbook's settings-store recipe when the recipe, its database fixture or the cookbook's
+  dependencies change or a change reaches the config package, Go 1.26 for httpx and gitx,
+  the SDK job for the SDK, the corpora in `parse/testdata` or its check scripts.
   Their test and lint targets cover only the reached packages (`PACKAGES`), and of those
   only the ones with a file under the target's build tags, as a `path/...` pattern does: go
   refuses a package named explicitly whose files the tags all exclude, such as
@@ -90,6 +93,9 @@ paths run all of them. The suites run once each:
   keeps generic methods in declaration order; on earlier ones its facts about methods are
   misattributed (golang/go#82106). httpx and gitx run their tests on Go 1.26, their floor.
 - Parse's SQLite integration runs beside PostgreSQL 17 and 18.
+- The settings-store recipe's database tests run on SQLite and PostgreSQL 19, in their own
+  job (`cookbook-postgres`), so the recipe's PostgreSQL behaviour runs on a real server
+  without a service container in the modules job, which runs on every change.
 - The SDK runs every check on its Node.js floor, then only its runtime tests and packed
   consumer on the newest LTS.
 - Tests that depend only on their inputs replay passing results across runs and runners:

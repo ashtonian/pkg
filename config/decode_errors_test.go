@@ -104,8 +104,9 @@ func TestReload_DecodeErrorWithholdsSensitiveValues(t *testing.T) {
 }
 
 // treeKey reads a decoder name against the keys present, so a map key
-// holding "." or "]" is placed exactly, and one that cannot be told apart is
-// reported by its proven prefix.
+// holding "." or "]" is placed exactly, a source key under a struct holding
+// one is not read as a field's key it begins with, and one that cannot be
+// told apart is reported by its proven prefix.
 func TestTreeKey(t *testing.T) {
 	type inner struct {
 		Port int `koanf:"port"`
@@ -114,6 +115,9 @@ func TestTreeKey(t *testing.T) {
 		Pools  []inner          `koanf:"pools"`
 		Byname map[string]inner `koanf:"byname"`
 		Value  any              `koanf:"value"`
+		Server inner            `koanf:"server"`
+		Other  inner            `koanf:"other"`
+		Both   inner            `koanf:"both"`
 	}
 	root, err := rootSchema(reflect.TypeFor[cfg]())
 	require.NoError(t, err)
@@ -121,6 +125,9 @@ func TestTreeKey(t *testing.T) {
 		"pools":  []any{map[string]any{"port": 1}},
 		"byname": map[string]any{"a.b": map[string]any{"port": 1}, "x]": map[string]any{}, "x": map[string]any{}, "x].y[x": map[string]any{}},
 		"value":  map[string]any{"k": 1},
+		"server": map[string]any{"port": 1},
+		"other":  map[string]any{"port.x": 1, "port[0]": 2},
+		"both":   map[string]any{"port": 1, "port.x": 2},
 	}
 	for _, tt := range []struct {
 		name  string
@@ -133,8 +140,12 @@ func TestTreeKey(t *testing.T) {
 		{"byname[x].y[x].port", "byname", false}, // two present keys fit: x, and x].y[x
 		{"byname[missing].port", "byname", false},
 		{"value[k]", "value", false}, // beneath an interface, the value's own keys
+		{"server.port", "server.port", true},
+		{"other.port.x", "other", false}, // the tree holds port.x, not port
+		{"other.port[0]", "other", false},
+		{"both.port.x", "both", false}, // two present keys fit: port, and port.x
 	} {
-		p, _, exact := treeKey(root, tree, tt.name)
+		p, _, _, exact := treeKey(root, tree, tt.name)
 		assert.Equal(t, tt.key, p.String(), tt.name)
 		assert.Equal(t, tt.exact, exact, tt.name)
 	}

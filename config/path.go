@@ -16,9 +16,13 @@ import (
 //	named["primary"].port  a map entry: its key, always quoted as a Go string
 //	limits["/upload"]
 //	items[*].port          any element or entry, in a schema pattern
+//	["a.b"].port           a source key at the root no field's key can spell
 //
 // Quoting every map key keeps a key holding ".", "[", "]" or a quote — or
-// one that looks like an index — from reading as structure.
+// one that looks like an index — from reading as structure. A key begins
+// with a field, or with a quoted map key: the root is a struct, so a key
+// that begins with one names a source key no field reads, as a report of
+// unknown keys names it, and never an index or a wildcard.
 
 type segKind uint8
 
@@ -102,7 +106,10 @@ func parseKeyPath(s string) (keyPath, error) {
 	wantField := true // a key starts with a field, and so does each segment after "."
 	for rest != "" {
 		if rest[0] == '[' {
-			if wantField {
+			switch {
+			case len(p) == 0 && !strings.HasPrefix(rest, `["`):
+				return nil, fmt.Errorf("%w %q: a key begins with a field or a quoted map key", ErrKey, s)
+			case len(p) > 0 && wantField:
 				return nil, fmt.Errorf("%w %q: a selector must follow a field", ErrKey, s)
 			}
 			seg, n, err := parseSelector(rest)
@@ -110,7 +117,7 @@ func parseKeyPath(s string) (keyPath, error) {
 				return nil, fmt.Errorf("%w %q: %w", ErrKey, s, err)
 			}
 			p = append(p, seg)
-			rest = rest[n:]
+			rest, wantField = rest[n:], false
 		} else {
 			if !wantField {
 				return nil, fmt.Errorf("%w %q: expected \".\" or \"[\" after %q", ErrKey, s, p.String())

@@ -6,12 +6,31 @@ Complete programs that use [`config`](../../README.md) the way a service does, e
 |---|---|
 | [Kubernetes ConfigMap and Secret volumes](#kubernetes-configmap-and-secret-volumes) | The file watch on a ConfigMap volume; Secret keys through koanf's `k8smount` provider and its watch |
 | [Settings in a database](#settings-in-a-database) | A settings table read on every reload through `NewMapProvider`, tested on SQLite |
-| [Settings a service writes](#settings-a-service-writes) | An admin API that stores `CanonicalKey` rows, checks each write with the service's own load, serializes writers across replicas and reloads the table through `WithOverrideEntries`, tested on SQLite |
+| [Settings a service writes](#settings-a-service-writes) | An admin API that stores `CanonicalKey` rows, checks each write with the service's own load, serializes writers across replicas and reloads the table through `WithOverrideEntries`, tested on SQLite and PostgreSQL |
 | [AWS Secrets Manager](#aws-secrets-manager) | `secret` tags resolved through `SecretsFrom`, per environment |
 | [HashiCorp Vault](#hashicorp-vault) | A KV v2 secret as config keys, through koanf's Vault provider |
 | [A whole service](#a-whole-service) | Kong flags, validation, hot reload, appliers, admin endpoints and graceful shutdown |
 
-This is a module of its own, so the `config` module takes none of the SDKs and drivers it uses. Run it from this directory with `GOWORK=off go test ./...`, or `make cookbook-check` from the repository root; it builds against the working tree through `replace` directives.
+This is a module of its own, so the `config` module takes none of the SDKs and drivers it uses. It builds against the working tree through `replace` directives.
+
+## Build, run and test
+
+Run it from this directory with `GOWORK=off go test ./...`, or from the repository root:
+
+| Command | Runs |
+|---|---|
+| `make cookbook-check` | `go mod tidy -diff`, `go vet` and every recipe's race tests. The PostgreSQL legs skip unless `COOKBOOK_POSTGRES_DSN` is set |
+| `make lint-cookbook` | `go vet` on the declared Go floor, and staticcheck |
+| `make cookbook-integration` | The database tests: the settings-store recipe's, each on SQLite and on the PostgreSQL server `COOKBOOK_POSTGRES_DSN` names, and its fixture's own |
+| `eval "$(make -s cookbook-postgres-up)"` | Starts PostgreSQL 19 in Docker, the server CI's `cookbook-postgres` job provisions, and exports `COOKBOOK_POSTGRES_DSN`. `make cookbook-postgres-down` removes it |
+
+| Variable | Default | Description |
+|---|---|---|
+| `COOKBOOK_POSTGRES_DSN` | unset | A PostgreSQL URL. Each test gets a schema of its own, first on the search path and dropped when the test ends, so tests share any server, the one `make parse-postgres-up` starts among them. Unset, the PostgreSQL legs skip |
+| `COOKBOOK_REQUIRE_PG` | unset | `1` fails a PostgreSQL leg whose variable is unset instead of skipping it; CI's `cookbook-postgres` job sets it, so the job cannot pass without the server |
+| `COOKBOOK_PG_IMAGE`, `COOKBOOK_PG_NAME`, `COOKBOOK_PG_PORT` | `postgres:19`, `cookbook-postgres`, `55433` | Make variables: the image, container name and host port `cookbook-postgres-up` uses |
+
+A server that is set and unreachable fails the PostgreSQL legs rather than skipping them. The fixture is [`internal/pgtest`](internal/pgtest/pgtest.go), the twin of parse's `internal/dbtest`, which this module cannot import; a change to one's semantics belongs in both.
 
 ## Kubernetes ConfigMap and Secret volumes
 
@@ -108,11 +127,18 @@ func newReloader(ctx context.Context, db *sql.DB, boot *BootConfig) (*config.Rel
 
 ## Settings a service writes
 
-When the service writes the table itself — an admin API, a settings page — store each key as `config.CanonicalKey` spells it and load the table through `config.WithOverrideEntries`, so the writer and the loader share one key grammar: `limits.max`, `upstreams["api.internal"].timeout` (a map key holding a dot), `routes[1].path`. Every spelling of a key — a former name in an `alias` tag, another letter case — writes the one row, and `Key.Within` finds the rows beneath a key, which its write replaces and its `null` deletes.
+When the service writes the table itself — an admin API, a settings page — store each key as `config.CanonicalKey` spells it and load the table through `config.WithOverrideEntries`, so the writer and the loader share one key grammar: `limits.max`, `upstreams["api.internal"].timeout` (a map key holding a dot), `routes[1].path`. Every spelling of a key — a former name in an `alias` tag, another letter case — writes the one row, and `Key.Within` finds the rows beneath a key, which its write replaces and its `null` deletes. A row stored above a key — `limits` holding `{"max": 300}` when `limits.max` is written — has the key cut out of its value, under any spelling the value holds it by, in the same transaction and checked by the same load, so a set or a `null` beneath a row takes effect; a row left setting nothing is deleted. One write may not name both a key and a key within it, `limits` and `limits.max`: which wins would be the load's merge to decide, so the write is refused naming both, and the client sends the parent with the child folded in. A list or a scalar cannot be cut into, so a key beneath one a row stores, `routes[0].path` beneath a stored `routes` list, is refused: write the row's key whole. A release that removes a field leaves rows, or parts of rows' values, at keys the schema no longer reads. The table's source is under `config.WithUnknownEntries`, which claims the keys no field reads that only the table sets, by the decoder's own rules, so they stop no load: the service still starts, reloads and writes, and each load that finds any logs them at `Warn`. A key another source sets stays the load's, and fails it as before. A write's check claims them the same way, but refuses the write as unknown when one lies within a key the write sets. Such a key may still be written as `null`: that deletes the rows stored at and beneath it that the schema does not read either. Any other value for such a key, or a `null` with no such row stored, is refused as unknown, and a spelling the schema refuses never deletes a row it reads.
 
-A write is checked by the load that will read it. The service's options come from one builder; a write builds the table it would leave and loads it with those options, the table read replaced by that one, so `limits.min` and `limits.max` move together, the file and the environment beneath the table are read as the next reload reads them, and a table the service would refuse is never committed. `DecodeEdits` over the live config is not that check: it misses a lower source that changed and a row deleted since the config loaded. When the stored table fails to load as well, the fault is beneath the write: a 503, logged at `Error`. A refused write is a 422 whose body names the client's own keys and never a value.
+A write is checked by the load that will read it. The service's options come from one builder; a write builds the table it would leave and loads it with those options, the table read replaced by that one, so `limits.min` and `limits.max` move together, the file and the environment beneath the table are read as the next reload reads them, and a table the service would refuse is never committed. `DecodeEdits` over the live config is not that check: it misses a lower source that changed and a row deleted since the config loaded. When the settings fail to load without the write as well, the fault is beneath it — in the file, the environment or a row already stored — and the write is a 503, logged at `Error`. A refused write is a 422 whose body names the client's own keys, never a value, and its `reason`: `unknown` (a key names nothing the service reads), `repeated` (one key spelled two ways), `invalid` (the settings the write leaves do not load), `full` (the table would pass its cap), `enclosed` (a key lies inside a list or a scalar a stored row sets) or `overlap` (one write names a key and a key within it).
 
-Writes take turns across replicas: each updates one lock row as its first statement, which the database holds until the write ends, so each reads the table the one before it left. A configured cap bounds the table, and values are read with `UseNumber`, so integers keep every digit. The pool, the request timeouts and caps, and the log level (`warn` by default, with one startup entry) are `BootConfig` fields. [`settingsstore/main.go`](settingsstore/main.go) has the `PUT /admin/settings` handler and the `main` that serves it; its test runs every path on SQLite, two replicas writing at once among them.
+Writes take turns across replicas: each updates one lock row as its first statement, which the database holds until the write ends, so each reads the table the one before it left. The transaction runs at `READ COMMITTED` whatever the server's default, the level at which a write that waited reads what the one before it committed; SQLite's driver ignores the level, since its transactions are serializable and the lock row's update takes its write lock. Configured caps bound the table in rows and in bytes, and values are read with `UseNumber`, so integers keep every digit. The pool, the request timeouts and caps, and the log level (`warn` by default, with one startup entry) are `BootConfig` fields. [`settingsstore/main.go`](settingsstore/main.go) has the `PUT /admin/settings` handler and the `main` that serves it; its tests run every path on SQLite and on PostgreSQL ([Build, run and test](#build-run-and-test)): two replicas writing at once among them, and on PostgreSQL a write that waits on the lock row and then reads what the write holding it committed, on a session whose default isolation is `SERIALIZABLE`.
+
+| Command | Does |
+|---|---|
+| `settingsstore migrate` | Applies `Schema`, which creates only what is missing, and exits. Run it once per release, before the replicas start, with a role that may create tables. |
+| `settingsstore` | Serves the admin API. It runs no DDL, so its role needs only `SELECT`, `INSERT`, `UPDATE` and `DELETE` on `settings` and `settings_lock`, and replicas never race one another creating tables, which Postgres can refuse with a unique violation. Started against a database without the schema, it exits naming the migrate step. |
+
+Both commands read the variables below.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
@@ -126,31 +152,40 @@ Writes take turns across replicas: each updates one lock row as its first statem
 | `SETTINGS_CONN_MAX_LIFETIME` | duration | `30m` | How long a connection lives |
 | `SETTINGS_QUERY_TIMEOUT` | duration | `5s` | The bound on a read of the table, and on a write with its wait for its turn |
 | `SETTINGS_POLL_INTERVAL` | duration | `30s` | How often the reloader reads the table besides after a write |
-| `SETTINGS_MAX_ROWS` | int | `1000` | The table's row cap: a write past it is refused, and a read of a table past it fails |
+| `SETTINGS_MAX_ROWS` | int | `1000` | The table's row cap: a write that would grow the table past it is refused. A read accepts up to twice the cap, so a cap lowered beneath the table leaves it readable, and fails past that, so what a read holds stays bounded |
+| `SETTINGS_MAX_TABLE_BYTES` | int | `1048576` | The table's byte cap, counting every row's key and its value's JSON text, by the row cap's rule: a write that would grow the table past it is refused, and a read accepts up to twice it. The database withholds a value larger than twice the cap, so one row stored by another writer cannot pass the bound either |
 | `SETTINGS_MAX_BODY_BYTES` | int | `1048576` | The largest request body; a larger one is a 413 |
 | `SETTINGS_READ_HEADER_TIMEOUT`, `SETTINGS_READ_TIMEOUT` | duration | `5s`, `10s` | The server's bounds on reading a request's headers, and the whole request |
 | `SETTINGS_WRITE_TIMEOUT` | duration | `15s` | The server's bound on a response; longer than the query timeout |
 | `SETTINGS_IDLE_TIMEOUT` | duration | `60s` | How long a keep-alive connection idles |
 | `SETTINGS_SHUTDOWN_TIMEOUT` | duration | `10s` | The drain deadline on `SIGTERM` |
 
-A 503 is always logged at `Error`: `loading the stored settings` means the table fails to load with no write applied — find the refused key in the entry's error, fix or delete its row, and the next poll recovers; `taking the settings lock` means `Schema` was not applied; anything else is the database. While the stored table does not load, every reload fails and the service keeps its previous config.
+A write that times out waiting for its turn — behind another write of the same replica, for a pooled connection, or for the lock row another replica holds — is contention: a 503 with `reason` `busy` and a `Retry-After` of the query timeout, logged at `Warn`. Frequent ones mean writes take too long or arrive too fast for `SETTINGS_QUERY_TIMEOUT`. Every other 503 is logged at `Error`: `the settings fail to load without this write` means the service's own settings do not load even with the write left out, so no client is at fault. The entry names what to check — `SETTINGS_CONFIG_FILE`, the `APP_*` variables and the settings table — and the wrapped error names the key that fails. Fix the file or the variable and redeploy, or fix or delete the row — a row whose field a release removed is deleted by writing its key as `null` — and the next poll recovers; `taking the settings lock` means the lock row is gone — run `settingsstore migrate`, which restores it; anything else is the database. While the settings do not load, every reload fails and the service keeps its previous config. `settings table over its cap`, at `Warn` on every read, means `SETTINGS_MAX_ROWS` or `SETTINGS_MAX_TABLE_BYTES` was lowered beneath the table; the entry gives the table's `rows` and `bytes` beside each cap. The service still loads the table and takes every write that does not grow it past a cap, deletes among them, and refuses one that does as `full`: delete rows through the API until the warning stops. A table past twice a cap fails every read with `the table holds more than N rows` or `more than N bytes`, so reloads keep the previous config, writes fail and restarts fail: raise that cap to at least half the table's size, delete rows through the API, then lower it. Lower a cap by at most half at a time. `settings the schema does not read left out of the load`, at `Warn` on every load that finds one, names in `keys` what a removed field left: write each key as `null` to delete its row, or, for a part of a row's value such as `limits.old` inside the `limits` row, write the row's key whole again.
 
 <!-- recipe: settingsstore/main.go -->
 
 ```go
-// Sources builds the options the service loads AppConfig with, the table
-// read through entries.
-type Sources func(entries Entries) []config.Option
+// Sources are how the service loads AppConfig: Options builds the options,
+// the table read through entries under the table's source options, and
+// Beneath names the sources beneath the table, for an operator to check
+// when the settings fail to load.
+type Sources struct {
+	Options func(entries Entries, table ...config.SourceOption) []config.Option
+	Beneath string
+}
 
 // appSources layers the table over the file and APP_* variables.
 func appSources(file string, logger *slog.Logger) Sources {
-	return func(entries Entries) []config.Option {
-		return []config.Option{
-			config.WithFile(file),
-			config.WithEnvPrefix("APP"),
-			config.WithOverrideEntries(entries),
-			config.WithLogger(logger),
-		}
+	return Sources{
+		Options: func(entries Entries, table ...config.SourceOption) []config.Option {
+			return []config.Option{
+				config.WithFile(file),
+				config.WithEnvPrefix("APP"),
+				config.WithOverrideEntries(entries, table...),
+				config.WithLogger(logger),
+			}
+		},
+		Beneath: file + " and the APP_* variables",
 	}
 }
 ```
@@ -160,12 +195,15 @@ func appSources(file string, logger *slog.Logger) Sources {
 ```go
 // Write applies edits to the table, all or nothing, and returns the keys it
 // wrote: each key, spelled canonically, set to its value and replacing the
-// rows stored beneath it, or, set to nil, deleted with them. Unless the
-// table the write leaves loads with the service's options and fits the row
-// cap, the write is refused with a *RefusedError and nothing changes.
+// rows stored beneath it, or, set to nil, deleted with them, and in either
+// case cut out of the values of the rows stored above it. A key the
+// schema does not read may be set only to nil, to delete the rows a release
+// that removed its field left. Unless the table the write leaves loads with
+// the service's options, and fits the caps or is no larger than before,
+// the write is refused with a *RefusedError and nothing changes.
 func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, error) {
-	writes, err := canonical(edits)
-	if err != nil || len(writes) == 0 {
+	writes, unread, err := canonical[AppConfig](edits)
+	if err != nil || len(writes) == 0 && len(unread) == 0 {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
@@ -174,11 +212,17 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	case s.writing <- struct{}{}:
 		defer func() { <-s.writing }()
 	case <-ctx.Done():
-		return nil, fmt.Errorf("waiting to write settings: %w", context.Cause(ctx))
+		return nil, fmt.Errorf("waiting for this replica's other settings write: %w: %w", ErrBusy, context.Cause(ctx))
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	// At READ COMMITTED each statement reads what committed before it, so a
+	// write that waited for the lock row reads the table the write before it
+	// left; at REPEATABLE READ or SERIALIZABLE, a server default some
+	// deployments set, Postgres refuses the waiting write's update instead.
+	// SQLite's driver ignores the level: its transactions are serializable,
+	// and updating the lock row takes the database's write lock.
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
-		return nil, fmt.Errorf("beginning a settings write: %w", err)
+		return nil, fmt.Errorf("beginning a settings write: %w", busy(ctx, err))
 	}
 	defer func() { _ = tx.Rollback() }() // after Commit, a no-op
 	// Updating the lock row is the write's first statement: the database
@@ -186,43 +230,55 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	// turns, and each reads the table the one before it left.
 	locked, err := tx.ExecContext(ctx, "UPDATE settings_lock SET writes = writes + 1 WHERE id = 1")
 	if err != nil {
-		return nil, fmt.Errorf("taking the settings lock: %w", err)
+		return nil, fmt.Errorf("taking the settings lock: %w", busy(ctx, err))
 	}
 	n, err := locked.RowsAffected()
 	if err != nil {
 		return nil, fmt.Errorf("taking the settings lock: %w", err)
 	}
 	if n != 1 {
-		return nil, errors.New("taking the settings lock: settings_lock has no row 1; apply Schema")
+		return nil, errors.New("taking the settings lock: settings_lock has no row 1; run `settingsstore migrate`")
 	}
-	stored, err := readRows(ctx, tx, s.maxRows)
+	stored, err := readRows(ctx, tx, s.limits.read())
 	if err != nil {
 		return nil, err
 	}
-	keys := slices.Sorted(maps.Keys(writes))
-	table, deleted := apply(stored, writes)
-	if len(table) > s.maxRows {
-		return nil, &RefusedError{Reason: ReasonFull, Keys: keys}
+	if missing := unstored[AppConfig](unread, stored.values); len(missing) > 0 {
+		return nil, &RefusedError{Reason: ReasonUnknown, Keys: missing}
 	}
-	if err := s.check(ctx, stored, table, keys); err != nil {
+	keys := append(slices.Collect(maps.Keys(writes)), unread...)
+	slices.Sort(keys)
+	c, err := apply[AppConfig](stored.values, writes, unread)
+	if err != nil {
 		return nil, err
 	}
-	for _, key := range deleted {
+	texts, err := encode(writes, c.rewritten)
+	if err != nil {
+		return nil, err
+	}
+	after := tableSize{rows: len(c.table)}
+	for key := range c.table {
+		if text, ok := texts[key]; ok {
+			after.bytes += int64(len(key) + len(text))
+		} else {
+			after.bytes += stored.sizes[key]
+		}
+	}
+	if s.limits.refuses(stored.size(), after) {
+		return nil, &RefusedError{Reason: ReasonFull, Keys: keys}
+	}
+	if err := s.check(ctx, stored.values, c.table, writes, keys); err != nil {
+		return nil, err
+	}
+	for _, key := range c.deleted {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM settings WHERE key = $1", key); err != nil {
 			return nil, fmt.Errorf("deleting %s: %w", key, err)
 		}
 	}
-	for _, key := range keys {
-		if writes[key] == nil {
-			continue
-		}
-		text, err := json.Marshal(writes[key])
-		if err != nil {
-			return nil, fmt.Errorf("encoding the value of %s: %w", key, err)
-		}
+	for _, key := range slices.Sorted(maps.Keys(texts)) {
 		if _, err := tx.ExecContext(ctx,
 			"INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-			key, string(text)); err != nil {
+			key, texts[key]); err != nil {
 			return nil, fmt.Errorf("storing %s: %w", key, err)
 		}
 	}
@@ -236,21 +292,24 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 <!-- recipe: settingsstore/main.go -->
 
 ```go
-// check loads table, the one a write of keys leaves, with the service's
-// options. A table that does not load refuses the write, unless the stored
-// table does not load either: then the fault lies beneath the write, and no
-// client can fix it by retrying.
-func (s *Settings) check(ctx context.Context, stored, table map[string]any, keys []string) error {
-	_, err := config.Load[AppConfig](ctx, s.sources(fixed(table))...)
+// check loads after, the table a write of writes leaves, with the service's
+// options. A table that does not load refuses the write, as does a key no
+// field reads inside a value the write sets; one a stored row holds is
+// tolerated, as loads tolerate it. The write is not refused when before,
+// the table stored now, does not load either: then the fault lies in a
+// source beneath the table or in a row already stored, and no client can
+// fix it by retrying.
+func (s *Settings) check(ctx context.Context, before, after, writes map[string]any, keys []string) error {
+	_, err := config.Load[AppConfig](ctx, s.sources.Options(fixed(after), config.WithUnknownEntries(unknownInWrites(writes)))...)
 	if err == nil || !errors.Is(err, config.ErrValidation) && !errors.Is(err, config.ErrKey) {
 		return err
 	}
-	if _, storedErr := config.Load[AppConfig](ctx, s.sources(fixed(stored))...); storedErr != nil {
-		return fmt.Errorf("loading the stored settings: %w", storedErr)
+	if _, storedErr := config.Load[AppConfig](ctx, s.sources.Options(fixed(before), config.WithUnknownEntries(nil))...); storedErr != nil {
+		return fmt.Errorf("the settings fail to load without this write; check %s and the settings table: %w", s.sources.Beneath, storedErr)
 	}
 	reason := ReasonInvalid
-	if unknown, ok := errors.AsType[*config.UnknownKeysError](err); ok && len(unknown.Keys) > 0 {
-		reason = ReasonUnknown // a key inside a value the write sets
+	if _, ok := errors.AsType[*writtenUnknownError](err); ok {
+		reason = ReasonUnknown
 	}
 	return &RefusedError{Reason: reason, Keys: keys, Err: err}
 }

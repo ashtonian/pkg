@@ -40,7 +40,7 @@ func failedKeys(root *schemaNode, tree any, err error) []keyPath {
 	walk = func(e error) {
 		switch u := e.(type) {
 		case *mapstructure.DecodeError:
-			p, _, _ := treeKey(root, tree, u.Name())
+			p, _, _, _ := treeKey(root, tree, u.Name())
 			at = append(at, p)
 		case interface{ Unwrap() []error }:
 			for _, inner := range u.Unwrap() {

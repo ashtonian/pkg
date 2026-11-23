@@ -133,8 +133,10 @@ each entry to extend them.
 `ParseKey` applied to `named["a.b"].port` returns field, quoted-key and field
 segments. `Key.String()` preserves that canonical spelling; `Key.Fields()`
 returns `named.port`, and `Key.LastName()` returns `port`. Index selectors
-and `[*]` patterns use distinct segment kinds. Empty or malformed keys
-return an error wrapping `ErrKey`.
+and `[*]` patterns use distinct segment kinds. A key begins with a field,
+or with a quoted map key naming a source key at the root that no field's
+key can spell (`["a.b"]`); empty or malformed keys return an error wrapping
+`ErrKey`.
 
 ## Raw and policy-controlled trees
 
