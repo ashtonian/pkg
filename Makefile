@@ -258,7 +258,8 @@ tool-check:
 docs-check:
 	cd tools/doccheck && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test $(RACE) -count=1 ./... && GOWORK=off $(STATICCHECK) ./... && GOWORK=off go run . -root ../..
 
-## release-please-check: the release workflow's runner: first-parent notes and their release-please wiring
+## release-please-check: the release workflow's runner (first-parent notes and their release-please wiring)
+## and the release-notes check of a pull request's commits
 release-please-check:
 	cd tools/release-please && pnpm install --frozen-lockfile && node --test
 
