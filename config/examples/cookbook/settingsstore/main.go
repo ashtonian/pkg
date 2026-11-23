@@ -192,7 +192,13 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	case <-ctx.Done():
 		return nil, fmt.Errorf("waiting to write settings: %w", context.Cause(ctx))
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	// At READ COMMITTED each statement reads what committed before it, so a
+	// write that waited for the lock row reads the table the write before it
+	// left; at REPEATABLE READ or SERIALIZABLE, a server default some
+	// deployments set, Postgres refuses the waiting write's update instead.
+	// SQLite's driver ignores the level: its transactions are serializable,
+	// and updating the lock row takes the database's write lock.
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return nil, fmt.Errorf("beginning a settings write: %w", err)
 	}

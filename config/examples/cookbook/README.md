@@ -112,7 +112,7 @@ When the service writes the table itself — an admin API, a settings page — s
 
 A write is checked by the load that will read it. The service's options come from one builder; a write builds the table it would leave and loads it with those options, the table read replaced by that one, so `limits.min` and `limits.max` move together, the file and the environment beneath the table are read as the next reload reads them, and a table the service would refuse is never committed. `DecodeEdits` over the live config is not that check: it misses a lower source that changed and a row deleted since the config loaded. When the stored table fails to load as well, the fault is beneath the write: a 503, logged at `Error`. A refused write is a 422 whose body names the client's own keys and never a value.
 
-Writes take turns across replicas: each updates one lock row as its first statement, which the database holds until the write ends, so each reads the table the one before it left. A configured cap bounds the table, and values are read with `UseNumber`, so integers keep every digit. The pool, the request timeouts and caps, and the log level (`warn` by default, with one startup entry) are `BootConfig` fields. [`settingsstore/main.go`](settingsstore/main.go) has the `PUT /admin/settings` handler and the `main` that serves it; its test runs every path on SQLite, two replicas writing at once among them.
+Writes take turns across replicas: each updates one lock row as its first statement, which the database holds until the write ends, so each reads the table the one before it left. The transaction runs at `READ COMMITTED` whatever the server's default, the level at which a write that waited reads what the one before it committed; SQLite's driver ignores the level, since its transactions are serializable and the lock row's update takes its write lock. A configured cap bounds the table, and values are read with `UseNumber`, so integers keep every digit. The pool, the request timeouts and caps, and the log level (`warn` by default, with one startup entry) are `BootConfig` fields. [`settingsstore/main.go`](settingsstore/main.go) has the `PUT /admin/settings` handler and the `main` that serves it; its test runs every path on SQLite, two replicas writing at once among them.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
@@ -176,7 +176,13 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	case <-ctx.Done():
 		return nil, fmt.Errorf("waiting to write settings: %w", context.Cause(ctx))
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	// At READ COMMITTED each statement reads what committed before it, so a
+	// write that waited for the lock row reads the table the write before it
+	// left; at REPEATABLE READ or SERIALIZABLE, a server default some
+	// deployments set, Postgres refuses the waiting write's update instead.
+	// SQLite's driver ignores the level: its transactions are serializable,
+	// and updating the lock row takes the database's write lock.
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return nil, fmt.Errorf("beginning a settings write: %w", err)
 	}

@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -16,7 +18,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 
 	"github.com/ashtonian/pkg/config"
 )
@@ -340,4 +342,68 @@ func TestLogStarting(t *testing.T) {
 	assert.Equal(t, ":8080", entry.Config["addr"])
 	assert.NotContains(t, logs.String(), "FAKE_PASSWORD")
 	assert.Equal(t, slog.LevelWarn, level.Level())
+}
+
+// txLevels records the isolation level each transaction on a connection
+// begins at.
+type txLevels struct {
+	mu     sync.Mutex
+	levels []sql.IsolationLevel
+}
+
+// sqliteConn is what a modernc.org/sqlite connection implements.
+type sqliteConn interface {
+	driver.Conn
+	driver.ConnBeginTx
+	driver.ConnPrepareContext
+	driver.ExecerContext
+	driver.QueryerContext
+}
+
+// recordingConn is a SQLite connection that records its transactions'
+// isolation levels.
+type recordingConn struct {
+	sqliteConn
+	levels *txLevels
+}
+
+func (c recordingConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	c.levels.mu.Lock()
+	c.levels.levels = append(c.levels.levels, sql.IsolationLevel(opts.Isolation))
+	c.levels.mu.Unlock()
+	return c.sqliteConn.BeginTx(ctx, opts)
+}
+
+type recordingConnector struct {
+	dsn    string
+	levels *txLevels
+}
+
+func (c recordingConnector) Connect(context.Context) (driver.Conn, error) {
+	conn, err := c.Driver().Open(c.dsn)
+	if err != nil {
+		return nil, err
+	}
+	full, ok := conn.(sqliteConn)
+	if !ok {
+		return nil, errors.New("the SQLite connection lacks a method recordingConn forwards")
+	}
+	return recordingConn{full, c.levels}, nil
+}
+
+func (recordingConnector) Driver() driver.Driver { return &sqlite.Driver{} }
+
+// Every write begins at READ COMMITTED, the level at which the lock row
+// serializes writers on Postgres whatever the server's default.
+func TestSettings_WritesBeginAtReadCommitted(t *testing.T) {
+	var levels txLevels
+	dir := t.TempDir()
+	db := sql.OpenDB(recordingConnector{dsn: filepath.Join(dir, "settings.db") + "?_pragma=busy_timeout(10000)", levels: &levels})
+	t.Cleanup(func() { _ = db.Close() })
+	_, err := db.Exec(Schema)
+	require.NoError(t, err)
+	s := NewSettings(db, appSources(filepath.Join(dir, "config.yaml"), slog.New(slog.DiscardHandler)), 10*time.Second, 100)
+	write(t, s, map[string]any{"limits.max": 300})
+	write(t, s, map[string]any{"limits.max": nil})
+	assert.Equal(t, []sql.IsolationLevel{sql.LevelReadCommitted, sql.LevelReadCommitted}, levels.levels)
 }
