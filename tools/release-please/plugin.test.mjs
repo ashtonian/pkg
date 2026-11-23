@@ -203,13 +203,33 @@ test('each release path counts what the merge changed there', async () => {
   assert.doesNotMatch(written, /BREAKING|###/, 'no section, so release-please cuts no release');
 });
 
-// A branch commit older than the path's last release, or one release-please
-// cannot parse, never reaches the plugin: the branch commits it sees are not
-// the whole change there, so the subject stays a floor.
-test("a branch commit missing from a path's commits keeps the merge subject a floor there", async () => {
+// #372 merged after httpx 0.5.0, but its breaking commit was older than that
+// release, where release-please cuts httpx's commits, so the commit's
+// BREAKING CHANGE footer did not reach the notes.
+test("a branch commit older than the path's last release is read from the history", async () => {
+  const subject = 'fix(httpx)!: preserve independent options across repeated layer configuration (#372)';
+  const footer = 'Repeated layer options apply in call order.';
+  const branch = [
+    ['b0', `fix(httpx)!: preserve independent options across repeated layer configuration\n\nBREAKING CHANGE: ${footer}`, ['httpx/client.go']],
+    ['b1', 'test(httpx): close what the tests open', ['httpx/client_test.go']],
+    ['b2', 'feat(httpx/oauth2): refresh early', ['httpx/oauth2/token.go']],
+  ];
+  const config = { httpx: {}, 'httpx/oauth2': {} };
+
+  const kept = await runPaths(landedBatch(subject, branch), { httpx: raw(subject, branch, ['b1']) }, config);
+
+  const [header] = kept.httpx;
+  assert.deepEqual([header.type, header.breaking], ['fix', true], "another path's feature does not raise the type");
+  assert.deepEqual(header.notes, [{ title: 'BREAKING CHANGE', text: footer }]);
+  assert.match(await notes(kept.httpx), /Repeated layer options apply in call order\./);
+});
+
+// A branch commit release-please cannot parse gives no entry, so the branch
+// commits the plugin sees are not the whole change there and the subject stays
+// a floor.
+test('a branch commit release-please cannot parse keeps the merge subject a floor in its path', async () => {
   const subject = 'feat(parse)!: stream rows (#9)';
   const cases = [
-    { name: 'older than the release', missing: ['b0', 'feat(parse)!: stream rows', ['parse/stream.go']], floor: true },
     { name: 'unparseable', missing: ['b0', 'wip', ['parse/stream.go']], floor: true },
     { name: 'a fixup', missing: ['b0', 'fixup! test(parse): cover streaming', ['parse/stream.go']], floor: true },
     { name: 'unparseable, in another path', missing: ['b0', 'wip', ['httpx/x.go']], floor: false },
@@ -261,15 +281,26 @@ test("a branch commit touching only a path's exclude-paths leaves it complete", 
 });
 
 // Two paths with the same commits share a parse, so the merge must be
-// complete in both.
+// complete in both, and an unlisted branch commit counts only when it touches
+// both: one touching only parse/sdk leaves parse/sdk incomplete.
 test('paths with the same commits count a merge as complete only when it is in each', async () => {
   const subject = 'feat(parse)!: stream rows (#9)';
-  const branch = [['b1', 'test(parse): cover streaming', ['parse/a_test.go', 'parse/sdk/b_test.go']], ['b0', 'wip', ['parse/sdk/c.go']], ['b2', 'feat!: x', ['x/y.go']]];
-  const listed = raw(subject, branch, ['b1']);
+  const cases = [
+    { name: 'unparseable', other: ['b0', 'wip', ['parse/sdk/c.go']] },
+    { name: 'older than the release', other: ['b0', 'fix(parse/sdk): close streams\n\nBREAKING CHANGE: Close returns an error.', ['parse/sdk/c.go']] },
+  ];
+  for (const tc of cases) {
+    const branch = [['b1', 'test(parse): cover streaming', ['parse/a_test.go', 'parse/sdk/b_test.go']], tc.other, ['b2', 'feat!: x', ['x/y.go']]];
+    const listed = raw(subject, branch, ['b1']);
 
-  const kept = await runPaths(landedBatch(subject, branch), { parse: listed, 'parse/sdk': listed });
+    const kept = await runPaths(landedBatch(subject, branch), { parse: listed, 'parse/sdk': listed });
 
-  for (const path of ['parse', 'parse/sdk']) assert.deepEqual([kept[path][0].type, kept[path][0].breaking], ['feat', true], path);
+    for (const path of ['parse', 'parse/sdk']) {
+      const [header] = kept[path];
+      assert.deepEqual([header.type, header.breaking], ['feat', true], `${tc.name}: ${path}`);
+      assert.deepEqual(header.notes.map(n => n.text), ['stream rows (#9)'], `${tc.name}: ${path} takes no note from parse/sdk alone`);
+    }
+  }
 });
 
 test('without preconfigure, each merge counts at least as its subject, with a warning', () => {
