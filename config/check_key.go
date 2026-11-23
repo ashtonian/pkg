@@ -17,14 +17,15 @@ import (
 // CheckKey checks one concrete key with all other fields at their declared
 // and WithDefaults defaults. It decodes with Load's hooks and weak typing,
 // then runs its validator and T.Validate. Unknown keys — the key, or a key
-// inside its value that no field reads — return *KeyErrors matching ErrKey;
-// invalid values match ErrValidation. A validate tag the default validator
-// cannot apply to its field, such as dive on an int, is the declaration's
-// fault and returns ErrSchema with no *KeyError. Keys use ParseKey's
-// grammar, accepting field aliases and case folding (see CanonicalKey). A
-// list index must exist in the defaults or append immediately after them;
-// pass a whole list to create several new elements. Wildcards are not
-// concrete keys.
+// inside its value that no field reads — return *KeyErrors matching ErrKey,
+// as does a key that does not parse or is not concrete, its message saying
+// which; invalid values match ErrValidation. A validate tag the default
+// validator cannot apply to its field, such as dive on an int, is the
+// declaration's fault and returns ErrSchema with no *KeyError. Keys use
+// ParseKey's grammar, accepting field aliases and case folding (see
+// CanonicalKey). A list index must exist in the defaults or append
+// immediately after them; pass a whole list to create several new elements.
+// Wildcards are not concrete keys.
 //
 // value sets key as a source above the defaults would. A map[string]any, as
 // a file or JSON decodes to, merges into what the defaults hold there key by
@@ -79,13 +80,15 @@ func DecodeKey[T any](ctx context.Context, key string, value any, opts ...Option
 // key beneath an interface, or one a remain field collects, as a field
 // wherever it can be one, what lies beneath the latter spelled by the
 // field's element type. FieldFor resolves every key it returns. A settings
-// store keys its rows by it, so two spellings of one key are one row. It reads an entry's key as a load with no options does: a
-// WithDecodeHook that reads a key type from other text is not consulted, so
-// a key naming an entry by such text is refused. A key that does not parse, is not concrete or names nothing
-// config reads returns an Unknown *KeyError matching ErrKey. It reads no
-// value and no validate tag: whether a value is valid for the key is
-// CheckKey's to say. A declaration a load refuses for anything but its
-// validate tags, such as a misspelt tag key, matches ErrSchema.
+// store keys its rows by it, so two spellings of one key are one row. It
+// reads an entry's key as a load with no options does: a WithDecodeHook that
+// reads a key type from other text is not consulted, so a key naming an
+// entry by such text is refused. A key that does not parse, is not concrete
+// or names nothing config reads returns an Unknown *KeyError matching
+// ErrKey, whose message says which. It reads no value and no validate tag:
+// whether a value is valid for the key is CheckKey's to say. A declaration a
+// load refuses for anything but its validate tags, such as a misspelt tag
+// key, matches ErrSchema.
 func CanonicalKey[T any](key string) (string, error) {
 	schema, err := rootSchema(reflect.TypeFor[T]())
 	if err != nil {
@@ -115,13 +118,14 @@ func CanonicalKey[T any](key string) (string, error) {
 // other set, a map[string]any merging into that value as into a baseline's.
 //
 // The batch is refused whole, with an *EditsError, when any key is refused,
-// every refused key in it: a key naming nothing config reads, or a key
-// inside a value that no field reads (Unknown, ErrKey); one value set under
-// two spellings; an index beyond the next element; a key beneath one set to
-// a value that cannot hold it, as primary set to 5 cannot hold primary.port;
-// keys selecting both elements and fields of one value. When every key
-// applies but the candidate does not decode or validate, the *EditsError
-// names the batch's keys and holds the cause.
+// every refused key in it: a key that does not parse, holds [*] or names
+// nothing config reads, or a key inside a value that no field reads
+// (Unknown, ErrKey); one value set under two spellings; an index beyond the
+// next element; a key beneath one set to a value that cannot hold it, as
+// primary set to 5 cannot hold primary.port; keys selecting both elements
+// and fields of one value. When every key applies but the candidate does not
+// decode or validate, the *EditsError names the batch's keys and holds the
+// cause.
 //
 // What it checks is the batch over baseline and nothing else: the same
 // decode hooks, validator and Validate method as Load, and no source.

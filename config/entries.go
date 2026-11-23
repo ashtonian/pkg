@@ -36,11 +36,16 @@ import (
 //
 // An entry whose key names nothing config reads, and a key inside a value
 // that no field reads, reach the unknown-input handler as any source's
-// unknown keys do. Entries that cannot all apply fail the load with
-// *KeyErrors matching ErrValidation, every one of them named: one value
-// under two spellings, an index past the next element, a key beneath one
-// set to a value that cannot hold it, keys selecting both elements and
-// fields of one value, a value its field's format or sep tag cannot read.
+// unknown keys do. An entry keyed by what names no one value — text that
+// does not parse as a key, such as pool[x], or a key holding [*] — is no
+// unknown key, whatever the source does with those: it cannot be set.
+// Entries that cannot all apply fail the load with *KeyErrors, every one of
+// them named: those, matching ErrKey, each message saying which and quoting
+// the text that does not parse, redacted (see RedactText); and, matching
+// ErrValidation, one value under two spellings, an index past the next
+// element, a key beneath one set to a value that cannot hold it, keys
+// selecting both elements and fields of one value, a value its field's
+// format or sep tag cannot read.
 // Under [WithInvalidEntries] those entries, and every entry that does not
 // decode or validate as that option judges it, are withheld and reported
 // instead. Diagnostics name keys, cut short beneath a sensitive container,
@@ -82,7 +87,9 @@ func entrySource(read func(ctx context.Context) (map[string]any, error), opts []
 
 // readEntries reads the entries p reads and prepares them as key edits (see
 // edits.go), which set them over the layers beneath as the source called
-// name merges. An entry naming nothing config reads is an unknown key.
+// name merges. An entry naming nothing config reads is an unknown key; one
+// whose key does not parse, or holds [*], names no one value, and is
+// refused as an entry that cannot be set is.
 func (l *loader) readEntries(ctx context.Context, name string, p providerSource, src Source) (*layer, error) {
 	read, err := p.entries(ctx)
 	if err != nil {
@@ -92,7 +99,7 @@ func (l *loader) readEntries(ctx context.Context, name string, p providerSource,
 	y := &layer{name: name, label: constant(src), byEntry: true, entries: edits, withhold: p.withhold, report: p.rejected,
 		claimsUnknown: p.claimsUnknown, unknownReport: p.unknown}
 	for _, ke := range refused {
-		if ke.Unknown {
+		if ke.namesNothing() {
 			y.unknown = append(y.unknown, UnknownKey{Key: ke.Key, Suggestion: ke.suggestion})
 		} else {
 			y.refused = append(y.refused, ke)

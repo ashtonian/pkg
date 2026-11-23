@@ -622,6 +622,28 @@ func TestSettings_ANullDeletesARowTheSchemaNoLongerReads(t *testing.T) {
 	})
 }
 
+// A row whose key does not parse, which only a hand-written row holds, is
+// no key a load can leave out: every load fails naming it, and so does
+// every write but the one deleting it, a null write of its text.
+func TestSettings_ARowWhoseKeyDoesNotParseFailsLoadsUntilDeleted(t *testing.T) {
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		s, db := newReplica(t, b, 100)
+		write(t, s, map[string]any{"limits.max": 200})
+		_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ($1, $2)`, "limits[x]", "1")
+		require.NoError(t, err)
+
+		_, err = config.Load[AppConfig](t.Context(), s.Options()...)
+		require.ErrorIs(t, err, config.ErrKey)
+		assert.ErrorContains(t, err, `key "limits[x]" does not parse`)
+		_, err = s.Write(t.Context(), map[string]any{"limits.max": 300})
+		assert.ErrorContains(t, err, "the settings fail to load without this write")
+
+		write(t, s, map[string]any{"limits[x]": nil})
+		assert.Equal(t, map[string]string{"limits.max": "200"}, rowsOf(t, db))
+		assert.Equal(t, 200, load(t, s).Limits.Max)
+	})
+}
+
 // What a removed field leaves in the table, a row or a part of a row's
 // value, is left out of every load: the service restarts, reloads and
 // writes as though it were gone. What a write sets is not left out, so a key

@@ -43,7 +43,7 @@ schema. Schema errors support `errors.Is(err, config.ErrSchema)`; malformed keys
 | `RedactedMapChecked(cfg)` | `(map[string]string, error)` with text values keyed by path | Returns nil on structural errors and misspelt tag keys, including reached dynamic types |
 | `Usage[T](prefixes...)` | `([]UsageEntry, error)` with safe printable metadata | Reports the schema errors a load reports; keeps raw struct tags only in the non-JSON Field member |
 | `ParseKey(text)` | `(Key, error)` | Reports malformed keys with ErrKey |
-| `CanonicalKey[T](key)` | `(string, error)`: the key as this package prints it, aliases, case and map-key quoting resolved | An Unknown `*KeyError` (ErrKey) for a key that does not parse, is not concrete or names nothing T reads; `ErrSchema` for a declaration a load refuses, its `validate` tags aside |
+| `CanonicalKey[T](key)` | `(string, error)`: the key as this package prints it, aliases, case and map-key quoting resolved | An Unknown `*KeyError` (ErrKey) for a key that does not parse or is not concrete, its message saying which (`key "pool[x]" does not parse: …`, `key extra[*] is not concrete`), or that names nothing T reads; `ErrSchema` for a declaration a load refuses, its `validate` tags aside |
 | `Key.Within(p)` | `bool`: the key is `p` or beneath it | — |
 | `Tree(cfg)`, `TreeFunc(cfg, leaf)` | `(map[string]any, error)` with raw or policy-transformed values | Returns no partial tree on schema/scalar/text-marshaling errors |
 | `RedactedTreeChecked(cfg)` | `(map[string]any, error)` with nested redacted values | Returns nil on structural errors and misspelt tag keys; no partial tree |
@@ -119,7 +119,7 @@ Load options:
 | `WithDefaults(map)` | none | Defaults by dotted path, above the code defaults (`SetDefaults`) and tags; repeated calls merge. |
 | `WithBaseProvider(p, parser, opts...)` | none | A provider below the files. |
 | `WithOverrideProvider(p, parser, opts...)` | none | A provider above the environment. |
-| `WithBaseEntries(read, opts...)`, `WithOverrideEntries(read, opts...)` | none | Stored entries keyed in the key grammar, read with the load's context on every load, among the base or override providers in the order added. |
+| `WithBaseEntries(read, opts...)`, `WithOverrideEntries(read, opts...)` | none | Stored entries keyed in the key grammar, read with the load's context on every load, among the base or override providers in the order added. An entry whose key does not parse or holds `[*]` cannot be set, and is never an unknown key ([stored entries](sources.md#stored-entries)). |
 | `WithDecodeHook(h)` | none | A mapstructure decode hook, run before the built-in ones. |
 | `WithUnknownKeys(fn)` | unknown keys fail, unknown variables ignored | Decide what unknown keys and variables do: report, accept, or fail. |
 | `WithAllowUnknownKeys()` | unknown keys fail | Accept keys no field decodes, silently. |

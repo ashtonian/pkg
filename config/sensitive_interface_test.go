@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -128,24 +129,31 @@ func TestValidation_WithholdsKeysBeneathASensitiveInterface(t *testing.T) {
 	}
 }
 
-// A key no field reads beneath a sensitive interface is reported by the
-// interface's field.
-func TestLoad_ReportsUnknownKeysBeneathASensitiveInterfaceByItsField(t *testing.T) {
+// A stored entry holding [*] beneath a sensitive interface is refused, named
+// by the interface's field.
+func TestLoad_NamesPatternEntriesBeneathASensitiveInterfaceByItsField(t *testing.T) {
 	entries := map[string]any{}
-	var want []UnknownKey
+	var want []string
 	for _, tt := range ifaceFields {
 		key := tt.field + "." + ifaceKey + "[*]"
 		entries[key] = 1
-		want = append(want, UnknownKey{Key: shown(tt.field, tt.withheld, key)})
+		want = append(want, shown(tt.field, tt.withheld, key))
 	}
-	var got *UnknownKeysError
+	var rejected []KeyError
 	_, err := Load[ifaceCfg](t.Context(),
-		WithBaseEntries(func(context.Context) (map[string]any, error) { return entries, nil }),
-		WithUnknownKeys(func(_ context.Context, unknown *UnknownKeysError) error {
-			got = unknown
+		WithBaseEntries(func(context.Context) (map[string]any, error) { return entries, nil }, WithInvalidEntries(func(_ context.Context, ke []KeyError) error {
+			rejected = ke
 			return nil
-		}))
+		})))
 	require.NoError(t, err)
-	require.NotNil(t, got)
-	assert.ElementsMatch(t, want, got.Keys)
+	var got []string
+	for i := range rejected {
+		got = append(got, rejected[i].Key)
+		assert.ErrorIs(t, &rejected[i], ErrKey)
+		assert.Contains(t, rejected[i].Error(), "not concrete")
+		if !strings.Contains(rejected[i].Key, "[*]") {
+			assert.NotContains(t, rejected[i].Error(), ifaceKey, "withheld")
+		}
+	}
+	assert.ElementsMatch(t, want, got)
 }

@@ -148,6 +148,11 @@ func (p keyPath) any() keyPath {
 	return append(slices.Clip(p), segment{kind: segAny})
 }
 
+// isPattern reports whether p holds [*], so names no one key.
+func (p keyPath) isPattern() bool {
+	return slices.ContainsFunc(p, func(s segment) bool { return s.kind == segAny })
+}
+
 // keyList is keys for a message: in key order, each once, joined by ", ".
 // A walk over map entries meets them in no particular order.
 func keyList(keys []keyPath) string {
@@ -159,9 +164,23 @@ func keyList(keys []keyPath) string {
 	return strings.Join(slices.Compact(names), ", ")
 }
 
-// parseKeyPath parses a key in the grammar above. Wildcards ([*]) are
-// accepted; a caller that needs a concrete key rejects them.
+// keySyntaxError is why text does not parse as a key. It matches ErrKey.
+type keySyntaxError struct {
+	text   string
+	reason string // what in text breaks the grammar, quoting parts of it
+}
+
+func (e *keySyntaxError) Error() string { return fmt.Sprintf("%s %q: %s", ErrKey, e.text, e.reason) }
+
+func (e *keySyntaxError) Unwrap() error { return ErrKey }
+
+// parseKeyPath parses a key in the grammar above, or returns the
+// *keySyntaxError saying why s is no key. Wildcards ([*]) are accepted; a
+// caller that needs a concrete key rejects them.
 func parseKeyPath(s string) (keyPath, error) {
+	malformed := func(format string, args ...any) error {
+		return &keySyntaxError{text: s, reason: fmt.Sprintf(format, args...)}
+	}
 	var p keyPath
 	rest := s
 	wantField := true // a key starts with a field, and so does each segment after "."
@@ -169,19 +188,19 @@ func parseKeyPath(s string) (keyPath, error) {
 		if rest[0] == '[' {
 			switch {
 			case len(p) == 0 && !strings.HasPrefix(rest, `["`):
-				return nil, fmt.Errorf("%w %q: a key begins with a field or a quoted map key", ErrKey, s)
+				return nil, malformed("a key begins with a field or a quoted map key")
 			case len(p) > 0 && wantField:
-				return nil, fmt.Errorf("%w %q: a selector must follow a field", ErrKey, s)
+				return nil, malformed("a selector must follow a field")
 			}
 			seg, n, err := parseSelector(rest)
 			if err != nil {
-				return nil, fmt.Errorf("%w %q: %w", ErrKey, s, err)
+				return nil, malformed("%s", err)
 			}
 			p = append(p, seg)
 			rest, wantField = rest[n:], false
 		} else {
 			if !wantField {
-				return nil, fmt.Errorf("%w %q: expected \".\" or \"[\" after %q", ErrKey, s, p.String())
+				return nil, malformed("expected \".\" or \"[\" after %q", p.String())
 			}
 			end := strings.IndexAny(rest, ".[")
 			if end < 0 {
@@ -189,7 +208,7 @@ func parseKeyPath(s string) (keyPath, error) {
 			}
 			name := rest[:end]
 			if problem := fieldKeyProblem(name); problem != "" {
-				return nil, fmt.Errorf("%w %q: %q is not a field key: %s", ErrKey, s, name, problem)
+				return nil, malformed("%q is not a field key: %s", name, problem)
 			}
 			p = append(p, segment{kind: segField, name: name})
 			rest = rest[end:]
@@ -197,13 +216,13 @@ func parseKeyPath(s string) (keyPath, error) {
 		}
 		if next, ok := strings.CutPrefix(rest, "."); ok {
 			if next == "" {
-				return nil, fmt.Errorf("%w %q: ends with \".\"", ErrKey, s)
+				return nil, malformed("ends with \".\"")
 			}
 			rest, wantField = next, true
 		}
 	}
 	if len(p) == 0 {
-		return nil, fmt.Errorf("%w: empty key", ErrKey)
+		return nil, malformed("it is empty")
 	}
 	return p, nil
 }
