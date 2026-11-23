@@ -69,7 +69,11 @@
 // A validate rule that parses but cannot apply to its field's type
 // (min=abc), and an unparsable tag or misapplied dive in a struct behind a
 // pointer, a slice, a map or an interface, fail with ErrSchema naming the
-// field when validation reaches them. [KeyOf] names a field from its
+// field when validation reaches them. A value holding a cycle on a path the
+// default validator walks — a pointer holding its own address, structs
+// linked back to one another — fails with [ErrValidation] naming the field
+// where it closes and the field it leads back to; go-playground would
+// otherwise walk it forever. [KeyOf] names a field from its
 // address. [ParseKey] exposes the same
 // canonical grammar as typed segments, including quoted keys and wildcards.
 //

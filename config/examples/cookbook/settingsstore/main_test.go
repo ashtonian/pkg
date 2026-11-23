@@ -96,8 +96,12 @@ func replicaWith(t *testing.T, d database, limits TableLimits, logger *slog.Logg
 	t.Helper()
 	db := d.open(t)
 	require.NoError(t, migrate(t.Context(), db, 10*time.Second))
-	return NewSettings(db, d.sources(), 10*time.Second, limits, logger), db
+	return NewSettings(db, d.sources(), 10*time.Second, limits, testWriteLimits, logger), db
 }
+
+// testWriteLimits are the boot config's default write limits, the table's
+// rows at the default row cap.
+var testWriteLimits = WriteLimits{Keys: 1000, KeyBytes: 1024}
 
 func newReplica(t *testing.T, b backend, maxRows int) (*Settings, *sql.DB) {
 	return replica(t, b.fresh(t), maxRows)
@@ -402,8 +406,7 @@ func TestSettingsHandler_StoreFailures(t *testing.T) {
 // level, its database URL withheld.
 func TestLogStarting(t *testing.T) {
 	const url = "postgres://settings:FAKE_PASSWORD@db.example/settings"
-	boot, err := config.Load[BootConfig](t.Context(), config.WithEnvPrefix("SETTINGS"),
-		config.WithEnviron(func() []string { return []string{"SETTINGS_DATABASE_URL=" + url} }))
+	boot, err := loadBoot(t.Context(), func() []string { return []string{"SETTINGS_DATABASE_URL=" + url} }, slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 	var logs bytes.Buffer
 	level := new(slog.LevelVar)
@@ -479,7 +482,7 @@ func TestSettings_WritesBeginAtReadCommitted(t *testing.T) {
 	db := sql.OpenDB(recordingConnector{dsn: filepath.Join(dir, "settings.db") + "?_pragma=busy_timeout(10000)", levels: &levels})
 	t.Cleanup(func() { _ = db.Close() })
 	require.NoError(t, migrate(t.Context(), db, time.Second))
-	s := NewSettings(db, appSources(filepath.Join(dir, "config.yaml"), slog.New(slog.DiscardHandler)), 10*time.Second, TableLimits{Rows: 100, Bytes: 1 << 20}, slog.New(slog.DiscardHandler))
+	s := NewSettings(db, appSources(filepath.Join(dir, "config.yaml"), slog.New(slog.DiscardHandler)), 10*time.Second, TableLimits{Rows: 100, Bytes: 1 << 20}, testWriteLimits, slog.New(slog.DiscardHandler))
 	write(t, s, map[string]any{"limits.max": 300})
 	write(t, s, map[string]any{"limits.max": nil})
 	assert.Equal(t, []sql.IsolationLevel{sql.LevelReadCommitted, sql.LevelReadCommitted}, levels.levels)
@@ -514,7 +517,7 @@ func TestSettingsHandler_ContentionIsA503ToRetry(t *testing.T) {
 		d := b.fresh(t)
 		db := d.open(t)
 		require.NoError(t, migrate(t.Context(), db, 10*time.Second))
-		s := NewSettings(db, d.sources(), 200*time.Millisecond, TableLimits{Rows: 100, Bytes: 1 << 20}, slog.New(slog.DiscardHandler))
+		s := NewSettings(db, d.sources(), 200*time.Millisecond, TableLimits{Rows: 100, Bytes: 1 << 20}, testWriteLimits, slog.New(slog.DiscardHandler))
 		var logs bytes.Buffer
 		h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.NewJSONHandler(&logs, nil)))
 		contended := func(t *testing.T) {
@@ -603,6 +606,10 @@ func TestSettings_ANullDeletesARowTheSchemaNoLongerReads(t *testing.T) {
 			require.NoError(t, err)
 		}
 		h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.DiscardHandler))
+		rec := put(h, `{"legacy[*]": null}`)
+		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code, "a pattern names no key to delete")
+		assert.Contains(t, rec.Body.String(), `"reason":"unknown"`)
+		assert.Len(t, rowsOf(t, db), 3)
 		assert.Equal(t, http.StatusNoContent, put(h, `{"legacy": null}`).Code)
 		assert.Equal(t, map[string]string{"limits.max": "200"}, rowsOf(t, db))
 

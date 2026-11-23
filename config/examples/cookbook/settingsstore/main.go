@@ -49,7 +49,11 @@ CREATE TABLE IF NOT EXISTS settings_lock (id INTEGER PRIMARY KEY, writes BIGINT 
 INSERT INTO settings_lock (id, writes) VALUES (1, 0) ON CONFLICT (id) DO NOTHING;
 `
 
-// BootConfig is what the process needs before it can read the table.
+// BootConfig is what the process needs before it can read the table. A
+// read takes up to twice each table cap, so the caps' upper bounds keep it
+// well within an int; a key's upper bound stays beneath the largest entry
+// PostgreSQL's btree index takes, about 2.7 KB. MaxWriteKeys left unset is
+// MaxRows (see loadBoot).
 type BootConfig struct {
 	DatabaseURL       string        `koanf:"database_url" validate:"required" sensitive:"true"`
 	ConfigFile        string        `koanf:"config_file" default:"config.yaml"`
@@ -61,8 +65,10 @@ type BootConfig struct {
 	ConnMaxLifetime   time.Duration `koanf:"conn_max_lifetime" default:"30m" validate:"min=1s"`
 	QueryTimeout      time.Duration `koanf:"query_timeout" default:"5s" validate:"min=1ms"`
 	PollInterval      time.Duration `koanf:"poll_interval" default:"30s" validate:"min=1s"`
-	MaxRows           int           `koanf:"max_rows" default:"1000" validate:"min=1"`
-	MaxTableBytes     int64         `koanf:"max_table_bytes" default:"1048576" validate:"min=1"`
+	MaxRows           int           `koanf:"max_rows" default:"1000" validate:"min=1,max=1000000"`
+	MaxTableBytes     int64         `koanf:"max_table_bytes" default:"1048576" validate:"min=1,max=1073741824"`
+	MaxWriteKeys      int           `koanf:"max_write_keys" validate:"min=1,max=1000000"`
+	MaxKeyBytes       int           `koanf:"max_key_bytes" default:"1024" validate:"min=1,max=2048"`
 	MaxBodyBytes      int64         `koanf:"max_body_bytes" default:"1048576" validate:"min=1"`
 	ReadHeaderTimeout time.Duration `koanf:"read_header_timeout" default:"5s" validate:"min=1ms"`
 	ReadTimeout       time.Duration `koanf:"read_timeout" default:"10s" validate:"min=1ms"`
@@ -142,13 +148,18 @@ const (
 	ReasonFull     = "full"     // the table would grow past a cap
 	ReasonEnclosed = "enclosed" // a key lies inside a list or a scalar a stored row sets
 	ReasonOverlap  = "overlap"  // one write names a key and a key within it
+	ReasonTooMany  = "too many" // the write names more keys than one write may
+	ReasonTooLong  = "too long" // a key is longer than a key may be
 )
 
-// ErrBusy is a write that timed out waiting for its turn: behind another
-// write of this replica's, for a connection, or for the lock row another
-// replica's write holds. It is contention, not a failure; the client
-// retries.
-var ErrBusy = errors.New("another settings write holds the lock")
+// ErrBusy is a write whose time ran out: waiting for its turn — behind
+// another write of this replica's, for a connection, or for the lock row
+// another replica's write holds — or once it had it, reading the table,
+// checking the write or storing it. It is contention, not a failure; the
+// client retries. A write sets its keys to their values, so a retry after a
+// commit the deadline cut short, which the database may have completed,
+// sets them again.
+var ErrBusy = errors.New("settings write timed out")
 
 // RefusedError is a write the service refuses, and the write's keys at
 // fault. It names no value and no key the write did not name, so it is
@@ -167,11 +178,12 @@ func (e *RefusedError) Unwrap() error { return e.Err }
 
 // Settings is the settings table. Its methods are safe for concurrent use.
 type Settings struct {
-	db      *sql.DB
-	sources Sources
-	timeout time.Duration
-	limits  TableLimits
-	logger  *slog.Logger
+	db          *sql.DB
+	sources     Sources
+	timeout     time.Duration
+	limits      TableLimits
+	writeLimits WriteLimits
+	logger      *slog.Logger
 	// writing admits one of this replica's writes at a time, so writers
 	// waiting for the lock row hold no pooled connection the reloader needs.
 	writing chan struct{}
@@ -206,6 +218,14 @@ func (l TableLimits) refuses(before, after tableSize) bool {
 		after.bytes > l.Bytes && after.bytes > before.bytes
 }
 
+// WriteLimits bound what one write names. They are checked before the
+// write waits for its turn, so a write past them costs no other write
+// time.
+type WriteLimits struct {
+	Keys     int // keys one write names
+	KeyBytes int // bytes of each key, spelled as it is stored
+}
+
 // tableSize is a table's size, as TableLimits bound it.
 type tableSize struct {
 	rows  int
@@ -213,10 +233,10 @@ type tableSize struct {
 }
 
 // NewSettings returns the table in db, loaded with sources' options. Each
-// read, and each write with its wait for its turn, takes at most timeout,
-// and limits cap the table.
-func NewSettings(db *sql.DB, sources Sources, timeout time.Duration, limits TableLimits, logger *slog.Logger) *Settings {
-	return &Settings{db: db, sources: sources, timeout: timeout, limits: limits, logger: logger, writing: make(chan struct{}, 1)}
+// read, and each write with its wait for its turn, takes at most timeout;
+// limits cap the table and writeLimits each write.
+func NewSettings(db *sql.DB, sources Sources, timeout time.Duration, limits TableLimits, writeLimits WriteLimits, logger *slog.Logger) *Settings {
+	return &Settings{db: db, sources: sources, timeout: timeout, limits: limits, writeLimits: writeLimits, logger: logger, writing: make(chan struct{}, 1)}
 }
 
 // Options are the options the service loads AppConfig with, the table read
@@ -261,21 +281,40 @@ func (s *Settings) read(ctx context.Context) (map[string]any, error) {
 // rows stored beneath it, or, set to nil, deleted with them, and in either
 // case cut out of the values of the rows stored above it. A key the
 // schema does not read may be set only to nil, to delete the rows a release
-// that removed its field left. Unless the table the write leaves loads with
-// the service's options, and fits the caps or is no larger than before,
-// the write is refused with a *RefusedError and nothing changes.
+// that removed its field left. A write naming more keys than its limits
+// allow, or a longer key, is refused before it waits for its turn. Unless
+// the table the write leaves loads with the service's options, and fits the
+// caps or is no larger than before, the write is refused with a
+// *RefusedError and nothing changes. A write whose time runs out, waiting
+// for its turn or once it has it, is ErrBusy.
 func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, error) {
-	writes, unread, err := canonical[AppConfig](edits)
+	if len(edits) > s.writeLimits.Keys {
+		return nil, &RefusedError{Reason: ReasonTooMany, Keys: []string{}}
+	}
+	writes, unread, err := canonical[AppConfig](edits, s.writeLimits.KeyBytes)
 	if err != nil || len(writes) == 0 && len(unread) == 0 {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
+	keys, err := s.store(ctx, writes, unread)
+	// Whichever step the deadline cut short, the client retries the write,
+	// so every one is ErrBusy; a refusal stands, as no retry changes it.
+	if _, refused := errors.AsType[*RefusedError](err); err != nil && !refused && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil, fmt.Errorf("%w: %w", ErrBusy, err)
+	}
+	return keys, err
+}
+
+// store makes the write in its turn: it waits for this replica's other
+// write and for the lock row, then reads the table, checks the table the
+// write leaves and commits it.
+func (s *Settings) store(ctx context.Context, writes map[string]any, unread []string) ([]string, error) {
 	select {
 	case s.writing <- struct{}{}:
 		defer func() { <-s.writing }()
 	case <-ctx.Done():
-		return nil, fmt.Errorf("waiting for this replica's other settings write: %w: %w", ErrBusy, context.Cause(ctx))
+		return nil, fmt.Errorf("waiting for this replica's other settings write: %w", context.Cause(ctx))
 	}
 	// At READ COMMITTED each statement reads what committed before it, so a
 	// write that waited for the lock row reads the table the write before it
@@ -285,7 +324,7 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	// and updating the lock row takes the database's write lock.
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
-		return nil, fmt.Errorf("beginning a settings write: %w", busy(ctx, err))
+		return nil, fmt.Errorf("beginning a settings write: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // after Commit, a no-op
 	// Updating the lock row is the write's first statement: the database
@@ -293,7 +332,7 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	// turns, and each reads the table the one before it left.
 	locked, err := tx.ExecContext(ctx, "UPDATE settings_lock SET writes = writes + 1 WHERE id = 1")
 	if err != nil {
-		return nil, fmt.Errorf("taking the settings lock: %w", busy(ctx, err))
+		return nil, fmt.Errorf("taking the settings lock: %w", err)
 	}
 	n, err := locked.RowsAffected()
 	if err != nil {
@@ -306,15 +345,12 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	if missing := unstored[AppConfig](unread, stored.values); len(missing) > 0 {
-		return nil, &RefusedError{Reason: ReasonUnknown, Keys: missing}
-	}
-	keys := append(slices.Collect(maps.Keys(writes)), unread...)
-	slices.Sort(keys)
 	c, err := apply[AppConfig](stored.values, writes, unread)
 	if err != nil {
 		return nil, err
 	}
+	keys := append(slices.Collect(maps.Keys(writes)), unread...)
+	slices.Sort(keys)
 	texts, err := encode(writes, c.rewritten)
 	if err != nil {
 		return nil, err
@@ -370,15 +406,6 @@ func encode(writes, rewritten map[string]any) (map[string]string, error) {
 	return texts, nil
 }
 
-// busy is err, from waiting for a connection or the lock row, as ErrBusy
-// when the write's time ran out while it waited.
-func busy(ctx context.Context, err error) error {
-	if ctx.Err() != nil {
-		return fmt.Errorf("%w: %w", ErrBusy, err)
-	}
-	return err
-}
-
 // retryAfter is how long a client whose write met contention waits before
 // it retries: the most one write takes, its wait for its turn included.
 func (s *Settings) retryAfter() time.Duration {
@@ -425,16 +452,16 @@ func (e *writtenUnknownError) Error() string {
 // load on a key no field reads within a key writes sets, and lets the rest,
 // what rows already stored hold, through.
 func unknownInWrites(writes map[string]any) func(context.Context, []config.UnknownKey) error {
-	var set []config.Key
+	set := &keyTree{}
 	for key, value := range writes {
 		if k, err := config.ParseKey(key); err == nil && value != nil {
-			set = append(set, k)
+			set.add(k, key)
 		}
 	}
 	return func(_ context.Context, unknown []config.UnknownKey) error {
 		var written []config.UnknownKey
 		for _, u := range unknown {
-			if k, err := config.ParseKey(u.Key); err == nil && slices.ContainsFunc(set, k.Within) {
+			if k, err := config.ParseKey(u.Key); err == nil && len(set.within(k)) > 0 {
 				written = append(written, u)
 			}
 		}
@@ -487,23 +514,31 @@ func childText(at config.Key, kind config.SegmentKind, name string) (string, boo
 // canonical is edits keyed as CanonicalKey spells their keys, and unread,
 // the keys it refuses that edits set to nil, each a delete of the rows a
 // release that removed its field left. Any other key naming nothing the
-// service reads, one key spelled two ways, or a key and a key within it
+// service reads, a key holding a wildcard, a key longer than maxKeyBytes as
+// it is stored, one key spelled two ways, or a key and a key within it
 // refuses the write.
-func canonical[T any](edits map[string]any) (writes map[string]any, unread []string, err error) {
+func canonical[T any](edits map[string]any, maxKeyBytes int) (writes map[string]any, unread []string, err error) {
 	writes = make(map[string]any, len(edits))
-	var unknown, repeated []string
+	var unknown, long, repeated []string
 	for key, value := range edits {
 		c, err := config.CanonicalKey[T](key)
 		if errors.Is(err, config.ErrKey) {
-			if value == nil {
-				unread = append(unread, key)
-			} else {
+			switch {
+			case value != nil || wildcard(key):
 				unknown = append(unknown, key)
+			case len(key) > maxKeyBytes:
+				long = append(long, key)
+			default:
+				unread = append(unread, key)
 			}
 			continue
 		}
 		if err != nil {
 			return nil, nil, err
+		}
+		if len(c) > maxKeyBytes {
+			long = append(long, c)
+			continue
 		}
 		if _, ok := writes[c]; ok {
 			repeated = append(repeated, c)
@@ -514,6 +549,9 @@ func canonical[T any](edits map[string]any) (writes map[string]any, unread []str
 	case len(unknown) > 0:
 		slices.Sort(unknown)
 		return nil, nil, &RefusedError{Reason: ReasonUnknown, Keys: unknown}
+	case len(long) > 0:
+		slices.Sort(long)
+		return nil, nil, &RefusedError{Reason: ReasonTooLong, Keys: long}
 	case len(repeated) > 0:
 		slices.Sort(repeated)
 		return nil, nil, &RefusedError{Reason: ReasonRepeated, Keys: slices.Compact(repeated)}
@@ -527,79 +565,127 @@ func canonical[T any](edits map[string]any) (writes map[string]any, unread []str
 	return writes, unread, nil
 }
 
+// wildcard reports whether key parses to a pattern: a null names the rows
+// to delete by their key, and [*] names no one key.
+func wildcard(key string) bool {
+	k, err := config.ParseKey(key)
+	return err == nil && slices.ContainsFunc(k, func(s config.Segment) bool { return s.Kind == config.SegmentAny })
+}
+
 // overlapping is the keys of writes within another of them, and the keys
-// they are within. Each key's parents are looked up by their spelling, a
-// field spelled as a map key, as Key.Within compares them, so the cost is
-// the keys' segments, not their pairs.
+// they are within.
 func overlapping(writes map[string]any) []string {
+	tree := &keyTree{}
 	parsed := make(map[string]config.Key, len(writes))
-	bySpelling := make(map[string]string, len(writes))
 	for key := range writes {
-		k, err := config.ParseKey(key)
-		if err != nil {
-			continue
+		if k, err := config.ParseKey(key); err == nil {
+			tree.add(k, key)
+			parsed[key] = k
 		}
-		parsed[key] = k
-		bySpelling[fieldsAsMapKeys(k).String()] = key
 	}
 	var overlap []string
 	for key, k := range parsed {
-		for n := len(k) - 1; n > 0; n-- {
-			if parent, ok := bySpelling[fieldsAsMapKeys(k[:n]).String()]; ok {
-				overlap = append(overlap, key, parent)
-			}
+		for _, parent := range tree.within(k[:len(k)-1]) {
+			overlap = append(overlap, key, parent.text)
 		}
 	}
 	slices.Sort(overlap)
 	return slices.Compact(overlap)
 }
 
-// fieldsAsMapKeys is k with every field a map key of the same name.
-func fieldsAsMapKeys(k config.Key) config.Key {
-	out := slices.Clone(k)
-	for i := range out {
-		if out[i].Kind == config.SegmentField {
-			out[i].Kind = config.SegmentKey
-		}
-	}
-	return out
+// keyTree holds keys by their segments, so the keys a key is within, and
+// the keys beneath it, are found in steps of its depth rather than of the
+// keys held. A field and a map key of one name are one segment, as
+// Key.Within compares them. The keys it holds are concrete: a wildcard in a
+// key looked up matches none of them, as Within matches a wildcard only in
+// the key compared against.
+type keyTree struct {
+	children map[config.Segment]*keyTree
+	keys     []treeKey // the keys ending here
 }
 
-// unreadAt reports whether a stored key the schema does not read is at or
-// beneath unread, a key written null that the schema does not read either.
-// A row the schema reads is never deleted through a spelling it refuses.
-func unreadAt[T any](stored, unread string) bool {
-	if _, err := config.CanonicalKey[T](stored); err == nil {
-		return false
-	}
-	if stored == unread {
-		return true
-	}
-	s, err := config.ParseKey(stored)
-	if err != nil {
-		return false
-	}
-	u, err := config.ParseKey(unread)
-	return err == nil && s.Within(u)
+// treeKey is a key a keyTree holds, as written and parsed.
+type treeKey struct {
+	text string
+	key  config.Key
 }
 
-// unstored is the keys of unread with no row stored at or beneath them for
-// a null write to delete: keys naming nothing at all.
-func unstored[T any](unread []string, stored map[string]any) []string {
-	var missing []string
-	for _, u := range unread {
-		found := false
-		for key := range stored {
-			if unreadAt[T](key, u) {
-				found = true
-				break
+// add holds k, written as text.
+func (t *keyTree) add(k config.Key, text string) {
+	n := t
+	for _, s := range k {
+		next := n.children[branch(s)]
+		if next == nil {
+			if n.children == nil {
+				n.children = map[config.Segment]*keyTree{}
 			}
+			next = &keyTree{}
+			n.children[branch(s)] = next
 		}
-		if !found {
-			missing = append(missing, u)
+		n = next
+	}
+	n.keys = append(n.keys, treeKey{text: text, key: k})
+}
+
+// within is the keys held that k is within: k and the keys above it.
+func (t *keyTree) within(k config.Key) []treeKey {
+	var keys []treeKey
+	n := t
+	for _, s := range k {
+		if n = n.children[branch(s)]; n == nil {
+			break
+		}
+		keys = append(keys, n.keys...)
+	}
+	return keys
+}
+
+// beneath is the keys held strictly beneath k, a key of at least one
+// segment, sorted.
+func (t *keyTree) beneath(k config.Key) []treeKey {
+	n := t
+	for _, s := range k {
+		if n = n.children[branch(s)]; n == nil {
+			return nil
 		}
 	}
-	return missing
+	keys := n.below(nil)
+	slices.SortFunc(keys, func(a, b treeKey) int { return strings.Compare(a.text, b.text) })
+	return keys
+}
+
+// below is keys with the keys held beneath t appended.
+func (t *keyTree) below(keys []treeKey) []treeKey {
+	for _, child := range t.children {
+		keys = child.below(append(keys, child.keys...))
+	}
+	return keys
+}
+
+// branch is the segment a keyTree branches on for s: a map key as the
+// field of its name.
+func branch(s config.Segment) config.Segment {
+	if s.Kind == config.SegmentKey {
+		s.Kind = config.SegmentField
+	}
+	return s
+}
+
+// storedKey is a stored row's key as a write compares it: spelled as
+// CanonicalKey spells it when the schema reads it, as stored otherwise.
+type storedKey struct {
+	key  config.Key // nil when it does not parse
+	read bool       // the schema reads it
+}
+
+func readStoredKey[T any](stored string) storedKey {
+	c, err := config.CanonicalKey[T](stored)
+	if err != nil {
+		k, _ := config.ParseKey(stored)
+		return storedKey{key: k}
+	}
+	k, _ := config.ParseKey(c)
+	return storedKey{key: k, read: true}
 }
 
 // change is what a write does to the stored rows.
@@ -610,50 +696,88 @@ type change struct {
 }
 
 // apply is the change writes and unread make to stored, keys compared as
-// the schema T spells them. A stored row within
-// a key written is deleted, unless the write sets that key again, as is one
-// the schema does not read at or beneath a key of unread. A stored row
-// above a key written has that key cut out of its value, so the write takes
-// effect beneath it, and is deleted when left setting nothing. A key beneath
-// a list or a scalar a stored row sets cannot be cut out, and refuses the
-// write.
+// the schema T spells them. A stored row within a key written is deleted,
+// unless the write sets that key again, as is one the schema does not read
+// at or beneath a key of unread: a row the schema reads is never deleted
+// through a spelling it refuses. A stored row above a key written has that
+// key cut out of its value, so the write takes effect beneath it, and is
+// deleted when left setting nothing. A key of unread with no row to delete
+// names nothing, and refuses the write as unknown; a key beneath a list or
+// a scalar a stored row sets cannot be cut out, and refuses it as enclosed.
+//
+// Each stored key is read once, and the written and unread keys are held in
+// key trees, so the cost is the rows and the keys, each by its depth, and
+// not their pairs: the write holds the lock row while it runs.
 func apply[T any](stored, writes map[string]any, unread []string) (change, error) {
-	keys := slices.Sorted(maps.Keys(writes))
-	written := make([]config.Key, 0, len(keys))
-	for _, key := range keys {
+	written := &keyTree{}
+	for key := range writes {
 		if k, err := config.ParseKey(key); err == nil {
-			written = append(written, k)
+			written.add(k, key)
 		}
 	}
+	deleting := &keyTree{}
+	unparsed := map[string]bool{} // matched by the row stored at the same text
+	for _, key := range unread {
+		if k, err := config.ParseKey(key); err == nil {
+			deleting.add(k, key)
+		} else {
+			unparsed[key] = true
+		}
+	}
+	matched := map[string]bool{}
 	c := change{table: map[string]any{}, rewritten: map[string]any{}}
 	var enclosed []string
 	var errs []error
 	for key, value := range stored {
-		switch {
-		case slices.ContainsFunc(unread, func(u string) bool { return unreadAt[T](key, u) }):
-			c.deleted = append(c.deleted, key)
-		case covered[T](key, written):
+		row := readStoredKey[T](key)
+		if !row.read {
+			deletes := deleting.within(row.key)
+			for _, u := range deletes {
+				matched[u.text] = true
+			}
+			if unparsed[key] {
+				matched[key] = true
+			}
+			if len(deletes) > 0 || unparsed[key] {
+				c.deleted = append(c.deleted, key)
+				continue
+			}
+		}
+		if len(written.within(row.key)) > 0 {
 			if writes[key] == nil { // not set again under this spelling, where the upsert replaces it
 				c.deleted = append(c.deleted, key)
 			}
-		default:
-			value, changed, refused := cutBeneath[T](key, value, written)
+			continue
+		}
+		// A row the schema does not read stays as stored: loads leave it out.
+		if row.read && len(row.key) > 0 {
+			cut, changed, refused := cutBeneath[T](key, row.key, value, written.beneath(row.key))
 			if refused != nil {
 				enclosed = append(enclosed, refused.Keys...)
 				errs = append(errs, refused.Err)
 				continue
 			}
-			if object, ok := value.(map[string]any); changed && ok && len(object) == 0 {
+			if object, ok := cut.(map[string]any); changed && ok && len(object) == 0 {
 				c.deleted = append(c.deleted, key)
 				continue
 			}
-			c.table[key] = value
+			value = cut
 			if changed {
 				c.rewritten[key] = value
 			}
 		}
+		c.table[key] = value
 	}
-	if len(enclosed) > 0 {
+	var missing []string
+	for _, key := range unread {
+		if !matched[key] {
+			missing = append(missing, key)
+		}
+	}
+	switch {
+	case len(missing) > 0:
+		return change{}, &RefusedError{Reason: ReasonUnknown, Keys: missing}
+	case len(enclosed) > 0:
 		slices.Sort(enclosed)
 		return change{}, &RefusedError{Reason: ReasonEnclosed, Keys: slices.Compact(enclosed), Err: errors.Join(errs...)}
 	}
@@ -666,27 +790,20 @@ func apply[T any](stored, writes map[string]any, unread []string) (change, error
 	return c, nil
 }
 
-// cutBeneath is value, stored at key, with each key of written beneath key
-// cut out of it, and whether that changed it. A key it cannot cut out
-// refuses the write.
-func cutBeneath[T any](key string, value any, written []config.Key) (any, bool, *RefusedError) {
-	at, ok := schemaKey[T](key)
-	if !ok {
-		return value, false, nil // loads leave the row out
-	}
+// cutBeneath is value, stored at row, whose key is at, with each key of
+// beneath, the written keys beneath at, cut out of it, and whether that
+// changed it. A key it cannot cut out refuses the write.
+func cutBeneath[T any](row string, at config.Key, value any, beneath []treeKey) (any, bool, *RefusedError) {
 	changed := false
 	var refused *RefusedError
-	for _, w := range written {
-		if len(w) <= len(at) || !w.Within(at) {
-			continue
-		}
-		cut, c, err := cutAt[T](at, value, w)
+	for _, w := range beneath {
+		cut, c, err := cutAt[T](at, value, w.key)
 		if err != nil {
 			if refused == nil {
 				refused = &RefusedError{Reason: ReasonEnclosed}
 			}
-			refused.Keys = append(refused.Keys, w.String())
-			refused.Err = errors.Join(refused.Err, fmt.Errorf("the row %s: %w", key, err))
+			refused.Keys = append(refused.Keys, w.text)
+			refused.Err = errors.Join(refused.Err, fmt.Errorf("the row %s: %w", row, err))
 			continue
 		}
 		value, changed = cut, changed || c
@@ -735,19 +852,6 @@ func cutAt[T any](at config.Key, value any, target config.Key) (any, bool, error
 	return out, changed, nil
 }
 
-// covered reports whether a stored key is within one of written. A row
-// some other writer stored under another spelling compares canonically.
-func covered[T any](key string, written []config.Key) bool {
-	if c, err := config.CanonicalKey[T](key); err == nil {
-		key = c
-	}
-	k, err := config.ParseKey(key)
-	if err != nil {
-		return false
-	}
-	return slices.ContainsFunc(written, func(w config.Key) bool { return k.Within(w) })
-}
-
 type querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
@@ -768,39 +872,44 @@ func (t storedTable) size() tableSize {
 }
 
 // readRows reads the table, failing when it holds more than limit's rows or
-// bytes. The database leaves out a value that alone passes the byte limit,
-// so what a read holds stays bounded whatever another writer stored. Values
-// decode with UseNumber, so an integer keeps every digit.
+// bytes. The database sends a row's key and value only while the running
+// total of the rows' bytes, in key order, is within the byte limit, so a
+// read holds at most that many bytes of keys and values whatever another
+// writer stored. Values decode with UseNumber, so an integer keeps every
+// digit.
 func readRows(ctx context.Context, q querier, limit TableLimits) (storedTable, error) {
 	rows, err := q.QueryContext(ctx, `
-SELECT key, size, CASE WHEN size <= $2 THEN value END
-FROM (SELECT key, value, CAST(octet_length(key) AS BIGINT) + octet_length(value) AS size FROM settings) AS sized
-ORDER BY key LIMIT $1`, limit.Rows+1, limit.Bytes)
+SELECT CASE WHEN total <= $2 THEN key END, total, CASE WHEN total <= $2 THEN value END
+FROM (
+	SELECT key, value, CAST(SUM(CAST(octet_length(key) AS BIGINT) + octet_length(value)) OVER (ORDER BY key) AS BIGINT) AS total
+	FROM settings
+) AS sized
+ORDER BY sized.key LIMIT $1`, limit.Rows+1, limit.Bytes)
 	if err != nil {
 		return storedTable{}, fmt.Errorf("reading settings: %w", err)
 	}
 	defer rows.Close()
 	table := storedTable{values: map[string]any{}, sizes: map[string]int64{}}
-	var total int64
+	var before int64
 	for rows.Next() {
 		if len(table.values) == limit.Rows {
 			return storedTable{}, fmt.Errorf("reading settings: the table holds more than %d rows, %d times SETTINGS_MAX_ROWS; raise it to at least half the rows, delete rows through the API, then lower it", limit.Rows, readSlack)
 		}
-		var key string
-		var size int64
-		var text sql.NullString
-		if err := rows.Scan(&key, &size, &text); err != nil {
+		var key, text sql.NullString
+		var total int64
+		if err := rows.Scan(&key, &total, &text); err != nil {
 			return storedTable{}, fmt.Errorf("reading settings: %w", err)
 		}
-		if total += size; total > limit.Bytes {
+		if total > limit.Bytes { // the key and the value were not sent
 			return storedTable{}, fmt.Errorf("reading settings: the table holds more than %d bytes, %d times SETTINGS_MAX_TABLE_BYTES; raise it to at least half the table's bytes, delete rows through the API, then lower it", limit.Bytes, readSlack)
 		}
 		value, err := decodeJSON(strings.NewReader(text.String))
 		if err != nil {
-			return storedTable{}, fmt.Errorf("reading the value of %s: %w", key, err)
+			return storedTable{}, fmt.Errorf("reading the value of %s: %w", key.String, err)
 		}
-		table.values[key] = value
-		table.sizes[key] = size
+		table.values[key.String] = value
+		table.sizes[key.String] = total - before
+		before = total
 	}
 	if err := rows.Err(); err != nil {
 		return storedTable{}, fmt.Errorf("reading settings: %w", err)
@@ -845,17 +954,17 @@ func settingsHandler(s *Settings, changed func(), maxBody int64, logger *slog.Lo
 			if len(written) > 0 {
 				changed()
 			}
-			logger.InfoContext(r.Context(), "settings written", slog.Any("keys", written))
+			logger.LogAttrs(r.Context(), slog.LevelInfo, "settings written", keysLogged(r.Context(), logger, written)...)
 			w.WriteHeader(http.StatusNoContent)
 		case isRefused:
-			logger.InfoContext(r.Context(), "settings write refused",
-				slog.String("reason", refused.Reason), slog.Any("keys", refused.Keys), slog.Any("error", refused.Err))
+			attrs := append([]slog.Attr{slog.String("reason", refused.Reason)}, keysLogged(r.Context(), logger, refused.Keys)...)
+			logger.LogAttrs(r.Context(), slog.LevelInfo, "settings write refused", append(attrs, slog.Any("error", refused.Err))...)
 			reply(w, http.StatusUnprocessableEntity, refused)
 		case r.Context().Err() != nil:
 			logger.WarnContext(r.Context(), "settings write abandoned", slog.Any("error", err))
 			reply(w, http.StatusServiceUnavailable, map[string]string{"reason": "unavailable"})
 		case errors.Is(err, ErrBusy):
-			logger.WarnContext(r.Context(), "settings write timed out waiting for its turn", slog.Any("error", err))
+			logger.WarnContext(r.Context(), "settings write timed out", slog.Any("error", err))
 			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(s.retryAfter().Seconds()))))
 			reply(w, http.StatusServiceUnavailable, map[string]string{"reason": "busy"})
 		default:
@@ -864,6 +973,45 @@ func settingsHandler(s *Settings, changed func(), maxBody int64, logger *slog.Lo
 		}
 	}
 }
+
+// keysLogged is a write's keys as its log entry carries them: their count,
+// and at Debug the keys themselves, each as shownKey shows it.
+func keysLogged(ctx context.Context, logger *slog.Logger, keys []string) []slog.Attr {
+	attrs := []slog.Attr{slog.Int("key_count", len(keys))}
+	if logger.Enabled(ctx, slog.LevelDebug) {
+		shown := make([]string, len(keys))
+		for i, key := range keys {
+			shown[i] = shownKey[AppConfig](key)
+		}
+		attrs = append(attrs, slog.Any("keys", shown))
+	}
+	return attrs
+}
+
+// shownKey is key as a log may show it, judged by the config package: a
+// key it reads whose field is sensitive by its field's pattern, every map
+// key and index in it as [*], since a sensitive map's keys may themselves
+// be secrets; a key it does not read as its own errors name it, which
+// withhold what lies beneath a sensitive map or list.
+func shownKey[T any](key string) string {
+	if _, err := config.CanonicalKey[T](key); err != nil {
+		if ke, ok := errors.AsType[*config.KeyError](err); ok {
+			return ke.Key
+		}
+		return withheld
+	}
+	f, err := config.FieldFor[T](key)
+	switch {
+	case err != nil: // a key a remain field collects names no field
+		return withheld
+	case f.Sensitive:
+		return f.Path
+	}
+	return key
+}
+
+// withheld stands for a key no log shows.
+const withheld = "[REDACTED]"
 
 func reply(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -898,7 +1046,7 @@ func run(ctx context.Context, args []string, environ func() []string, open func(
 	default:
 		return fmt.Errorf("usage: settingsstore [migrate], not %q", args)
 	}
-	boot, err := config.Load[BootConfig](ctx, config.WithEnvPrefix("SETTINGS"), config.WithEnviron(environ), config.WithLogger(logger)) // SETTINGS_DATABASE_URL, ...
+	boot, err := loadBoot(ctx, environ, logger)
 	if err != nil {
 		return err
 	}
@@ -931,6 +1079,19 @@ func run(ctx context.Context, args []string, environ func() []string, open func(
 	return serve(ctx, db, boot, logger)
 }
 
+// loadBoot loads BootConfig from the SETTINGS_* variables. A write's key cap
+// left unset is the row cap: a write naming more keys than the table may
+// hold rows is refused before it waits for its turn.
+func loadBoot(ctx context.Context, environ func() []string, logger *slog.Logger) (*BootConfig, error) {
+	return config.Load[BootConfig](ctx, config.WithEnvPrefix("SETTINGS"), config.WithEnviron(environ), config.WithLogger(logger),
+		config.WithPostLoad(func(_ context.Context, b *BootConfig) error {
+			if b.MaxWriteKeys == 0 {
+				b.MaxWriteKeys = b.MaxRows
+			}
+			return nil
+		}))
+}
+
 // migrate applies Schema, which creates only what is missing. Run it once
 // per release, before the replicas start: Postgres can refuse concurrent
 // CREATE TABLE IF NOT EXISTS of one table with a unique violation.
@@ -961,7 +1122,9 @@ func checkSchema(ctx context.Context, db *sql.DB, timeout time.Duration) error {
 
 // serve serves the admin API over the table in db until ctx ends.
 func serve(ctx context.Context, db *sql.DB, boot *BootConfig, logger *slog.Logger) error {
-	settings := NewSettings(db, appSources(boot.ConfigFile, logger), boot.QueryTimeout, TableLimits{Rows: boot.MaxRows, Bytes: boot.MaxTableBytes}, logger)
+	settings := NewSettings(db, appSources(boot.ConfigFile, logger), boot.QueryTimeout,
+		TableLimits{Rows: boot.MaxRows, Bytes: boot.MaxTableBytes},
+		WriteLimits{Keys: boot.MaxWriteKeys, KeyBytes: boot.MaxKeyBytes}, logger)
 	reloader, err := config.NewReloader[AppConfig](ctx, settings.Options(), config.WithPollInterval(boot.PollInterval))
 	if err != nil {
 		return err

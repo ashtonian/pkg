@@ -45,9 +45,10 @@ var (
 	// reload the config is published and live, and the appliers that failed
 	// are called again on the next one; it does NOT wrap ErrReload, which
 	// means the reload published nothing. On a reloader's first load nothing
-	// is published and the reloader is not built ([ApplyError].Initial). An
-	// [ApplyError] carries it.
-	ErrApply = errors.New("configuration published but not fully applied")
+	// is published and the reloader is not built ([ApplyError].Initial), and
+	// the appliers that applied it are to be rolled back. An [ApplyError]
+	// carries it, naming the appliers that failed and those that applied.
+	ErrApply = errors.New("configuration not fully applied")
 	// ErrReloadInProgress reports a manual Reload that found another reload
 	// in flight. No pipeline ran and nothing failed, so it does NOT wrap
 	// ErrReload: a burst of operator requests must not read as failures.

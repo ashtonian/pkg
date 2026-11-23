@@ -7,6 +7,32 @@ import (
 	"testing"
 )
 
+// makeVariable is a variable the repository's Makefile declares for the
+// cookbook, which a caller may set.
+var makeVariable = regexp.MustCompile(`(?m)^(COOKBOOK_[A-Z_]+) \?=`)
+
+// Every Make variable the repository's Makefile declares for the cookbook
+// is in this README's tables.
+func TestREADMENamesEveryMakeVariable(t *testing.T) {
+	makefile, err := os.ReadFile("../../../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := makeVariable.FindAllStringSubmatch(string(makefile), -1)
+	if len(declared) == 0 {
+		t.Fatal("the Makefile declares no COOKBOOK_ variable")
+	}
+	for _, d := range declared {
+		if !strings.Contains(string(readme), "`"+d[1]+"`") {
+			t.Errorf("README names no Make variable %s", d[1])
+		}
+	}
+}
+
 // recipe marks a README block with the cookbook file it is taken from.
 var recipe = regexp.MustCompile("<!-- recipe: ([a-z/]+\\.go) -->\n\n```go\n((?s:.*?))\n```\n")
 
