@@ -19,7 +19,7 @@
 * **parse/filter:** a filter value, search term or cursor key holding U+0000 is E2073 (E2082 for a cursor) where it was accepted.
 * **parse/filter:** filter.MatchLike and the memory evaluator no longer match a character with another its Unicode case folding equates but its lower-case does not (ſ and s, ς and σ, µ and μ), and match İ with i.
 * **parse/filter:** PostgreSQL path SQL is doc -> 'a' ->> 'b' where it was doc #>> '{a,b}'. An expression index built on the old expression no longer matches the emitted one; rebuild it on filter.FieldExpr.
-* **parse:** schema documents list the resource's key and the implied NULL tests; include=<key> is E2083.
+* **parse:** schema documents list the resource's key and the implied NULL tests; include=&lt;key&gt; is E2083.
 * **parse:** SchemaValidator answers a filter, patch or sort on a schema document without that section with E2071, E2076 or E2079 instead of E2078. testdata/filter_conformance.json is an object, and testdata/sdk_wire.json records exchanges.
 * **parse:** the example's facets route answers a page parameter with E2067.
 * **parse:** a list body's read error is a *parse.BodyReadError. The example's patch routes refuse a body without a JSON patch media type.
