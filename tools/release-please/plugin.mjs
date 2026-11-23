@@ -43,20 +43,41 @@ export class FirstParentPlugin extends ManifestPlugin {
     if (paths === undefined && commits.length > 0) {
       this.warnOnce(`${FIRST_PARENT}: no release path has these commits; each merge counts at least as its subject`);
     }
-    const kept = firstParentCommits(commits, this.history, {
+    const all = [...commits, ...this.unlisted(commits, paths ?? [])];
+    const kept = firstParentCommits(all, this.history, {
       headerOf: this.headerOf,
       rank: this.rank,
-      complete: this.completeMerges(commits, paths ?? []),
+      complete: this.completeMerges(all, paths ?? []),
       branches: this.branches,
       warn: message => this.warnOnce(message),
     });
     return escapeNotes(kept);
   }
 
+  // unlisted parses, as release-please does, each branch commit of a merge
+  // listed here that touches paths but release-please did not list.
+  // release-please cuts a path's commits at its last release in history
+  // (date) order, so a branch commit older than that release never reaches
+  // it, though its merge came after. Paths sharing a parse cannot be told
+  // apart, so only a commit touching each of them is read.
+  unlisted(commits, paths) {
+    if (paths.length === 0) return [];
+    const { branchCommits = new Map() } = this.history;
+    const listed = new Set(commits.map(commit => commit.sha));
+    const read = [];
+    for (const merge of listed) {
+      for (const sha of this.branches.get(merge)?.shas ?? []) {
+        if (listed.has(sha) || !paths.every(path => this.touching.get(path)?.has(sha))) continue;
+        const { message, files } = branchCommits.get(sha);
+        read.push(...parseConventionalCommits([{ sha, message, files }], quiet));
+      }
+    }
+    return read;
+  }
+
   // completeMerges returns the merges each of whose branch commits touching
-  // paths is among commits as a conventional commit. One older than the
-  // path's last release never reaches release-please, and one its parser
-  // cannot read ("wip", "fixup! …") gives no entry.
+  // paths is among commits as a conventional commit: one release-please's
+  // parser cannot read ("wip", "fixup! …") gives no entry.
   completeMerges(commits, paths) {
     const complete = new Set();
     if (paths.length === 0) return complete;
