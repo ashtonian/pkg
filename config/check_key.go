@@ -45,10 +45,13 @@ func (e *KeyError) Is(target error) bool {
 // and WithDefaults defaults. It decodes with Load's hooks and weak typing,
 // then runs its validator and T.Validate. Unknown keys — the key, or a key
 // inside its value that no field reads — return *KeyErrors matching ErrKey;
-// invalid values match ErrValidation. Keys use ParseKey's grammar, accepting
-// field aliases and case folding (see CanonicalKey). A list index must exist
-// in the defaults or append immediately after them; pass a whole list to
-// create several new elements. Wildcards are not concrete keys.
+// invalid values match ErrValidation. A validate tag the default validator
+// cannot apply to its field, such as dive on an int, is the declaration's
+// fault and returns ErrSchema with no *KeyError. Keys use ParseKey's
+// grammar, accepting field aliases and case folding (see CanonicalKey). A
+// list index must exist in the defaults or append immediately after them;
+// pass a whole list to create several new elements. Wildcards are not
+// concrete keys.
 //
 // value sets key as a source above the defaults would. A map[string]any, as
 // a file or JSON decodes to, merges into what the defaults hold there key by
@@ -186,7 +189,9 @@ func DecodeEdits[T any](ctx context.Context, baseline *T, edits map[string]any, 
 // the batch's keys as diagnostics may show them, sorted, and Err is the
 // decoder's or validator's cause, for trusted diagnostics. errors.Is
 // reaches ErrKey when a key was refused and ErrValidation when the
-// configuration failed. Error names keys and never a value.
+// configuration failed. Error names keys and never a value. A validate tag
+// the default validator cannot apply is no batch's fault: DecodeEdits
+// returns that ErrSchema as it is, not in an EditsError.
 type EditsError struct {
 	Refused []KeyError `json:"refused,omitempty"`
 	Keys    []string   `json:"keys,omitempty"`
@@ -245,7 +250,9 @@ func newKeyChecker(t reflect.Type, o *options) (*keyChecker, error) {
 
 // apply sets entries over base, which it changes, and decodes and validates
 // the result. A refused key, or a candidate that does not decode or
-// validate, is the *EditsError; err is only why ctx ended.
+// validate, is the *EditsError; err is why ctx ended, or a validate tag the
+// validator cannot apply (ErrSchema), which is the declaration's fault and
+// no key's.
 func (c *keyChecker) apply(ctx context.Context, base map[string]any, entries map[string]any) (any, *EditsError, error) {
 	edits, refused := prepareEdits(c.schema, entries)
 	for _, e := range edits {
@@ -261,6 +268,9 @@ func (c *keyChecker) apply(ctx context.Context, base map[string]any, entries map
 	result, unknown, err := c.decode(ctx, base)
 	if ctxErr := ended(ctx); ctxErr != nil && (err != nil || unknown != nil) {
 		return nil, nil, ctxErr
+	}
+	if errors.Is(err, ErrSchema) {
+		return nil, nil, err
 	}
 	if err == nil && unknown == nil {
 		return result, nil, nil

@@ -119,7 +119,9 @@ its typed values. A rejected key returns `*KeyError`: `Unknown` and `ErrKey`
 distinguish an unknown key — the key itself, or a key inside its value that
 no field reads, such as `primary.bogus` in `primary` set to `{"bogus": 1}`;
 a known key with an invalid value matches `ErrValidation`. Schema/setup
-errors and cancellation return directly. No partial config is returned on
+errors and cancellation return directly, among them a `validate` tag the
+default validator cannot apply to its field (`dive` on an `int`), which is
+`ErrSchema` with no `*KeyError`. No partial config is returned on
 failure. Error messages contain the key, not the value; wrapped causes are
 for trusted diagnostics.
 
@@ -205,7 +207,9 @@ When every key applies but the candidate does not decode or validate, the
 validator's cause in `Err` for trusted diagnostics. `errors.Is` reaches
 `ErrKey` when a key was refused and `ErrValidation` when the candidate
 failed; the message names keys and never a value. A baseline holding a value
-that does not marshal to text is an error of its own, neither. On any
+that does not marshal to text is an error of its own, neither, and a
+`validate` tag the default validator cannot apply is `ErrSchema` as it is,
+no batch's fault. On any
 failure no candidate is returned. The baseline is only read, and the
 candidate shares nothing with it or with the edits. The candidate is decoded
 afresh from the baseline's keys, so a field config does not decode
@@ -261,7 +265,9 @@ callback receives sorted key/error pairs after every read, including an
 empty report; nil discards reports. Its error fails the load with
 `ErrSource`. Defaults must validate before any source is read. Unknown keys
 still reach the normal diagnostics, including declared unknown children of
-a withheld entry. Read/parser errors and cancellation fail the load, with
+a withheld entry. A `validate` tag the default validator cannot apply
+fails the load with `ErrSchema`, whichever entry brings the validator to
+it. Read/parser errors and cancellation fail the load, with
 the cause the context ended with, and a load whose context has ended
 reports nothing. The option applies equally to `WithOverrideProvider`.
 

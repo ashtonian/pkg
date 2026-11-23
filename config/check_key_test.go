@@ -396,3 +396,58 @@ func TestCanonicalKey(t *testing.T) {
 		assert.ErrorIs(t, err, ErrKey, key)
 	}
 }
+
+// undivable's validate tag parses but cannot apply to its field: the
+// validator meets it only as it validates a value.
+type undivable struct {
+	Count int `koanf:"count" validate:"dive"`
+}
+
+// interfaceHolder's extra holds whatever a decode hook makes of it, an
+// undivable among them, which the validator reaches only through a value.
+type interfaceHolder struct {
+	Port  int `koanf:"port" default:"1" validate:"min=1"`
+	Extra any `koanf:"extra"`
+}
+
+// A validate tag the validator cannot apply is the declaration's fault, no
+// key's or batch's: DecodeKey, DecodeEdits and a load whose sources withhold
+// invalid entries return ErrSchema, not ErrValidation, and no *KeyError or
+// *EditsError — also when only an entry's value brings the validator to it.
+func TestKeyChecks_ValidatorDeclarationErrorsAreSchemaErrors(t *testing.T) {
+	assertSchema := func(t *testing.T, err error) {
+		t.Helper()
+		require.ErrorIs(t, err, ErrSchema)
+		assert.NotErrorIs(t, err, ErrValidation)
+		_, isKey := errors.AsType[*KeyError](err)
+		_, isEdits := errors.AsType[*EditsError](err)
+		assert.False(t, isKey || isEdits, "%#v", err)
+	}
+	provider, err := NewMapProvider(func(context.Context) (map[string]any, error) {
+		return map[string]any{"count": 1}, nil
+	}, "")
+	require.NoError(t, err)
+
+	_, err = DecodeKey[undivable](t.Context(), "count", 1)
+	assertSchema(t, err)
+	_, err = DecodeEdits[undivable](t.Context(), nil, map[string]any{"count": 1})
+	assertSchema(t, err)
+	_, err = DecodeEdits(t.Context(), &undivable{Count: 2}, map[string]any{"count": 1})
+	assertSchema(t, err)
+	_, err = Load[undivable](t.Context(), WithBaseEntries(readEntries(map[string]any{"count": 1}), WithInvalidEntries(nil)))
+	assertSchema(t, err)
+	_, err = Load[undivable](t.Context(), WithBaseProvider(provider, nil, WithInvalidEntries(nil)))
+	assertSchema(t, err)
+
+	brokenInside := WithDecodeHook(func(_, to reflect.Type, data any) (any, error) {
+		if m, ok := data.(map[string]any); ok && to.Kind() == reflect.Interface && m["broken"] != nil {
+			return undivable{}, nil
+		}
+		return data, nil
+	})
+	_, err = Load[interfaceHolder](t.Context(), brokenInside,
+		WithBaseEntries(readEntries(map[string]any{"extra.broken": true}), WithInvalidEntries(nil)))
+	assertSchema(t, err)
+	_, err = DecodeKey[interfaceHolder](t.Context(), "extra.broken", true, brokenInside)
+	assertSchema(t, err)
+}

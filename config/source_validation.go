@@ -41,7 +41,10 @@ type SourceOption func(*providerSource)
 // available to the normal unknown-input handler, including declared unknown
 // children of a withheld entry. Read and parser errors and cancellation
 // still fail the load, with the cause the context ended with, and a load
-// whose context has ended reports nothing.
+// whose context has ended reports nothing. A validate tag the default
+// validator cannot apply fails the load with ErrSchema, whichever entry
+// brings the validator to it: it is the declaration's fault, not the
+// entry's.
 func WithInvalidEntries(report func(context.Context, []KeyError) error) SourceOption {
 	return func(s *providerSource) { s.withhold, s.rejected = true, report }
 }
@@ -50,21 +53,22 @@ func WithInvalidEntries(report func(context.Context, []KeyError) error) SourceOp
 // below, the tree of the layers merged beneath it, as WithInvalidEntries
 // describes, and returns those it keeps; each withheld one is in rejected,
 // and the keys inside its value that no field reads in unknown. It does
-// not change below or the edits; err is only why ctx ended.
+// not change below or the edits; err fails the load (see fatal).
 func (c *keyChecker) withhold(ctx context.Context, below map[string]any, edits []edit) (kept []edit, rejected []*KeyError, unknown []UnknownKey, err error) {
 	if len(edits) == 0 {
 		return nil, nil, nil, nil
 	}
-	if c.passes(ctx, below, edits) == nil {
+	failed := c.passes(ctx, below, edits)
+	if failed == nil {
 		return edits, nil, nil, nil
 	}
-	if err := ended(ctx); err != nil {
+	if err := fatal(ctx, failed); err != nil {
 		return nil, nil, nil, err
 	}
 	alone := make([]error, len(edits)) // nil: the edit passes on its own
 	for i := range edits {
 		alone[i] = c.passes(ctx, below, edits[i:i+1])
-		if err := ended(ctx); err != nil {
+		if err := fatal(ctx, alone[i]); err != nil {
 			return nil, nil, nil, err
 		}
 	}
@@ -79,17 +83,32 @@ func (c *keyChecker) withhold(ctx context.Context, below map[string]any, edits [
 				with = append(with, edits[j])
 			}
 		}
-		if c.passes(ctx, below, with) == nil {
+		failed := c.passes(ctx, below, with)
+		if failed == nil {
 			kept = append(kept, e)
 			continue
 		}
-		if err := ended(ctx); err != nil {
+		if err := fatal(ctx, failed); err != nil {
 			return nil, nil, nil, err
 		}
 		rejected = append(rejected, &KeyError{Key: e.safe, Err: alone[i]})
 		unknown = append(unknown, e.unknown...)
 	}
 	return kept, rejected, unknown, nil
+}
+
+// fatal is why judging fails the load rather than an entry, given failed,
+// an entry's failure: the context ended, or a validate tag the validator
+// cannot apply (ErrSchema), which is the declaration's fault and no
+// entry's. It is nil when failed is the entry's own.
+func fatal(ctx context.Context, failed error) error {
+	if err := ended(ctx); err != nil {
+		return err
+	}
+	if errors.Is(failed, ErrSchema) {
+		return failed
+	}
+	return nil
 }
 
 // passes is nil when edits, set over below, decode and validate; keys no
@@ -214,13 +233,16 @@ func (l *loader) prepareValidation(ctx context.Context, o *options) error {
 		return err
 	}
 	_, unknown, err := c.decode(ctx, c.defaultsTree())
+	if ctxErr := ended(ctx); ctxErr != nil && (err != nil || unknown != nil) {
+		return ctxErr
+	}
+	if errors.Is(err, ErrSchema) {
+		return err
+	}
 	if unknown != nil {
 		err = errors.Join(err, unknown)
 	}
 	if err != nil {
-		if ctxErr := ended(ctx); ctxErr != nil {
-			return ctxErr
-		}
 		return fmt.Errorf("invalid baseline for provider entry validation: %w: %w", ErrValidation, err)
 	}
 	l.checker = c
