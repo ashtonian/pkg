@@ -1,6 +1,6 @@
 # parse/client
 
-Builds requests in parse's grammar from Go: typed filters, sort orders, list parameters, merge-patch members and JSON Patch operations, for SDKs that call a parse server. It imports only the standard library, and it is held to the same filter and patch corpora as the TypeScript SDK.
+Builds requests in parse's grammar from Go: typed filters, sort orders, list parameters, a row's item path, merge-patch members and JSON Patch operations, for SDKs that call a parse server. It imports only the standard library, and it is held to the same filter and patch corpora as the TypeScript SDK.
 
 ## Quick Start
 
@@ -67,6 +67,7 @@ A `Quoted[T]` travels as encoding/json writes a `json:",string"` field: its JSON
 - **ListParams** encodes the list parameters `Resource.ParseList` reads (`filter`, `sort`, `cursor`, `page_size`, `include_total`, `include_deleted`, `search`, `facets`, `include`, `fields`) and leaves zero members out: `Values` as a query string, `Body` as the JSON document `Resource.ParseListBody` reads from a POST, for a request too large for a URL.
 - **Nullable[T]** is a merge-patch (RFC 7396) member: with the `omitzero` tag option the zero value is absent, `Null[T]()` clears the field, `Set(v)` writes it. Tag every `Nullable` member `omitzero`: `omitempty` does not omit a struct, so an absent member under it (or under no option) would encode as `null` and clear its column; encoding one is `ErrAbsentMember` instead. `Set` of a nil slice or map writes the empty one, and `Set` of a nil pointer is `Null`, since that is what it encodes.
 - **Operation** is a JSON Patch (RFC 6902) operation; a `[]Operation` is the document. `Append(path, element)` and `Array[E].Append(e)` write parse's `array_append` extension, which appends one element to an array column atomically. `Pointer(tokens...)` escapes member names into a JSON Pointer.
+- **ItemPath(key...)** is the path of one row below its collection's path, the item route `parsehttp.ItemPattern` registers: a segment per key value, in key order, each escaped on its own (`url.PathEscape`), so `ItemPath("w1", "a/b")` is `w1/a%2Fb`. A value is written as the server's `Resource.ParseKey` reads its column: a string as itself, an integer in decimal, a float as its JSON number, a bool as `true` or `false`, a `Quoted` value as its value, and a `MarshalText` value (a UUID, a decimal, a `time.Time`) as its text.
 
 ## Errors
 
@@ -80,6 +81,7 @@ The client refuses only what the grammar cannot express; the server judges every
 | `ErrSubSecond` | A relative `Moment` that is not a whole number of seconds; in a filter, wrapped by `ErrOperand` |
 | `ErrElementCondition` | A comparison of an array's `Element()` outside that array's `Some` or `None` (carried when nested in another `Some`, `None`, `Is` or `IsNot`; returned when encoded at the top), or a field's condition inside them |
 | `ErrAbsentMember` | An absent `Nullable` encoded: its struct member is not tagged `omitzero` |
+| `ErrKeyValue` | A key `ItemPath` cannot write: no value, a value of a type with no text (a struct, a pointer, nil), a non-finite float, or a value whose text is `""`, `.` or `..`, which URL parsing drops from a path. It wraps the cause |
 
 ## API Reference
 
@@ -92,6 +94,7 @@ The client refuses only what the grammar cannot express; the server judges every
 - `ListParams.Body` — the same request as a POST body
 - `Nullable[T]`, `Null[T]`, `Set` — merge-patch members; `ErrAbsentMember`
 - `Operation`, `Add`, `Remove`, `Replace`, `Move`, `Copy`, `Test`, `Append`, `Pointer` — JSON Patch
+- `ItemPath`, `ErrKeyValue` — the path of one row, a segment per key value
 - `ErrEmptyOr`, `ErrNegatedEmpty`, `ErrElementCondition`, `ErrOperand`, `ErrSubSecond` — what the grammar cannot express
 
 ## Testing
@@ -103,7 +106,7 @@ The client refuses only what the grammar cannot express; the server judges every
 - the client refuses it itself;
 - or the client's types cannot express it.
 
-A new corpus case fails the test until it is classified, and a classification that names no corpus case fails it too. `testdata/sdk_wire.json` records the requests the client builds (`ListParams.Values` and `Body`) with the answers parse's handlers gave them, so a change to the client's encoding is a stale fixture the TypeScript SDK is then held to. The same file holds the list parameters to `ParseList`, parses a document from every `Operation` constructor and checks the code `BuildUpdate` answers for each, and checks that geo filters parse.
+A new corpus case fails the test until it is classified, and a classification that names no corpus case fails it too. `testdata/sdk_wire.json` records the requests the client builds (`ListParams.Values` and `Body`, and the item path `ItemPath` writes for a key of two columns) with the answers parse's handlers gave them, so a change to the client's encoding is a stale fixture the TypeScript SDK is then held to. The same file holds the list parameters to `ParseList`, parses a document from every `Operation` constructor and checks the code `BuildUpdate` answers for each, and checks that geo filters parse.
 
 ## Operations
 
@@ -128,6 +131,7 @@ The client encodes values with encoding/json and query parameters with `net/url`
 | `sort.go` | `Order`, `Sort` |
 | `list.go` | `ListParams` |
 | `patch.go` | `Nullable`, `ErrAbsentMember`, `Operation`, `Append`, `Pointer` |
+| `item.go` | `ItemPath`, `ErrKeyValue`: a row's path below its collection, a segment per key value |
 
 ## Dependencies
 

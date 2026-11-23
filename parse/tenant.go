@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"strconv"
-	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -50,24 +48,7 @@ func (c *tenantColumn) value(text string) (any, error) {
 	if c.info.Type != core.FieldTypeInt {
 		return core.NormalizeScalar(c.info.Type, c.info.NumberKind, text)
 	}
-	// Decimal digits with an optional minus sign: the text an integer key
-	// is written as, and no other spelling of it.
-	var (
-		n   any
-		err error
-	)
-	if strings.HasPrefix(text, "-") {
-		n, err = strconv.ParseInt(text, 10, 64)
-	} else {
-		n, err = strconv.ParseUint(text, 10, 64)
-	}
-	switch {
-	case errors.Is(err, strconv.ErrRange):
-		return nil, fmt.Errorf("%s overflows %s", text, c.info.NumberKind)
-	case err != nil:
-		return nil, fmt.Errorf("%q is not a decimal integer", text)
-	}
-	return core.NormalizeScalar(c.info.Type, c.info.NumberKind, n)
+	return integerText(c.info.NumberKind, text)
 }
 
 // textual reports a column holding the tenant as text: a string, or a UUID

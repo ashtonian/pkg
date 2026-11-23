@@ -7,7 +7,7 @@
 
 import { ApiError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaVersionError } from "./core/errors.js";
 import { hasProblemMembers, isProblemMediaType, isRecord, PROBLEM_MEDIA_TYPE, type Problem, readProblem } from "./core/problem.js";
-import type { ErrorBody, ListRequestOptions, RequestOptions } from "./core/types.js";
+import type { ErrorBody, KeyValue, ListRequestOptions, RequestOptions, ResourceKey } from "./core/types.js";
 import type { FacetOptions, FacetResult, FilterSchema, ListOptions, ListResult, SortField } from "./filter/types.js";
 import type { RelatedSchemas } from "./filter/validate.js";
 import type { PatchInput, PatchResult } from "./patch/types.js";
@@ -113,6 +113,55 @@ function joinURL(base: string, ...segments: string[]): string {
 function query(params: URLSearchParams): string {
   const qs = params.toString();
   return qs ? `?${qs}` : "";
+}
+
+// keyValues are a key's values, one per key column.
+function keyValues(key: ResourceKey): readonly KeyValue[] {
+  return isCompositeKey(key) ? key : [key];
+}
+
+function isCompositeKey(key: ResourceKey): key is readonly [KeyValue, ...KeyValue[]] {
+  return Array.isArray(key);
+}
+
+// keyText is a key value as the server reads its column's text (Go
+// Resource.ParseKey). A type check guards untyped callers, whose object
+// would otherwise travel as "[object Object]".
+function keyText(value: KeyValue): string {
+  switch (typeof value) {
+    case "string":
+      return value;
+    case "number":
+      if (!Number.isFinite(value)) {
+        throw new RangeError(`a key value must be a finite number, got ${String(value)}`);
+      }
+      return String(value);
+    case "bigint":
+    case "boolean":
+      return String(value);
+    default:
+      throw new TypeError(`a key value is a string, number, bigint or boolean, got ${typeof value}`);
+  }
+}
+
+// keySegment is a key value as one path segment, escaped on its own so a
+// "/" in it stays in its segment. URL parsing drops "." and ".." from a path,
+// escaped or not, and an empty segment is no segment, so no URL addresses a
+// value spelt so.
+function keySegment(value: KeyValue): string {
+  const text = keyText(value);
+  if (text === "" || text === "." || text === "..") {
+    throw new RangeError(`a key value cannot be the path segment ${JSON.stringify(text)}`);
+  }
+  return encodeURIComponent(text);
+}
+
+// The server's item route has a segment per key column, so a key of another
+// arity names a path it does not route.
+function checkKeyArity(resource: string, columns: readonly string[], values: number): void {
+  if (columns.length > 0 && columns.length !== values) {
+    throw new RangeError(`the key of ${resource} is (${columns.join(", ")}), a value per column; got ${String(values)}`);
+  }
 }
 
 function isErrorBody(v: Record<string, unknown>): v is Record<string, unknown> & ErrorBody {
@@ -226,8 +275,13 @@ export interface ClientConfig {
  * A typed handle to a single REST resource collection.
  * Provides list (with filter, sort, facets, search, includes, pagination), patch,
  * schema discovery, and client-side validation.
+ *
+ * `K` is the type of a row's key: one value by default, a tuple of a value
+ * per key column, in key order, for a key of several (`[string, string]`
+ * for the schema `key` `["warehouse_id", "sku"]`), so a key of another
+ * arity does not compile.
  */
-export interface Resource<T> {
+export interface Resource<T, K extends ResourceKey = KeyValue> {
   /**
    * Fetch a filtered, sorted, paginated list with optional facets and count.
    * When `validateBeforeSend` is enabled, validates filter and sort against the schema.
@@ -244,17 +298,27 @@ export interface Resource<T> {
   listAll(opts?: Omit<ListOptions<T>, "cursor">, reqOpts?: ListRequestOptions): AsyncIterableIterator<ListResult<T>>;
 
   /**
-   * Partially update one resource with a JSON Merge Patch (RFC 7396): set a
-   * field to replace it (objects merge), set it to null to remove it.
+   * Partially update the row `key` names with a JSON Merge Patch (RFC
+   * 7396): set a field to replace it (objects merge), set it to null to
+   * remove it. The request is `PATCH {collection}/{value}/…`, a path segment
+   * per key value in key order, each escaped on its own
+   * (`encodeURIComponent`), so `["w1", "a/b"]` is `/w1/a%2Fb`. A key of no
+   * value, or a value no path segment can carry (`""`, `"."`, `".."`), throws
+   * `RangeError` before sending; so does, under `validateBeforeSend`, a key
+   * whose number of values is not the schema's number of `key` columns.
    */
-  patch(id: string, input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>>;
+  patch(key: K, input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>>;
 
   /**
-   * Apply one JSON Merge Patch to several resources (`PATCH ?id[]=…`). The
-   * ids always travel in the URL: {@link ClientConfig.maxURLLength} does
+   * Apply one JSON Merge Patch to several rows (`PATCH ?id[]=…`), each named
+   * by the one value of a key of one column. `id[]` has no form for a key of
+   * several columns: a tuple key throws `RangeError` before sending, as does,
+   * under `validateBeforeSend`, any call on a resource whose schema `key` has
+   * several columns; patch such rows one by one with {@link Resource.patch}.
+   * The ids always travel in the URL: {@link ClientConfig.maxURLLength} does
    * not apply, and the server contract has no body form for them.
    */
-  patchMany(ids: string[], input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>>;
+  patchMany(ids: readonly Extract<K, KeyValue>[], input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>>;
 
   /**
    * Facet counts for facetable fields, optionally under a filter
@@ -293,9 +357,10 @@ export interface ResourceOptions {
 
 /** Top-level API client. Use {@link createClient} to create one. */
 export interface Client {
-  /** Create a typed resource handle for a collection path below `baseURL`.
-   *  An empty path throws a `RangeError`. */
-  resource<T>(path: string, opts?: ResourceOptions): Resource<T>;
+  /** Create a typed resource handle for a collection path below `baseURL`;
+   *  `K` is its rows' key type ({@link Resource}). An empty path throws a
+   *  `RangeError`. */
+  resource<T, K extends ResourceKey = KeyValue>(path: string, opts?: ResourceOptions): Resource<T, K>;
 
   /** Fetch schemas for all registered resources. Populates the schema
    *  cache, keyed by each document's registry name. */
@@ -491,7 +556,7 @@ export function createClient(cfg: ClientConfig): Client {
   }
 
   return {
-    resource<T>(path: string, resourceOpts: ResourceOptions = {}): Resource<T> {
+    resource<T, K extends ResourceKey = KeyValue>(path: string, resourceOpts: ResourceOptions = {}): Resource<T, K> {
       const collection = trimSlashes(path);
       if (collection === "") {
         throw new RangeError(`resource path must name a collection, got ${JSON.stringify(path)}`);
@@ -541,27 +606,38 @@ export function createClient(cfg: ClientConfig): Client {
           }
         },
 
-        async patch(id: string, input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>> {
-          if (id === "") {
-            throw new RangeError("patch needs an id: PATCH without one targets the collection");
+        async patch(key: K, input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>> {
+          const values = keyValues(key);
+          if (values.length === 0) {
+            throw new RangeError("patch needs a key: PATCH without one targets the collection");
           }
+          const segments = values.map(keySegment);
           if (validate) {
             const v = await this.validator(reqOpts);
+            checkKeyArity(name, v.keyColumns(), values.length);
             v.validatePatch(input);
           }
-          return request<PatchResult<T>>("PATCH", `${collectionURL}/${encodeURIComponent(id)}`, input, reqOpts);
+          return request<PatchResult<T>>("PATCH", `${collectionURL}/${segments.join("/")}`, input, reqOpts);
         },
 
-        async patchMany(ids: string[], input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>> {
+        async patchMany(ids: readonly Extract<K, KeyValue>[], input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>> {
           if (ids.length === 0) {
             throw new RangeError("patchMany needs at least one id: PATCH without one targets no row");
           }
+          // The type admits no tuple here; an untyped caller's still has no id[] form.
+          if (ids.some((id) => Array.isArray(id))) {
+            throw new RangeError("patchMany names each row by one id[] value, which cannot hold a key of several columns; patch each such row with patch(key)");
+          }
           if (validate) {
             const v = await this.validator(reqOpts);
+            const columns = v.keyColumns();
+            if (columns.length > 1) {
+              throw new RangeError(`patchMany cannot address ${name}: its key is (${columns.join(", ")}) and id[] holds one value per row; patch each row with patch(key)`);
+            }
             v.validatePatch(input);
           }
           const params = new URLSearchParams();
-          for (const id of ids) params.append("id[]", id);
+          for (const id of ids) params.append("id[]", keyText(id));
           return request<PatchResult<T>>("PATCH", `${collectionURL}${query(params)}`, input, reqOpts);
         },
 
