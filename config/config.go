@@ -46,9 +46,10 @@ import (
 // ctx reaches the secret populator, every post-load hook, a context-aware
 // validator and every [ContextProvider]. Once ctx ends no further stage
 // runs: a load whose context has ended reads no source and calls nothing of
-// the caller's, and one that ends mid-load stops before the next provider,
-// the environment, decoding, a report callback, the secret populator, the
-// next post-load hook or validation, returning an error that wraps ctx.Err()
+// the caller's, and one that ends mid-load stops before the next provider
+// or file, the environment, decoding, the variable filter, a report
+// callback, the secret populator, the next post-load hook or validation,
+// returning an error that wraps ctx.Err()
 // and its [context.Cause]. A stage already running observes ctx itself.
 //
 // Keys match fields regardless of letter case, as decoding does. Each
@@ -271,9 +272,10 @@ func ended(ctx context.Context) error {
 }
 
 // load is Load's pipeline. live guards each boundary before a stage the
-// caller supplies — a Defaulter, a provider, the environ function, decode
-// hooks, a report callback, the secret populator, a post-load hook — so a
-// load whose context has ended starts none of them.
+// caller supplies — a Defaulter, a provider, a file's parser, the environ
+// function, decode hooks, the variable filter, a report callback, the
+// secret populator, a post-load hook — so a load whose context has ended
+// starts none of them.
 func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	none := loaded[T]{}
 	live := func() error {
@@ -334,6 +336,9 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		}
 	}
 	for _, f := range o.files {
+		if err := live(); err != nil {
+			return none, err
+		}
 		raw, err := os.ReadFile(f.path)
 		switch {
 		case err == nil:
@@ -411,6 +416,9 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	md, err := o.decodeInput(schema, merged, cfg, observe)
 	if err != nil {
 		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
+	}
+	if err := live(); err != nil {
+		return none, err
 	}
 	if len(unmatchedEnv) > 0 {
 		references, err := referencedVariables(schema, reflect.ValueOf(cfg))
