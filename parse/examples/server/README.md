@@ -16,14 +16,14 @@ flowchart LR
 
 **Failure modes:** Invalid settings fail startup; invalid requests return Parse E-codes; a patch of a missing product is 404 `E4004`, and a batch's missing keys are its `failed` items; a request body the client did not finish sending is 400 `E4001`, logged at WARN; a request that outlives `--request-timeout` is 504 `E5004`, logged at WARN, and a request whose client left is not answered and is logged at DEBUG; any other SQL failure is 500 `E5001`, logged at ERROR; response failures are observed by the handler; an expired shutdown grace forces connections closed.
 
-**Dependencies:** The example imports Parse, the released `pkg/config` and Kong provider, Kong, and the pure-Go SQLite driver. Applications supply their own resource, storage, authenticated scope and authorization policy.
+**Dependencies:** The example is a module of its own. It imports Parse, replaced by the working tree it sits in, the released `pkg/config` and Kong provider, Kong, and the pure-Go SQLite driver; Parse itself requires none of the CLI and configuration modules. Applications supply their own resource, storage, authenticated scope and authorization policy.
 
 ## Quick Start
 
-From the Parse module directory (`parse/` in a repository checkout):
+From this directory (`parse/examples/server` in a repository checkout), a module outside the repository's Go workspace, so with `GOWORK=off`:
 
 ```bash
-go run ./examples/server --addr 127.0.0.1:8080
+GOWORK=off go run . --addr 127.0.0.1:8080
 curl 'http://127.0.0.1:8080/api/products?category=books&sort=-price&page_size=2'
 curl -H 'Content-Type: application/json' \
   -d '{"filter":{"category":"books"},"sort":"-price","page_size":2}' \
@@ -97,10 +97,14 @@ JSON logs report startup, request/response failures and shutdown. `request deadl
 
 ## Verification
 
+From this directory:
+
 ```bash
-go test -tags=unit ./examples/server
-go test -tags=integration -race ./examples/server
+GOWORK=off go test -tags=unit ./...
+GOWORK=off go test -tags=integration -race ./...
 ```
+
+`make parse-example-check` from the repository root runs both, after `go mod tidy -diff`, `go vet` and staticcheck; CI runs it whenever Parse or the example changes.
 
 The unit checks cover explicit flags over environment values, omitted-flag precedence, rejection of an unbounded shutdown and of an unknown log level, the startup entry at any level, and the request timeout on every request's context. The integration checks request every route of the Routes table. The integration checks include an expired deadline (504 `E5004`, no ERROR entry) and a cancelled request (nothing written, a DEBUG entry) on every route that reaches the database. Integration checks exercise the HTTP resource against SQLite. See [the module overview](../../README.md), [query guide](../../docs/queries.md) and [error contract](../../docs/http-errors.md).
 
@@ -108,6 +112,7 @@ The unit checks cover explicit flags over environment values, omitted-flag prece
 
 | File | Responsibility |
 |---|---|
+| `go.mod` | The example's own module: Kong and the released config modules, Parse replaced by this working tree |
 | `main.go` | Configuration, HTTP lifecycle and seeded SQLite storage |
 | `server.go` | Resource declaration, routes, list (GET and POST), facet, schema, single and batch patch handlers, the example's error codes |
 | `settings_test.go` | Configuration source precedence, bounded shutdown, the log level and the startup entry |

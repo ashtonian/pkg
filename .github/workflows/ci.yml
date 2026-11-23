@@ -133,6 +133,7 @@ jobs:
             config/examples/cookbook/**
             httpx/examples/gin/**
             httpx/internal/bench/**
+            parse/examples/server/**
           go-owners: |
             {
               "config/examples/quickstart/main.go": ["./config"],

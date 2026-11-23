@@ -31,13 +31,17 @@ const (
 // PostgreSQL run cannot pass with no statement executed.
 const RequirePostgresEnv = "PARSE_REQUIRE_PG"
 
+// TimeoutEnv names the deadline of a PostgreSQL test, a Go duration
+// (default 30s): each statement the fixture runs, connection included, and
+// the context Context returns. It is bounded so an unreachable server fails
+// the first call rather than stalling for the operating system's connect
+// timeout; raise it on a host contended enough to miss it.
+const TimeoutEnv = "PARSE_TEST_TIMEOUT"
+
+const defaultTimeout = 30 * time.Second
+
 // driverName is the database/sql driver the helpers open servers with.
 const driverName = "pgx"
-
-// statementTimeout bounds each statement the fixture itself runs, connection
-// included, so an unreachable server fails the first call rather than
-// stalling it for the operating system's connect timeout.
-const statementTimeout = 30 * time.Second
 
 // postgisLockKey serializes CREATE EXTENSION across test processes that share
 // a server: concurrent first creations collide on the catalog's unique index.
@@ -59,7 +63,11 @@ var (
 func newServer(dsnEnv string, setup func(context.Context, *sql.DB) error) *server {
 	s := &server{dsnEnv: dsnEnv}
 	s.ready = sync.OnceValue(func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), statementTimeout)
+		limit, err := timeout()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), limit)
 		defer cancel()
 		db, err := sql.Open(driverName, os.Getenv(dsnEnv))
 		if err != nil {
@@ -90,6 +98,40 @@ func enablePostGIS(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("enabling postgis: %w", err)
 	}
 	return tx.Commit()
+}
+
+// timeout is TimeoutEnv's duration, or its default when it is unset.
+func timeout() (time.Duration, error) {
+	v := os.Getenv(TimeoutEnv)
+	if v == "" {
+		return defaultTimeout, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s=%q is no positive duration", TimeoutEnv, v)
+	}
+	return d, nil
+}
+
+// Timeout is the deadline TimeoutEnv sets. A value that is no positive
+// duration fails the test.
+func Timeout(t testing.TB) time.Duration {
+	t.Helper()
+	d, err := timeout()
+	if err != nil {
+		t.Fatalf("dbtest: %v", err)
+	}
+	return d
+}
+
+// Context is a context with Timeout's deadline, for a test that runs
+// statements of its own. It is not the test's context, which is cancelled
+// before cleanups run, so a cleanup can use it too.
+func Context(t testing.TB) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), Timeout(t))
+	t.Cleanup(cancel)
+	return ctx
 }
 
 // Postgres returns a database/sql handle on the PARSE_POSTGRES_DSN server,
@@ -147,14 +189,15 @@ func (s *server) schemaDSN(t testing.TB) string {
 	// Random, not the clock: test binaries of several packages share one
 	// server, and two fixtures can start in the same clock tick.
 	schema := "t_" + strings.ToLower(rand.Text())
-	ctx, cancel := context.WithTimeout(t.Context(), statementTimeout)
+	limit := Timeout(t)
+	ctx, cancel := context.WithTimeout(t.Context(), limit)
 	defer cancel()
 	if err := exec(ctx, dsn, "CREATE SCHEMA "+schema); err != nil {
 		t.Fatalf("dbtest: create schema: %v", err)
 	}
 	t.Cleanup(func() {
 		// The test's context is already cancelled when cleanups run.
-		ctx, cancel := context.WithTimeout(context.Background(), statementTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), limit)
 		defer cancel()
 		if err := exec(ctx, dsn, "DROP SCHEMA "+schema+" CASCADE"); err != nil {
 			t.Logf("dbtest: drop schema %s: %v", schema, err)
