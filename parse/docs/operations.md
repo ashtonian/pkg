@@ -86,12 +86,10 @@ canonical UUID/string/integer scalar type; duplicate normalized keys refuse.
 Database collation aliases must also be rejected by the caller's exact Current
 key check. All validation finishes before returning an executable plan.
 
-The initial batch contract supports column patches that the ordinary SQL
-compiler supports. It refuses relation mutations and primary-key/tenant-column
-assignments. Existing single-payload update and relation APIs retain their
-contracts. Typed JSON, arrays, nulls, change predicates, timestamps and increments
+A batch takes the column patches the ordinary SQL compiler takes. It refuses
+relation mutations and primary-key/tenant-column assignments. Typed JSON, arrays, nulls, change predicates, timestamps and increments
 use the same canonical patch expression builder. `patch.PatchSQLResult.Assignments`
-exposes those structured column expressions alongside its existing rendered SET
+exposes those structured column expressions alongside its rendered SET
 fragment; consumers never split SQL strings to recover them.
 
 ## Query costs and limits

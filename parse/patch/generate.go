@@ -281,9 +281,10 @@ func DefaultPatchOps() map[core.FieldType][]PatchOp {
 }
 
 // relationPatchOps returns the allowed-ops subset for a relation-patch
-// path: replace / add / remove. JSON Patch's move / copy / test verbs
-// have no clean translation to "set / extend / shrink junction
-// membership" so they're rejected at validation (E2117). .
+// path: replace / add / remove. JSON Patch's move / copy / test have no
+// translation to setting, extending or shrinking a membership, so the parser
+// refuses them on a generated relation path (E2064); BuildPatchSQL refuses
+// one a hand-built schema allows (E2117).
 func relationPatchOps() []PatchOp {
 	return []PatchOp{PatchOpReplace, PatchOpAdd, PatchOpRemove}
 }

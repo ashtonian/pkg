@@ -58,7 +58,7 @@ PARSE_POSTGRES_DSN=postgres://… go test -tags=integration -count=1 ./patch/...
 
 patch validates operations and compiles them to SQL; it runs no statement and has no health check, metrics or logs of its own. Its failures:
 
-- A `*core.ParseError` is the request's fault: an invalid operation or value (E2064–E2077), a policy refusal (E2084, E2085), a relation operation it cannot take (E2117–E2119). Joined failures name each member's JSON Pointer ([errors](../docs/http-errors.md#error-codes)).
+- A `*core.ParseError` is the request's fault: an invalid operation or value (E2064–E2077), a policy refusal (E2084, E2085), a relation value it cannot take (E2118, E2119), and from SQL compilation a test or transfer it cannot render (E2068, E2070, E2117). Joined failures name each member's JSON Pointer ([errors](../docs/http-errors.md#error-codes)).
 - `ErrUnparsed` is the server's: a `ParsedPatch` no parser produced reached a compiler. `ErrSQLColumnMissing` is the schema's: a path with no SQL column.
 - A patch is bounded by `MaxOperations` (`DefaultMaxOperations`), a relation operation by `MaxRelationValues` (`DefaultMaxRelationValues`) and typed copies by `MaxPatchCopyBytes` ([patch configuration](../docs/patches.md#configuration)).
 

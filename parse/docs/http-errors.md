@@ -141,7 +141,7 @@ All known codes describe permanent failures and are listed below; retry and cata
 | E2114 | 400 | Invalid geo polygon |
 | E2115 | 400 | Geo operator or shape not supported by the dialect |
 | E2116 | 400 | Invalid UUID |
-| E2117 | 422 | Operation not allowed on a relation field |
+| E2117 | 422 | `move`, `copy` or `test` on a relation path, refused by `BuildPatchSQL` when a hand-built schema allows it; a generated schema allows none of them, so the parser refuses them as E2064 |
 | E2118 | 422 | Relation patch value is not a set of keys: an `add` or `remove` naming none, or a null key (a value that is not a list, or a key of the wrong type, is E2077) |
 | E2119 | 422 | Relation patch exceeds its maximum: more keys in one relation operation than `PatchSchema.MaxRelationValues`; `Details` holds `count` and `limit` |
 | E2120 | 500 | A schema discovery handler could not encode its document |

@@ -253,9 +253,10 @@ type PathSchema struct {
 	// than a scalar column. When set, BuildPatchSQL emits
 	// junction INSERT/DELETE statements into PatchSQLResult.RelationOps
 	// instead of touching SQLColumn (which is "" for relation paths).
-	// AllowedOps for a relation path is the relation-verb subset
-	// (replace / add / remove); RFC 6902's move/copy/test are rejected
-	// at validation with E2117.
+	// AllowedOps for a generated relation path is the relation-verb subset
+	// (replace / add / remove), so the parser refuses RFC 6902's
+	// move/copy/test there (E2064); BuildPatchSQL refuses one a hand-built
+	// schema allows (E2117).
 	Relation *core.RelationSchema
 }
 
