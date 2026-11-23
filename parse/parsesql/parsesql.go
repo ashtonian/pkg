@@ -145,10 +145,12 @@ func queryPage[T any](ctx context.Context, db Queryer, r *parse.Resource[T], pla
 // split into the rows whose columns it wrote and the rows it left
 // (parse.Resource.UpdatedRows), and how many junction rows its membership
 // changes touched; neither split holding a row means the target is not
-// found. A plan that reads before it writes (SkipUnchanged: plan.Current
-// set) or changes relation memberships runs in one transaction — a
-// savepoint when db is a *sql.Tx — so its rows and memberships change
-// together: Current, the owner statement, the membership changes for the
+// found. A plan that reads before it writes (SkipUnchanged or a patch of
+// document members: plan.Current set) or changes relation memberships runs
+// in one transaction — a savepoint when db is a *sql.Tx — so its rows and
+// memberships change together: Current, then Conflict, whose row fails the
+// update before anything is written (UpdatePlan.ConflictError), the owner
+// statement, the membership changes for the
 // keys of the rows it returned (changed, then unchanged), never the
 // requested keys, then, for a resource with computed columns
 // (parse.ReadExpr), those rows again (Resource.Reread).
@@ -185,6 +187,15 @@ func update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 			return parse.UpdateResult[T]{}, wrap("current", err)
 		}
 		current = rows
+	}
+	if plan.Conflict != nil {
+		var op int64
+		switch err := scanOne(ctx, db, *plan.Conflict, &op); {
+		case err == nil:
+			return parse.UpdateResult[T]{}, plan.ConflictError(op)
+		case !errors.Is(err, sql.ErrNoRows):
+			return parse.UpdateResult[T]{}, wrap("conflict", err)
+		}
 	}
 	owner, err := query(ctx, db, r, plan.Owner)
 	if err != nil {

@@ -121,9 +121,11 @@ go test -tags=integration -race ./...
 go test -tags=unit -run '^$' -bench . ./...
 ```
 
+`./...` stops at the [example server](../examples/server/), a module of its own: `make parse-example-check` from the repository root tests it against this working tree.
+
 `go test -tags=concurrency -race ./...` is the quick race check: it builds only the tests that run parse code on several goroutines (files tagged `concurrency`). Parse starts no goroutines of its own, so the race detector can fail no other unit test.
 
-SQLite cases run locally. PostgreSQL and PostGIS tests run against the servers `PARSE_POSTGRES_DSN` and `PARSE_POSTGIS_DSN` name, and skip when the variable is unset; see [database test helpers](../internal/dbtest/). From a repository checkout, `make parse-postgres-up` starts one PostGIS server that serves both and prints the two exports. A named server that is unavailable fails the test, within 30 seconds of the first fixture call. Skipped backend tests are not a backend verification result: with `PARSE_REQUIRE_PG=1` an unset variable fails each test that asks for its server instead, which is how CI's PostgreSQL jobs run.
+SQLite cases run locally. PostgreSQL and PostGIS tests run against the servers `PARSE_POSTGRES_DSN` and `PARSE_POSTGIS_DSN` name, and skip when the variable is unset; see [database test helpers](../internal/dbtest/). From a repository checkout, `make parse-postgres-up` starts one PostGIS server that serves both and prints the two exports. A named server that is unavailable fails the test within `PARSE_TEST_TIMEOUT` of the first fixture call: a Go duration, 30 seconds by default, that also bounds each PostgreSQL test of `parsepgx`; raise it on a contended host. Skipped backend tests are not a backend verification result: with `PARSE_REQUIRE_PG=1` an unset variable fails each test that asks for its server instead, which is how CI's PostgreSQL jobs run.
 
 | Source | What it exercises |
 |---|---|
@@ -131,6 +133,7 @@ SQLite cases run locally. PostgreSQL and PostGIS tests run against the servers `
 | [SQL examples](../examples_sql_test.go) | Request-to-SQL examples across dialects |
 | [pgx recipe](../parsepgx/recipe_test.go) | List and Merge Patch endpoints on `parsepgx`; `TestRecipe` serves them against PostgreSQL |
 | [parsepgx suite](../parsepgx/parsepgx_integration_test.go) | Page walks with totals, facets and includes; tenancy; every pgx exec mode; snapshots; update rollback; guarded updates |
+| [parsepgx cancellation](../parsepgx/cancel_integration_test.go) | Concurrent relation updates of one owner; lists and updates cancelled or past their deadline mid-statement |
 | [Change predicate cases](../patch/change_predicate_cases_test.go) | `SkipUnchanged`'s comparisons per column kind, executed on SQLite and PostgreSQL |
 | [HTTP server](../examples/server/) | SQLite requests, pagination, facets, and patching |
 | [Filter conformance](../filter/filtertest/) | Shared operator/type behavior for backend implementers |

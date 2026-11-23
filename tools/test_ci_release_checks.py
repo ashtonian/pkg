@@ -63,7 +63,7 @@ OWNERS = json.loads(scope_input("go-owners"))
 
 class ReleaseChecks(unittest.TestCase):
     def test_archive_examples_remain_required_for_prose(self):
-        self.assertEqual(ci.release_checks(["parse/docs/queries.md"]), ["parse-release-check", "docs-check"])
+        self.assertEqual(ci.release_checks(["parse/docs/queries.md"]), ["parse-release-check", "parse-example-check", "docs-check"])
         modules = job("modules")
         self.assertIn("contains(needs.scope.outputs.jobs, '\"modules\"')", modules)
         self.assertIn("needs.scope.outputs.checks", modules)
@@ -76,17 +76,18 @@ class ReleaseChecks(unittest.TestCase):
 
     def test_release_checks_follow_the_changed_modules(self):
         cases = {
-            ("parse/internal/dialect/dialect.go",): ["parse-release-check", "docs-check"],
-            ("parse/sdk/ts/src/client.ts", "parse/README.md"): ["parse-release-check", "docs-check"],
+            ("parse/internal/dialect/dialect.go",): ["parse-release-check", "parse-example-check", "docs-check"],
+            ("parse/sdk/ts/src/client.ts", "parse/README.md"): ["parse-release-check", "parse-example-check", "docs-check"],
             ("httpx/codec/proto/codec.go",): ["httpx-release-check", "docs-check"],
             ("tools/check-httpx-release.sh",): ["httpx-release-check"],
             ("state/store.go", "onepassword/client.go"): ["native-release-check", "docs-check"],
             ("config/watch.go",): ["config-release-check", "cookbook-check", "docs-check"],
             ("config/kongprovider/load.go",): ["kongprovider-release-check", "cookbook-check", "docs-check"],
-            ("config/examples/cookbook/main.go",): ["cookbook-check"],
+            ("config/examples/cookbook/main.go",): ["cookbook-check", "docs-check"],
+            ("parse/examples/server/server.go", "parse/examples/server/go.mod"): ["parse-example-check", "docs-check"],
             ("gitx/merge.go", "jsonvalue/value.go"): ["gitx-release-check", "jsonvalue-release-check", "docs-check"],
             ("tools/doccheck/check.go",): ["docs-check"],
-            ("httpx/examples/gin/main.go",): ["httpx-release-check"],
+            ("httpx/examples/gin/main.go",): ["httpx-release-check", "docs-check"],
             ("tools/release-please/first-parent.mjs",): ["release-please-check"],
             ("tools/check-parse-sdk-release.sh",): [],
             ("CONTRIBUTING.md", "README.md"): [],
@@ -96,10 +97,19 @@ class ReleaseChecks(unittest.TestCase):
             with self.subTest(paths=paths):
                 self.assertEqual(ci.release_checks(list(paths)), want)
 
-    def test_the_documentation_check_reads_every_workspace_module(self):
-        used = json.loads(subprocess.check_output(["go", "work", "edit", "-json"], cwd=ROOT))["Use"]
-        trees = {PurePosixPath(u["DiskPath"]).parts[0] + "/" for u in used}
-        self.assertEqual(set(ci.CHECKS["docs-check"]), trees | {"tools/doccheck/"})
+    def test_the_documentation_check_reads_every_module(self):
+        # doccheck reads every go.mod's module outside the directories it
+        # skips, in the workspace or not; a change to any of them runs it.
+        skipped = ("testdata", "vendor", "node_modules")
+        tracked = subprocess.check_output(["git", "ls-files", "-z", "--", "*go.mod"], cwd=ROOT).decode().split("\0")
+        modules = [PurePosixPath(p).parent for p in tracked if PurePosixPath(p).name == "go.mod"]
+        modules = [m for m in modules if not any(part in skipped or part[0] in "._" for part in m.parts)]
+        for module in modules:
+            with self.subTest(module=module):
+                self.assertTrue(ci.reads("docs-check", f"{module}/README.md"))
+        for tree in ci.CHECKS["docs-check"]:
+            with self.subTest(tree=tree):
+                self.assertTrue(any(f"{m}/".startswith(tree) for m in modules), f"{tree} holds no module")
 
     def test_shared_unknown_or_unavailable_inputs_run_every_release_check(self):
         every = list(ci.CHECKS)
@@ -113,11 +123,11 @@ class ReleaseChecks(unittest.TestCase):
 class Plan(unittest.TestCase):
     def test_the_modules_job_runs_only_with_a_release_check(self):
         self.assertEqual(ci.plan(["test", "modules"], ["CONTRIBUTING.md"]), (["test"], []))
-        self.assertEqual(ci.plan(["test", "modules"], ["parse/list.go"]), (["test", "modules"], ["parse-release-check", "docs-check"]))
+        self.assertEqual(ci.plan(["test", "modules"], ["parse/list.go"]), (["test", "modules"], ["parse-release-check", "parse-example-check", "docs-check"]))
 
     def test_the_cookbook_lints_whenever_its_check_runs(self):
         self.assertEqual(ci.plan(["modules"], ["config/examples/cookbook/main.go"]),
-                         (["modules", "lint"], ["cookbook-check"]))
+                         (["modules", "lint"], ["cookbook-check", "docs-check"]))
 
     def test_a_full_run_makes_every_check(self):
         jobs, checks = ci.plan(list(ci.JOBS), None)
@@ -144,13 +154,13 @@ class Plan(unittest.TestCase):
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
             self.assertEqual(json.loads(values["jobs"]), ["test", "modules", "parse-benchmarks"])
             self.assertEqual(json.loads(values["required"]), ["test", "modules"])
-            self.assertEqual(values["checks"], "httpx-release-check parse-release-check docs-check")
+            self.assertEqual(values["checks"], "httpx-release-check parse-release-check parse-example-check docs-check")
             self.assertEqual(values["lint-cookbook"], "false")
-            self.assertEqual(json.loads(values["selections"])["modules"], ["httpx-release-check", "parse-release-check", "docs-check"])
+            self.assertEqual(json.loads(values["selections"])["modules"], ["httpx-release-check", "parse-release-check", "parse-example-check", "docs-check"])
             # The pull request's run, measured from the merge's first parent,
             # made only parse's release check: it does not cover this push's.
             self.assertEqual(json.loads(values["parent-selections"]),
-                             {"test": [parse], "modules": ["parse-release-check", "docs-check"], "parse-benchmarks": [parse]})
+                             {"test": [parse], "modules": ["parse-release-check", "parse-example-check", "docs-check"], "parse-benchmarks": [parse]})
             for full, listing in (("true", str(files)), ("false", "")):
                 with self.subTest(full=full, listing=listing):
                     self.assertIsNone(ci.changed_paths({"SCOPE_FULL": full, "SCOPE_FILES": listing}))

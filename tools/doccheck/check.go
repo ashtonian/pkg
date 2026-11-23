@@ -62,7 +62,7 @@ type module struct {
 	used    map[string]bool // allow entries that matched, by "kind\x00key"
 }
 
-// check runs every check over every module of the workspace at root.
+// check runs every check over every module of the repository at root.
 func check(ctx context.Context, root, allowPath string) ([]finding, error) {
 	allow := map[string]moduleAllow{}
 	if data, err := os.ReadFile(allowPath); err == nil {
@@ -74,11 +74,11 @@ func check(ctx context.Context, root, allowPath string) ([]finding, error) {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("reading allow list %s: %w", allowPath, err)
 	}
-	mods, err := workspaceModules(ctx, root)
+	roots, err := moduleRoots(root)
 	if err != nil {
 		return nil, err
 	}
-	roots, err := moduleRoots(root)
+	mods, err := checkedModules(ctx, root, roots)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +90,7 @@ func check(ctx context.Context, root, allowPath string) ([]finding, error) {
 	var findings []finding
 	for name := range allow {
 		if !slices.Contains(mods, name) {
-			findings = append(findings, finding{path: allowPath, msg: fmt.Sprintf("allow list names %s, which is no workspace module", name)})
+			findings = append(findings, finding{path: allowPath, msg: fmt.Sprintf("allow list names %s, which is no module of the repository", name)})
 		}
 	}
 	modules := make([]*module, 0, len(mods))
@@ -131,6 +131,25 @@ func check(ctx context.Context, root, allowPath string) ([]finding, error) {
 	return findings, nil
 }
 
+// checkedModules are the modules the check reads, relative to root: those
+// go.work uses, then, sorted, every other module of the repository (roots).
+// A module kept out of the workspace, an example or a tool with its own
+// dependency graph, still documents the code beside it.
+func checkedModules(ctx context.Context, root string, roots map[string]bool) ([]string, error) {
+	mods, err := workspaceModules(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	var outside []string
+	for dir := range roots {
+		if !slices.Contains(mods, dir) {
+			outside = append(outside, dir)
+		}
+	}
+	slices.Sort(outside)
+	return append(mods, outside...), nil
+}
+
 // workspaceModules are the directories go.work uses, relative to root.
 func workspaceModules(ctx context.Context, root string) ([]string, error) {
 	work, err := filepath.Abs(filepath.Join(root, "go.work"))
@@ -169,7 +188,9 @@ func skipDir(name string) bool {
 		name == "testdata" || name == "vendor" || name == "node_modules")
 }
 
-// moduleRoots are every directory holding a go.mod, relative to root.
+// moduleRoots are every directory holding a go.mod, relative to root, but
+// those skipDir leaves out: a test fixture's or a dependency's module is
+// not the repository's.
 func moduleRoots(root string) (map[string]bool, error) {
 	roots := map[string]bool{}
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {

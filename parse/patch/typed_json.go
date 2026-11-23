@@ -58,14 +58,17 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 	out := make(map[string]any, len(obj))
 	switch t.Kind() {
 	case reflect.Map:
-		if t.Key().Kind() != reflect.String {
-			return nil, fmt.Errorf("object merge requires string map keys for %s; use JSON Patch replace", t)
-		}
+		// A member names its key as encoding/json decodes one (an integer
+		// kind in base 10, a type with text methods through them) and is
+		// written under the name encoding/json writes for that key, so the
+		// stored document holds one spelling per key and "01" merges into
+		// "1". A string key without text methods is its own name.
+		canonicalize := declared || t.Key().Kind() != reflect.String
 		sources := make(map[string]string, len(obj))
 		for _, name := range slices.Sorted(maps.Keys(obj)) {
 			value := obj[name]
 			canonical := name
-			if declared {
+			if canonicalize {
 				_, key, err := jsonkeys.CanonicalMapKey(t.Key(), name)
 				if err != nil {
 					return nil, err
@@ -199,6 +202,103 @@ func normalizeDeclaredJSON(t reflect.Type, value any) (any, error) {
 		return json.RawMessage(raw), nil
 	}
 	return canonical, err
+}
+
+// checkDocumentMember refuses an operation below a field whose Go type
+// declares its document's shape, where ApplyValidatedPatch, decoding the
+// field once the patch applies, would refuse the result: a member a struct
+// does not name exactly, a map key encoding/json does not decode or writes
+// under another name (two names for one key), a member of a value that has
+// none, and a value an add or a replace writes that does not decode as the
+// member. SQL writes a stored document without decoding it, so this is what
+// holds that document to its type. Below an interface, json.RawMessage or a
+// type that decodes itself, the document's shape is its own.
+func checkDocumentMember(schema *PatchSchema, op PatchOp, path string, value any) error {
+	tokens, err := core.ParsePointer(path)
+	if err != nil {
+		return err
+	}
+	field, ok := schema.pathSet().resolve(core.FormatPointer(tokens[0]))
+	if !ok {
+		return nil
+	}
+	t := field.GoType
+	for i, token := range tokens[1:] {
+		for t != nil && t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		if t == nil || untypedDocument(t) || customJSONType(t) {
+			return nil
+		}
+		parent := t
+		switch {
+		case t.Kind() == reflect.Map:
+			_, canonical, err := jsonkeys.CanonicalMapKey(t.Key(), token)
+			if err != nil {
+				return fmt.Errorf("member %q: %w", token, err)
+			}
+			if canonical != token {
+				return fmt.Errorf("member %q is the %s key encoding/json writes as %q", token, t.Key(), canonical)
+			}
+			t = t.Elem()
+		case t.Kind() == reflect.Struct:
+			f := jsonMember(t, token)
+			if f == nil {
+				return fmt.Errorf("%s has no member %q", t, token)
+			}
+			t = f.Type
+		case t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8:
+			return fmt.Errorf("%s encodes as a string, which has no members", t)
+		case t.Kind() == reflect.Slice || t.Kind() == reflect.Array:
+			t = t.Elem()
+		default:
+			return fmt.Errorf("%s has no members", t)
+		}
+		if i == len(tokens)-2 && (op == PatchOpAdd || op == PatchOpReplace) {
+			return checkMemberFits(parent, token, value)
+		}
+	}
+	return nil
+}
+
+// checkMemberFits decodes value as member name of parent inside a
+// one-member instance of parent, so the member's tag options apply as
+// encoding/json applies them.
+func checkMemberFits(parent reflect.Type, name string, value any) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	var wrapped []byte
+	if parent.Kind() == reflect.Slice || parent.Kind() == reflect.Array {
+		wrapped = slices.Concat([]byte("["), raw, []byte("]"))
+	} else {
+		key, err := json.Marshal(name)
+		if err != nil {
+			return err
+		}
+		wrapped = slices.Concat([]byte("{"), key, []byte(":"), raw, []byte("}"))
+	}
+	if err := checkJSONMembers(parent, wrapped); err != nil {
+		return fmt.Errorf("member %q: %w", name, err)
+	}
+	return nil
+}
+
+// jsonMember is the field of struct type t that encoding/json names name,
+// matched exactly: RFC 6901 names a member by its exact name, where a
+// decode would also take a field's name in another case.
+func jsonMember(t reflect.Type, name string) *core.Field {
+	walk, err := core.JSONFieldsOf(t)
+	if err != nil || name == "" {
+		return nil
+	}
+	for _, f := range walk.Fields {
+		if f.External == name {
+			return f
+		}
+	}
+	return nil
 }
 
 func decodeJSONDocument(raw []byte, dst any) error {

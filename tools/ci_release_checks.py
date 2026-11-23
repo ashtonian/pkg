@@ -31,17 +31,19 @@ CHECKS = {
     "parse-release-check": ("parse/", "tools/check-parse-release.sh"),
     # The cookbook replaces both config modules with their working trees.
     "cookbook-check": ("config/",),
+    # The Parse server example replaces Parse with its working tree.
+    "parse-example-check": ("parse/",),
     "tool-check": (ARCHIVE_TOOLING,),
     "release-please-check": ("tools/release-please/",),
-    # The documentation check reads every workspace module's Markdown and API.
+    # The documentation check reads every module's Markdown, API and comments,
+    # the workspace's and those kept out of it.
     "docs-check": ("config/", "gitx/", "gowalker/", "httpx/", "jsonvalue/", "onepassword/", "parse/", "process/",
-                   "state/", "tools/doccheck/"),
+                   "state/", "tools/doccheck/", "tools/modarchive/"),
 }
 # Modules nested in another module's directory are not part of its archive.
 NESTED = {
     "config-release-check": ("config/kongprovider/", "config/examples/cookbook/"),
-    # Modules outside the workspace hold no documentation the check reads.
-    "docs-check": ("config/examples/cookbook/", "httpx/examples/gin/", "httpx/internal/bench/"),
+    "parse-release-check": ("parse/examples/server/",),
 }
 # Prose outside every module, and the SDK's scripts, which its own job runs.
 UNCHECKED = {"CONTRIBUTING.md", "README.md"}

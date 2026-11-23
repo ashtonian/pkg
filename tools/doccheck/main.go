@@ -1,5 +1,7 @@
-// Command doccheck holds the Markdown of every module in the workspace to
-// the code it documents. The Go identifiers its code spans name resolve
+// Command doccheck holds the Markdown of every module of the repository to
+// the code it documents: those go.work uses, and every other go.mod outside
+// hidden, vendored, test-fixture and node_modules directories, such as an
+// example or a tool kept out of the workspace. The Go identifiers its code spans name resolve
 // against the module's exported API; its relative links and their anchors
 // resolve; the files its code maps name exist. A module that opts in, in the
 // allow list, is also held the other way: every non-test Go file is in a

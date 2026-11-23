@@ -8,6 +8,7 @@ TAGGED_MODULES := $(HTTPX_MODULES) $(PARSE_MODULES) $(NATIVE_MODULES)
 MODULES := $(CORE_MODULES) $(CONFIG_MODULES) $(TAGGED_MODULES)
 # Programs that use the published modules; tested, never published.
 COOKBOOK := config/examples/cookbook
+PARSE_EXAMPLE := parse/examples/server
 # Staticcheck runs on Go 1.27.4 or later whatever toolchain vets. Earlier 1.27
 # releases write export data with a type's generic methods moved last, so its
 # facts for every method declared after a generic one belong to another method
@@ -43,7 +44,7 @@ scoped-over = $(if $(3),$(1) $(3),@echo "no covered packages in $(strip $(2))")
 UNTAGGED_MODULES := $(CORE_MODULES) $(CONFIG_MODULES)
 LINT_TAGS := unit,integration
 
-.PHONY: test test-native-unit test-native-integration native-release-check test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration parse-postgres-up parse-postgres-down test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check lint release-check gitx-release-check config-release-check kongprovider-release-check httpx-release-check cookbook-check tool-check release-please-check ci
+.PHONY: test test-native-unit test-native-integration native-release-check test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration parse-postgres-up parse-postgres-down test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check lint release-check gitx-release-check config-release-check kongprovider-release-check httpx-release-check cookbook-check parse-example-check tool-check release-please-check ci
 
 ## test: every published module from the working tree (go.work), race detector on.
 ## -count=1 only where a test depends on state the test cache cannot see:
@@ -187,6 +188,11 @@ httpx-release-check:
 cookbook-check:
 	cd $(COOKBOOK) && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test $(RACE) -count=1 ./...
 
+## parse-example-check: vet, staticcheck and test the Parse server example, a
+## module outside the workspace, against the Parse working tree
+parse-example-check:
+	cd $(PARSE_EXAMPLE) && GOWORK=off go mod tidy -diff && GOWORK=off go vet -tags=unit,integration ./... && GOWORK=off $(STATICCHECK) -tags=unit,integration ./... && GOWORK=off go test $(RACE) -tags=unit,integration -count=1 ./...
+
 ## parse-sdk-registry-check: bounded registry availability and integrity checks
 parse-sdk-registry-check:
 	node --test tools/check-parse-sdk-registry.test.mjs
@@ -195,7 +201,7 @@ parse-sdk-registry-check:
 tool-check:
 	cd tools/modarchive && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test $(RACE) -count=1 ./... && GOWORK=off $(STATICCHECK) ./...
 
-## docs-check: every workspace module's Markdown against its code: Go identifiers,
+## docs-check: every module's Markdown, in the workspace or not, against its code: Go identifiers,
 ## relative links and anchors, code maps (tools/doccheck)
 docs-check:
 	cd tools/doccheck && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test $(RACE) -count=1 ./... && GOWORK=off $(STATICCHECK) ./... && GOWORK=off go run . -root ../..
@@ -205,4 +211,4 @@ release-please-check:
 	cd tools/release-please && pnpm install --frozen-lockfile && node --test
 
 ## ci: everything CI runs
-ci: lint lint-cookbook test release-check parse-sdk-release-check parse-sdk-registry-check cookbook-check tool-check release-please-check docs-check
+ci: lint lint-cookbook test release-check parse-sdk-release-check parse-sdk-registry-check cookbook-check parse-example-check tool-check release-please-check docs-check
