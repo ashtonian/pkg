@@ -28,7 +28,9 @@ import (
 // the map: weakly typed, through the built-in decode hooks, so "010" is the
 // integer 8 and "0x10" is 16, as in a file. A WithDecodeHook that reads a
 // key type its own way is not consulted: a key's spelling does not depend
-// on a load's options.
+// on a load's options. Text names an entry only when its key is one entry
+// a map can hold and name again: a key equal to itself (not NaN) whose own
+// text reads back to it, so "60s" and "1m" are one entry, written "1m0s".
 //
 // A map keyed by any other type — an interface, a struct without text
 // methods, a type that reads text but writes none — has no codec: it is
@@ -117,9 +119,38 @@ func (c *keyCodec) text(k reflect.Value) (string, error) {
 
 // parse reads text as a load decodes a source's key into the map.
 func (c *keyCodec) parse(text string) (reflect.Value, error) {
+	k, _, err := c.read(text)
+	return k, err
+}
+
+// canonical is the one text of the key text reads as: "010" is "8".
+func (c *keyCodec) canonical(text string) (string, error) {
+	_, canonical, err := c.read(text)
+	return canonical, err
+}
+
+// read is the key text reads as and that key's own text. It refuses a key
+// the map cannot hold as one entry named by its text: one unequal to itself
+// (NaN), which no lookup finds, or one whose text reads back to another
+// key, which that text would name instead.
+func (c *keyCodec) read(text string) (key reflect.Value, canonical string, err error) {
 	if c.plain {
-		return reflect.ValueOf(text).Convert(c.typ), nil
+		return reflect.ValueOf(text).Convert(c.typ), text, nil
 	}
+	if key, err = c.decode(text); err != nil {
+		return reflect.Value{}, "", err
+	}
+	if canonical, err = c.text(key); err != nil {
+		return reflect.Value{}, "", err
+	}
+	again, err := c.decode(canonical)
+	if err != nil || !again.Equal(key) {
+		return reflect.Value{}, "", fmt.Errorf("%q reads as a %s key that its text %q does not read back to", text, gowalker.TypeText(c.typ), canonical)
+	}
+	return key, canonical, nil
+}
+
+func (c *keyCodec) decode(text string) (reflect.Value, error) {
 	out := reflect.New(c.typ)
 	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		DecodeHook:       builtinDecodeHook(),
@@ -133,18 +164,6 @@ func (c *keyCodec) parse(text string) (reflect.Value, error) {
 		return reflect.Value{}, err
 	}
 	return out.Elem(), nil
-}
-
-// canonical is the one text of the key text reads as: "010" is "8".
-func (c *keyCodec) canonical(text string) (string, error) {
-	if c.plain {
-		return text, nil
-	}
-	k, err := c.parse(text)
-	if err != nil {
-		return "", err
-	}
-	return c.text(k)
 }
 
 // builtinDecodeHook is the decode hooks every load runs, without a

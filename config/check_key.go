@@ -103,10 +103,12 @@ func DecodeKey[T any](ctx context.Context, key string, value any, opts ...Option
 // CanonicalKey returns key spelled the one way this package prints it, for
 // T: each field by its key, not an alias tag's former name or another letter
 // case; a map entry quoted, by the text of the key a load reads it as
-// (ports["0x50"] is ports["80"], timeouts["60s"] is timeouts["1m0s"]); and
-// a key beneath an interface or remain field as a field wherever it can be
+// (ports["0x50"] is ports["80"], timeouts["60s"] is timeouts["1m0s"]); and a
+// key beneath an interface or remain field as a field wherever it can be
 // one. A settings store keys its rows by it, so two spellings of one key
-// are one row. A key that does not parse, is not concrete or names nothing
+// are one row. It reads an entry's key as a load with no options does: a
+// WithDecodeHook that reads a key type from other text is not consulted, so
+// a key naming an entry by such text is refused. A key that does not parse, is not concrete or names nothing
 // config reads returns an Unknown *KeyError matching ErrKey. It reads no
 // value and no validate tag: whether a value is valid for the key is
 // CheckKey's to say. A declaration a load refuses for anything but its
