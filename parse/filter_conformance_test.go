@@ -7,10 +7,13 @@ package parse_test
 // The Go filter parser is authoritative. This file walks a canonical set of
 // filter inputs through the real parser + both SQL dialects and records the
 // resulting AST / SQL / validity / error code into
-// testdata/filter_conformance.json. The TypeScript DSL client
-// (parse/sdk/ts/src/filter) consumes the same JSON and must agree — see
-// sdk/ts/src/filter/conformance.test.ts. Drift on either side becomes a red
-// build.
+// testdata/filter_conformance.json, with the schema documents the registry
+// serves for the corpus's resources, and the server's verdict on a set of
+// sort strings and list requests. The TypeScript client
+// (sdk/ts/src/filter/conformance.test.ts) validates every input against
+// those documents and must agree; parse/client classifies every case
+// (client_conformance_test.go); filter's own tests require a valid and an
+// invalid case for every operator and every filterable type.
 //
 // Regenerate the corpus after an intentional grammar change:
 //
@@ -23,21 +26,26 @@ package parse_test
 // grammar, and the TS client legitimately never enforces them.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
+	"net/url"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 )
 
-var updateConformance = flag.Bool("update", false, "regenerate the Go-authoritative conformance corpus")
+var updateRendered = flag.Bool("update", false, "rewrite what is rendered from the code: the conformance corpora, the SDK fixtures and the guides' tables")
 
 const conformanceCorpusPath = "testdata/filter_conformance.json"
 
@@ -45,25 +53,38 @@ const conformanceCorpusPath = "testdata/filter_conformance.json"
 // resolve to a fixed RFC3339 string — the corpus must be byte-stable.
 var confClock = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
 
-// confEntity is the schema the corpus is generated against. Its field/operator
-// set must mirror the schema the TS conformance test validates against.
+// confEntity is the resource the corpus is generated against
+// (confEntities), with a field of every filterable type.
 type confEntity struct {
-	ID      string          `json:"id"      parse:"filter" filter_ops:"eq,ne,in,nin"`
-	Name    string          `json:"name"    parse:"filter" filter_ops:"eq,ne,like,ilike,contains,null,not_null,exists"`
-	Status  string          `json:"status"  parse:"filter" filter_ops:"eq,ne,in,nin" enum:"active,offline,error"`
-	Count   int             `json:"count"   parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin"`
+	ID      string          `json:"id"      parse:"filter,sort" filter_ops:"eq,ne,in,nin"`
+	Name    string          `json:"name"    parse:"filter,sort" filter_ops:"eq,ne,like,ilike,contains,null,not_null,exists"`
+	Status  string          `json:"status"  parse:"filter,facet" filter_ops:"eq,ne,in,nin" enum:"active,offline,error" facet:"terms:5"`
+	Count   int             `json:"count"   parse:"filter,sort" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin"`
 	Price   decimal.Decimal `json:"price"   parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin"`
 	Active  bool            `json:"active"  parse:"filter" filter_ops:"eq,ne"`
-	Created time.Time       `json:"created" parse:"filter" filter_ops:"eq,gt,gte,lt,lte"`
+	Created time.Time       `json:"created" parse:"filter,sort" filter_ops:"eq,gt,gte,lt,lte"`
 	Meta    map[string]any  `json:"meta"    parse:"filter" paths:"region:string;labels:[]string;sizes:[]int"`
 	Note    *string         `json:"note"    parse:"filter" filter_ops:"not_null"`
 	Lines   []confLine      `json:"lines"   parse:"filter"`
 	Tags    []string        `json:"tags"    parse:"filter"`
 	// Serial and Live travel as JSON strings (json:",string").
-	Serial int64   `json:"serial,string" parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin"`
-	Live   bool    `json:"live,string"   parse:"filter" filter_ops:"eq,ne"`
-	Big    uint64  `json:"big,string"    parse:"filter" filter_ops:"eq,gt"`
-	Ratio  float64 `json:"ratio,string"  parse:"filter" filter_ops:"eq,lt"`
+	Serial int64          `json:"serial,string" parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin"`
+	Live   bool           `json:"live,string"   parse:"filter" filter_ops:"eq,ne"`
+	Big    uint64         `json:"big,string"    parse:"filter" filter_ops:"eq,gt"`
+	Ratio  float64        `json:"ratio,string"  parse:"filter" filter_ops:"eq,lt"`
+	Score  float64        `json:"score"         parse:"filter" filter_ops:"gt,lte"`
+	Day    core.Date      `json:"day"           parse:"filter" filter_ops:"eq,gt,lt"`
+	At     core.LocalTime `json:"at"            parse:"filter" filter_ops:"eq,gte"`
+	Span   core.Interval  `json:"span"          parse:"filter" filter_ops:"eq,in"`
+	Addr   core.Inet      `json:"addr"          parse:"filter" filter_ops:"eq,in"`
+	Subnet core.CIDR      `json:"subnet"        parse:"filter" filter_ops:"eq"`
+	Mac    core.MACAddr   `json:"mac"           parse:"filter" filter_ops:"eq,ne"`
+	Key    uuid.UUID      `json:"key"           parse:"filter" filter_ops:"eq,in"`
+	Spot   map[string]any `json:"spot"          parse:"filter" filter_ops:"near,within,intersects" geo:"jsonb" geo_srid:"4326"`
+	Dims   confDims       `json:"dims"          parse:"filter" filter_ops:"eq,has_key"`
+	Blob   []byte         `json:"blob"          parse:"filter" filter_ops:"null"`
+	// OwnerID is the key the relation "owner" joins on; no filter field.
+	OwnerID string `json:"-" db:"owner_id"`
 }
 
 // confLine is an element of confEntity's lines array.
@@ -72,11 +93,74 @@ type confLine struct {
 	Qty int    `json:"qty" parse:"filter" filter_ops:"eq,gt,lt"`
 }
 
-// confPart is the target of confEntity's declared has-many relation
-// "parts" (parts.entity_id = entities.id).
+// confDims is confEntity's struct-typed (object) field.
+type confDims struct {
+	W int `json:"w"`
+	H int `json:"h"`
+}
+
+// confPart is the target of confEntity's has-many relation "parts"
+// (parts.entity_id = conf_entities.id).
 type confPart struct {
-	ID    string `json:"id"    parse:"filter" filter_ops:"eq,in"`
-	State string `json:"state" parse:"filter" filter_ops:"eq,ne" enum:"ok,worn"`
+	ID       string `json:"id"    parse:"filter" filter_ops:"eq,in"`
+	EntityID string `json:"-"     db:"entity_id"`
+	State    string `json:"state" parse:"filter" filter_ops:"eq,ne" enum:"ok,worn"`
+}
+
+// confOwner is the target of confEntity's belongs-to relation "owner"
+// (conf_entities.owner_id = owners.id).
+type confOwner struct {
+	ID   string `json:"id"   parse:"filter" filter_ops:"eq,in"`
+	Name string `json:"name" parse:"filter" filter_ops:"eq,like"`
+}
+
+// confBareEntity is a resource with nothing to filter, sort or patch: its
+// schema document has none of those sections.
+type confBareEntity struct {
+	ID string `json:"id" db:"id"`
+}
+
+// The corpus's resource names, as the registry serves them.
+const (
+	confEntities = "conf_entities"
+	confBare     = "conf_bare"
+)
+
+// confCorpusResources are the corpus's resources, registered as a server
+// registers them.
+type confCorpusResources struct {
+	entities *parse.Resource[confEntity]
+	bare     *parse.Resource[confBareEntity]
+	registry *parse.SchemaRegistry
+}
+
+// confResources builds the corpus's resources. The corpus leaves the cost
+// guard out (it is deployment configuration, not grammar), so the entity
+// lifts it.
+func confResources(t *testing.T) confCorpusResources {
+	t.Helper()
+	parts, err := parse.NewResource[confPart]("parts")
+	require.NoError(t, err)
+	owners, err := parse.NewResource[confOwner]("owners")
+	require.NoError(t, err)
+	entities, err := parse.NewResource[confEntity](confEntities, parse.ParserOptions(core.WithClock(confClock), core.WithMaxCost(1<<20)))
+	require.NoError(t, err)
+	require.NoError(t, entities.Relate("parts", parse.HasMany(parts, "entity_id", parse.Indexed(), parse.Includable())))
+	require.NoError(t, entities.Relate("owner", parse.BelongsTo(owners, "owner_id", parse.Indexed())))
+	bare, err := parse.NewResource[confBareEntity](confBare)
+	require.NoError(t, err)
+	reg := parse.NewSchemaRegistry()
+	require.NoError(t, parse.RegisterResource(reg, entities))
+	require.NoError(t, parse.RegisterResource(reg, parts))
+	require.NoError(t, parse.RegisterResource(reg, owners))
+	require.NoError(t, parse.RegisterResource(reg, bare))
+	return confCorpusResources{entities: entities, bare: bare, registry: reg}
+}
+
+// confSchema is the filter schema the corpus's cases are parsed against.
+func confSchema(t *testing.T) *filter.ResourceSchema {
+	t.Helper()
+	return confResources(t).entities.FilterSchema()
 }
 
 // astNode is the language-neutral serialization of a filter.FilterNode used in
@@ -96,7 +180,12 @@ type conformanceCase struct {
 	CanonicalAST *astNode       `json:"canonicalAst,omitempty"`
 	SQLPostgres  string         `json:"sqlPostgres,omitempty"`
 	SQLSqlite    string         `json:"sqlSqlite,omitempty"`
-	ErrorCode    string         `json:"errorCode,omitempty"`
+	// SQLPostgresCode and SQLSqliteCode are the code a dialect refuses a
+	// valid filter with: a value the grammar accepts and the dialect cannot
+	// hold, such as an unsigned integer above SQLite's.
+	SQLPostgresCode string `json:"sqlPostgresCode,omitempty"`
+	SQLSqliteCode   string `json:"sqlSqliteCode,omitempty"`
+	ErrorCode       string `json:"errorCode,omitempty"`
 	// TSApplicable is false for constructs the TS client legitimately never
 	// builds (e.g. server-side geo). The TS conformance test skips these.
 	TSApplicable *bool `json:"tsApplicable,omitempty"`
@@ -295,27 +384,77 @@ func canonicalCases() []caseInput {
 		{name: "err_relation_target_enum", input: map[string]any{"parts": map[string]any{"$some": map[string]any{"state": "new"}}}},
 		{name: "err_relation_is_on_collection", input: map[string]any{"parts": map[string]any{"$is": map[string]any{}}}},
 		{name: "err_relation_not_object", input: map[string]any{"parts": map[string]any{"$some": []any{}}}},
-	}
-}
+		{name: "err_relation_none_unknown_target_field", input: map[string]any{"parts": map[string]any{"$none": map[string]any{"colour": "red"}}}},
+		{name: "err_relation_is_not_on_collection", input: map[string]any{"parts": map[string]any{"$is_not": map[string]any{}}}},
 
-// confSchema builds the filter schema for confEntity.
-func confSchema(t *testing.T) *filter.ResourceSchema {
-	t.Helper()
-	schema, err := filter.GenerateFilterSchema[confEntity](core.NewSchemaGenerator())
-	if err != nil {
-		t.Fatalf("generate filter schema: %v", err)
+		// --- a belongs-to relation: $is and $is_not filter by its one target ---
+		{name: "reference_is", input: map[string]any{"owner": map[string]any{"$is": map[string]any{"name": "acme"}}}},
+		{name: "reference_is_not", input: map[string]any{"owner": map[string]any{"$is_not": map[string]any{"name": map[string]any{"$like": "ac%"}}}}},
+		{name: "reference_key_shorthand", input: map[string]any{"owner": "o1"}},
+		{name: "err_reference_is_unknown_target_field", input: map[string]any{"owner": map[string]any{"$is": map[string]any{"colour": "red"}}}},
+		{name: "err_reference_some", input: map[string]any{"owner": map[string]any{"$some": map[string]any{}}}},
+
+		// --- an operator's operand takes the operator's form ---
+		{name: "err_ilike_not_string", input: map[string]any{"name": map[string]any{"$ilike": 5}}},
+		{name: "err_exists_not_bool", input: map[string]any{"name": map[string]any{"$exists": "yes"}}},
+		{name: "err_and_not_array", input: map[string]any{"$and": map[string]any{"status": "active"}}},
+
+		// --- a float that travels as a JSON number ---
+		{name: "float_gt", input: map[string]any{"score": map[string]any{"$gt": 0.5}}},
+		{name: "err_float_lte_type", input: map[string]any{"score": map[string]any{"$lte": "half"}}},
+
+		// --- timestamps: RFC 3339 or a relative token ---
+		{name: "err_timestamp_type", input: map[string]any{"created": 5}},
+		{name: "err_timestamp_spelling", input: map[string]any{"created": map[string]any{"$gt": "yesterday"}}, tsApplicable: ptrFalse()},
+
+		// --- dates, times of day and intervals, as their canonical text ---
+		{name: "date_gt", input: map[string]any{"day": map[string]any{"$gt": "2026-01-01"}}},
+		{name: "err_date_operator", input: map[string]any{"day": map[string]any{"$gte": "2026-01-01"}}},
+		{name: "err_date_spelling", input: map[string]any{"day": "01/02/2026"}, tsApplicable: ptrFalse()},
+		{name: "time_gte", input: map[string]any{"at": map[string]any{"$gte": "09:30:00"}}},
+		{name: "err_time_spelling", input: map[string]any{"at": "half past nine"}, tsApplicable: ptrFalse()},
+		{name: "interval_in", input: map[string]any{"span": map[string]any{"$in": []any{"P1D", "PT2H30M"}}}},
+		{name: "err_interval_operator", input: map[string]any{"span": map[string]any{"$lt": "P1D"}}},
+		{name: "err_interval_spelling", input: map[string]any{"span": "1 day"}, tsApplicable: ptrFalse()},
+
+		// --- network addresses ---
+		{name: "inet_eq", input: map[string]any{"addr": "192.0.2.1"}},
+		{name: "err_inet_spelling", input: map[string]any{"addr": "192.0.2.300"}, tsApplicable: ptrFalse()},
+		{name: "cidr_eq", input: map[string]any{"subnet": "192.0.2.0/24"}},
+		{name: "err_cidr_host_bits", input: map[string]any{"subnet": "192.0.2.1/24"}, tsApplicable: ptrFalse()},
+		{name: "macaddr_ne", input: map[string]any{"mac": map[string]any{"$ne": "08:00:2b:01:02:03"}}},
+		{name: "err_macaddr_spelling", input: map[string]any{"mac": map[string]any{"$ne": "08:00:2b"}}, tsApplicable: ptrFalse()},
+		{name: "err_macaddr_type", input: map[string]any{"mac": 8}},
+
+		// --- UUIDs ---
+		{name: "uuid_in", input: map[string]any{"key": map[string]any{"$in": []any{"6ba7b810-9dad-11d1-80b4-00c04fd430c8"}}}},
+		{name: "err_uuid_type", input: map[string]any{"key": 7}},
+		{name: "err_uuid_spelling", input: map[string]any{"key": "not-a-uuid"}, tsApplicable: ptrFalse()},
+
+		// --- geo: the server reads the operand's shape ---
+		{name: "geo_near", input: map[string]any{"spot": map[string]any{"$near": map[string]any{"lat": 40.7128, "lon": -74.006, "distance": "1500m"}}}},
+		{name: "geo_within_box", input: map[string]any{"spot": map[string]any{"$within": map[string]any{
+			"top_left": map[string]any{"lat": 40.8, "lon": -74.1}, "bottom_right": map[string]any{"lat": 40.65, "lon": -73.7},
+		}}}},
+		{name: "geo_intersects_polygon", input: map[string]any{"spot": map[string]any{"$intersects": map[string]any{"points": []any{
+			map[string]any{"lat": 0, "lon": 0}, map[string]any{"lat": 1, "lon": 1}, map[string]any{"lat": 0, "lon": 1},
+		}}}}},
+		{name: "err_geo_operator", input: map[string]any{"spot": map[string]any{"$eq": "x"}}},
+		{name: "err_geo_near_without_distance", input: map[string]any{"spot": map[string]any{"$near": map[string]any{"lat": 1, "lon": 2}}}, tsApplicable: ptrFalse()},
+		{name: "err_geo_within_not_a_shape", input: map[string]any{"spot": map[string]any{"$within": 5}}, tsApplicable: ptrFalse()},
+		{name: "err_geo_intersects_two_points", input: map[string]any{"spot": map[string]any{"$intersects": map[string]any{"points": []any{
+			map[string]any{"lat": 0, "lon": 0}, map[string]any{"lat": 1, "lon": 1},
+		}}}}, tsApplicable: ptrFalse()},
+
+		// --- a struct field is a document of a fixed shape ---
+		{name: "object_has_key", input: map[string]any{"dims": map[string]any{"$has_key": "w"}}},
+		{name: "object_eq_document", input: map[string]any{"dims": map[string]any{"w": 2, "h": 3}}},
+		{name: "err_object_operator", input: map[string]any{"dims": map[string]any{"$contains": map[string]any{"w": 2}}}},
+
+		// --- a field with no filter semantics takes the NULL tests only ---
+		{name: "any_null", input: map[string]any{"blob": map[string]any{"$null": true}}},
+		{name: "err_any_operator", input: map[string]any{"blob": map[string]any{"$eq": "x"}}},
 	}
-	parts, err := filter.GenerateFilterSchema[confPart](core.NewSchemaGenerator(core.WithSQLTableName("parts")))
-	if err != nil {
-		t.Fatalf("generate target schema: %v", err)
-	}
-	schema.Fields["parts"] = &filter.FieldSchema{
-		ExternalName: "parts", DataType: core.FieldTypeString, Indexed: true,
-		AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpIn, filter.OpNin, filter.OpNull, filter.OpNotNull, filter.OpSome, filter.OpNone},
-		Relation:         &core.RelationSchema{Kind: core.HasMany, JoinTable: "parts", SourceColumn: "entity_id", TargetColumn: "id", PrimaryKey: "id"},
-		Related:          parts,
-	}
-	return schema
 }
 
 // toASTNode serializes a parsed FilterNode into the language-neutral astNode.
@@ -352,10 +491,11 @@ func runCase(t *testing.T, schema *filter.ResourceSchema, in caseInput) conforma
 	parser := filter.NewFilterParser(schema, confCfg)
 	ast, err := parser.Parse(string(body))
 	if err != nil {
-		c.Valid = false
-		if pe, ok := errors.AsType[*core.ParseError](err); ok {
-			c.ErrorCode = pe.Code
+		pe, ok := errors.AsType[*core.ParseError](err)
+		if !ok {
+			t.Fatalf("case %q: refused with a server fault, not a ParseError: %v", in.name, err)
 		}
+		c.ErrorCode = pe.Code
 		return c
 	}
 
@@ -363,112 +503,222 @@ func runCase(t *testing.T, schema *filter.ResourceSchema, in caseInput) conforma
 	if ast != nil {
 		c.CanonicalAST = toASTNode(ast.Root)
 	}
-	if sql, ok := buildWhere(schema, ast, filter.PostgresDialect{}); ok {
-		c.SQLPostgres = sql
-	}
-	if sql, ok := buildWhere(schema, ast, filter.SQLiteDialect{}); ok {
-		c.SQLSqlite = sql
-	}
+	c.SQLPostgres, c.SQLPostgresCode = buildWhere(t, in.name, schema, ast, filter.PostgresDialect{})
+	c.SQLSqlite, c.SQLSqliteCode = buildWhere(t, in.name, schema, ast, filter.SQLiteDialect{})
 	return c
 }
 
-// buildWhere generates the WHERE fragment for a dialect; ok is false for an
-// empty AST (no WHERE) or a build error (recorded as an empty fragment).
-func buildWhere(schema *filter.ResourceSchema, ast *filter.FilterAST, dialect filter.Dialect) (string, bool) {
+// buildWhere generates the WHERE fragment for a dialect, "" for an empty
+// AST, or the code of the ParseError the dialect refuses the request's
+// values with. Any other build error is a defect in the case or the builder:
+// a valid request never fails as the server's fault, and a valid filter
+// that filters something has SQL.
+func buildWhere(t *testing.T, name string, schema *filter.ResourceSchema, ast *filter.FilterAST, dialect filter.Dialect) (sql, code string) {
+	t.Helper()
 	if ast == nil || ast.Root == nil {
-		return "", false
+		return "", ""
 	}
 	res, err := filter.NewSQLBuilder(schema, dialect).Build(ast)
-	if err != nil || res == nil {
-		return "", false
+	if err != nil {
+		pe, ok := errors.AsType[*core.ParseError](err)
+		if !ok {
+			t.Fatalf("case %q: %s build: %v", name, dialect.Name(), err)
+		}
+		return "", pe.Code
 	}
-	return res.Where, true
+	if res.Where == "" {
+		t.Fatalf("case %q: %s built no SQL for a filter that filters", name, dialect.Name())
+	}
+	return res.Where, ""
 }
 
-// normalize JSON-encodes a value so int/float and field-order differences
-// don't break equality comparisons.
+// normalize is v's JSON with its object keys sorted and its numbers exact,
+// so an AST read from the corpus and one built live compare equal whatever
+// order a struct operand's fields marshal in.
 func normalize(t *testing.T, v any) string {
 	t.Helper()
 	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	return string(b)
+	require.NoError(t, err)
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var canonical any
+	require.NoError(t, dec.Decode(&canonical))
+	out, err := json.Marshal(canonical)
+	require.NoError(t, err)
+	return string(out)
 }
 
-// TestEmitFilterConformance regenerates the corpus when -update is passed.
-// Without -update it is a no-op (the corpus is checked by TestFilterConformance).
-func TestEmitFilterConformance(t *testing.T) {
-	if !*updateConformance {
-		t.Skip("pass -update to regenerate the conformance corpus")
-	}
-	schema := confSchema(t)
-	cases := canonicalCases()
+// filterCorpus is testdata/filter_conformance.json.
+type filterCorpus struct {
+	// Schemas are the documents the registry serves for the corpus's
+	// resources, by name: the client validates against them, relation
+	// targets included.
+	Schemas map[string]*parse.SchemaResponse `json:"schemas"`
+	// Cases are filters on confEntities.
+	Cases []conformanceCase `json:"cases"`
+	// Sort are sort parameters to confEntities' list.
+	Sort []sortCase `json:"sort"`
+	// List are list requests: their query strings.
+	List []listCase `json:"list"`
+}
 
-	out := make([]conformanceCase, 0, len(cases))
-	for _, in := range cases {
+// sortCase is a sort parameter and the server's verdict on it.
+type sortCase struct {
+	Name         string `json:"name"`
+	Input        string `json:"input"`
+	Valid        bool   `json:"valid"`
+	ErrorCode    string `json:"errorCode,omitempty"`
+	TSApplicable *bool  `json:"tsApplicable,omitempty"`
+}
+
+// listCase is a list request's query string and the server's verdict on
+// it: ParseList and BuildList, as a list handler runs them.
+type listCase struct {
+	Name string `json:"name"`
+	// Resource is the resource listed; empty is confEntities.
+	Resource     string     `json:"resource,omitempty"`
+	Input        url.Values `json:"input"`
+	Valid        bool       `json:"valid"`
+	ErrorCode    string     `json:"errorCode,omitempty"`
+	TSApplicable *bool      `json:"tsApplicable,omitempty"`
+}
+
+func sortInputs() []sortCase {
+	return []sortCase{
+		{Name: "one_field", Input: "name"},
+		{Name: "descending", Input: "-count"},
+		{Name: "ascending_sign", Input: "+name"},
+		{Name: "several", Input: "name,-created,id"},
+		{Name: "empty", Input: ""},
+		{Name: "spaces_around_fields", Input: " name , -count "},
+		{Name: "empty_slot", Input: "name,,count"},
+		{Name: "err_unknown_field", Input: "colour"},
+		{Name: "err_filter_field_not_sortable", Input: "status"},
+		{Name: "err_descending_not_sortable", Input: "-price"},
+		{Name: "err_too_many_fields", Input: "name,count,created,id"},
+		{Name: "err_too_many_slots", Input: "name,,,count"},
+		{Name: "err_sign_alone", Input: "-"},
+		{Name: "err_double_sign", Input: "--name"},
+		{Name: "repeated_field", Input: "name,-name"},
+	}
+}
+
+func listInputs() []listCase {
+	no := false
+	return []listCase{
+		{Name: "defaults", Input: url.Values{}},
+		{Name: "include_relation", Input: url.Values{filter.ParamInclude: {"parts"}}},
+		{Name: "err_include_not_a_relation", Input: url.Values{filter.ParamInclude: {"name"}}},
+		{Name: "err_include_not_includable", Input: url.Values{filter.ParamInclude: {"owner"}}},
+		{Name: "err_include_unknown", Input: url.Values{filter.ParamInclude: {"nope"}}},
+		{Name: "facets_field", Input: url.Values{filter.ParamFacets: {"status"}}},
+		{Name: "err_facets_not_facetable", Input: url.Values{filter.ParamFacets: {"name"}}},
+		{Name: "err_facets_unknown", Input: url.Values{filter.ParamFacets: {"nope"}}},
+		{Name: "err_search_without_search_fields", Input: url.Values{filter.ParamSearch: {"drill"}}},
+		{Name: "search_blank", Input: url.Values{filter.ParamSearch: {"  "}}},
+		{Name: "sort_and_filter", Input: url.Values{filter.ParamSort: {"-count"}, filter.ParamFilter: {`{"status":"active"}`}}},
+		{Name: "err_sort_too_many_fields", Input: url.Values{filter.ParamSort: {"name,count,created,id"}}},
+		{Name: "err_filter_unknown_field", Input: url.Values{filter.ParamFilter: {`{"colour":"red"}`}}},
+		{Name: "page_size", Input: url.Values{filter.ParamPageSize: {"10"}}},
+		{Name: "err_page_size_zero", Input: url.Values{filter.ParamPageSize: {"0"}}, TSApplicable: &no},
+		{Name: "err_page_size_word", Input: url.Values{filter.ParamPageSize: {"ten"}}, TSApplicable: &no},
+		{Name: "fields_mask", Input: url.Values{filter.ParamFields: {"id,name"}}},
+		{Name: "err_fields_unknown", Input: url.Values{filter.ParamFields: {"nope"}}, TSApplicable: &no},
+		{Name: "err_include_total_word", Input: url.Values{filter.ParamIncludeTotal: {"yes"}}, TSApplicable: &no},
+		{Name: "err_cursor_garbage", Input: url.Values{filter.ParamCursor: {"garbage"}}, TSApplicable: &no},
+		{Name: "err_list_parameter_twice", Input: url.Values{filter.ParamSort: {"name", "-name"}}, TSApplicable: &no},
+		{Name: "bare_defaults", Resource: confBare, Input: url.Values{}},
+		{Name: "filter_on_untagged_key", Resource: confBare, Input: url.Values{filter.ParamFilter: {`{"id":"a"}`}}},
+		{Name: "untagged_key_range", Resource: confBare, Input: url.Values{filter.ParamFilter: {`{"id":{"$gte":"a"}}`}}},
+		{Name: "err_untagged_key_operator", Resource: confBare, Input: url.Values{filter.ParamFilter: {`{"id":{"$ne":"a"}}`}}},
+		{Name: "err_bare_unknown_field", Resource: confBare, Input: url.Values{filter.ParamFilter: {`{"name":"a"}`}}},
+		{Name: "err_bare_sort", Resource: confBare, Input: url.Values{filter.ParamSort: {"id"}}},
+		{Name: "err_bare_include", Resource: confBare, Input: url.Values{filter.ParamInclude: {"id"}}},
+		{Name: "err_bare_facets", Resource: confBare, Input: url.Values{filter.ParamFacets: {"id"}}},
+	}
+}
+
+// listVerdict is a list handler's verdict on q: nil, or the ParseError it
+// answers. Anything else fails the test: a request is never refused with a
+// server fault.
+func listVerdict[T any](t *testing.T, name string, res *parse.Resource[T], q url.Values) (valid bool, code string) {
+	t.Helper()
+	req, err := res.ParseList(q)
+	if err == nil {
+		_, err = res.BuildList(filter.PostgresDialect{}, req, parse.Scope{})
+	}
+	if err == nil {
+		return true, ""
+	}
+	pe, ok := errors.AsType[*core.ParseError](err)
+	if !ok {
+		t.Fatalf("case %q: refused with a server fault, not a ParseError: %v", name, err)
+	}
+	return false, pe.Code
+}
+
+// buildFilterCorpus builds testdata/filter_conformance.json.
+func buildFilterCorpus(t *testing.T) []byte {
+	t.Helper()
+	res := confResources(t)
+	schema := res.entities.FilterSchema()
+	corpus := filterCorpus{Schemas: map[string]*parse.SchemaResponse{}}
+	for _, name := range res.registry.ResourceNames() {
+		corpus.Schemas[name] = res.registry.SchemaFor(name)
+	}
+	for _, in := range canonicalCases() {
 		c := runCase(t, schema, in)
 		// Determinism guard: re-run and require an identical serialization.
-		again := runCase(t, schema, in)
-		if normalize(t, c) != normalize(t, again) {
+		if normalize(t, c) != normalize(t, runCase(t, schema, in)) {
 			t.Fatalf("case %q is non-deterministic across runs; use single-key maps or ordered $and/$or arrays", in.name)
 		}
-		out = append(out, c)
+		corpus.Cases = append(corpus.Cases, c)
 	}
-
-	data, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal corpus: %v", err)
+	for _, c := range sortInputs() {
+		c.Valid, c.ErrorCode = listVerdict(t, c.Name, res.entities, url.Values{filter.ParamSort: {c.Input}})
+		corpus.Sort = append(corpus.Sort, c)
 	}
-	data = append(data, '\n')
-	if err := os.MkdirAll(filepath.Dir(conformanceCorpusPath), 0o755); err != nil {
-		t.Fatalf("mkdir testdata: %v", err)
+	for _, c := range listInputs() {
+		switch c.Resource {
+		case "":
+			c.Valid, c.ErrorCode = listVerdict(t, c.Name, res.entities, c.Input)
+		case confBare:
+			c.Valid, c.ErrorCode = listVerdict(t, c.Name, res.bare, c.Input)
+		default:
+			t.Fatalf("list case %q: no resource %q", c.Name, c.Resource)
+		}
+		corpus.List = append(corpus.List, c)
 	}
-	if err := os.WriteFile(conformanceCorpusPath, data, 0o644); err != nil {
-		t.Fatalf("write corpus: %v", err)
-	}
-	t.Logf("wrote %d cases to %s", len(out), conformanceCorpusPath)
+	data, err := json.MarshalIndent(corpus, "", "  ")
+	require.NoError(t, err)
+	return append(data, '\n')
 }
 
-// TestFilterConformance re-parses every corpus input and asserts the recorded
-// AST / SQL / validity / error code still match the live Go parser. This guards
-// accidental Go-side regressions between regenerations.
-func TestFilterConformance(t *testing.T) {
-	corpus := readFilterCorpus(t)
-	if len(corpus) == 0 {
-		t.Fatal("corpus is empty")
+// TestEmitFilterConformance builds the corpus and requires the file to hold
+// it byte for byte: a JSON comparison would read the quoted 64-bit integers
+// as float64 and miss a change in their low digits. -update writes it.
+func TestEmitFilterConformance(t *testing.T) {
+	got := buildFilterCorpus(t)
+	if *updateRendered {
+		require.NoError(t, os.WriteFile(conformanceCorpusPath, got, 0o644))
+		return
 	}
+	want, err := os.ReadFile(conformanceCorpusPath)
+	require.NoError(t, err, "missing corpus; regenerate with -update")
+	assert.Equal(t, string(want), string(got), "filter corpus is stale; regenerate with -update")
+}
 
-	// The corpus must stay in lockstep with the case set; a drift here means
-	// someone edited canonicalCases without regenerating.
-	if len(corpus) != len(canonicalCases()) {
-		t.Fatalf("corpus has %d cases but canonicalCases has %d; regenerate with -update",
-			len(corpus), len(canonicalCases()))
-	}
-
-	schema := confSchema(t)
-	for _, want := range corpus {
-		t.Run(want.Name, func(t *testing.T) {
-			got := runCase(t, schema, caseInput{name: want.Name, input: want.Input, tsApplicable: want.TSApplicable})
-
-			if got.Valid != want.Valid {
-				t.Fatalf("valid: got %v want %v", got.Valid, want.Valid)
-			}
-			if want.ErrorCode != got.ErrorCode {
-				t.Fatalf("errorCode: got %q want %q", got.ErrorCode, want.ErrorCode)
-			}
-			if normalize(t, got.CanonicalAST) != normalize(t, want.CanonicalAST) {
-				t.Fatalf("canonicalAst drift:\n got: %s\nwant: %s",
-					normalize(t, got.CanonicalAST), normalize(t, want.CanonicalAST))
-			}
-			if got.SQLPostgres != want.SQLPostgres {
-				t.Fatalf("sqlPostgres: got %q want %q", got.SQLPostgres, want.SQLPostgres)
-			}
-			if got.SQLSqlite != want.SQLSqlite {
-				t.Fatalf("sqlSqlite: got %q want %q", got.SQLSqlite, want.SQLSqlite)
-			}
-		})
-	}
+// readFilterCorpus reads the corpus with its numbers exact: a quoted int64
+// case's AST holds 2^63-1, which a float64 would round.
+func readFilterCorpus(t *testing.T) filterCorpus {
+	t.Helper()
+	data, err := os.ReadFile(conformanceCorpusPath)
+	require.NoError(t, err, "read the corpus (regenerate with -run TestEmitFilterConformance -update)")
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var corpus filterCorpus
+	require.NoError(t, dec.Decode(&corpus))
+	return corpus
 }
 
 func ptrFalse() *bool {

@@ -52,6 +52,8 @@ flowchart LR
 
 ## Functions
 
+The constants `DecimalFunc`, `DecimalKeyFunc`, `DecimalFloat32Func`, `GeoNearFunc`, `GeoInBoxFunc` and `GeoCoveredByFunc` hold the SQL names below, as `filter.SQLiteDialect` calls them.
+
 | SQL | Returns | Used for |
 |---|---|---|
 | `parse_decimal(x)` | `x`'s canonical decimal text (`core.DecimalText`): plain notation, no exponent, no leading or trailing zeros, `0` for either zero; NULL when `x` holds no decimal | equality, `$in` / `$nin` against the set's canonical texts, facet terms |

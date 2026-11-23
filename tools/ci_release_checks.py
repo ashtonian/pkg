@@ -33,9 +33,16 @@ CHECKS = {
     "cookbook-check": ("config/",),
     "tool-check": (ARCHIVE_TOOLING,),
     "release-please-check": ("tools/release-please/",),
+    # The documentation check reads every workspace module's Markdown and API.
+    "docs-check": ("config/", "gitx/", "gowalker/", "httpx/", "jsonvalue/", "onepassword/", "parse/", "process/",
+                   "state/", "tools/doccheck/"),
 }
 # Modules nested in another module's directory are not part of its archive.
-NESTED = {"config-release-check": ("config/kongprovider/", "config/examples/cookbook/")}
+NESTED = {
+    "config-release-check": ("config/kongprovider/", "config/examples/cookbook/"),
+    # Modules outside the workspace hold no documentation the check reads.
+    "docs-check": ("config/examples/cookbook/", "httpx/examples/gin/", "httpx/internal/bench/"),
+}
 # Prose outside every module, and the SDK's scripts, which its own job runs.
 UNCHECKED = {"CONTRIBUTING.md", "README.md"}
 SDK_TOOLING = "tools/check-parse-sdk-"

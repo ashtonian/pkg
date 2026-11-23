@@ -20,9 +20,7 @@ type Parser struct {
 
 // NewParser creates a new patch Parser.
 func NewParser(schema *PatchSchema, config *core.ParserConfig) *Parser {
-	if config == nil {
-		config = core.DefaultConfig()
-	}
+	config = config.Effective()
 	return &Parser{schema: schema, config: config, codec: config.GetCodec()}
 }
 
@@ -243,7 +241,7 @@ func (p *Parser) resolvePath(path string, index int) (*PathSchema, int, error) {
 			Path:    path, Index: new(index),
 		}
 	}
-	if p.config.MaxDepth > 0 && len(tokens) > p.config.MaxDepth {
+	if len(tokens) > p.config.MaxDepth {
 		return nil, 0, &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodePathTooDeep.String(),
 			Message: fmt.Sprintf("path '%s' at index %d has %d segments; maximum is %d", path, index, len(tokens), p.config.MaxDepth),

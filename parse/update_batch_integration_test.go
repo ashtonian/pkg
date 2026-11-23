@@ -3,10 +3,7 @@
 package parse_test
 
 import (
-	"context"
 	"database/sql"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -18,15 +15,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-type updateBatchImage struct {
-	id, version int64
-	tenant      string
-	reference   *string
-	meta        updateBatchDocument
-	stamp       string
-	deleted     *string
-}
 
 func TestUpdateBatchSQLite(t *testing.T) {
 	testUpdateBatchDatabase(t, dbtest.SQLite(t), filter.SQLiteDialect{})
@@ -75,23 +63,29 @@ func testUpdateBatchDatabase(t *testing.T, db *sql.DB, d parse.Dialect) {
 	require.NoError(t, err)
 	require.Greater(t, len(plan.Chunks), 1)
 	require.Less(t, len(plan.Chunks), len(requests))
-	changed, statements, err := executeUpdateBatch(t.Context(), db, d, plan)
+	res, err := applyUpdateBatch(t, db, r, d, plan)
 	require.NoError(t, err)
-	require.Len(t, changed, 38)
-	assert.Equal(t, 2*len(plan.Chunks), statements)
-	for _, row := range changed {
-		assert.Equal(t, "t1", row.tenant)
-		assert.Equal(t, int64(4), row.version)
-		assert.Equal(t, core.FormatTimestamp(stamp), row.stamp)
-		assert.Equal(t, 9, row.meta.Count)
-		if row.id == 5 {
-			assert.Nil(t, row.reference)
+	require.Len(t, res.Changed, 38)
+	for _, row := range res.Changed {
+		assert.Equal(t, "t1", row.TenantID)
+		assert.Equal(t, int64(4), row.Version)
+		assert.Equal(t, core.FormatTimestamp(stamp), row.UpdatedAt)
+		assert.Equal(t, 9, row.Meta.Count)
+		if row.ID == 5 {
+			assert.Nil(t, row.Reference)
 		} else {
-			require.NotNil(t, row.reference)
-			assert.Equal(t, fmt.Sprintf("new-%d", row.id), *row.reference)
-			assert.Equal(t, fmt.Sprintf("new-%d", row.id), row.meta.Value)
+			require.NotNil(t, row.Reference)
+			assert.Equal(t, fmt.Sprintf("new-%d", row.ID), *row.Reference)
+			assert.Equal(t, fmt.Sprintf("new-%d", row.ID), row.Meta.Value)
 		}
 	}
+	unchanged := make([]int64, len(res.Unchanged))
+	for i, row := range res.Unchanged {
+		unchanged[i] = row.ID
+		assert.Equal(t, int64(3), row.Version, "row %d keeps its version", row.ID)
+	}
+	assert.ElementsMatch(t, []int64{3, 4}, unchanged, "3 already holds its patch; 4's patch is empty")
+	assert.Zero(t, res.RelationRows)
 	for _, id := range []int64{3, 4, 41, 42} {
 		var version int64
 		var updated string
@@ -110,12 +104,13 @@ func testUpdateBatchDatabase(t *testing.T, db *sql.DB, d parse.Dialect) {
 		t.Run(test.name, func(t *testing.T) {
 			plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{{Key: test.key, Patch: updateBatchPatch(t, r, test.raw)}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, test.opt)
 			require.NoError(t, err)
-			observed, _, err := executeUpdateBatch(t.Context(), db, d, plan)
+			res, err := applyUpdateBatch(t, db, r, d, plan)
 			require.NoError(t, err)
-			require.Len(t, observed, 1)
-			assert.Equal(t, test.version, observed[0].version)
-			require.NotNil(t, observed[0].reference)
-			assert.Equal(t, test.reference, *observed[0].reference)
+			require.Len(t, res.Changed, 1)
+			assert.Empty(t, res.Unchanged)
+			assert.Equal(t, test.version, res.Changed[0].Version)
+			require.NotNil(t, res.Changed[0].Reference)
+			assert.Equal(t, test.reference, *res.Changed[0].Reference)
 		})
 	}
 	for _, test := range []struct {
@@ -131,9 +126,10 @@ func testUpdateBatchDatabase(t *testing.T, db *sql.DB, d parse.Dialect) {
 				{Key: test.key, Patch: updateBatchPatch(t, r, `{"reference":"also-refused"}`), Policy: updateBatchVersion(test.rev)},
 			}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxParameters: 4}, parse.SkipUnchanged())
 			require.NoError(t, err)
-			_, statements, err := executeUpdateBatch(t.Context(), db, d, plan)
+			res, err := applyUpdateBatch(t, db, r, d, plan)
 			require.ErrorIs(t, err, parse.ErrUpdateBatchTargets)
-			assert.LessOrEqual(t, statements, len(plan.Chunks))
+			assert.Zero(t, res)
+			assert.Equal(t, "new-1", storedReference(t, db, d, 1), "no chunk wrote")
 		})
 	}
 	t.Run("late-constraint-rolls-back-earlier-chunk", func(t *testing.T) {
@@ -142,88 +138,21 @@ func testUpdateBatchDatabase(t *testing.T, db *sql.DB, d parse.Dialect) {
 			{Key: int64(2), Patch: updateBatchPatch(t, r, `{"reference":"refused"}`), Policy: updateBatchVersion(4)},
 		}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxParameters: 4}, parse.SkipUnchanged())
 		require.NoError(t, err)
-		_, statements, err := executeUpdateBatch(t.Context(), db, d, plan)
+		res, err := applyUpdateBatch(t, db, r, d, plan)
 		require.Error(t, err)
-		assert.Greater(t, statements, len(plan.Chunks))
+		assert.NotErrorIs(t, err, parse.ErrUpdateBatchTargets, "every target was found; the second owner failed")
+		assert.Zero(t, res)
+		assert.Equal(t, "new-1", storedReference(t, db, d, 1), "the first chunk's write is undone")
 	})
+}
+
+func storedReference(t *testing.T, db *sql.DB, d parse.Dialect, id int64) string {
+	t.Helper()
 	var reference string
-	require.NoError(t, db.QueryRowContext(t.Context(), "SELECT reference FROM batch_rows WHERE id=1").Scan(&reference))
-	assert.Equal(t, "new-1", reference)
+	require.NoError(t, db.QueryRowContext(t.Context(), "SELECT reference FROM batch_rows WHERE id="+d.Placeholder(1), id).Scan(&reference))
+	return reference
 }
 
 func updateBatchVersion(version int64) *filter.PolicyConstraints {
 	return &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: "version", Operator: filter.OpEq, Value: version}}}
-}
-
-func executeUpdateBatch(ctx context.Context, db *sql.DB, d parse.Dialect, plan *parse.UpdateBatchPlan) (out []updateBatchImage, statements int, err error) {
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer func() { err = errors.Join(err, conn.Close()) }()
-	begin := "BEGIN"
-	if d.Name() == "sqlite" {
-		begin = "BEGIN IMMEDIATE"
-	}
-	if _, err := conn.ExecContext(ctx, begin); err != nil {
-		return nil, 0, err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_, rollbackErr := conn.ExecContext(ctx, "ROLLBACK")
-			err = errors.Join(err, rollbackErr)
-			out = nil
-		}
-	}()
-	for _, chunk := range plan.Chunks {
-		statements++
-		rows, err := queryUpdateBatch(ctx, conn, chunk.Current)
-		if err != nil {
-			return nil, statements, err
-		}
-		keys := make([]any, len(rows))
-		for i, row := range rows {
-			keys[i] = row.id
-		}
-		if err := chunk.CheckCurrent(keys); err != nil {
-			return nil, statements, err
-		}
-	}
-	for _, chunk := range plan.Chunks {
-		if chunk.Owner == nil {
-			continue
-		}
-		statements++
-		rows, err := queryUpdateBatch(ctx, conn, *chunk.Owner)
-		if err != nil {
-			return nil, statements, err
-		}
-		out = append(out, rows...)
-	}
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return nil, statements, err
-	}
-	committed = true
-	return out, statements, nil
-}
-
-func queryUpdateBatch(ctx context.Context, conn *sql.Conn, statement parse.Statement) (out []updateBatchImage, err error) {
-	rows, err := conn.QueryContext(ctx, statement.SQL, statement.Args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { err = errors.Join(err, rows.Close()) }()
-	for rows.Next() {
-		var row updateBatchImage
-		var raw string
-		if err := rows.Scan(&row.id, &row.tenant, &row.reference, &row.version, &raw, &row.stamp, &row.deleted); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal([]byte(raw), &row.meta); err != nil {
-			return nil, err
-		}
-		out = append(out, row)
-	}
-	return out, rows.Err()
 }

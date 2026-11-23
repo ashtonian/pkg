@@ -151,7 +151,10 @@ func ParseRelationTag(tag string) (*RelationSchema, error) {
 }
 
 // IsIdentifier reports whether s is a plain SQL identifier
-// ([A-Za-z_][A-Za-z0-9_]*), safe to emit into SQL unquoted.
+// ([A-Za-z_][A-Za-z0-9_]*): the names parse accepts for tables and columns.
+// It does not say a name is no reserved word; every statement quotes the
+// names it writes (Dialect.QuoteIdent), so a reserved or mixed-case name
+// reads the column spelt exactly so.
 func IsIdentifier(s string) bool {
 	if s == "" {
 		return false

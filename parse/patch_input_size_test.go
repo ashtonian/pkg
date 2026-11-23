@@ -10,7 +10,7 @@ import (
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
-// PARSE-16: a patch body over MaxInputSize is E2063, the code the error table
+// A patch body over MaxInputSize is E2063, the code the error table
 // documents for every oversized body, filter or patch.
 func TestPatch_OversizedBodyIsInputTooLarge(t *testing.T) {
 	cfg := core.DefaultConfig()

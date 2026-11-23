@@ -61,7 +61,7 @@ func TestMergePatchMap_IsTheBodysPatch(t *testing.T) {
 	server, err := p.ServerMergePatchMap(map[string]any{"rotated": at, "name": "s2"})
 	require.NoError(t, err)
 	set, _ := setSQL(t, server)
-	assert.Contains(t, set, "rotated = $")
+	assert.Contains(t, set, `"rotated" = $`)
 }
 
 type gaugeSettings struct {
@@ -117,7 +117,7 @@ func TestMergePatchMap_NilIsJSONNull(t *testing.T) {
 	whole, err := p.MergePatchMap(map[string]any{"settings": gaugeSettings{Size: 2}})
 	require.NoError(t, err)
 	set, args := setSQL(t, whole)
-	assert.Equal(t, "settings = $1", set)
+	assert.Equal(t, `"settings" = $1`, set)
 	value, ok := args[0].(string)
 	require.True(t, ok)
 	assert.JSONEq(t, `{"size":2,"theme":null}`, value)
@@ -152,7 +152,7 @@ func TestHandBuiltPatchIsRefused(t *testing.T) {
 	require.NoError(t, err)
 	byHand := &patch.ParsedPatch{Operations: []*patch.PatchOperation{{Op: patch.PatchOpReplace, Path: "/name", Value: "x"}}}
 	_, err = p.ApplyValidatedPatch(byHand, sensor{})
-	assert.ErrorIs(t, err, patch.ErrUnparsed)
+	assert.ErrorIs(t, err, parse.ErrForeign)
 	_, err = p.BuildUpdate(filter.SQLiteDialect{}, byHand, parse.ByID("1"), parse.Scope{})
-	assert.ErrorIs(t, err, patch.ErrUnparsed)
+	assert.ErrorIs(t, err, parse.ErrForeign)
 }

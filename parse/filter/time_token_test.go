@@ -58,8 +58,8 @@ func TestFilterParser_ResolvesRelativeTokens(t *testing.T) {
 		Name: "events",
 		Fields: map[string]*filter.FieldSchema{
 			"created_at": {
-				ExternalName:     "created_at",
-				SQLExpr:          "events.created_at",
+				ExternalName: "created_at",
+				Table:        "events", Column: "created_at",
 				DataType:         core.FieldTypeTimestamp,
 				AllowedOperators: []filter.FilterOperator{filter.OpGte, filter.OpLte, filter.OpEq},
 			},

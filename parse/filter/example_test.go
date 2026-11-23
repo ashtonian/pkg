@@ -40,7 +40,7 @@ func Example() {
 	}
 	fmt.Println(len(lite.Args), "SQLite args")
 	// Output:
-	// (devices.labels @> $1::jsonb AND devices.status = ANY($2)) [{"env":"prod"} [active]]
+	// ("devices"."labels" @> $1::jsonb AND "devices"."status" = ANY($2)) [{"env":"prod"} [active]]
 	// 3 SQLite args
 }
 
@@ -70,7 +70,7 @@ func ExampleNewSQLBuilder() {
 		Name: "users",
 		Fields: map[string]*filter.FieldSchema{
 			"status": {
-				ExternalName: "status", SQLExpr: "users.status",
+				ExternalName: "status", Table: "users", Column: "status",
 				DataType:         core.FieldTypeString,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpIn},
 				EnumValues:       []string{"active", "inactive"},
@@ -95,7 +95,7 @@ func ExampleNewSQLBuilder() {
 	fmt.Println("WHERE:", result.Where)
 	fmt.Println("args:", result.Args)
 	// Output:
-	// WHERE: users.status = $1
+	// WHERE: "users"."status" = $1
 	// args: [active]
 }
 
@@ -105,24 +105,24 @@ func ExampleNewListQuery() {
 		PrimaryKey: "id", // ends every keyset
 		Fields: map[string]*filter.FieldSchema{
 			"category": {
-				ExternalName: "category", SQLExpr: "products.category",
+				ExternalName: "category", Table: "products", Column: "category",
 				DataType:         core.FieldTypeString,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpIn},
 				Facetable:        true,
 			},
 			"price": {
-				ExternalName: "price", SQLExpr: "products.price",
+				ExternalName: "price", Table: "products", Column: "price",
 				DataType:         core.FieldTypeFloat,
 				AllowedOperators: []filter.FilterOperator{filter.OpGte, filter.OpLte},
 			},
 		},
 		SystemFields: map[string]*filter.FieldSchema{
-			"id": {ExternalName: "id", SQLExpr: "products.id", Column: "id", DataType: core.FieldTypeInt},
+			"id": {ExternalName: "id", Table: "products", Column: "id", DataType: core.FieldTypeInt},
 		},
 	}
 	sortSchema := &filter.SortSchema{
 		Fields: map[string]*filter.SortFieldSchema{
-			"price": {SQLExpr: "products.price"},
+			"price": {Table: "products", Column: "price"},
 		},
 		DefaultField: "price",
 		DefaultDir:   filter.SortDesc,
@@ -164,12 +164,12 @@ func ExampleNewQueryParamParser() {
 		Name: "items",
 		Fields: map[string]*filter.FieldSchema{
 			"status": {
-				ExternalName: "status", SQLExpr: "items.status",
+				ExternalName: "status", Table: "items", Column: "status",
 				DataType:         core.FieldTypeString,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpIn},
 			},
 			"price": {
-				ExternalName: "price", SQLExpr: "items.price",
+				ExternalName: "price", Table: "items", Column: "price",
 				DataType:         core.FieldTypeFloat,
 				AllowedOperators: []filter.FilterOperator{filter.OpGte, filter.OpLte},
 			},
@@ -203,8 +203,8 @@ func ExampleNewQueryParamParser() {
 func ExampleParseSort() {
 	schema := &filter.SortSchema{
 		Fields: map[string]*filter.SortFieldSchema{
-			"name":       {SQLExpr: "items.name"},
-			"created_at": {SQLExpr: "items.created_at", Indexed: true},
+			"name":       {Table: "items", Column: "name"},
+			"created_at": {Table: "items", Column: "created_at", Indexed: true},
 		},
 		DefaultField: "created_at",
 		DefaultDir:   filter.SortDesc,
@@ -219,7 +219,7 @@ func ExampleParseSort() {
 
 	fmt.Println("SQL:", result.ToSQL(filter.PostgresDialect{}))
 	// Output:
-	// SQL: ORDER BY items.name ASC, items.created_at DESC
+	// SQL: ORDER BY "items"."name" ASC, "items"."created_at" DESC
 }
 
 func ExampleNewPage() {
@@ -228,7 +228,7 @@ func ExampleNewPage() {
 	// The plan comes from the Build call that produced the rows
 	// (ListResult.Cursor); the getter resolves each key's value from the
 	// boundary row by row column.
-	plan := filter.CursorPlan{Keys: []filter.CursorKey{{Name: "id", SQLExpr: "id", Column: "id", Direction: filter.SortAsc}}}
+	plan := filter.CursorPlan{Keys: []filter.CursorKey{{Name: "id", Column: "id", Direction: filter.SortAsc}}}
 	page, err := filter.NewPage(items, 2, plan, func(s string, _ string) (any, error) {
 		return s, nil
 	})
@@ -264,12 +264,12 @@ func ExampleGenerateFilterSchema() {
 	fmt.Println("table:", schema.Name)
 	fmt.Println("name label:", schema.Fields["name"].Label)
 	fmt.Println("category facetable:", schema.Fields["category"].Facetable)
-	fmt.Println("price SQL:", schema.Fields["price"].SQLExpr)
+	fmt.Println("price SQL:", filter.FieldExpr(filter.PostgresDialect{}, schema.Fields["price"]))
 	// Output:
 	// table: products
 	// name label: Name
 	// category facetable: true
-	// price SQL: products.unit_price
+	// price SQL: "products"."unit_price"
 }
 
 func ExampleApplyPolicyConstraints() {
@@ -277,14 +277,14 @@ func ExampleApplyPolicyConstraints() {
 		Name: "devices",
 		Fields: map[string]*filter.FieldSchema{
 			"status": {
-				ExternalName: "status", SQLExpr: "devices.status",
+				ExternalName: "status", Table: "devices", Column: "status",
 				DataType:         core.FieldTypeString,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq},
 			},
 		},
 		SystemFields: map[string]*filter.FieldSchema{
 			"tenant_id": {
-				ExternalName: "tenant_id", SQLExpr: "devices.tenant_id",
+				ExternalName: "tenant_id", Table: "devices", Column: "tenant_id",
 				DataType:         core.FieldTypeString,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq},
 			},
@@ -313,6 +313,6 @@ func ExampleApplyPolicyConstraints() {
 	fmt.Println("WHERE:", result.Where)
 	fmt.Println("args:", result.Args)
 	// Output:
-	// WHERE: (devices.status = $1 AND devices.tenant_id = $2)
+	// WHERE: ("devices"."status" = $1 AND "devices"."tenant_id" = $2)
 	// args: [active t1]
 }

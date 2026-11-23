@@ -31,15 +31,12 @@ func JSONFieldsOf(t reflect.Type) (*StructFields, error) {
 	return fields, nil
 }
 
-// jsonEngine names a document's members as encoding/json does. It keeps every
-// type it compiles, as jsonFields does: types are finite and never unloaded.
-var jsonEngine = gowalker.MustNew(gowalker.WithJSONFields(JSONTagKey), gowalker.DropTies(), gowalker.WithUnboundedCache())
-
-// jsonFields keeps every struct type JSONFieldsOf has walked.
+// jsonFields keeps every struct type JSONFieldsOf has walked: types are
+// finite and never unloaded.
 var jsonFields = gowalker.NewTypeCache(
-	jsonEngine,
+	gowalker.MustNew(gowalker.WithJSONFields(JSONTagKey), gowalker.DropTies(), gowalker.WithUnboundedCache()),
 	func(s *gowalker.Schema) (*StructFields, error) {
-		out := &StructFields{Type: s.Type(), external: map[string]*Field{}}
+		out := &StructFields{Type: s.Type(), external: map[string]*Field{}, view: s.Root()}
 		for _, d := range s.Root().Declarations() {
 			if d.State != gowalker.Named {
 				continue

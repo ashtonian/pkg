@@ -212,16 +212,20 @@ func runRelationMemberships(t *testing.T, r relResources, d filter.Dialect, quer
 				scope = parse.Scope{Tenant: "t1"}
 				req, err := r.assets.ParseList(q)
 				require.NoError(t, err)
-				req.Filter, err = filter.ResolveMemberships(context.Background(), req.Filter, lookup,
+				resolved, err := filter.ResolveMemberships(context.Background(), req.Filter(), lookup,
 					filter.ResolveRelationScope(filter.RelationScope{Tenant: scope.Tenant, Related: scope.Related}))
+				require.NoError(t, err)
+				req, err = req.WithFilter(resolved)
 				require.NoError(t, err)
 				plan, err = r.assets.BuildList(d, req, scope)
 				require.NoError(t, err)
 			} else {
 				req, err := r.devices.ParseList(q)
 				require.NoError(t, err)
-				req.Filter, err = filter.ResolveMemberships(context.Background(), req.Filter, lookup,
+				resolved, err := filter.ResolveMemberships(context.Background(), req.Filter(), lookup,
 					filter.ResolveRelationScope(filter.RelationScope{Tenant: scope.Tenant, Related: scope.Related}))
+				require.NoError(t, err)
+				req, err = req.WithFilter(resolved)
 				require.NoError(t, err)
 				plan, err = r.devices.BuildList(d, req, scope)
 				require.NoError(t, err)
@@ -252,7 +256,7 @@ func relationFilter(t *testing.T, r relResources, f string) *filter.ParsedFilter
 	t.Helper()
 	req, err := r.devices.ParseList(url.Values{filter.ParamFilter: {f}})
 	require.NoError(t, err)
-	return req.Filter
+	return req.Filter()
 }
 
 // sqlMembershipLookup answers a lookup with the subquery SQL renders for it.
@@ -267,13 +271,13 @@ func (l sqlMembershipLookup) LookupFilteredValues(ctx context.Context, lk *filte
 }
 
 func (l sqlMembershipLookup) LookupValues(_ context.Context, lk *filter.Lookup) ([]any, error) {
-	probe := &filter.FieldSchema{ExternalName: "probe", SQLExpr: "probe", DataType: core.FieldTypeString}
+	probe := &filter.FieldSchema{ExternalName: "probe", Column: "probe", DataType: core.FieldTypeString}
 	res, err := filter.NewSQLBuilder(&filter.ResourceSchema{Name: "probe"}, l.d).
 		Build(&filter.FilterAST{Root: &filter.FilterNode{Field: probe, Op: filter.OpMember, Member: lk}})
 	if err != nil {
 		return nil, err
 	}
-	sub := strings.TrimSuffix(strings.TrimPrefix(res.Where, "probe IN ("), ")")
+	sub := strings.TrimSuffix(strings.TrimPrefix(res.Where, `"probe" IN (`), ")")
 	var out []any
 	for _, row := range l.query(l.t, sub, res.Args) {
 		out = append(out, row[0])
@@ -455,7 +459,7 @@ func runRelationUnknownPolicy(t *testing.T, r relResources, d filter.Dialect, qu
 // with targets the request may relate (live, in the tenant, or admitted by
 // the target's policy), and a replace or remove reaches only pairs to such
 // targets, so pairs the request cannot see stay.
-func runRelationWrites(t *testing.T, r relResources, d parse.Dialect, query func(t *testing.T, sql string, args []any) [][]any) {
+func runRelationWrites(t *testing.T, r relResources, d parse.Dialect, db *sql.DB) {
 	t.Helper()
 	apply := func(id, body string, merge bool) {
 		t.Helper()
@@ -469,21 +473,13 @@ func runRelationWrites(t *testing.T, r relResources, d parse.Dialect, query func
 		require.NoError(t, err, body)
 		plan, err := r.devices.BuildUpdate(d, p, parse.ByID(id), relationScopeT1())
 		require.NoError(t, err)
-		owners := query(t, plan.Owner.SQL, plan.Owner.Args)
-		keys := make([]any, len(owners))
-		for i, o := range owners {
-			keys[i] = o[0]
-		}
-		stmts, err := r.devices.RelationStatements(plan, keys)
-		require.NoError(t, err)
-		for _, st := range stmts {
-			query(t, st.SQL, st.Args)
-		}
+		_, err = applyUpdate(t, db, r.devices, d, plan, false)
+		require.NoError(t, err, body)
 	}
 	pairs := func(table, column, device string) []string {
 		t.Helper()
 		var out []string
-		for _, row := range query(t, "SELECT "+column+" FROM "+table+" WHERE device_id = '"+device+"' ORDER BY "+column, nil) {
+		for _, row := range queryRows(t, db, "SELECT "+column+" FROM "+table+" WHERE device_id = '"+device+"' ORDER BY "+column, nil) {
 			id, ok := row[0].(string)
 			require.True(t, ok)
 			out = append(out, id)

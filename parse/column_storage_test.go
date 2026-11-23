@@ -226,10 +226,10 @@ func TestColumnStorage_JSONPredicatesAndPathsFollowPhysicalType(t *testing.T) {
 		want    filter.JSONStorage
 		expr    string
 	}{
-		{"json", core.SQLJSON, filter.StorageJSON, "(documents.data)::jsonb"},
-		{"jsonb", core.SQLJSONB, filter.StorageJSONB, "documents.data"},
-		{"inferred", "", "", "documents.data"},
-		{"json again", core.SQLJSON, filter.StorageJSON, "(documents.data)::jsonb"},
+		{"json", core.SQLJSON, filter.StorageJSON, `("documents"."data")::jsonb`},
+		{"jsonb", core.SQLJSONB, filter.StorageJSONB, `"documents"."data"`},
+		{"inferred", "", "", `"documents"."data"`},
+		{"json again", core.SQLJSON, filter.StorageJSON, `("documents"."data")::jsonb`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var opts []parse.ResourceOption
@@ -261,11 +261,11 @@ func TestColumnStorage_JSONPredicatesAndPathsFollowPhysicalType(t *testing.T) {
 			require.NoError(t, err)
 			plan, err := r.BuildList(filter.PostgresDialect{}, req, parse.Scope{})
 			require.NoError(t, err)
-			assert.Contains(t, plan.Page.SQL, "jsonb_typeof("+tt.expr+" #> '{key}')")
+			assert.Contains(t, plan.Page.SQL, "jsonb_typeof("+tt.expr+" -> 'key')")
 			assert.Contains(t, plan.Page.SQL, "ORDER BY ")
-			assert.Contains(t, plan.Page.SQL, tt.expr+" #>> '{key}'")
+			assert.Contains(t, plan.Page.SQL, tt.expr+" ->> 'key'")
 			if tt.storage != core.SQLJSON {
-				assert.NotContains(t, plan.Page.SQL, "(documents.data)::jsonb")
+				assert.NotContains(t, plan.Page.SQL, `("documents"."data")::jsonb`)
 			}
 		})
 	}

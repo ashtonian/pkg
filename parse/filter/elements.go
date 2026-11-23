@@ -57,7 +57,7 @@ func documentElements(g *core.SchemaGenerator, field *core.Field, doc *FieldSche
 	if len(decls) == 0 {
 		return nil, nil
 	}
-	placeholder := &FieldSchema{SQLExpr: elementColumn, Storage: StorageJSONB}
+	placeholder := &FieldSchema{Expr: elementColumn, Storage: StorageJSONB}
 	fields := make(map[string]*FieldSchema, len(decls))
 	for i, d := range decls {
 		segs := strings.Split(d.Path, ".")

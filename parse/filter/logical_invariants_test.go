@@ -12,10 +12,9 @@ import (
 	"github.com/ashtonian/pkg/parse/filter"
 )
 
-// TestEmptyLogicalOperatorsRejected covers /P-2: empty $not /
-// $and / $or bodies must be rejected at parse time. Previously an empty object
-// yielded a nil AST child (SIGSEGV in SQLBuilder.buildNode) and an empty array
-// yielded a zero-child logical node (`WHERE ()` — invalid SQL).
+// TestEmptyLogicalOperatorsRejected: an empty $not / $and / $or body is
+// refused at parse time, since an empty object would leave the node no child
+// and an empty array would compile to `WHERE ()`.
 func TestEmptyLogicalOperatorsRejected(t *testing.T) {
 	p := filter.NewFilterParser(testSchema(), nil)
 	cases := []struct {
@@ -57,8 +56,8 @@ func TestBuildNodeNilGuard(t *testing.T) {
 }
 
 // TestEmptyLogicalNodeErrors: a zero-child logical node reaching the
-// builder (only constructible programmatically after the P-1 parser fix)
-// errors instead of emitting `WHERE ()`.
+// builder, which only a programmatic AST can hold since the parser refuses
+// one, errors instead of emitting `WHERE ()`.
 func TestEmptyLogicalNodeErrors(t *testing.T) {
 	for _, op := range []filter.FilterOperator{filter.OpOr, filter.OpAnd} {
 		ast := &filter.FilterAST{Root: &filter.FilterNode{Op: op}}
@@ -73,9 +72,9 @@ func TestEmptyLogicalNodeErrors(t *testing.T) {
 	}
 }
 
-// TestEmptyNestedPolicyGroupSkipped: empty nested policy groups must not
-// inject nil children into the AST (same panic class as P-1 via the policy
-// path), and a policy that resolves to nothing leaves the user AST unchanged.
+// TestEmptyNestedPolicyGroupSkipped: empty nested policy groups add no nil
+// children to the AST, and a policy that resolves to nothing leaves the
+// request's AST unchanged.
 func TestEmptyNestedPolicyGroupSkipped(t *testing.T) {
 	schema := testSchema()
 
@@ -132,8 +131,8 @@ func TestEmptyNestedPolicyGroupSkipped(t *testing.T) {
 	})
 }
 
-// FuzzParseThenBuild is the P-1 class guard: any input the parser accepts must
-// build SQL without panicking, and repeated builds must be deterministic
+// FuzzParseThenBuild: any input the parser accepts must build SQL without
+// panicking, and repeated builds must be deterministic
 // on both dialects. SQL generation may error for unsupported combinations.
 func FuzzParseThenBuild(f *testing.F) {
 	seeds := []string{

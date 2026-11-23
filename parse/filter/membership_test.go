@@ -16,10 +16,10 @@ import (
 
 func memberSchema() *ResourceSchema {
 	return &ResourceSchema{Name: "docs", Fields: map[string]*FieldSchema{
-		"id":        {ExternalName: "id", SQLExpr: "docs.id", DataType: core.FieldTypeString},
-		"parent_id": {ExternalName: "parent_id", SQLExpr: "docs.parent_id", DataType: core.FieldTypeUUID},
-		"count":     {ExternalName: "count", SQLExpr: "docs.count", DataType: core.FieldTypeInt},
-		"at":        {ExternalName: "at", SQLExpr: "docs.at", DataType: core.FieldTypeTimestamp},
+		"id":        {ExternalName: "id", Table: "docs", Column: "id", DataType: core.FieldTypeString},
+		"parent_id": {ExternalName: "parent_id", Table: "docs", Column: "parent_id", DataType: core.FieldTypeUUID},
+		"count":     {ExternalName: "count", Table: "docs", Column: "count", DataType: core.FieldTypeInt},
+		"at":        {ExternalName: "at", Table: "docs", Column: "at", DataType: core.FieldTypeTimestamp},
 	}}
 }
 
@@ -40,15 +40,56 @@ func TestMembership_CompilesToAnInSubquery(t *testing.T) {
 	for name, tc := range map[string]struct {
 		d     Dialect
 		where string
+		args  []any
 	}{
-		"postgres": {PostgresDialect{}, `docs.parent_id IN (SELECT "descendant_id" FROM "authz"."node_closure" WHERE ("root_id" IN ($1, $2) AND ("user_id" = $3 OR "ended_at" IS NULL)))`},
-		"sqlite":   {SQLiteDialect{}, `docs.parent_id IN (SELECT "descendant_id" FROM "authz"."node_closure" WHERE ("root_id" IN (?1, ?2) AND ("user_id" = ?3 OR "ended_at" IS NULL)))`},
+		"postgres": {PostgresDialect{}, `"docs"."parent_id" IN (SELECT "authz"."node_closure"."descendant_id" FROM "authz"."node_closure" WHERE ("authz"."node_closure"."root_id" = ANY($1) AND ("authz"."node_closure"."user_id" = $2 OR "authz"."node_closure"."ended_at" IS NULL)))`, []any{[]string{"r1", "r2"}, "u1"}},
+		"sqlite":   {SQLiteDialect{}, `"docs"."parent_id" IN (SELECT "authz"."node_closure"."descendant_id" FROM "authz"."node_closure" WHERE ("authz"."node_closure"."root_id" IN (SELECT value AS v FROM json_each(?1)) AND ("authz"."node_closure"."user_id" = ?2 OR "authz"."node_closure"."ended_at" IS NULL)))`, []any{`["r1","r2"]`, "u1"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			res, err := NewSQLBuilder(memberSchema(), tc.d).Build(memberAST(t, "parent_id", l, false))
 			require.NoError(t, err)
 			assert.Equal(t, tc.where, res.Where)
-			assert.Equal(t, []any{"r1", "r2", "u1"}, res.Args)
+			assert.Equal(t, tc.args, res.Args)
+		})
+	}
+}
+
+// A WhereIn list binds as one parameter, as `$in` does, so the statement's
+// text and parameter count are those of a one-value list however long it
+// is: 70,000 values are past PostgreSQL's 65,535 bind parameters.
+func TestMembership_InListBindsOneSet(t *testing.T) {
+	ids := make([]any, 70_000)
+	for i := range ids {
+		ids[i] = int64(i)
+	}
+	for name, d := range map[string]Dialect{"postgres": PostgresDialect{}, "sqlite": SQLiteDialect{}} {
+		t.Run(name, func(t *testing.T) {
+			one, err := NewSQLBuilder(memberSchema(), d).Build(memberAST(t, "parent_id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", int64(0))}, false))
+			require.NoError(t, err)
+			res, err := NewSQLBuilder(memberSchema(), d).Build(memberAST(t, "parent_id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", ids...)}, false))
+			require.NoError(t, err)
+			assert.Equal(t, one.Where, res.Where)
+			assert.Equal(t, 1, res.ParamCount)
+		})
+	}
+	res, err := NewSQLBuilder(memberSchema(), PostgresDialect{}).Build(memberAST(t, "parent_id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", 1, int32(2), uint8(3))}, false))
+	require.NoError(t, err)
+	assert.Equal(t, []any{[]int64{1, 2, 3}}, res.Args, "integers of any Go kind are one integer set")
+}
+
+// A WhereIn list is one set of one scalar type; the lookup is the server's,
+// so a list it cannot bind is a plain error, never a request's.
+func TestMembership_InListOfOneScalarType(t *testing.T) {
+	for name, vs := range map[string][]any{
+		"mixed types":  {"a", int64(1)},
+		"a document":   {map[string]any{"a": 1}},
+		"a byte slice": {[]byte("a")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewSQLBuilder(memberSchema(), PostgresDialect{}).Build(memberAST(t, "parent_id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", vs...)}, false))
+			require.ErrorIs(t, err, ErrPolicyInvalid)
+			_, isParseError := errors.AsType[*core.ParseError](err)
+			assert.False(t, isParseError)
 		})
 	}
 }
@@ -59,11 +100,11 @@ func TestMembership_SQLShapes(t *testing.T) {
 		negate bool
 		where  string
 	}{
-		"every row":      {&Lookup{Table: "t", Project: "p"}, false, `docs.id IN (SELECT "p" FROM "t")`},
-		"empty list":     {&Lookup{Table: "t", Project: "p", Where: WhereIn("c")}, false, `docs.id IN (SELECT "p" FROM "t" WHERE 1=0)`},
-		"negated":        {&Lookup{Table: "t", Project: "p", Where: WhereEq("c", "x")}, true, `NOT (docs.id IN (SELECT "p" FROM "t" WHERE "c" = $1))`},
-		"one-child And":  {&Lookup{Table: "t", Project: "p", Where: WhereAll(WhereNull("c"))}, false, `docs.id IN (SELECT "p" FROM "t" WHERE ("c" IS NULL))`},
-		"placeholder ok": {&Lookup{Table: "t", Project: "p", Where: WhereEq("c", "$1; DROP TABLE t")}, false, `docs.id IN (SELECT "p" FROM "t" WHERE "c" = $1)`},
+		"every row":      {&Lookup{Table: "t", Project: "p"}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t")`},
+		"empty list":     {&Lookup{Table: "t", Project: "p", Where: WhereIn("c")}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE 1=0)`},
+		"negated":        {&Lookup{Table: "t", Project: "p", Where: WhereEq("c", "x")}, true, `NOT ("docs"."id" IN (SELECT "t"."p" FROM "t" WHERE "t"."c" = $1))`},
+		"one-child And":  {&Lookup{Table: "t", Project: "p", Where: WhereAll(WhereNull("c"))}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE ("t"."c" IS NULL))`},
+		"placeholder ok": {&Lookup{Table: "t", Project: "p", Where: WhereEq("c", "$1; DROP TABLE t")}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE "t"."c" = $1)`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			res, err := NewSQLBuilder(memberSchema(), PostgresDialect{}).Build(memberAST(t, "id", tc.l, tc.negate))
@@ -96,17 +137,16 @@ func TestMembership_RefusesMalformedLookups(t *testing.T) {
 			_, err := ApplyPolicyConstraints(memberSchema(), nil, &PolicyConstraints{
 				Constraints: []*PolicyConstraint{{Field: tc.field, Member: tc.l}},
 			})
-			var pe *core.ParseError
-			require.ErrorAs(t, err, &pe)
-			assert.Equal(t, ECodeInvalidRelation.String(), pe.Code)
+			require.ErrorIs(t, err, ErrPolicyInvalid)
+			assert.ErrorContains(t, err, `field "`+tc.field+`": `, "the constraint is named")
+			_, isParseError := errors.AsType[*core.ParseError](err)
+			assert.False(t, isParseError, "a lookup is the server's, never the request's")
 		})
 	}
 	_, err := ApplyPolicyConstraints(memberSchema(), nil, &PolicyConstraints{
 		Constraints: []*PolicyConstraint{{Field: "nope", Member: &Lookup{Table: "t", Project: "p"}}},
 	})
-	var pe *core.ParseError
-	require.ErrorAs(t, err, &pe)
-	assert.Equal(t, ECodeUnknownField.String(), pe.Code)
+	assert.ErrorIs(t, err, ErrPolicyInvalid)
 }
 
 type recordingLookup struct {
@@ -145,7 +185,7 @@ func TestResolveMemberships_RewritesToTheEquivalentIn(t *testing.T) {
 			before := *ast.Root
 			out, err := ResolveMemberships(context.Background(), NewParsedFilter(ast), lookup)
 			require.NoError(t, err)
-			got := out.AST.Root
+			got := out.AST().Root
 			stripFields(got)
 			assert.Equal(t, tc.want, got)
 			assert.Equal(t, before, *ast.Root, "the input filter is not modified")
@@ -164,8 +204,8 @@ func TestResolveMemberships_WithoutALookupIsUnknown(t *testing.T) {
 	ast := memberAST(t, "id", &Lookup{Table: "t", Project: "p"}, true)
 	out, err := ResolveMemberships(context.Background(), NewParsedFilter(ast), nil)
 	require.NoError(t, err)
-	require.Equal(t, OpNot, out.AST.Root.Op)
-	assert.Equal(t, unknownNode(), out.AST.Root.Children[0], "NOT unknown is unknown: the deny still admits nothing it might refuse")
+	require.Equal(t, OpNot, out.AST().Root.Op)
+	assert.Equal(t, unknownNode(), out.AST().Root.Children[0], "NOT unknown is unknown: the deny still admits nothing it might refuse")
 }
 
 func TestResolveMemberships_ResolvesEachLookupOnce(t *testing.T) {
@@ -194,7 +234,7 @@ func TestResolveMemberships_SharedLookupTestsEachField(t *testing.T) {
 	out, err := ResolveMemberships(context.Background(), NewParsedFilter(ast), lookup)
 	require.NoError(t, err)
 	assert.Equal(t, 1, lookup.calls)
-	or := out.AST.Root
+	or := out.AST().Root
 	require.Equal(t, OpOr, or.Op)
 	require.Len(t, or.Children, 2)
 	assert.Equal(t, "id", or.Children[0].Field.ExternalName)
@@ -259,6 +299,5 @@ func TestMatchLookupRow(t *testing.T) {
 		})
 	}
 	_, err := MatchLookupRow(WhereEq("missing", "x"), get)
-	var pe *core.ParseError
-	assert.ErrorAs(t, err, &pe, "a misspelt column cannot silently select nothing")
+	assert.ErrorIs(t, err, ErrPolicyInvalid, "a misspelt column cannot silently select nothing")
 }

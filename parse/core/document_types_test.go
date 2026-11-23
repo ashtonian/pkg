@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/jsonkeys"
 )
 
 // Document types encoding/json reads and writes, that parse's row walk
@@ -52,7 +52,7 @@ func TestDocumentTypes_AsMapValuesScanValidateAndMergePatch(t *testing.T) {
 		raw := []byte(`{"k":{"a":1,"y":2}}`)
 		fresh := reflect.New(typ)
 		require.NoError(t, json.Unmarshal(raw, fresh.Interface()))
-		assert.NoError(t, core.ValidateJSONKeyRepresentation(raw, fresh.Interface()), "%s", typ)
+		assert.NoError(t, jsonkeys.Validate(raw, fresh.Interface()), "%s", typ)
 	}
 
 	parsed, err := resource.ParseMergePatch([]byte(`{"locked":{"k":{"a":2}},"foreign":{"k":{"a":3}},"ties":{"k":{"y":4}}}`))

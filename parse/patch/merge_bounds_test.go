@@ -4,6 +4,7 @@ package patch_test
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -67,7 +68,7 @@ func TestParseMergePatch_BoundsNestedObjects(t *testing.T) {
 // PostgreSQL merge SQL and its arguments grow linearly with depth.
 func TestBuildPatchSQL_PostgresMergeGrowsLinearly(t *testing.T) {
 	cfg := core.DefaultConfig()
-	cfg.MaxDepth = 0
+	cfg.MaxDepth = math.MaxInt
 	schema := mergeSchema("")
 	schema.MaxOperations = 0
 	size := func(depth int) (int, int) {

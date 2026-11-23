@@ -53,6 +53,12 @@ func TestEvaluateQuotedConformance(t *testing.T) {
 	}))
 }
 
+func TestEvaluateFoldConformance(t *testing.T) {
+	filtertest.RunFold(t, true, evaluateOver(filtertest.FoldRecords(), func(r filtertest.FoldRecord) (string, filter.Row) {
+		return r.ID, structRow(r)
+	}))
+}
+
 func TestEvaluateGeoConformance(t *testing.T) {
 	t.Run("stored", func(t *testing.T) {
 		filtertest.RunGeo(t, evaluateOver(filtertest.GeoRecords(), func(r filtertest.GeoRecord) (string, filter.Row) {
@@ -119,7 +125,7 @@ func TestDocumentElementsConformance(t *testing.T) {
 		var ids []string
 		for _, r := range records {
 			row := structRow(r)
-			truth, err := ownElements{stored: row}.eval(f.AST.Root, row)
+			truth, err := ownElements{stored: row}.eval(f.AST().Root, row)
 			if err != nil {
 				return nil, err
 			}
@@ -194,9 +200,10 @@ func (o ownElements) eval(n *filter.FilterNode, row filter.Row) (filter.Truth, e
 // array's as row reads them.
 func (o ownElements) elements(f *filter.FieldSchema, row filter.Row) ([]any, error) {
 	if f.Elements != nil {
-		doc, ok := o.stored(f.SQLExpr)
+		column := f.Table + "." + f.Column
+		doc, ok := o.stored(column)
 		if !ok {
-			return nil, fmt.Errorf("field %s: no column %s", f.ExternalName, f.SQLExpr)
+			return nil, fmt.Errorf("field %s: no column %s", f.ExternalName, column)
 		}
 		return filter.DocumentElements(doc)
 	}
@@ -284,7 +291,7 @@ func evaluateOver[R any](records []R, row func(R) (string, filter.Row)) filterte
 		var ids []string
 		for _, r := range records {
 			id, rw := row(r)
-			truth, err := filter.Evaluate(f.AST.Root, rw)
+			truth, err := filter.Evaluate(f.AST().Root, rw)
 			if err != nil {
 				return nil, err
 			}

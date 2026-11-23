@@ -123,7 +123,7 @@ func (l *Lookup) validate() error {
 			return err
 		}
 	}
-	if l.Filter != nil && l.Filter.AST != nil && hasRelation(l.Filter.AST.Root) {
+	if l.Filter != nil && l.Filter.ast != nil && hasRelation(l.Filter.ast.Root) {
 		return invalidLookup(fmt.Sprintf("lookup on %s filters by a relation; resolve it first", l.Table))
 	}
 	return nil
@@ -180,8 +180,10 @@ func (c *LookupCond) validate() error {
 	return nil
 }
 
+// invalidLookup is a membership lookup that cannot be built or answered.
+// Only a policy declares one, so it is the server's fault.
 func invalidLookup(msg string) error {
-	return &core.ParseError{Kind: core.ParseErrorKindFilter, Code: ECodeInvalidRelation.String(), Message: msg}
+	return fmt.Errorf("%w: %s", ErrPolicyInvalid, msg)
 }
 
 // memberNode is the AST node of a membership constraint on field.

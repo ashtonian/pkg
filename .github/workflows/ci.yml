@@ -94,7 +94,7 @@ jobs:
               "test": {"go": ["./..."]},
               "test-darwin": {"go": ["./process/...", "./state/...", "./onepassword/...", "./config/...", "./config/kongprovider/..."]},
               "parse-postgres": {"go": ["./parse/..."]},
-              "parse-sdk": ["parse/sdk/**", "parse/testdata/**", "tools/check-parse-sdk-*"],
+              "parse-sdk": ["parse/sdk/**", "parse/testdata/**", "parse/examples/server/README.md", "tools/check-parse-sdk-*"],
               "parse-benchmarks": {"go": ["./parse/filter"]},
               "minimum-go": {"go": ["./httpx/...", "./httpx/oauth2/...", "./httpx/codec/msgpack/...", "./httpx/codec/proto/...", "./httpx/compress/brotli/...", "./gitx/..."]},
               "modules": ["**"],
@@ -123,13 +123,13 @@ jobs:
             config/docs/**/*.md
             gowalker/docs/**/*.md
             httpx/docs/**/*.md
-            parse/docs/**/*.md
             parse/sdk/**
             .release-please-manifest.json
             release-please-config.json
             tools/check-*
             tools/release-please/**
             tools/modarchive/**
+            tools/doccheck/**
             config/examples/cookbook/**
             httpx/examples/gin/**
             httpx/internal/bench/**
@@ -138,7 +138,9 @@ jobs:
               "config/examples/quickstart/main.go": ["./config"],
               "config/kongprovider/examples/**": ["./config/kongprovider"],
               "httpx/examples/quickstart/main.go": ["./httpx"],
-              "gitx/README.md": ["./gitx/cmd/mergeinserts"]
+              "gitx/README.md": ["./gitx/cmd/mergeinserts"],
+              "parse/testdata/filter_conformance.json": ["./parse/filter"],
+              "parse/docs/*.md": ["./parse"]
             }
       # Release checks follow the module trees a change touches; that map is
       # pkg's. On a merge push it also measures the merge from its first

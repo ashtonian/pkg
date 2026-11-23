@@ -53,10 +53,10 @@ func TestPostgresNativeRowCompare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Where, "(items.created_at, items.id COLLATE pg_c_utf8) < ($1, $2)") {
+	if !strings.Contains(result.Where, `("items"."created_at", "items"."id" COLLATE pg_c_utf8) < ($1, $2)`) {
 		t.Errorf("expected native row comparison, got %q", result.Where)
 	}
-	if result.OrderBy != "ORDER BY items.created_at DESC, items.id COLLATE pg_c_utf8 DESC" {
+	if result.OrderBy != `ORDER BY "items"."created_at" DESC, "items"."id" COLLATE pg_c_utf8 DESC` {
 		t.Errorf("expected tie-breaker in ORDER BY, got %q", result.OrderBy)
 	}
 	if len(result.Args) != 2 {
@@ -79,7 +79,7 @@ func TestSQLiteExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "((items.created_at < ?1) OR (items.created_at = ?1 AND items.id COLLATE BINARY < ?2))"
+	want := `(("items"."created_at" < ?1) OR ("items"."created_at" = ?1 AND "items"."id" COLLATE BINARY < ?2))`
 	if !strings.Contains(result.Where, want) {
 		t.Errorf("expected expansion %q, got %q", want, result.Where)
 	}
@@ -104,7 +104,7 @@ func TestMixedDirectionsExpandOnPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "((items.name > $1) OR (items.name = $1 AND items.created_at < $2) OR (items.name = $1 AND items.created_at = $2 AND items.id COLLATE pg_c_utf8 > $3))"
+	want := `(("items"."name" > $1) OR ("items"."name" = $1 AND "items"."created_at" < $2) OR ("items"."name" = $1 AND "items"."created_at" = $2 AND "items"."id" COLLATE pg_c_utf8 > $3))`
 	if !strings.Contains(result.Where, want) {
 		t.Errorf("expected mixed-direction expansion %q, got %q", want, result.Where)
 	}
@@ -125,7 +125,7 @@ func TestReverseFlipsComparators(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Where, "(items.created_at, items.id COLLATE pg_c_utf8) > ($1, $2)") {
+	if !strings.Contains(result.Where, `("items"."created_at", "items"."id" COLLATE pg_c_utf8) > ($1, $2)`) {
 		t.Errorf("expected flipped comparators, got %q", result.Where)
 	}
 }
@@ -168,14 +168,14 @@ func TestCursorFromDifferentSortRejected(t *testing.T) {
 // deterministic ORDER BY.
 func TestTieBreakerOrderByWithoutSort(t *testing.T) {
 	noDefault := &filter.SortSchema{Fields: map[string]*filter.SortFieldSchema{
-		"name": {SQLExpr: "items.name"},
+		"name": {Table: "items", Column: "name"},
 	}}
 	lq := mustListQuery(t, testSchema(), noDefault, filter.PostgresDialect{})
 	result, err := lq.Build()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OrderBy != "ORDER BY items.id COLLATE pg_c_utf8 ASC" {
+	if result.OrderBy != `ORDER BY "items"."id" COLLATE pg_c_utf8 ASC` {
 		t.Errorf("expected PK-only ORDER BY, got %q", result.OrderBy)
 	}
 }
@@ -204,9 +204,9 @@ func TestInt64Above2p53RoundTrip(t *testing.T) {
 // and surfaces getter errors instead of minting an unresumable token.
 func TestCursorPlanToken_MirrorsBuildKeys(t *testing.T) {
 	sort := &filter.SortResult{Fields: []filter.SortField{
-		{Name: "created_at", Schema: &filter.SortFieldSchema{SQLExpr: "items.created_at"}, Direction: filter.SortDesc},
+		{Name: "created_at", Schema: &filter.SortFieldSchema{Table: "items", Column: "created_at"}, Direction: filter.SortDesc},
 	}}
-	plan := filter.CursorPlan{Keys: filter.Keyset(sort, filter.CursorKey{Name: "id", SQLExpr: "id", Column: "id"})}
+	plan := filter.CursorPlan{Keys: filter.Keyset(sort, filter.CursorKey{Name: "id", Column: "id"})}
 	token, err := plan.Token(false, func(col string) (any, error) {
 		switch col {
 		case "created_at":

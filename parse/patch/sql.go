@@ -14,9 +14,9 @@ import (
 
 // PatchSQLResult holds the generated SQL SET clause and arguments.
 type PatchSQLResult struct {
-	// SetClause is the comma-separated `col = $N` fragment ready to drop
-	// into UPDATE … SET. Empty when the patch only touches relation
-	// fields (junction-only patches).
+	// SetClause is the comma-separated `"col" = $N` fragment ready to drop
+	// into UPDATE … SET, each column quoted by the dialect. Empty when the
+	// patch only touches relation fields (junction-only patches).
 	SetClause string
 
 	// Assignments are the same SET expressions before comma-separated rendering.
@@ -55,6 +55,9 @@ type PatchSQLResult struct {
 
 // ColumnAssignment is one canonical folded column expression.
 type ColumnAssignment struct {
+	// Column is the column's name, unquoted; Expression reads the stored
+	// column, where it does, quoted and unqualified, so it is the target's
+	// own in an UPDATE of one table.
 	Column, Expression string
 }
 
@@ -153,11 +156,11 @@ func WithChangePredicate() PatchSQLOption {
 // BuildPatchSQL converts a ParsedPatch into a SQL SET clause and a list
 // of relation patch ops.
 //
-// Scalar-column operations fold, in order, into ONE assignment per column
-// : replace/add set the column to the value, remove sets it to
-// NULL, array_append appends and an RFC 7396 merge merges into whatever the
-// column holds at that point in the sequence. Emitting one assignment per
-// operation lost every write but the last to a repeated column (SQLite keeps
+// Scalar-column operations fold, in order, into ONE assignment per column:
+// replace/add set the column to the value, remove sets it to NULL,
+// array_append appends and an RFC 7396 merge merges into whatever the
+// column holds at that point in the sequence. One assignment per operation
+// would lose every write but the last to a repeated column (SQLite keeps
 // the last duplicate assignment). Operations before a column's final
 // replace/add/remove are overwritten and bind no placeholder. Columns appear
 // in first-touched order.
@@ -234,7 +237,7 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 		}
 		b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: expr})
 		if cfg.changePredicate {
-			change, err := changedSQL(dialect, col, expr, ops[len(ops)-1].Schema)
+			change, err := changedSQL(dialect, dialect.QuoteIdent(col), expr, ops[len(ops)-1].Schema)
 			if err != nil {
 				return nil, fmt.Errorf("change predicate for %s: %w", col, err)
 			}
@@ -257,13 +260,13 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 			b.assignments = append(b.assignments, ColumnAssignment{Column: cfg.autoTimestamp, Expression: value})
 		}
 		for _, col := range cfg.increments {
-			b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: col + " + 1"})
+			b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: dialect.QuoteIdent(col) + " + 1"})
 		}
 	}
 
 	clauses := make([]string, len(b.assignments))
 	for i, assignment := range b.assignments {
-		clauses[i] = assignment.Column + " = " + assignment.Expression
+		clauses[i] = dialect.QuoteIdent(assignment.Column) + " = " + assignment.Expression
 	}
 	return &PatchSQLResult{
 		SetClause:       strings.Join(clauses, ", "),
@@ -283,14 +286,14 @@ func changedSQL(d dialect.Dialect, col, expr string, schema *PathSchema) (string
 	if expr == "NULL" {
 		return col + " IS NOT NULL", nil
 	}
-	switch d.Name() {
-	case dialect.NameSQLite:
+	switch k := dialect.KindOf(d); k {
+	case dialect.KindSQLite:
 		// IS NOT is SQLite's null-safe inequality on every version that runs
 		// the SQL (IS DISTINCT FROM is a 3.39 alias). BINARY overrides a
 		// NOCASE or RTRIM column and keeps its affinity, which converts the
 		// value for the comparison as it does on store.
 		return col + " COLLATE BINARY IS NOT " + expr, nil
-	case dialect.NamePostgres:
+	case dialect.KindPostgres:
 		switch {
 		case schema != nil && schema.SQLType == core.SQLJSON:
 			// json has no equality operator, and jsonb's text is canonical:
@@ -311,8 +314,9 @@ func changedSQL(d dialect.Dialect, col, expr string, schema *PathSchema) (string
 		// placeholder as the column (an enum, a domain), where a first use as
 		// text would not.
 		return col + " IS DISTINCT FROM " + expr + " OR " + col + `::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::text", nil
+	default:
+		return "", dialect.Unsupported(k, "a change predicate")
 	}
-	return "", fmt.Errorf("not supported for dialect %q", d.Name())
 }
 
 // serverColumns are the columns the server writes on every update: the
@@ -346,10 +350,9 @@ func serverColumns(cfg *patchSQLConfig) (map[string]bool, error) {
 func checkSQLCompilable(op *PatchOperation) error {
 	switch op.Op {
 	case PatchOpTest:
-		// Silently dropping test ops left optimistic-concurrency intent
-		// unenforced — a caller sending [test, replace] believed the replace
-		// was conditional. Conditional UPDATE is not
-		// supported server-side; reject loudly.
+		// A caller sending [test, replace] means the replace to be
+		// conditional, and the compiled UPDATE cannot make it so: dropping
+		// the test would leave that intent unenforced, so it is refused.
 		return &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodeTestOpSQL.String(),
 			Message: fmt.Sprintf("test op for %s cannot be compiled to SQL; conditional update is not supported — verify with a read or use ApplyValidatedPatch", op.Path),
@@ -420,7 +423,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 		if len(ops) != 1 {
 			return "", fmt.Errorf("patch: column %s: a merge shares its column with another operation, which no parser produces", col)
 		}
-		expr, err := mergeSQL(b.dialect, col, ops[0].Schema.SQLType, ops[0].Value, b.bind)
+		expr, err := mergeSQL(b.dialect, b.dialect.QuoteIdent(col), ops[0].Schema.SQLType, ops[0].Value, b.bind)
 		if err != nil {
 			return "", fmt.Errorf("%s for %s: %w", ops[0].Op, ops[0].Path, err)
 		}
@@ -446,7 +449,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 		}
 	}
 	if start < 0 {
-		expr := col
+		expr := b.dialect.QuoteIdent(col)
 		for _, op := range later {
 			var err error
 			if expr, err = arrayAppendSQL(b.dialect, expr, op.Value, b.bind); err != nil {
@@ -497,21 +500,22 @@ func mergeSQL(d dialect.Dialect, expr string, storage core.SQLType, patch any, b
 	if !ok {
 		return "", fmt.Errorf("merge value is %T, not an object", patch)
 	}
-	switch d.Name() {
-	case dialect.NameSQLite:
+	switch k := dialect.KindOf(d); k {
+	case dialect.KindSQLite:
 		doc, err := json.Marshal(obj)
 		if err != nil {
 			return "", err
 		}
 		return "json_patch(COALESCE(" + expr + ", '{}'), " + bind(string(doc)) + ")", nil
-	case dialect.NamePostgres:
+	case dialect.KindPostgres:
 		if storage == core.SQLJSON {
 			expr += "::jsonb"
 		}
 		levels := 0
 		return pgMerge(expr, obj, bind, &levels)
+	default:
+		return "", dialect.Unsupported(k, "a merge patch")
 	}
-	return "", fmt.Errorf("merge patch not supported for dialect %q", d.Name())
 }
 
 // pgMerge compiles the merge of patch into the document target: the target
@@ -622,28 +626,22 @@ func columnName(op *PatchOperation) (string, error) {
 	if op.Schema != nil && op.Schema.SQLColumn != "" {
 		return op.Schema.SQLColumn, nil
 	}
-	// Never emit user-supplied path text as a SQL identifier — a schema without SQLColumn (and no relation) cannot be
-	// compiled safely.
-	return "", &core.ParseError{
-		Kind: core.ParseErrorKindPatch, Code: ECodeSQLColumnMissing.String(),
-		Message: fmt.Sprintf("path %s has no SQLColumn mapping; refusing to use the request path as a SQL identifier", op.Path),
-		Path:    op.Path,
-	}
+	// The request's path text is never a SQL identifier.
+	return "", fmt.Errorf("path %s: %w", op.Path, ErrSQLColumnMissing)
 }
 
 // arrayAppendSQL returns the dialect-specific expression appending element
 // to the array expression expr. NULL coalesces to the empty container so the
-// first append to a fresh NULL column yields a one-element array. Branches on
-// dialect.Name(); a dialect without a case is rejected rather than guessed.
+// first append to a fresh NULL column yields a one-element array.
 func arrayAppendSQL(d dialect.Dialect, expr string, element any, bind func(any) string) (string, error) {
-	switch d.Name() {
-	case dialect.NamePostgres:
+	switch k := dialect.KindOf(d); k {
+	case dialect.KindPostgres:
 		// array_append preserves element order; the UPDATE's row lock
 		// serialises concurrent appenders without losing values.
 		// The untyped '{}' takes the column's array type, so BIGINT[] and
 		// UUID[] columns append as well as TEXT[].
 		return fmt.Sprintf("array_append(COALESCE(%s, '{}'), %s)", expr, bind(element)), nil
-	case dialect.NameSQLite:
+	case dialect.KindSQLite:
 		// SQLite stores arrays as JSON TEXT; '$[#]' appends. The element is
 		// bound as its JSON encoding — the one a full replace writes — and
 		// read back through json(): a bound SQL value would be inserted as
@@ -654,7 +652,7 @@ func arrayAppendSQL(d dialect.Dialect, expr string, element any, bind func(any) 
 		}
 		return fmt.Sprintf("json_insert(COALESCE(%s, '[]'), '$[#]', json(%s))", expr, bind(string(data))), nil
 	default:
-		return "", fmt.Errorf("array_append not supported for dialect %q", d.Name())
+		return "", dialect.Unsupported(k, "array_append")
 	}
 }
 

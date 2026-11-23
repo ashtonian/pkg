@@ -104,8 +104,7 @@ func TestDecimalSQL_PostgresIsExact(t *testing.T) {
 		require.NoError(t, err)
 		plan, err := resource.BuildList(filter.PostgresDialect{}, req, parse.Scope{})
 		require.NoError(t, err)
-		page, err := resource.Page(queryLedger(t, db, plan), plan)
-		require.NoError(t, err)
+		page := listPage(t, db, resource, filter.PostgresDialect{}, plan)
 		for _, it := range page.Items {
 			walked = append(walked, it.ID)
 		}
@@ -125,24 +124,9 @@ func listLedger(t *testing.T, db *sql.DB, d parse.Dialect, resource *parse.Resou
 	plan, err := resource.BuildList(d, req, parse.Scope{})
 	require.NoError(t, err)
 	var ids []string
-	for _, it := range queryLedger(t, db, plan) {
+	for _, it := range listPage(t, db, resource, d, plan).Items {
 		ids = append(ids, it.ID)
 	}
 	slices.Sort(ids)
 	return strings.Join(ids, "")
-}
-
-func queryLedger(t *testing.T, db *sql.DB, plan *parse.ListPlan) []ledgerLine {
-	t.Helper()
-	rows, err := db.Query(plan.Page.SQL, plan.Page.Args...)
-	require.NoError(t, err, plan.Page.SQL)
-	defer func() { require.NoError(t, rows.Close()) }()
-	var out []ledgerLine
-	for rows.Next() {
-		var it ledgerLine
-		require.NoError(t, rows.Scan(&it.ID, &it.Amount, &it.Fee))
-		out = append(out, it)
-	}
-	require.NoError(t, rows.Err())
-	return out
 }

@@ -62,10 +62,10 @@ func listKey(fs *ResourceSchema, ss *SortSchema) (CursorKey, error) {
 	}
 	switch {
 	case sf != nil:
-		key.SQLExpr, key.Column, key.DataType = sf.SQLExpr, sf.RowColumn(), sf.DataType
+		key.Table, key.Column, key.Expr, key.DataType = sf.Table, sf.RowColumn(), sf.Expr, sf.DataType
 		key.NumberKind, key.Nullable = sf.NumberKind, sf.Nullable
 	case ff != nil:
-		key.SQLExpr, key.Column, key.DataType = ff.SQLExpr, ff.RowColumn(), ff.DataType
+		key.Table, key.Column, key.Expr, key.DataType = ff.Table, ff.RowColumn(), ff.Expr, ff.DataType
 		key.NumberKind = ff.NumberKind
 	default:
 		return CursorKey{}, fmt.Errorf("key %q is no sort, filter or system field", name)
@@ -73,7 +73,7 @@ func listKey(fs *ResourceSchema, ss *SortSchema) (CursorKey, error) {
 	if key.DataType == "" {
 		return CursorKey{}, fmt.Errorf("key %q declares no type", name)
 	}
-	if key.Column == "" {
+	if key.Column == "" || fs.computes(key.Column) {
 		return CursorKey{}, fmt.Errorf("key %q is computed; a keyset reads its key from a column", name)
 	}
 	return key, nil
@@ -107,12 +107,13 @@ type listConfig struct {
 	limit       int
 	maxLimit    int
 	policy      *PolicyConstraints
+	now         time.Time
 	withCount   bool
 	facetFields []string
 	searchQuery string
 	startParam  int
 	scope       relationScope
-	related     map[string]*PolicyConstraints
+	related     relatedPolicies
 }
 
 // ListFilter sets the JSON filter string.
@@ -155,6 +156,14 @@ func ListPolicy(pc *PolicyConstraints) ListOption {
 	return func(c *listConfig) { c.policy = pc }
 }
 
+// ListNow resolves the relative-time tokens of the filter JSON, the policy
+// and the related tables' policies against now: the instant the request
+// was parsed at, so they agree with its filter. Without it, Build reads the
+// parser clock once. A RelationScope.Now holds for the related policies.
+func ListNow(now time.Time) ListOption {
+	return func(c *listConfig) { c.now = now }
+}
+
 // ListWithCount enables COUNT(*) query generation.
 func ListWithCount(enable bool) ListOption {
 	return func(c *listConfig) { c.withCount = enable }
@@ -175,12 +184,13 @@ func ListSearch(query string) ListOption {
 // ListRelationScope scopes the relations the filter, count and facets
 // reach (RelationScope).
 func ListRelationScope(s RelationScope) ListOption {
-	return func(c *listConfig) { c.scope, c.related = s.tenancy(), s.Related }
+	return func(c *listConfig) { c.scope, c.related = s.tenancy(), s.policies() }
 }
 
 // ListStartParam sets the starting parameter index offset. Use this when the
 // SQL query has preceding parameters (e.g., SET clause args in an UPDATE).
-// The filter's first placeholder will be startParam+1.
+// The filter's first placeholder will be startParam+1. A negative offset is
+// an error from Build.
 func ListStartParam(n int) ListOption {
 	return func(c *listConfig) { c.startParam = n }
 }
@@ -221,27 +231,35 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 		cfg.limit = cfg.maxLimit
 	}
 
+	now := cfg.now
+	if now.IsZero() {
+		now = lq.filterConfig.Now()
+	}
+	related := cfg.related.at(now)
 	ast := cfg.filterAST
 	if ast == nil && cfg.filterJSON != "" {
-		parsed, err := NewFilterParser(lq.filterSchema, lq.filterConfig).Parse(cfg.filterJSON)
+		parsed, err := NewFilterParser(lq.filterSchema, lq.filterConfig).At(now).Parse(cfg.filterJSON)
 		if err != nil {
 			return nil, err
 		}
 		ast = parsed
 	}
 	if cfg.policy != nil && !cfg.policy.IsEmpty() {
-		var clock func() time.Time
-		if lq.filterConfig != nil {
-			clock = lq.filterConfig.Clock
-		}
-		merged, err := applyPolicyConstraints(lq.filterSchema, ast, cfg.policy, clock)
+		merged, err := applyPolicyConstraints(lq.filterSchema, ast, cfg.policy, now)
 		if err != nil {
 			return nil, err
 		}
 		ast = merged
 	}
-	builder := &SQLBuilder{schema: lq.filterSchema, dialect: lq.dialect, startParam: cfg.startParam, scope: cfg.scope.over(lq.filterSchema), related: cfg.related}
-	filterSQL, err := builder.Build(ast)
+	// The sort keys and search fields read computed columns as the filter
+	// does; the builder resolves its own.
+	exprs, err := lq.filterSchema.ComputedSQL(lq.dialect)
+	if err != nil {
+		return nil, err
+	}
+	search := columnExprs(exprs).search(lq.searchSchema)
+	builder := &SQLBuilder{schema: lq.filterSchema, dialect: lq.dialect, startParam: cfg.startParam, scope: cfg.scope.over(lq.dialect, lq.filterSchema), related: related}
+	filterSQL, err := builder.build(ast, exprs)
 	if err != nil {
 		return nil, err
 	}
@@ -256,6 +274,9 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 	keys, err := lq.cursorKeys(sortResult)
 	if err != nil {
 		return nil, err
+	}
+	for i, k := range keys {
+		keys[i] = columnExprs(exprs).key(k)
 	}
 	plan := CursorPlan{Keys: keys, HasCursor: cfg.cursor != ""}
 
@@ -283,8 +304,8 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 
 	// Search — WHERE-only, ANDed after filter + cursor. Never reorders the
 	// result, so keyset pagination stays stable on the configured sort.
-	if lq.searchSchema != nil && cfg.searchQuery != "" {
-		sc, searchErr := buildSearchCondition(lq.searchSchema, lq.dialect, cfg.searchQuery, paramIdx)
+	if search != nil && cfg.searchQuery != "" {
+		sc, searchErr := buildSearchCondition(search, lq.dialect, cfg.searchQuery, paramIdx)
 		if searchErr != nil {
 			return nil, searchErr
 		}
@@ -334,12 +355,12 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 	if cfg.startParam != 0 && (cfg.withCount || len(cfg.facetFields) > 0) {
 		populationBuilder := *builder
 		populationBuilder.startParam = 0
-		population, err = populationBuilder.Build(ast)
+		population, err = populationBuilder.build(ast, exprs)
 		if err != nil {
 			return nil, err
 		}
 	}
-	popWhere, popArgs, err := AndSearch(lq.searchSchema, lq.dialect, population.Where, population.Args, 0, cfg.searchQuery)
+	popWhere, popArgs, err := AndSearch(search, lq.dialect, population.Where, population.Args, 0, cfg.searchQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +368,7 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 	if cfg.withCount {
 		// Relation predicates are correlated EXISTS, so no join multiplies
 		// owner rows and a plain COUNT(*) is exact.
-		result.CountSQL = "SELECT COUNT(*) FROM " + lq.filterSchema.Name + " WHERE " + popWhere
+		result.CountSQL = "SELECT COUNT(*) FROM " + lq.dialect.QuoteIdent(lq.filterSchema.Name) + " WHERE " + popWhere
 		result.CountArgs = slices.Clone(popArgs)
 	}
 
@@ -356,7 +377,7 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 		for i, f := range cfg.facetFields {
 			reqs[i] = FacetRequest{Field: f}
 		}
-		fq, err := buildFacetQuery(lq.filterSchema, lq.dialect, popWhere, popArgs, reqs, facetConfig{scope: cfg.scope, related: cfg.related})
+		fq, err := buildFacetQuery(lq.filterSchema, lq.dialect, popWhere, popArgs, reqs, facetConfig{scope: cfg.scope, related: related})
 		if err != nil {
 			return nil, err
 		}

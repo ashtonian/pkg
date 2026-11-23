@@ -65,9 +65,7 @@ func NewApplier[T any](gen *core.SchemaGenerator, cfg *core.ParserConfig) (*Appl
 	if gen == nil {
 		return nil, errors.New("patch: NewApplier needs the schema generator")
 	}
-	if cfg == nil {
-		cfg = core.DefaultConfig()
-	}
+	cfg = cfg.Effective()
 	walk, err := gen.StructFields(reflect.TypeFor[T]())
 	if err != nil {
 		return nil, fmt.Errorf("patch: walking fields: %w", err)

@@ -42,17 +42,18 @@ func TestPaths_Declared(t *testing.T) {
 		storage filter.JSONStorage
 		indexed bool
 	}{
-		"attrs.color":   {core.FieldTypeString, "path_items.attrs", []string{"color"}, filter.StorageJSON, false},
-		"attrs.size":    {core.FieldTypeInt, "path_items.attrs", []string{"size"}, filter.StorageJSON, true},
-		"attrs.a-b.c_d": {core.FieldTypeUUID, "path_items.attrs", []string{"a-b", "c_d"}, filter.StorageJSON, false},
-		"doc.mode":      {core.FieldTypeString, "path_items.doc", []string{"mode"}, filter.StorageJSONB, false},
-		"doc.dims.w":    {core.FieldTypeFloat, "path_items.doc", []string{"dims", "w"}, filter.StorageJSONB, true},
+		"attrs.color":   {core.FieldTypeString, "attrs", []string{"color"}, filter.StorageJSON, false},
+		"attrs.size":    {core.FieldTypeInt, "attrs", []string{"size"}, filter.StorageJSON, true},
+		"attrs.a-b.c_d": {core.FieldTypeUUID, "attrs", []string{"a-b", "c_d"}, filter.StorageJSON, false},
+		"doc.mode":      {core.FieldTypeString, "doc", []string{"mode"}, filter.StorageJSONB, false},
+		"doc.dims.w":    {core.FieldTypeFloat, "doc", []string{"dims", "w"}, filter.StorageJSONB, true},
 	} {
 		f := s.Fields[name]
 		require.NotNil(t, f, name)
 		require.NotNil(t, f.Path, name)
-		assert.Empty(t, f.SQLExpr, "%s: a path's value comes from the dialect", name)
+		assert.Empty(t, f.Expr, "%s: a path's value comes from the dialect", name)
 		assert.Equal(t, want.typ, f.DataType, name)
+		assert.Equal(t, "path_items", f.Path.Table, name)
 		assert.Equal(t, want.column, f.Path.Column, name)
 		assert.Equal(t, want.segs, f.Path.Segments, name)
 		assert.Equal(t, want.storage, f.Path.Storage, name)
@@ -199,7 +200,7 @@ func TestPaths_WithPathsIsARequestView(t *testing.T) {
 	require.NoError(t, err)
 	res, err := filter.NewSQLBuilder(view, filter.PostgresDialect{}).Build(ast)
 	require.NoError(t, err)
-	assert.Equal(t, `(CASE WHEN jsonb_typeof((path_items.attrs)::jsonb #> '{tier}') = 'string' THEN ((path_items.attrs)::jsonb #>> '{tier}') END) = $1`, res.Where)
+	assert.Equal(t, `(CASE WHEN jsonb_typeof(("path_items"."attrs")::jsonb -> 'tier') = 'string' THEN (("path_items"."attrs")::jsonb ->> 'tier') END) = $1`, res.Where)
 	assert.Equal(t, []any{"gold"}, res.Args)
 
 	for name, d := range map[string]filter.PathDecl{
@@ -221,7 +222,7 @@ func TestPaths_SQLiteRendering(t *testing.T) {
 	s, err := filter.GenerateFilterSchema[pathItem](core.NewSchemaGenerator())
 	require.NoError(t, err)
 	got := filter.FieldExpr(filter.SQLiteDialect{}, s.Fields["attrs.a-b.c_d"])
-	assert.True(t, strings.HasPrefix(got, `(CASE WHEN json_type(path_items.attrs, '$."a-b"."c_d"') = 'text' AND lower(json_extract(path_items.attrs, '$."a-b"."c_d"')) GLOB '`), got)
+	assert.True(t, strings.HasPrefix(got, `(CASE WHEN json_type("path_items"."attrs", '$."a-b"."c_d"') = 'text' AND lower(json_extract("path_items"."attrs", '$."a-b"."c_d"')) GLOB '`), got)
 }
 
 func TestPaths_SortKeys(t *testing.T) {
@@ -239,7 +240,7 @@ func TestPaths_SortKeys(t *testing.T) {
 
 	sr, err := filter.ParseSort(s, "-attrs.size")
 	require.NoError(t, err)
-	assert.Equal(t, `ORDER BY (CASE WHEN jsonb_typeof(path_records.attrs #> '{size}') = 'number' THEN (path_records.attrs #>> '{size}')::numeric END) DESC NULLS FIRST`, sr.ToSQL(filter.PostgresDialect{}))
+	assert.Equal(t, `ORDER BY (CASE WHEN jsonb_typeof("path_records"."attrs" -> 'size') = 'number' THEN ("path_records"."attrs" ->> 'size')::numeric END) DESC NULLS FIRST`, sr.ToSQL(filter.PostgresDialect{}))
 }
 
 func TestPaths_SortWithPaths(t *testing.T) {
@@ -269,7 +270,7 @@ func TestPaths_NumericCursorValues(t *testing.T) {
 	require.NoError(t, err)
 	sr, err := filter.ParseSort(s, "attrs.size")
 	require.NoError(t, err)
-	keys := filter.Keyset(sr, filter.CursorKey{Name: "id", SQLExpr: "path_records.id", Column: "id", DataType: core.FieldTypeString})
+	keys := filter.Keyset(sr, filter.CursorKey{Name: "id", Table: "path_records", Column: "id", DataType: core.FieldTypeString})
 	for _, v := range []any{int64(3), 3.5, nil} {
 		tok := &filter.PageToken{Fields: []filter.CursorField{{Name: "attrs.size", Value: v, Direction: filter.SortAsc}, {Name: "id", Value: "a", Direction: filter.SortAsc}}}
 		assert.NoError(t, filter.ValidateCursor(tok, keys), "%v", v)
@@ -290,7 +291,6 @@ func TestPaths_Facets(t *testing.T) {
 	color := s.Fields["attrs.color"]
 	require.True(t, color.Facetable)
 	assert.Equal(t, filter.FacetTerms, color.FacetSchema.Type)
-	assert.Empty(t, color.FacetSchema.SQLExpr, "a path facet renders per dialect")
 	level := s.Fields["settings.level"]
 	require.True(t, level.Facetable)
 	assert.Equal(t, filter.FacetTypeRange, level.FacetSchema.Type)
@@ -305,5 +305,5 @@ func TestPaths_Facets(t *testing.T) {
 
 	q, err := filter.BuildFacetQuery(view, filter.PostgresDialect{}, "1=1", nil, []filter.FacetRequest{{Field: "attrs.tier"}})
 	require.NoError(t, err)
-	assert.Contains(t, q.SQL, `(CASE WHEN jsonb_typeof(path_records.attrs #> '{tier}') = 'string' THEN (path_records.attrs #>> '{tier}') END) AS`)
+	assert.Contains(t, q.SQL, `(CASE WHEN jsonb_typeof("path_records"."attrs" -> 'tier') = 'string' THEN ("path_records"."attrs" ->> 'tier') END) AS`)
 }

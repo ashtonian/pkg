@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"math"
 	"mime"
 	"net/url"
 	"slices"
@@ -31,9 +30,9 @@ import (
 // is not one JSON object, or names a member twice, is E2086. An unknown
 // member, or a member of the wrong JSON type, is E2067, so a misspelt member
 // cannot widen a list. Flat field filters do not apply: a body has filter.
-// An error reading body is returned wrapped, not as a request error.
+// A read that fails is a *BodyReadError, not a request error.
 func (r *Resource[T]) ParseListBody(body io.Reader) (*ListRequest, error) {
-	data, err := r.readListBody(body)
+	data, err := r.readBody(body, r.cfg.ListBodyLimit(), "list", core.ParseErrorKindFilter)
 	if err != nil {
 		return nil, err
 	}
@@ -53,25 +52,6 @@ func (r *Resource[T]) ParseListBody(body io.Reader) (*ListRequest, error) {
 		}
 	}
 	return r.ParseListInput(in)
-}
-
-// readListBody reads body up to the parser's list body limit
-// (core.ParserConfig.ListBodyLimit): one byte more tells a body that is too
-// large without reading the rest of it. The limit is held below MaxInt so
-// that byte cannot overflow the reader's bound.
-func (r *Resource[T]) readListBody(body io.Reader) ([]byte, error) {
-	limit := r.cfg.ListBodyLimit()
-	data, err := io.ReadAll(io.LimitReader(body, int64(min(limit, math.MaxInt-1))+1))
-	if err != nil {
-		return nil, fmt.Errorf("parse: %s: reading list body: %w", r.table, err)
-	}
-	if len(data) > limit {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindFilter, Code: filter.ECodeInputTooLarge.String(),
-			Message: fmt.Sprintf("list body exceeds maximum %d bytes", limit),
-		}
-	}
-	return data, nil
 }
 
 // listMember decodes one member of a list body into in; null is an absent

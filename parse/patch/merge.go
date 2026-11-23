@@ -15,9 +15,7 @@ func ParseMergePatch(body []byte, schema *PatchSchema, config *core.ParserConfig
 	if schema == nil {
 		return nil, errNoSchema
 	}
-	if config == nil {
-		config = core.DefaultConfig()
-	}
+	config = config.Effective()
 
 	if config.MaxInputSize > 0 && len(body) > config.MaxInputSize {
 		return nil, &core.ParseError{
@@ -48,9 +46,7 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 	if schema == nil {
 		return nil, errNoSchema
 	}
-	if config == nil {
-		config = core.DefaultConfig()
-	}
+	config = config.Effective()
 	if raw == nil {
 		return nil, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodeInvalidJSON.String(), Message: "resource merge patch must be an object"}
 	}
@@ -64,7 +60,7 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 	// its arguments in proportion: scalar members of one object bind as one
 	// value however many there are.
 	ops, depth := mergeShape(raw, 1)
-	if config.MaxDepth > 0 && depth > config.MaxDepth {
+	if depth > config.MaxDepth {
 		return nil, &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodePathTooDeep.String(),
 			Message: fmt.Sprintf("merge patch nests %d levels deep; maximum is %d", depth, config.MaxDepth),
@@ -79,8 +75,8 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 
 	result := &ParsedPatch{Operations: make([]*PatchOperation, 0, len(raw)), schema: schema}
 
-	// Sorted walk: map order made the operation list — and so the SQL SET
-	// clause and apply order — vary run to run.
+	// Sorted walk: map order would make the operation list — and so the SQL
+	// SET clause and apply order — vary run to run.
 	var failures []error
 	for _, key := range slices.Sorted(maps.Keys(raw)) {
 		operation, err := validateMergeMember(schema, codec, key, raw[key])

@@ -3,12 +3,13 @@
 package core_test
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
 
-func TestSchemaGenerator_ColumnExpr(t *testing.T) {
+func TestSchemaGenerator_ColumnName(t *testing.T) {
 	tests := []struct {
 		name  string
 		opts  []core.GeneratorOption
@@ -16,21 +17,25 @@ func TestSchemaGenerator_ColumnExpr(t *testing.T) {
 		dbTag string
 		want  string
 	}{
-		{"default snake", nil, "deviceType", "", "items.device_type"},
-		{"db tag override", nil, "deviceType", "custom_col", "items.custom_col"},
-		{"db tag dash ignored", nil, "deviceType", "-", "items.device_type"},
-		{"camel convention", []core.GeneratorOption{core.WithColumnConvention(core.CamelCase)}, "DeviceType", "", "items.deviceType"},
-		{"db tag beats convention", []core.GeneratorOption{core.WithColumnConvention(core.CamelCase)}, "DeviceType", "my_col", "items.my_col"},
-		{"db tag options stripped", nil, "id", "id,pk", "items.id"},
+		{"default snake", nil, "deviceType", "", "device_type"},
+		{"db tag override", nil, "deviceType", "custom_col", "custom_col"},
+		{"db tag dash ignored", nil, "deviceType", "-", "device_type"},
+		{"camel convention", []core.GeneratorOption{core.WithColumnConvention(core.CamelCase)}, "DeviceType", "", "deviceType"},
+		{"db tag beats convention", []core.GeneratorOption{core.WithColumnConvention(core.CamelCase)}, "DeviceType", "my_col", "my_col"},
+		{"db tag options stripped", nil, "id", "id,pk", "id"},
 		{"non-identifier column rejected", nil, "x", "x; DROP TABLE t", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gen := core.NewSchemaGenerator(tt.opts...)
-			got, err := gen.ColumnExpr("items", tt.field, core.FieldTypeString, tt.dbTag)
+			got, err := gen.ColumnName(tt.field, tt.dbTag)
 			if tt.want == "" {
 				if err == nil {
 					t.Errorf("expected an identifier error, got %q", got)
+				}
+				_, err = gen.MappedExpr("items", tt.field, core.FieldTypeString, tt.dbTag)
+				if err == nil {
+					t.Error("MappedExpr without a mapper accepted a column that is no identifier")
 				}
 				return
 			}
@@ -40,7 +45,28 @@ func TestSchemaGenerator_ColumnExpr(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
+			expr, err := gen.MappedExpr("items", tt.field, core.FieldTypeString, tt.dbTag)
+			if err != nil || expr != "" {
+				t.Errorf("MappedExpr without a mapper = %q, %v; want the column itself", expr, err)
+			}
 		})
+	}
+}
+
+type quotingMapper struct{}
+
+func (quotingMapper) MapColumn(table, column string, _ core.FieldType) string {
+	return `lower("` + table + `"."` + column + `")`
+}
+
+func TestSchemaGenerator_MappedExpr(t *testing.T) {
+	gen := core.NewSchemaGenerator(core.WithColumnMapper(quotingMapper{}))
+	got, err := gen.MappedExpr("items", "displayName", core.FieldTypeString, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `lower("items"."display_name")`; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
@@ -100,5 +126,27 @@ func TestSchemaGenerator_ColumnTagKey(t *testing.T) {
 	gen2 := core.NewSchemaGenerator(core.WithColumnTag("sql"))
 	if gen2.ColumnTagKey() != "sql" {
 		t.Errorf("expected sql, got %q", gen2.ColumnTagKey())
+	}
+}
+
+// The generator keeps its own copy of the options: a write to a map or
+// slice the options handed in changes no schema it generates afterwards,
+// nor does a write to what its accessors return.
+func TestSchemaGenerator_CopiesItsOptions(t *testing.T) {
+	ops := map[core.FieldType][]string{core.FieldTypeString: {"eq"}}
+	gen := core.NewSchemaGenerator(func(o *core.GeneratorOptions) { o.DefaultFilterOps = ops })
+	ops[core.FieldTypeString][0] = "gt"
+	ops[core.FieldTypeInt] = []string{"lt"}
+
+	got, ok := gen.DefaultFilterOps(core.FieldTypeString)
+	if !ok || !slices.Equal(got, []string{"eq"}) {
+		t.Fatalf("DefaultFilterOps(string) = %v, %v; want [eq], true", got, ok)
+	}
+	got[0] = "ne"
+	if again, _ := gen.DefaultFilterOps(core.FieldTypeString); !slices.Equal(again, []string{"eq"}) {
+		t.Errorf("DefaultFilterOps(string) after a write to its result = %v; want [eq]", again)
+	}
+	if _, ok := gen.DefaultFilterOps(core.FieldTypeInt); ok {
+		t.Error("a type the options named after construction is served")
 	}
 }

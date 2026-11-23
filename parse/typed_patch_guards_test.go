@@ -19,8 +19,7 @@ type bsonDevice struct {
 }
 
 // TestFieldNameTagThreadsToApply: with a non-json FieldNameTag, applying a
-// validated patch previously no-op'd silently — fieldIndexMap hardcoded the
-// json tag, found no entry, and continued.
+// validated patch finds each field by that tag, not by its json name.
 func TestFieldNameTagThreadsToApply(t *testing.T) {
 	tp, err := parse.NewResource[bsonDevice]("bson_devices", parse.ParserOptions(core.WithGeneratorOptions(core.WithFieldNameTag("bson"))))
 	if err != nil {
@@ -68,7 +67,8 @@ func TestSchemaValidatedPathMissMustError(t *testing.T) {
 	}
 }
 
-// uintDevice exercises P-5's numeric coercion guards on the direct-apply path.
+// uintDevice exercises the numeric coercion guards on the direct-apply path:
+// a value outside an unsigned or narrow field's range is refused.
 type uintDevice struct {
 	ID     string  `json:"id,omitempty" db:"id"`
 	Count  uint    `json:"count"  parse:"filter,patch" patch_ops:"replace"`
@@ -76,9 +76,9 @@ type uintDevice struct {
 	Weight float64 `json:"weight" parse:"filter,patch" patch_ops:"replace"`
 }
 
-// TestNumericCoercionGuards: -1 wrapped into uint 18446744073709551615 and
-// 3.7 silently truncated into int 3. Both must error; integral floats and
-// real floats still work.
+// TestNumericCoercionGuards: -1 into a uint and 3.7 into an int are refused,
+// not wrapped or truncated; an integral float into an int and any finite
+// float into a float apply.
 func TestNumericCoercionGuards(t *testing.T) {
 	tp, err := parse.NewResource[uintDevice]("uint_devices")
 	if err != nil {
@@ -88,7 +88,7 @@ func TestNumericCoercionGuards(t *testing.T) {
 	t.Run("negative into uint errors", func(t *testing.T) {
 		_, err := tp.ApplyPatch([]byte(`[{"op":"replace","path":"/count","value":-1}]`), uintDevice{})
 		if err == nil {
-			t.Fatal("-1 accepted into uint; want error (wrapped to 2^64-1 before)")
+			t.Fatal("-1 accepted into uint; want an error")
 		}
 		if !strings.Contains(err.Error(), "E2077") && !strings.Contains(strings.ToLower(err.Error()), "negative") {
 			t.Logf("error text: %v", err)

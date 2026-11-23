@@ -300,8 +300,9 @@ func TestEveryExecMode(t *testing.T) {
 			got, err := parsepgx.Update(ctx, pool, products,
 				update(t, `{"sizes":["m","l"],"labels":["red","blue"]}`, parse.ByIDs(c.ids["a"], c.ids["g"]), c.scopeA))
 			require.NoError(t, err)
-			require.Len(t, got, 1)
-			assert.Equal(t, []string{"m", "l"}, got[0].Sizes)
+			require.Len(t, got.Changed, 1)
+			assert.Empty(t, got.Unchanged)
+			assert.Equal(t, []string{"m", "l"}, got.Changed[0].Sizes)
 			assert.Equal(t, []string{"blue", "red"}, labels(t, c, "a", c.tenantA))
 
 			// The guarded form reuses its placeholders in the WHERE: a text,
@@ -309,8 +310,10 @@ func TestEveryExecMode(t *testing.T) {
 			got, err = parsepgx.Update(ctx, pool, products,
 				update(t, `{"name":"a","price":50,"sizes":["m","l"],"labels":["red","blue"]}`, parse.ByIDs(c.ids["a"], c.ids["g"]), c.scopeA, parse.SkipUnchanged()))
 			require.NoError(t, err)
-			require.Len(t, got, 1, "a is unchanged, and found")
-			assert.Equal(t, c.ids["a"], got[0].ID)
+			assert.Empty(t, got.Changed)
+			require.Len(t, got.Unchanged, 1, "a is unchanged, and found")
+			assert.Equal(t, c.ids["a"], got.Unchanged[0].ID)
+			assert.Zero(t, got.RelationRows, "its labels are already red and blue")
 		})
 	}
 }
@@ -374,27 +377,36 @@ func TestUpdate_ChangesTheScopesTargetsAndTheirRelations(t *testing.T) {
 	got, err := parsepgx.Update(ctx, c.pool, products,
 		update(t, `{"price":45,"labels":["sale","red"]}`, parse.ByIDs(c.ids["a"], c.ids["d"], c.ids["g"]), c.scopeA))
 	require.NoError(t, err)
-	require.Len(t, got, 1, "d is deleted, g is B's")
-	assert.Equal(t, c.ids["a"], got[0].ID)
-	assert.Equal(t, 45.0, got[0].Price)
+	require.Len(t, got.Changed, 1, "d is deleted, g is B's")
+	assert.Empty(t, got.Unchanged)
+	assert.Equal(t, c.ids["a"], got.Changed[0].ID)
+	assert.Equal(t, 45.0, got.Changed[0].Price)
+	assert.Equal(t, int64(2), got.RelationRows, "blue removed, sale added")
 	assert.Equal(t, []string{"red", "sale"}, labels(t, c, "a", c.tenantA))
 	assert.Equal(t, []string{"green"}, labels(t, c, "a", c.tenantB), "B's pair for a is B's")
 	assert.Equal(t, []string{"red"}, labels(t, c, "g", c.tenantB))
 
 	only, err := parsepgx.Update(ctx, c.pool, products, update(t, `{"labels":[]}`, parse.ByID(c.ids["b"]), c.scopeA))
 	require.NoError(t, err)
-	require.Len(t, only, 1, "a relation-only patch returns its owner")
+	assert.Empty(t, only.Changed, "a relation-only patch writes no column")
+	require.Len(t, only.Unchanged, 1, "and returns its owner")
+	assert.Equal(t, int64(1), only.RelationRows, "red removed")
 	assert.Empty(t, labels(t, c, "b", c.tenantA))
+	again, err := parsepgx.Update(ctx, c.pool, products, update(t, `{"labels":[]}`, parse.ByID(c.ids["b"]), c.scopeA))
+	require.NoError(t, err)
+	require.Len(t, again.Unchanged, 1)
+	assert.Zero(t, again.RelationRows, "no membership changed")
 
 	read, err := parsepgx.Update(ctx, c.pool, products, update(t, `{}`, parse.ByID(c.ids["a"]), c.scopeA))
 	require.NoError(t, err)
-	require.Len(t, read, 1)
-	assert.Equal(t, 45.0, read[0].Price, "an empty patch reads the row")
+	assert.Empty(t, read.Changed)
+	require.Len(t, read.Unchanged, 1, "an empty patch reads the row")
+	assert.Equal(t, 45.0, read.Unchanged[0].Price)
 
 	none, err := parsepgx.Update(ctx, c.pool, products,
 		update(t, `{"price":1}`, parse.ByID(c.ids["a"]), parse.Scope{Tenant: c.tenantB.String()}))
 	require.NoError(t, err)
-	assert.Empty(t, none, "another tenant updates nothing")
+	assert.Zero(t, none, "another tenant updates nothing")
 }
 
 // versioned reads products with a version and a stamp the server moves.
@@ -410,64 +422,121 @@ type versioned struct {
 
 var versionedProducts = parse.MustResource[versioned]("products", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
 
+// countedProduct reads its label count through an expression over the
+// junction, so an update that changes memberships rereads its rows.
+type countedProduct struct {
+	ID         uuid.UUID  `json:"id"          db:"id"          parse:"filter,sort" indexed:"true"`
+	TenantID   uuid.UUID  `json:"tenant_id"   db:"tenant_id"`
+	Price      float64    `json:"price"       db:"price"       parse:"filter,patch"`
+	Version    int64      `json:"version"     db:"version"`
+	LabelCount int64      `json:"label_count" db:"label_count"`
+	DeletedAt  *time.Time `json:"deleted_at"  db:"deleted_at"`
+	Labels     []string   `json:"labels"      db:"-"           parse:"filter,include,patch" relation:"product_labels,product_id,label_id,id,tenant_id" indexed:"true"`
+}
+
+var countedProducts = parse.MustResource[countedProduct]("products", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"),
+	parse.ReadExpr("label_count", parse.SQL(`(SELECT count(*) FROM product_labels l WHERE l.product_id = "products"."id" AND l.tenant_id = "products"."tenant_id")`)))
+
 // A SkipUnchanged plan, on a pool or in the caller's transaction, writes,
-// stamps and counts only the rows it changes, returns them and then the
-// targets it left as they were, and changes the memberships of both.
+// stamps and counts only the rows it changes, reports them apart from the
+// targets it left as they were, and changes the memberships of both; with
+// computed columns over the pairs, both sides are read again after them.
 func TestUpdate_SkipUnchanged(t *testing.T) {
-	for _, tc := range []struct {
+	runners := []struct {
 		name string
-		run  func(ctx context.Context, c *catalog, plan *parse.UpdatePlan) ([]versioned, error)
+		run  func(ctx context.Context, c *catalog, apply func(parsepgx.DB) error) error
 	}{
-		{"on the pool", func(ctx context.Context, c *catalog, plan *parse.UpdatePlan) ([]versioned, error) {
-			return parsepgx.Update(ctx, c.pool, versionedProducts, plan)
+		{"on the pool", func(_ context.Context, c *catalog, apply func(parsepgx.DB) error) error { return apply(c.pool) }},
+		{"in the caller's transaction", func(ctx context.Context, c *catalog, apply func(parsepgx.DB) error) error {
+			return pgx.BeginFunc(ctx, c.pool, func(tx pgx.Tx) error { return apply(tx) })
 		}},
-		{"in the caller's transaction", func(ctx context.Context, c *catalog, plan *parse.UpdatePlan) ([]versioned, error) {
-			var rows []versioned
-			err := pgx.BeginFunc(ctx, c.pool, func(tx pgx.Tx) error {
-				var err error
-				rows, err = parsepgx.Update(ctx, tx, versionedProducts, plan)
-				return err
-			})
-			return rows, err
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c := newCatalog(t)
-			ctx := testContext(t)
-			_, err := c.pool.Exec(ctx, `ALTER TABLE products ADD COLUMN version bigint NOT NULL DEFAULT 1, ADD COLUMN updated_at timestamptz`)
-			require.NoError(t, err)
-			plan := func(body string, target parse.Target) *parse.UpdatePlan {
-				p, err := versionedProducts.ParseMergePatch([]byte(body))
+	}
+	guarded := func(t *testing.T, c *catalog, body string, target parse.Target) *parse.UpdatePlan {
+		t.Helper()
+		p, err := versionedProducts.ParseMergePatch([]byte(body))
+		require.NoError(t, err)
+		plan, err := versionedProducts.BuildUpdate(filter.PostgresDialect{}, p, target, c.scopeA,
+			parse.StampSQL("updated_at", "now()"), parse.Increment("version"), parse.SkipUnchanged())
+		require.NoError(t, err)
+		require.NotNil(t, plan.Current)
+		return plan
+	}
+	for _, runner := range runners {
+		t.Run(runner.name, func(t *testing.T) {
+			setup := func(t *testing.T) (*catalog, context.Context) {
+				c := newCatalog(t)
+				ctx := testContext(t)
+				_, err := c.pool.Exec(ctx, `ALTER TABLE products ADD COLUMN version bigint NOT NULL DEFAULT 1, ADD COLUMN updated_at timestamptz`)
 				require.NoError(t, err)
-				plan, err := versionedProducts.BuildUpdate(filter.PostgresDialect{}, p, target, c.scopeA,
-					parse.StampSQL("updated_at", "now()"), parse.Increment("version"), parse.SkipUnchanged())
-				require.NoError(t, err)
-				require.NotNil(t, plan.Current)
-				return plan
+				return c, ctx
+			}
+			update := func(t *testing.T, ctx context.Context, c *catalog, plan *parse.UpdatePlan) parse.UpdateResult[versioned] {
+				t.Helper()
+				var res parse.UpdateResult[versioned]
+				require.NoError(t, runner.run(ctx, c, func(db parsepgx.DB) error {
+					var err error
+					res, err = parsepgx.Update(ctx, db, versionedProducts, plan)
+					return err
+				}))
+				return res
 			}
 
-			got, err := tc.run(ctx, c, plan(`{"price":50,"labels":["red","sale"]}`, parse.ByIDs(c.ids["a"], c.ids["b"], c.ids["d"], c.ids["g"])))
-			require.NoError(t, err)
-			require.Len(t, got, 2, "d is deleted, g is B's")
-			assert.Equal(t, []string{"b", "a"}, c.names(got[0].ID, got[1].ID), "b changed, a already cost 50")
-			assert.Equal(t, 50.0, got[0].Price)
-			assert.Equal(t, int64(2), got[0].Version)
-			assert.NotNil(t, got[0].UpdatedAt)
-			assert.Equal(t, int64(1), got[1].Version, "the unchanged row keeps its version")
-			assert.Nil(t, got[1].UpdatedAt, "and its stamp")
-			assert.Equal(t, []string{"red", "sale"}, labels(t, c, "a", c.tenantA), "the unchanged row's memberships change too")
-			assert.Equal(t, []string{"red", "sale"}, labels(t, c, "b", c.tenantA))
-			assert.Equal(t, []string{"green"}, labels(t, c, "a", c.tenantB), "another tenant's pair stays")
+			t.Run("columns and relations", func(t *testing.T) {
+				c, ctx := setup(t)
+				got := update(t, ctx, c, guarded(t, c, `{"price":50,"labels":["red","sale"]}`, parse.ByIDs(c.ids["a"], c.ids["b"], c.ids["d"], c.ids["g"])))
+				require.Len(t, got.Changed, 1, "b changed")
+				require.Len(t, got.Unchanged, 1, "a already cost 50; d is deleted, g is B's")
+				assert.Equal(t, []string{"b"}, c.names(got.Changed[0].ID))
+				assert.Equal(t, []string{"a"}, c.names(got.Unchanged[0].ID))
+				assert.Equal(t, 50.0, got.Changed[0].Price)
+				assert.Equal(t, int64(2), got.Changed[0].Version)
+				assert.NotNil(t, got.Changed[0].UpdatedAt)
+				assert.Equal(t, int64(1), got.Unchanged[0].Version, "the unchanged row keeps its version")
+				assert.Nil(t, got.Unchanged[0].UpdatedAt, "and its stamp")
+				assert.Equal(t, int64(3), got.RelationRows, "a's blue removed, a's and b's sale added")
+				assert.Equal(t, []string{"red", "sale"}, labels(t, c, "a", c.tenantA), "the unchanged row's memberships change too")
+				assert.Equal(t, []string{"red", "sale"}, labels(t, c, "b", c.tenantA))
+				assert.Equal(t, []string{"green"}, labels(t, c, "a", c.tenantB), "another tenant's pair stays")
 
-			var version int64
-			var stamped bool
-			require.NoError(t, c.pool.QueryRow(ctx, `SELECT version, updated_at IS NOT NULL FROM products WHERE id = $1`, c.ids["a"]).Scan(&version, &stamped))
-			assert.Equal(t, int64(1), version, "the stored unchanged row was not written")
-			assert.False(t, stamped)
+				var version int64
+				var stamped bool
+				require.NoError(t, c.pool.QueryRow(ctx, `SELECT version, updated_at IS NOT NULL FROM products WHERE id = $1`, c.ids["a"]).Scan(&version, &stamped))
+				assert.Equal(t, int64(1), version, "the stored unchanged row was not written")
+				assert.False(t, stamped)
 
-			none, err := tc.run(ctx, c, plan(`{"price":50}`, parse.ByID(c.ids["g"])))
-			require.NoError(t, err)
-			assert.Empty(t, none, "another tenant's row is not found")
+				assert.Zero(t, update(t, ctx, c, guarded(t, c, `{"price":50}`, parse.ByID(c.ids["g"]))), "another tenant's row is not found")
+			})
+			t.Run("columns alone", func(t *testing.T) {
+				c, ctx := setup(t)
+				got := update(t, ctx, c, guarded(t, c, `{"price":50}`, parse.ByIDs(c.ids["a"], c.ids["b"])))
+				require.Len(t, got.Changed, 1)
+				require.Len(t, got.Unchanged, 1)
+				assert.Equal(t, []string{"b"}, c.names(got.Changed[0].ID))
+				assert.Equal(t, []string{"a"}, c.names(got.Unchanged[0].ID))
+				assert.Zero(t, got.RelationRows)
+			})
+			t.Run("a reread", func(t *testing.T) {
+				c, ctx := setup(t)
+				p, err := countedProducts.ParseMergePatch([]byte(`{"price":50,"labels":["red"]}`))
+				require.NoError(t, err)
+				plan, err := countedProducts.BuildUpdate(filter.PostgresDialect{}, p, parse.ByIDs(c.ids["a"], c.ids["b"]), c.scopeA,
+					parse.Increment("version"), parse.SkipUnchanged())
+				require.NoError(t, err)
+				var got parse.UpdateResult[countedProduct]
+				require.NoError(t, runner.run(ctx, c, func(db parsepgx.DB) error {
+					var err error
+					got, err = parsepgx.Update(ctx, db, countedProducts, plan)
+					return err
+				}))
+				require.Len(t, got.Changed, 1)
+				require.Len(t, got.Unchanged, 1)
+				assert.Equal(t, []string{"b"}, c.names(got.Changed[0].ID))
+				assert.Equal(t, []string{"a"}, c.names(got.Unchanged[0].ID))
+				assert.Equal(t, int64(1), got.Unchanged[0].LabelCount, "a's count is read after its blue pair went")
+				assert.Equal(t, int64(1), got.Changed[0].LabelCount)
+				assert.Equal(t, int64(2), got.Changed[0].Version, "the reread keeps the changed side's write")
+				assert.Equal(t, int64(1), got.RelationRows)
+			})
 		})
 	}
 }
@@ -498,7 +567,7 @@ func TestUpdate_InTheCallersTransaction(t *testing.T) {
 	got, err := parsepgx.Update(ctx, tx, products,
 		update(t, `{"name":"renamed","labels":["new"]}`, parse.ByID(c.ids["a"]), c.scopeA))
 	require.NoError(t, err)
-	require.Len(t, got, 1)
+	require.Len(t, got.Changed, 1)
 	require.NoError(t, tx.Rollback(ctx))
 
 	var name string
@@ -540,9 +609,9 @@ func TestReadColumns_LeaveSensitiveColumnsInTheDatabase(t *testing.T) {
 	require.NoError(t, err)
 	upd, err := creds.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID(id), scope)
 	require.NoError(t, err)
-	rows, err := parsepgx.Update(ctx, pool, creds, upd)
+	res, err := parsepgx.Update(ctx, pool, creds, upd)
 	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Equal(t, "ci", rows[0].Name)
-	assert.Empty(t, rows[0].SecretHash)
+	require.Len(t, res.Changed, 1)
+	assert.Equal(t, "ci", res.Changed[0].Name)
+	assert.Empty(t, res.Changed[0].SecretHash)
 }

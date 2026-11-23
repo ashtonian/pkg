@@ -25,6 +25,12 @@ A field tagged `parse:"server"` is a column only the server sets — a credentia
 | Test a value, copy/move a value, or edit an explicitly allowed nested pointer | `ParsePatch` then `ApplyValidatedPatch` | Go application; persist with appropriate concurrency control |
 | Set server-owned fields | `ParseServerMergePatch` | Trusted server code only |
 
+### Reading a patch request
+
+`parsehttp.ParsePatch(r, products)` reads a `PATCH` request's body in the grammar its `Content-Type` names: `application/merge-patch+json` (`parse.MediaTypeMergePatch`) or `application/json`, which the SDK sends, is a merge patch; `application/json-patch+json` (`parse.MediaTypeJSONPatch`) is a JSON Patch. Any other media type, or none, is E2086 with `details.parameter` `content-type`. The body is read no further than `MaxInputSize`, the size the patch parsers hold a body to; a longer one is E2063, and a `MaxInputSize` of zero or less reads it whole. A framework that hands its handlers a request's parts calls `Resource.ParsePatchRequest(contentType, body, opts...)`, which applies the same rules.
+
+A body that cannot be read to its end, because the client went away or sent less than its `Content-Length`, is a `*parse.BodyReadError` wrapping the reader's error, for a patch and a list body alike. It is not a `ParseError`, so `parsehttp.WriteError` declines it, and not a server fault: answer it as a bad request at `WARN`, as the example and the pgx recipe do, without an `ERROR` entry.
+
 ## Validation
 
 JSON Patch bodies must be arrays of operations; resource Merge Patch bodies must be objects. A root `null` is rejected rather than treated as an empty update. An operation carries only the value it writes: a `remove` of a field, a `move` and a `copy` have no `PatchOperation.Value`, whatever `value` member the client sent. A `remove`, a merge-patch null and a `move`'s source are null writes, so the path's validators run with null.
@@ -33,7 +39,7 @@ Every patch schema — generated, or built with `patch.NewPatchSchema` — has `
 
 A relation operation's value is a list of target keys, decided when it parses so that nothing the parser accepts is refused later for its shape. A key is never null (E2118), so a relation's membership type cannot be nullable (`[]*string` fails schema generation and `patch.RelationPath`). A merge-patch `null`, like a JSON Patch `replace` with `null`, is the clear — the same operation as `[]` — since RFC 7396 reads null as removing the member and the member is the membership; the schema document's `nullable` for a relation path says so. An `add` or `remove` names at least one key (E2118), and a value that is not a list, or a key of the wrong type, is E2077. Each key takes its target key's wire form: a JSON string for a key tagged `json:",string"` (`patch.RelationPath`'s `wire`). The parsers keep each key once, in the order first named, and refuse more than `PatchSchema.MaxRelationValues` (`patch.DefaultMaxRelationValues`, 1000; 0 is unlimited) with E2119 (422), whose `Details` hold the count (`patch.DetailValueCount`, `"count"`) and the limit (`patch.DetailValueLimit`, `"limit"`), before any SQL exists. Every key is a pair written per owner, so the limit bounds one factor of the rows a membership change writes; the owners are the rows the update targets. The schema document serves it as `max_relation_values`.
 
-A schema's paths are its own: `NewPatchSchema(resource, paths)` checks every key as a policy checks its patterns (a token is a literal, `*` or `**`), every path schema and its operations, and `AddPath` adds a path — refusing one the schema already has — which every parse that starts after it sees. `Path(key)` looks a key up and `Paths()` yields them in key order. An exact key is matched before a pattern, and patterns most specific first. `patch.IsValidOp` and `patch.Ops` name the recognized operations.
+A schema's paths are its own: `NewPatchSchema(resource, paths)` checks every key as a policy checks its patterns (a token is a literal, `*` or `**`), every path schema and its operations, and `AddPath` adds a path — refusing one the schema already has — which every parse that starts after it sees; a resource's patch schemas take theirs in `parse.CustomizeSchemas`, while it is built. `Clone` copies a schema deeply. `Path(key)` looks a key up and `Paths()` yields them in key order. An exact key is matched before a pattern, and patterns most specific first. `patch.IsValidOp` and `patch.Ops` name the recognized operations.
 
 A field tagged `json:",string"` takes its value as a JSON string holding it (`{"id":"9007199254740993"}`), as it reads in responses; a bare JSON number is E2077, while a Go number passed in code is the value. A `test` compares canonical text, and a `copy` or `move` between a quoted and an unquoted field is refused ([quoted values](schema-configuration.md#quoted-values)).
 
@@ -75,12 +81,31 @@ Integral decimal/exponent values remain exact through the supported integer rang
 
 Default operations per type. `remove` follows nullability: it is dropped for non-nullable fields (and rejected in `patch_ops` on them) and added for nullable scalars such as `*bool` or `*uuid.UUID`. `GeneratorOptions.DefaultPatchOps` replaces a type's defaults as given:
 
+<!-- BEGIN rendered patch-operations: edit the code, then go test -tags=unit -run TestDocTables -update -->
+
 | Type | Default operations |
 |---|---|
-| string, int, float, decimal, bool, timestamp, date, uuid | replace (+ remove when the Go type is a pointer) |
-| json, object | replace add remove |
+| string | replace |
+| int | replace |
+| float | replace |
+| decimal | replace |
+| bool | replace |
+| timestamp | replace |
+| date | replace |
+| time | replace |
+| interval | replace |
+| inet | replace |
+| cidr | replace |
+| macaddr | replace |
+| uuid | replace |
+| json | replace add remove |
 | array | replace add remove array_append |
+| object | replace add remove |
+| any | none |
+| geo | none |
 | relation | replace add remove (junction rows) |
+
+<!-- END rendered patch-operations -->
 
 `array_append` is an extension operation: it appends one element to an array, initializing a missing or null array. A Go fixed-size array (`[2]int`) cannot grow, so it is not given `array_append` and declaring it in `patch_ops` fails schema generation. A null appended element is valid only when the element type is nullable: `[]*int` can contain null, `[]int` cannot. Nullable pointer elements are also preserved during whole-array replacement.
 
@@ -103,7 +128,7 @@ Values bind through the dialect's `MarshalValue(value, core.TypeInfo)` (the `SQL
 
 `parse.ColumnType` / `core.WithColumnTypes` carries the physical storage profile into patch paths and binding. A declared JSON string, byte slice or scalar slice binds its Go JSON encoding; native SQL arrays keep their array representation. Declared JSON uses this encoding even when the Go value implements `driver.Valuer`; native database values keep their driver binding.
 
-A path with no `SQLColumn` fails with E2069. Relation paths go to `PatchSQLResult.RelationOps`; `RenderRelationOp(op, dialect, ownerPKs, opts)` renders their junction statements for the caller's transaction and fails closed on a tenant-scoped junction without `RenderRelationOpOptions.TenantValue` (or explicit `Unscoped`). The owners and the values each bind as one array parameter — `col = ANY($n)` / `col <> ALL($n)` on PostgreSQL, `col IN (SELECT value FROM json_each(?n))` on SQLite — so a statement's parameter count does not depend on how many there are ([relations](relations.md#update-membership)). It refuses an operation it cannot render: an `add` or `remove` with no values, a null key, keys of two types, or a dialect other than PostgreSQL and SQLite.
+A path that is neither a relation nor has a `SQLColumn` fails with `patch.ErrSQLColumnMissing`, a plain error: the schema is the server's, and the request's path text is never used as an identifier. Relation paths go to `PatchSQLResult.RelationOps`; `RenderRelationOp(op, dialect, ownerPKs, opts)` renders their junction statements for the caller's transaction and fails closed on a tenant-scoped junction without `RenderRelationOpOptions.TenantValue` (or explicit `Unscoped`). The owners and the values each bind as one array parameter — `col = ANY($n)` / `col <> ALL($n)` on PostgreSQL, `col IN (SELECT value FROM json_each(?n))` on SQLite — so a statement's parameter count does not depend on how many there are ([pair tables](pair-tables.md#update-membership)). It refuses an operation it cannot render: an `add` or `remove` with no values, a null key, keys of two types, or a dialect other than PostgreSQL and SQLite.
 
 `PatchSQLResult.Assignments` exposes each folded `ColumnAssignment{Column, Expression}` before rendering the comma-separated `SetClause`. Both forms share `Args` and placeholder numbering. `Resource.BuildUpdateBatch` composes these expressions for distinct per-key column patches; its [transaction and exact-preimage contract](operations.md#varied-native-update-batches) applies to every chunk.
 
@@ -111,7 +136,7 @@ A SET clause is not a complete UPDATE. `Resource.BuildUpdate` builds the complet
 
 ## Patches built in code
 
-A server that builds a patch need not encode JSON to parse it back. `MergePatchMap(map[string]any{...})` validates a merge patch given as a map exactly as `ParseMergePatch` validates its body — a nested `map[string]any` merges into a document, any other value (a Go value of the path's type, such as a `time.Time` or a struct, which replaces the document whole) replaces, and null removes, null being what encoding/json writes as null: `nil` or a nil pointer, map or slice, at any depth — and `ValidateOperations([]patch.RawPatchOp{...})` validates JSON Patch operations as `ParsePatch` does. `ServerMergePatchMap` and `ValidateServerOperations` do the same against the server patch schema, for the server's own writes. A `patch.ParsedPatch` assembled by hand would skip validation, so it is refused: `ApplyValidatedPatch`, `BuildPatchSQL`, `BuildUpdate` and `ApplyPatchPolicyConstraints` return `patch.ErrUnparsed` for a patch no parser produced.
+A server that builds a patch need not encode JSON to parse it back. `MergePatchMap(map[string]any{...})` validates a merge patch given as a map exactly as `ParseMergePatch` validates its body — a nested `map[string]any` merges into a document, any other value (a Go value of the path's type, such as a `time.Time` or a struct, which replaces the document whole) replaces, and null removes, null being what encoding/json writes as null: `nil` or a nil pointer, map or slice, at any depth — and `ValidateOperations([]patch.RawPatchOp{...})` validates JSON Patch operations as `ParsePatch` does. `ServerMergePatchMap` and `ValidateServerOperations` do the same against the server patch schema, for the server's own writes. A `patch.ParsedPatch` assembled by hand would skip validation, so it is refused: `BuildPatchSQL` and `ApplyPatchPolicyConstraints` return `patch.ErrUnparsed` for a patch no parser produced. A resource goes further and takes only the patches its own patch schemas validated (`ParsedPatch.ParsedFor`): `ApplyValidatedPatch`, `BuildUpdate` and `BuildUpdateBatch` return `parse.ErrForeign` for one assembled by hand or parsed by another resource.
 
 ## Resource updates
 
@@ -121,17 +146,13 @@ A server that builds a patch need not encode JSON to parse it back. `MergePatchM
 plan, err := products.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID(id),
 	parse.Scope{Tenant: tenantID, Policy: policy},
 	parse.StampSQL("updated_at", "NOW()"))
-if err != nil { /* ErrNoTarget, ErrUpdateScope, ErrTenantRequired, ErrTenantInvalid or a patch error */ }
+if err != nil { /* ErrNoTarget, ErrKeyInvalid, ErrUpdateScope, ErrTenantRequired, ErrTenantInvalid or a patch error */ }
 
-tx, err := db.BeginTx(ctx, nil)
-rows, err := tx.QueryContext(ctx, plan.Owner.SQL, plan.Owner.Args...) // the target rows as the update left them
-if plan.HasRelations() {
-	stmts, err := products.RelationStatements(plan, keysOf(rows)) // keys read with products.Key, never the requested ids
-	// execute each statement in tx
-	reread, err := products.Reread(plan, keysOf(rows))
-	// when reread is not nil, its rows in tx replace rows: computed columns read the new pairs
-}
-err = tx.Commit()
+res, err := parsepgx.Update(ctx, pool, products, plan) // parsesql.Update on SQLite
+if err != nil { /* the database's error; the row and membership changes are rolled back together */ }
+if len(res.Changed)+len(res.Unchanged) == 0 { /* not found */ }
+// res.Changed: the rows whose columns the update wrote. res.Unchanged: the
+// rows it left. res.RelationRows: the junction rows it deleted and inserted.
 ```
 
 | Patch | `plan.Owner` | `plan.Writes` |
@@ -140,34 +161,36 @@ err = tx.Commit()
 | Changes relations only | `SELECT <columns> … WHERE …` plus the dialect's row lock (`FOR UPDATE` on PostgreSQL), so two replacements of one relation cannot interleave their delete and insert | true |
 | Empty | `SELECT <columns> … WHERE …` — a scoped read | false |
 
-The rows `Owner` returns are the rows the scope admits. Zero rows means the target is absent, deleted, another tenant's or outside the policy; answer that as not found. Under `SkipUnchanged` the `UPDATE` returns only the rows it changed, and `plan.Current` tells an unchanged target from a missing one ([Skipping unchanged rows](#skipping-unchanged-rows)). Relation statements are rendered for the keys `Owner` returned, tenant-scoped as the update was, and run in its transaction. `Owner` runs before them, so a [computed column](queries.md#computed-columns) over a relation's pairs reads the pairs as they were; `Reread(plan, keys)` returns the statement that reads those rows' `Columns` again after the relation statements, held to the update's tenant, or nil when the patch changes no relation or the resource has no computed column. On PostgreSQL, `parsepgx.Update(ctx, pool, products, plan)` does all of this: it returns the owner rows and, when the patch changes relations, runs owner and relation statements in one transaction (a savepoint inside a caller's `pgx.Tx`).
+The rows `Owner` returns are the rows the scope admits. Zero rows means the target is absent, deleted, another tenant's or outside the policy; answer that as not found. Under `SkipUnchanged` the `UPDATE` returns only the rows it changed, and `plan.Current` tells an unchanged target from a missing one ([Skipping unchanged rows](#skipping-unchanged-rows)). Relation statements are rendered for the keys `Owner` returned, tenant-scoped as the update was, and run in its transaction. `Owner` runs before them, so a [computed column](queries.md#computed-columns) over a relation's pairs reads the pairs as they were; `Reread(plan, keys)` returns the statement that reads those rows' `Columns` again after the relation statements, held to the update's tenant, or nil when the patch changes no relation or the resource has no computed column.
+
+`parsepgx.Update(ctx, pool, products, plan)` on PostgreSQL and `parsesql.Update(ctx, db, products, plan)` on SQLite do all of this and return a `parse.UpdateResult`. `Changed` holds the target rows whose columns the update wrote; `Unchanged` holds the rows it left: every row of a plan that assigns no column (`plan.Owner` a `SELECT`: an empty or relation-only patch), and under `SkipUnchanged` the rows the patch already described (`Resource.UpdatedRows` splits them). `RelationRows` counts the junction rows the relation statements deleted and inserted. A plan with `Current` or relation changes runs in one transaction — a savepoint inside the caller's — so its rows and memberships change together. A replace or add writes one junction row per matched owner and value: a `ByFilter` update over many rows writes as many pairs as its rows times the patch's values, so bound the target.
 
 | Option / target | Effect |
 |---|---|
-| `ByID(id)`, `ByIDs(ids...)`, `ByFilter(f)` | The rows to change; a zero target is `ErrNoTarget` rather than every row |
+| `ByID(id)`, `ByIDs(ids...)`, `ByFilter(f)` | The rows to change; a zero target is `ErrNoTarget` rather than every row, and a key the key column cannot hold is `ErrKeyInvalid`, refused as the key before any statement binds it |
 | `Stamp(column, at)` | Set `column` to `at` on every update that writes a column; `at` must be non-zero |
 | `StampSQL(column, expr)` | Set `column` to the trusted SQL `expr` — the database clock, such as `NOW()` |
 | `Increment(column)` | Set the integer `column` to one more than it holds on every update that writes a column — a version the server moves; `RETURNING` reports the moved value. Repeat for each counter; composes with the stamp |
 | `SkipUnchanged()` | Update only the target rows the patch's columns change, so a row the patch leaves as it is keeps its stamp and counters and `RETURNING` omits it; `plan.Current` reads every target row. See [Skipping unchanged rows](#skipping-unchanged-rows) |
 | `Scope.Governance`, `Scope.IncludeDeleted` | Refused with `ErrUpdateScope`: an update reaches only its own tenant's live rows |
 
+A patch never writes the key or the tenant column. `NewResource` refuses a request or server patch path over either, naming the path and the column: the update's WHERE holds the scope's tenant and the row's key, so the write would move the row out of its tenant or away from every relation correlated on its key, and a tenant transfer is not a patch. `BuildUpdate` and `BuildUpdateBatch` refuse a stamp or increment that names one (`cannot change identity column`). The deleted column is an ordinary column to a patch: when its field has the `patch` capability, a request may set it (`{"deleted_at":"2026-01-01T00:00:00Z"}`), which soft-deletes the row. An update reaches only live rows, so restoring one is the server's own statement.
+
 An update has one stamp: a later `Stamp` or `StampSQL` replaces an earlier one. The stamp column and each increment column must be one of the resource's columns, an increment column an integer one, none a [computed column](queries.md#computed-columns) (`parse.ReadExpr`), which the table does not hold, and none may be named twice. A patch's own write to a stamped or incremented column — a request's or the server's — is dropped: the server's value wins, and a patch writing only those columns writes nothing. `Dialect` is a dialect both the filter and patch compilers speak; `filter.PostgresDialect` and `filter.SQLiteDialect` are.
 
 ### Skipping unchanged rows
 
-A patch that sets what a row already holds still writes it: the stamp and counters move, and a consumer that emits an event per updated row emits one for nothing. `SkipUnchanged()` ANDs the patch's change predicate into the `UPDATE`'s WHERE — null-safe comparisons of each column the patch assigns with the value it assigns, reusing the SET clause's placeholders and binding nothing of their own — so only rows that change are written, stamped, counted and returned:
+A patch that sets what a row already holds still writes it: the stamp and counters move, and a consumer that emits an event per updated row emits one for nothing. `SkipUnchanged()` ANDs the patch's change predicate into the `UPDATE`'s WHERE — null-safe comparisons of each column the patch assigns with the value it assigns, reusing the SET clause's placeholders and binding nothing of their own — so only rows that change are written, stamped, counted and returned. A note's `{"title":"Agenda","rank":2}` with `StampSQL("updated_at", "NOW()")`, `Increment("version")` and `SkipUnchanged()`:
 
+<!-- output of ExampleSkipUnchanged_stamped -->
 ```text
-UPDATE notes SET rank = $1, title = $2, updated_at = NOW(), version = version + 1
-WHERE (notes.tenant_id = $3 AND notes.deleted_at IS NULL AND notes.id = $4)
-  AND (rank IS DISTINCT FROM $1 OR rank::text COLLATE "C" IS DISTINCT FROM ($1)::text
-    OR title IS DISTINCT FROM $2 OR title::text COLLATE "C" IS DISTINCT FROM ($2)::text)
-RETURNING notes.id, …
-
-SELECT notes.id, … FROM notes WHERE (notes.tenant_id = $1 AND notes.deleted_at IS NULL AND notes.id = $2) FOR UPDATE
+UPDATE "notes" SET "rank" = $1, "title" = $2, "updated_at" = NOW(), "version" = "version" + 1 WHERE ("notes"."tenant_id" = $3 AND "notes"."deleted_at" IS NULL AND "notes"."id" = $4) AND ("rank" IS DISTINCT FROM $1 OR "rank"::text COLLATE "C" IS DISTINCT FROM ($1)::text OR "title" IS DISTINCT FROM $2 OR "title"::text COLLATE "C" IS DISTINCT FROM ($2)::text) RETURNING "notes"."id", …
+[2 Agenda t1 n1]
+SELECT "notes"."id", … FROM "notes" WHERE ("notes"."tenant_id" = $1 AND "notes"."deleted_at" IS NULL AND "notes"."id" = $2) FOR UPDATE
+[t1 n1]
 ```
 
-The second statement is `plan.Current`: the same scoped WHERE without the predicate, with the dialect's row lock. Run `Current` first, then `Owner`, in one transaction, and split the target rows (`queryNotes` runs a statement and scans its rows):
+The second statement is `plan.Current`: the same scoped WHERE without the predicate, with the dialect's row lock. The executors run `Current` first, then `Owner`, in one transaction, and split the target rows:
 
 ```go
 plan, err := notes.BuildUpdate(d, parsed, parse.ByID(id), scope,
@@ -175,34 +198,26 @@ plan, err := notes.BuildUpdate(d, parsed, parse.ByID(id), scope,
 if err != nil {
 	return err
 }
-var current []Note
-if plan.Current != nil {
-	if current, err = queryNotes(ctx, tx, *plan.Current); err != nil { // locks every target
-		return err
-	}
-}
-changed, err := queryNotes(ctx, tx, plan.Owner) // written, stamped and counted: emit events for these
+res, err := parsepgx.Update(ctx, pool, notes, plan) // parsesql.Update on SQLite
 if err != nil {
 	return err
 }
-unchanged, err := notes.Unchanged(changed, current) // matched, left as they were
-if err != nil {
-	return err
-}
-if len(changed)+len(unchanged) == 0 {
+if len(res.Changed)+len(res.Unchanged) == 0 {
 	return ErrNotFound
 }
+// res.Changed: written, stamped and counted — emit events for these.
+// res.Unchanged: matched, left as they were.
 ```
 
-`Current` goes first because its lock holds every target while `Owner` compares them, so the two split one set of rows: the unchanged rows are exactly those the update compared and left. Run the other way, under READ COMMITTED a row another transaction changes or deletes between the two statements would read as it then stands, or not at all. SQLite has no row lock; begin the transaction as a write transaction (`BEGIN IMMEDIATE`) so no other writer commits between the two. `parsepgx.Update` sends `Current` and `Owner` in one batch, in that order. `Unchanged(changed, current)` is the rows of `current` whose keys `changed` lacks: a row the patch changed and moved out of a `ByFilter` target is in `changed` alone. `ExampleSkipUnchanged` prints both statements and is checked by the unit lane.
+`Current` goes first because its lock holds every target while `Owner` compares them, so the two split one set of rows: the unchanged rows are exactly those the update compared and left. Run the other way, under READ COMMITTED a row another transaction changes or deletes between the two statements would read as it then stands, or not at all. SQLite has no row lock; the transaction must be a write transaction so no other writer commits between the two, which with `database/sql` is the connection's `_txlock=immediate` setting ([database/sql](integrations.md#databasesql-and-sqlite)), not a statement. `parsepgx.Update` sends `Current` and `Owner` in one batch, in that order. `Unchanged(changed, current)` is the rows of `current` whose keys `changed` lacks: a row the patch changed and moved out of a `ByFilter` target is in `changed` alone. `ExampleSkipUnchanged` prints both statements and is checked by the unit lane.
 
 | Patch, under `SkipUnchanged` | `plan.Owner` | `plan.Current` | What changed |
 |---|---|---|---|
-| Assigns a column | `UPDATE … WHERE … AND <change predicate> RETURNING <columns>`: the rows it changed | `SELECT <columns> … WHERE …` plus the row lock | Owner's rows; `Unchanged` gives the matched rows it left; neither returns a row: not found |
-| Changes relations only | `SELECT <columns> … WHERE …` plus the row lock, as without the option | nil: Owner returns every target row | No column, stamp or counter moves. The relation statements' affected rows count the memberships removed and added: zero means none changed (each junction pair needs a unique key, which `ON CONFLICT DO NOTHING` relies on) |
-| Assigns nothing: empty, or server columns alone | `SELECT <columns> … WHERE …` | nil | `plan.Writes` is false: nothing changes |
+| Assigns a column | `UPDATE … WHERE … AND <change predicate> RETURNING <columns>`: the rows it changed | `SELECT <columns> … WHERE …` plus the row lock | `Changed`: Owner's rows; `Unchanged`: the matched rows it left; neither holds a row: not found |
+| Changes relations only | `SELECT <columns> … WHERE …` plus the row lock, as without the option | nil: Owner returns every target row | Every target is `Unchanged`: no column, stamp or counter moves. `RelationRows` counts the memberships removed and added: zero means none changed (each junction pair needs a unique key, which `ON CONFLICT DO NOTHING` relies on) |
+| Assigns nothing: empty, or server columns alone | `SELECT <columns> … WHERE …` | nil | `plan.Writes` is false and every target is `Unchanged`: nothing changes |
 
-A patch with columns and relations changes the memberships of every target row: pass the keys of the changed and the unchanged rows to `RelationStatements` in the same transaction. A membership change alone moves no stamp or counter, with the option or without it.
+A patch with columns and relations changes the memberships of every target row, changed and unchanged: the executors pass the keys of both to `RelationStatements` in the same transaction. A membership change alone moves no stamp or counter, with the option or without it.
 
 "Unchanged" means the write would leave the column reading as it does: the stored value is compared with the value the update assigns — the expression the SET clause computes, so a merge that sets what a document already holds is unchanged and an `array_append` never is. A false "changed" costs a write; the comparisons are built never to report a false "unchanged".
 
@@ -224,27 +239,11 @@ A value the column rounds as it stores it — a timestamp finer than the column'
 
 ## JSON documents
 
-A `map[string]any` or `json.RawMessage` field is a JSON document (`jsonb` on PostgreSQL, JSON text on SQLite); a struct field is too, once given `filter_ops`. parse compares and contains documents as a whole:
+A `map[string]any` or `json.RawMessage` field is a JSON document (`jsonb` on PostgreSQL, JSON text on SQLite); a struct field is too, once given `filter_ops`. Filtering one, whole or by its declared members, is in [queries](queries.md#json-documents) and [JSON paths](queries.md#json-paths). Patching one:
 
-```text
-{"attrs":{"$contains":{"color":"red","dims":{"w":10}}}}    attrs holds these members, at any depth
-postgres WHERE products.attrs @> $1::jsonb [{"color":"red","dims":{"w":10}}]
-sqlite   (json_each predicates per member: same meaning, no jsonb)
-
-{"tags":{"$contains":["sale"]}}                             a native array holds every listed element
-postgres WHERE products.tags @> $1 [[sale]]
-
-{"attrs.color":"red"}
-[E2071] field 'attrs.color' is not filterable
-```
-
-- `{"attrs":{"color":"red"}}` is **whole-document equality**, not a partial match; use `$contains` for that. A `$gt` inside a `$contains` operand is data, a literal `"$gt"` key.
-- `$null` / `$exists` test the column, not a key: a stored JSON `null` and `{}` are both "exists". `{"$contains":{"color":null}}` finds an explicit JSON null; the public grammar has no general key-presence predicate.
-- No path into a document can be filtered, compared, sorted or faceted, and a JSON field cannot be sorted or searched at all. A `filter.FieldSchema` with your own `SQLExpr` (`attrs ->> 'color'`) is the escape hatch, with its typing and dialect left to you.
 - Updates: a merge patch merges recursively in SQL on both dialects and in `ApplyValidatedPatch` — siblings survive, nested `null` deletes. A JSON Patch to `/attrs/color` is refused (E2076); with a `/attrs/*` path pattern it parses, but SQL refuses nested paths (E2070) and it applies only in Go.
 - Typed documents have additional canonicalization and merge limits; see [typed document behavior](#typed-document-behavior).
 - Empty JSON Pointer tokens address empty object keys, including intermediate keys, when the path schema allows them.
-- Index: `@>` is served by a GIN index (`jsonb_path_ops` is smaller when containment is the only query).
 
 ## Typed document behavior
 
@@ -299,6 +298,12 @@ pc, err := patch.NewPatchPolicyConstraints(
 )
 ```
 
+| Option | Effect |
+|---|---|
+| `ForbidPaths(patterns...)` | Forbid writing the paths the patterns match (E2084). A pattern is a JSON Pointer whose tokens are each a literal, `*` (exactly one token) or `**` (zero or more): `/tenant_id`, `/internal/**` |
+| `ConstrainValues(pattern, constraint)` | Restrict the values written at the paths `pattern` matches to a `ValueConstraint` (E2085) |
+| `ValidateWith(validators...)` | `PatchValidator`s each operation must pass, called with the request's `PolicySubject` |
+
 `NewPatchPolicyConstraints` checks the policy when it is built, so a bad pattern is a startup error and never a request's: it refuses a path pattern whose token holds `*` among other characters, a value constraint given twice for one pattern, a `ValueConstraint.Pattern` that does not compile, and a nil validator. The policy is immutable. `ApplyPatchPolicyConstraints(parsed, pc, subject)` enforces it and records it on the patch (`AuditInfo`), and `parse.WithPatchPolicy(pc, subject)` applies it inside a `Resource`'s `ParsePatch`, `ParseMergePatch`, `MergePatchMap`, `ValidateOperations` and `ApplyPatch`; `subject` is a `*patch.PolicySubject` for the validators. `AllowedValues` and `DeniedValues` compare numbers by value, a decimal path's exactly; `PatchPolicyFromWritableFields` builds a policy forbidding every path a writable-field set leaves out.
 
 Policy judges what each operation writes, not its envelope. A whole value writes every path below its own, a merge object writes the members it names, a `remove` writes null whatever `value` it carries, a `move` writes its source as well as its destination, and a `test` writes nothing.
@@ -309,4 +314,4 @@ Policy judges what each operation writes, not its envelope. A whole value writes
 
 `copy` / `move` validate the resolved source against destination nullability, normalization, and validators after preceding operations run. Copy budgets count every serialized source, including overwrites. These checks complement authorization; the application still decides who may modify the resource.
 
-[Error catalog](http-errors.md#error-codes) · [Relations](relations.md#update-membership)
+[Error catalog](http-errors.md#error-codes) · [Relations](relations.md#change-membership) · [Pair tables](pair-tables.md#update-membership)

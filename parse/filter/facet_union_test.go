@@ -28,23 +28,23 @@ func facetSchema() *filter.ResourceSchema {
 		Name:       "items",
 		PrimaryKey: "id",
 		SystemFields: map[string]*filter.FieldSchema{
-			"id": {ExternalName: "id", SQLExpr: "items.id", Column: "id", DataType: core.FieldTypeString},
+			"id": {ExternalName: "id", Table: "items", Column: "id", DataType: core.FieldTypeString},
 		},
 		Fields: map[string]*filter.FieldSchema{
 			"status": {
-				ExternalName: "status", SQLExpr: "items.status", DataType: core.FieldTypeString,
+				ExternalName: "status", Table: "items", Column: "status", DataType: core.FieldTypeString,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpIn},
 				Facetable:        true,
 				FacetSchema:      &filter.FacetSchema{Type: filter.FacetTerms, Limit: 25},
 			},
 			"owner_id": {
-				ExternalName: "owner_id", SQLExpr: "items.owner_id", DataType: core.FieldTypeUUID,
+				ExternalName: "owner_id", Table: "items", Column: "owner_id", DataType: core.FieldTypeUUID,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq},
 				Facetable:        true,
 				// No FacetSchema → defaults to terms; default limit 50.
 			},
 			"price": {
-				ExternalName: "price", SQLExpr: "items.price", DataType: core.FieldTypeFloat,
+				ExternalName: "price", Table: "items", Column: "price", DataType: core.FieldTypeFloat,
 				AllowedOperators: []filter.FilterOperator{filter.OpGt, filter.OpLte},
 				Facetable:        true,
 				FacetSchema: &filter.FacetSchema{
@@ -57,11 +57,11 @@ func facetSchema() *filter.ResourceSchema {
 				},
 			},
 			"name": {
-				ExternalName: "name", SQLExpr: "items.name", DataType: core.FieldTypeString,
+				ExternalName: "name", Table: "items", Column: "name", DataType: core.FieldTypeString,
 				// Not facetable.
 			},
 			"in_stock": {
-				ExternalName: "in_stock", SQLExpr: "items.in_stock", DataType: core.FieldTypeBool,
+				ExternalName: "in_stock", Table: "items", Column: "in_stock", DataType: core.FieldTypeBool,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq},
 				Facetable:        true,
 			},
@@ -73,7 +73,7 @@ func TestBuildFacetQuery_Postgres(t *testing.T) {
 	q, err := filter.BuildFacetQuery(
 		facetSchema(),
 		filter.PostgresDialect{},
-		"items.tenant_id = $1",
+		`"items"."tenant_id" = $1`,
 		[]any{"t1"},
 		[]filter.FacetRequest{
 			{Field: "status"},
@@ -87,12 +87,12 @@ func TestBuildFacetQuery_Postgres(t *testing.T) {
 
 	want := []string{
 		"WITH base AS MATERIALIZED",
-		"items.status AS facet__0",
-		"items.owner_id::text AS facet__1",
-		"CASE WHEN items.price >= $2 AND items.price < $3 THEN '0-50'",
-		"items.price >= $4 AND items.price < $5 THEN '50-100'",
-		"items.price >= $6 THEN '100+' END AS facet__2",
-		"FROM items WHERE items.tenant_id = $1)",
+		`"items"."status" AS facet__0`,
+		`"items"."owner_id"::text AS facet__1`,
+		`CASE WHEN "items"."price" >= $2 AND "items"."price" < $3 THEN '0-50'`,
+		`"items"."price" >= $4 AND "items"."price" < $5 THEN '50-100'`,
+		`"items"."price" >= $6 THEN '100+' END AS facet__2`,
+		`FROM "items" WHERE "items"."tenant_id" = $1)`,
 		"SELECT 'status' AS facet_field",
 		"ORDER BY c DESC, facet__0 COLLATE pg_c_utf8 LIMIT 25",
 		"SELECT 'owner_id' AS facet_field",
@@ -122,7 +122,7 @@ func TestBuildFacetQuery_SQLite(t *testing.T) {
 	q, err := filter.BuildFacetQuery(
 		facetSchema(),
 		filter.SQLiteDialect{},
-		"items.tenant_id = ?1",
+		`"items"."tenant_id" = ?1`,
 		[]any{"t1"},
 		[]filter.FacetRequest{
 			{Field: "status"},
@@ -135,11 +135,11 @@ func TestBuildFacetQuery_SQLite(t *testing.T) {
 	if strings.Contains(q.SQL, "MATERIALIZED") {
 		t.Errorf("SQLite must not emit MATERIALIZED hint; got:\n%s", q.SQL)
 	}
-	if !strings.Contains(q.SQL, "CAST(items.owner_id AS TEXT)") {
+	if !strings.Contains(q.SQL, `CAST("items"."owner_id" AS TEXT)`) {
 		t.Errorf("expected CAST(... AS TEXT) for SQLite uuid; got:\n%s", q.SQL)
 	}
 	// String fields shouldn't be cast.
-	if strings.Contains(q.SQL, "CAST(items.status AS TEXT)") {
+	if strings.Contains(q.SQL, `CAST("items"."status" AS TEXT)`) {
 		t.Errorf("string field should not be cast; got:\n%s", q.SQL)
 	}
 }
@@ -414,12 +414,12 @@ func TestBuildFacetQuery_RoundTrip_NumbersTieByValue(t *testing.T) {
 		require.NoError(t, err)
 	}
 	schema := &filter.ResourceSchema{Name: "items", Fields: map[string]*filter.FieldSchema{
-		"qty":   {ExternalName: "qty", SQLExpr: "items.qty", DataType: core.FieldTypeInt, Facetable: true},
-		"ratio": {ExternalName: "ratio", SQLExpr: "items.ratio", DataType: core.FieldTypeFloat, Facetable: true},
-		"label": {ExternalName: "label", SQLExpr: "items.label", DataType: core.FieldTypeString, Facetable: true},
+		"qty":   {ExternalName: "qty", Table: "items", Column: "qty", DataType: core.FieldTypeInt, Facetable: true},
+		"ratio": {ExternalName: "ratio", Table: "items", Column: "ratio", DataType: core.FieldTypeFloat, Facetable: true},
+		"label": {ExternalName: "label", Table: "items", Column: "label", DataType: core.FieldTypeString, Facetable: true},
 		"doc.price": {ExternalName: "doc.price", DataType: core.FieldTypeDecimal, Facetable: true,
-			Path: &filter.JSONPath{Column: "items.doc", Segments: []string{"price"}, Storage: filter.StorageJSON}},
-		"scores": {ExternalName: "scores", SQLExpr: "items.scores", DataType: core.FieldTypeArray, Elem: core.FieldTypeInt, Facetable: true},
+			Path: &filter.JSONPath{Table: "items", Column: "doc", Segments: []string{"price"}, Storage: filter.StorageJSON}},
+		"scores": {ExternalName: "scores", Table: "items", Column: "scores", DataType: core.FieldTypeArray, Elem: core.FieldTypeInt, Facetable: true},
 	}}
 	reqs := []filter.FacetRequest{{Field: "qty", Limit: 3}, {Field: "ratio", Limit: 3}, {Field: "label", Limit: 3}, {Field: "doc.price", Limit: 3}, {Field: "scores"}}
 	q, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil, reqs)
@@ -479,7 +479,7 @@ func TestBuildFacetQuery_RoundTrip_ListElements(t *testing.T) {
 	}
 	schema := &filter.ResourceSchema{Name: "posts", Fields: map[string]*filter.FieldSchema{
 		"tags": {
-			ExternalName: "tags", SQLExpr: "posts.tags", DataType: core.FieldTypeArray, Elem: core.FieldTypeString,
+			ExternalName: "tags", Table: "posts", Column: "tags", DataType: core.FieldTypeArray, Elem: core.FieldTypeString,
 			AllowedOperators: []filter.FilterOperator{filter.OpContains}, Facetable: true,
 		},
 	}}
@@ -535,10 +535,10 @@ func TestBuildFacetQuery_RoundTrip_FacetFrom(t *testing.T) {
 		require.NoError(t, err)
 	}
 	schema := &filter.ResourceSchema{Name: "docs", Fields: map[string]*filter.FieldSchema{
-		"status": {ExternalName: "status", SQLExpr: "d.status", DataType: core.FieldTypeString, Facetable: true},
+		"status": {ExternalName: "status", Table: "d", Column: "status", DataType: core.FieldTypeString, Facetable: true},
 		"doc.price": {ExternalName: "doc.price", DataType: core.FieldTypeDecimal, Facetable: true,
-			Path: &filter.JSONPath{Column: "d.doc", Segments: []string{"price"}, Storage: filter.StorageJSON}},
-		"tags": {ExternalName: "tags", SQLExpr: "d.tags", DataType: core.FieldTypeArray, Elem: core.FieldTypeString, Facetable: true},
+			Path: &filter.JSONPath{Table: "d", Column: "doc", Segments: []string{"price"}, Storage: filter.StorageJSON}},
+		"tags": {ExternalName: "tags", Table: "d", Column: "tags", DataType: core.FieldTypeArray, Elem: core.FieldTypeString, Facetable: true},
 	}}
 	reqs := []filter.FacetRequest{{Field: "status"}, {Field: "doc.price"}, {Field: "tags"}}
 	const from = "docs d JOIN owners o ON o.id = d.owner_id"
@@ -560,7 +560,7 @@ func TestBuildFacetQuery_RoundTrip_FacetFrom(t *testing.T) {
 
 	plain, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil, reqs)
 	require.NoError(t, err)
-	require.Contains(t, plain.SQL, " FROM docs WHERE 1=1")
+	require.Contains(t, plain.SQL, ` FROM "docs" WHERE 1=1`)
 }
 
 // --- helpers ---

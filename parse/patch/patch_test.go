@@ -133,7 +133,7 @@ func TestBuildPatchSQL_Replace(t *testing.T) {
 	if result.Empty {
 		t.Error("expected non-empty")
 	}
-	if !strings.Contains(result.SetClause, "name = $1") {
+	if !strings.Contains(result.SetClause, `"name" = $1`) {
 		t.Errorf("expected name = $1, got %q", result.SetClause)
 	}
 }
@@ -144,7 +144,7 @@ func TestBuildPatchSQL_Remove(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.SetClause, "name = NULL") {
+	if !strings.Contains(result.SetClause, `"name" = NULL`) {
 		t.Errorf("expected NULL, got %q", result.SetClause)
 	}
 }
@@ -155,7 +155,7 @@ func TestBuildPatchSQL_SQLite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.SetClause, "name = ?1") {
+	if !strings.Contains(result.SetClause, `"name" = ?1`) {
 		t.Errorf("expected ?1, got %q", result.SetClause)
 	}
 }

@@ -28,9 +28,16 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	if target == nil {
 		return "", invalidRelation(node.Field, "has no target resource to filter")
 	}
+	// The target's predicates read its computed columns as the owner's
+	// dialect does; one the dialect refuses fails the build.
+	exprs, err := target.resolve(b.dialect)
+	if err != nil {
+		return "", err
+	}
 	depth := b.depth + 1
 	visible := append([]string{b.schema.Name}, b.visible...)
 	bind := s.binder(b.dialect)
+	d := b.dialect
 
 	pk := rel.OwnerKey()
 	join := relationTableAlias(rel.JoinTable, depth, visible)
@@ -45,31 +52,31 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 		sb.WriteString("NOT ")
 	}
 	sb.WriteString("EXISTS (SELECT 1 FROM ")
-	writeTable(&sb, rel.JoinTable, join)
+	writeTable(&sb, d, rel.JoinTable, join)
 	if rel.TargetTable != "" {
 		sb.WriteString(" JOIN ")
-		writeTable(&sb, rel.TargetTable, related)
-		sb.WriteString(" ON " + related + "." + rel.TargetKey + " = " + join + "." + rel.TargetColumn)
+		writeTable(&sb, d, rel.TargetTable, related)
+		sb.WriteString(" ON " + qualified(d, related, rel.TargetKey) + " = " + qualified(d, join, rel.TargetColumn))
 	}
-	sb.WriteString(" WHERE " + join + "." + rel.SourceColumn + " = " + b.schema.Name + "." + pk)
+	sb.WriteString(" WHERE " + qualified(d, join, rel.SourceColumn) + " = " + qualified(d, b.schema.Name, pk))
 
 	// A policy-scoped relation declares no tenant column on its target:
 	// the policy below decides which target rows are visible.
-	scope, err := b.scope.clause(rel.JoinTable, rel.TenantColumn, join, joinTenantType(node.Field), bind)
+	scope, err := b.scope.clause(d, rel.JoinTable, rel.TenantColumn, join, joinTenantType(node.Field), bind)
 	if err != nil {
 		return "", err
 	}
 	sb.WriteString(scope)
 	if rel.DeletedColumn != "" {
-		sb.WriteString(" AND " + join + "." + rel.DeletedColumn + " IS NULL")
+		sb.WriteString(" AND " + qualified(d, join, rel.DeletedColumn) + " IS NULL")
 	}
-	targetScope, err := b.scope.clause(rel.TargetTable, rel.TargetTenant, related, tenantColumnType(target, rel.TargetTenant), bind)
+	targetScope, err := b.scope.clause(d, rel.TargetTable, rel.TargetTenant, related, tenantColumnType(target, rel.TargetTenant), bind)
 	if err != nil {
 		return "", err
 	}
 	sb.WriteString(targetScope)
 	if rel.TargetDeleted != "" {
-		sb.WriteString(" AND " + related + "." + rel.TargetDeleted + " IS NULL")
+		sb.WriteString(" AND " + qualified(d, related, rel.TargetDeleted) + " IS NULL")
 	}
 
 	nested := (*FilterNode)(nil)
@@ -77,26 +84,19 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 		nested = node.Children[0]
 	}
 	if rel.Policy {
-		pc, ok := b.related[rel.RelatedTable()]
-		if !ok {
-			return "", fmt.Errorf("relation %s on %s: %w", node.Field.ExternalName, rel.RelatedTable(), ErrRelatedPolicyRequired)
+		if nested, err = b.related.on(node.Field, nested); err != nil {
+			return "", err
 		}
-		ast, err := ApplyPolicyConstraints(target, &FilterAST{Root: nested}, pc)
-		if err != nil {
-			return "", fmt.Errorf("relation %s: %w", node.Field.ExternalName, err)
-		}
-		nested = ast.Root
 	}
 	if nested != nil {
 		if related != target.Name {
-			var err error
-			if nested, err = rebaseNode(nested, target.Name, related, map[*FieldSchema]*FieldSchema{}); err != nil {
+			if nested, err = rebaseNode(nested, target.Name, related, exprs, map[*FieldSchema]*FieldSchema{}); err != nil {
 				return "", fmt.Errorf("relation %s: %w", node.Field.ExternalName, err)
 			}
 		}
 		nb := &SQLBuilder{
 			schema: &ResourceSchema{Name: related}, dialect: b.dialect, scope: b.scope, related: b.related,
-			depth: depth, visible: append(visible, join, related),
+			depth: depth, visible: append(visible, join, related), exprs: exprs,
 		}
 		cond, err := s.selecting(func() (string, error) { return nb.buildNode(s, nested) })
 		if err != nil {
@@ -127,19 +127,22 @@ func relationTableAlias(table string, depth int, visible []string) string {
 	return table
 }
 
-func writeTable(sb *strings.Builder, table, alias string) {
-	sb.WriteString(table)
+// writeTable writes table as a FROM item named alias, both quoted: an alias
+// made from a table's name is the name's exact spelling too.
+func writeTable(sb *strings.Builder, d Dialect, table, alias string) {
+	sb.WriteString(d.QuoteIdent(table))
 	if alias != table {
 		sb.WriteByte(' ')
-		sb.WriteString(alias)
+		sb.WriteString(d.QuoteIdent(alias))
 	}
 }
 
 // rebaseNode is n with every field moved from table to alias: expressions
 // that are table's columns, or JSON paths into them, name alias instead.
 // SQL's unknown names no table and stays as it is. A field computed some
-// other way, or raw policy SQL, cannot be moved and is an error.
-func rebaseNode(n *FilterNode, table, alias string, moved map[*FieldSchema]*FieldSchema) (*FilterNode, error) {
+// other way (a column mapper's expression, or one of computed), or raw
+// policy SQL, cannot be moved and is an error.
+func rebaseNode(n *FilterNode, table, alias string, computed columnExprs, moved map[*FieldSchema]*FieldSchema) (*FilterNode, error) {
 	if n == nil {
 		return nil, nil
 	}
@@ -153,7 +156,7 @@ func rebaseNode(n *FilterNode, table, alias string, moved map[*FieldSchema]*Fiel
 	// An element field or element path stays a placeholder: its own
 	// `$some` / `$none` binds it to the element alias.
 	if n.Field != nil && n.Field.Relation == nil && !isElement(n.Field) && !isElementPath(n.Field) {
-		f, err := rebaseField(n.Field, table, alias, moved)
+		f, err := rebaseField(n.Field, table, alias, computed, moved)
 		if err != nil {
 			return nil, err
 		}
@@ -168,7 +171,7 @@ func rebaseNode(n *FilterNode, table, alias string, moved map[*FieldSchema]*Fiel
 	if len(n.Children) > 0 {
 		out.Children = make([]*FilterNode, len(n.Children))
 		for i, c := range n.Children {
-			rc, err := rebaseNode(c, table, alias, moved)
+			rc, err := rebaseNode(c, table, alias, computed, moved)
 			if err != nil {
 				return nil, err
 			}
@@ -178,25 +181,24 @@ func rebaseNode(n *FilterNode, table, alias string, moved map[*FieldSchema]*Fiel
 	return &out, nil
 }
 
-func rebaseField(f *FieldSchema, table, alias string, moved map[*FieldSchema]*FieldSchema) (*FieldSchema, error) {
+func rebaseField(f *FieldSchema, table, alias string, computed columnExprs, moved map[*FieldSchema]*FieldSchema) (*FieldSchema, error) {
 	if m, ok := moved[f]; ok {
 		return m, nil
 	}
-	prefix := table + "."
 	c := *f
 	switch {
 	case f.Path != nil:
-		if !strings.HasPrefix(f.Path.Column, prefix) {
+		if f.Path.Expr != "" || f.Path.Table != table {
 			return nil, fmt.Errorf("field %s is not a column of %s and cannot be filtered through a relation", f.ExternalName, table)
 		}
 		p := *f.Path
-		p.Column = alias + "." + strings.TrimPrefix(p.Column, prefix)
+		p.Table = alias
 		c.Path = &p
-	case strings.HasPrefix(f.SQLExpr, prefix) && core.IsIdentifier(strings.TrimPrefix(f.SQLExpr, prefix)):
-		c.SQLExpr = alias + "." + strings.TrimPrefix(f.SQLExpr, prefix)
+	case f.Expr == "" && f.Table == table && !computed.computes(f):
 	default:
 		return nil, fmt.Errorf("field %s is not a column of %s and cannot be filtered through a relation", f.ExternalName, table)
 	}
+	c.Table = alias
 	moved[f] = &c
 	return &c, nil
 }

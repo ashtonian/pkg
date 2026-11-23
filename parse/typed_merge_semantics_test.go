@@ -48,7 +48,7 @@ func TestMergePatchPreservesSiblings(t *testing.T) {
 }
 
 // TestMergePatchNestedNullDeletes: within an object merge, null at a key
-// removes that key (RFC 7396) — previously the null was set literally.
+// removes that key (RFC 7396); it is not stored as a JSON null.
 func TestMergePatchNestedNullDeletes(t *testing.T) {
 	tp, err := parse.NewResource[cfgEntity]("cfg_entities")
 	if err != nil {

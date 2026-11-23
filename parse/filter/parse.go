@@ -15,8 +15,8 @@ type FilterParser struct {
 	schema *ResourceSchema
 	config *core.ParserConfig
 	codec  core.Codec
-	// now returns the anchor for relative-time token resolution
-	// (`now-7d` etc., ). Zero value defaults to time.Now.UTC.
+	// now returns the anchor for relative-time token resolution (`now-7d`
+	// etc.). Each Parse, ParseMap and ParseBytes reads it once (At).
 	now func() time.Time
 	// relDepth is how many relation predicates enclose the filter being
 	// parsed: a nested filter is parsed against the target's schema.
@@ -25,19 +25,24 @@ type FilterParser struct {
 
 // NewFilterParser creates a new FilterParser for the given schema and config.
 func NewFilterParser(schema *ResourceSchema, config *core.ParserConfig) *FilterParser {
-	if config == nil {
-		config = core.DefaultConfig()
-	}
-	now := config.Clock
-	if now == nil {
-		now = func() time.Time { return time.Now().UTC() }
-	}
+	config = config.Effective()
 	return &FilterParser{
 		schema: schema,
 		config: config,
 		codec:  config.GetCodec(),
-		now:    now,
+		now:    config.Now,
 	}
+}
+
+// At returns a copy of p whose relative-time tokens (`now`, `now-1h`)
+// resolve against now. Parsers that read one request (its JSON filter, its
+// flat parameters, its policy) take one instant, so `now-1h … now` is an
+// hour and `$gte now` with `$lte now` can hold. Each parse of p alone reads
+// its clock once.
+func (p *FilterParser) At(now time.Time) *FilterParser {
+	c := *p
+	c.now = func() time.Time { return now }
+	return &c
 }
 
 // Parse parses a JSON filter string into a FilterAST.
@@ -55,6 +60,7 @@ func (p *FilterParser) ParseMap(raw map[string]any) (*FilterAST, error) {
 	if len(raw) == 0 {
 		return &FilterAST{}, nil
 	}
+	p = p.At(p.now())
 
 	root, err := p.parseNode(raw, 0)
 	if err != nil {
@@ -86,6 +92,7 @@ func (p *FilterParser) ParseBytes(data []byte) (*FilterAST, error) {
 		}
 	}
 
+	p = p.At(p.now())
 	var raw map[string]any
 	if err := p.codec.Decode(data, &raw); err != nil {
 		return nil, &core.ParseError{
@@ -252,7 +259,7 @@ func (p *FilterParser) parseFieldCondition(fieldName string, value any, depth in
 	if err != nil {
 		return nil, err
 	}
-	return relatedShorthand(&FilterNode{Field: field, Op: OpEq, Value: normalized})
+	return p.relatedShorthand(&FilterNode{Field: field, Op: OpEq, Value: normalized})
 }
 
 func (p *FilterParser) parseOperatorObject(field *FieldSchema, obj map[string]any, depth int) (*FilterNode, error) {
@@ -307,7 +314,7 @@ func (p *FilterParser) parseOperatorObject(field *FieldSchema, obj map[string]an
 			if isNull {
 				resolved = OpNull
 			}
-			node, err := relatedShorthand(&FilterNode{Field: field, Op: resolved})
+			node, err := p.relatedShorthand(&FilterNode{Field: field, Op: resolved})
 			if err != nil {
 				return nil, err
 			}
@@ -323,7 +330,7 @@ func (p *FilterParser) parseOperatorObject(field *FieldSchema, obj map[string]an
 		if err != nil {
 			return nil, err
 		}
-		node, err := relatedShorthand(&FilterNode{Field: field, Op: op, Value: normalized})
+		node, err := p.relatedShorthand(&FilterNode{Field: field, Op: op, Value: normalized})
 		if err != nil {
 			return nil, err
 		}
@@ -358,12 +365,21 @@ func hasOperatorKeys(obj map[string]any) bool {
 }
 
 // NewParsedFilter wraps a FilterAST with computed cost and condition count.
+// The filter is parsed for no schema (ParsedFor): an evaluator or a
+// membership resolver takes it, a resource's builders do not.
 func NewParsedFilter(ast *FilterAST) *ParsedFilter {
-	cost := 0
-	conditions := 0
+	return NewParsedFilterFor(nil, ast)
+}
+
+// NewParsedFilterFor wraps ast, which a parser built from schema, as a
+// filter ParsedFor(schema). A resource marks the filters it parses with its
+// own schema, which it never hands out, so its builders refuse a filter
+// parsed against any other.
+func NewParsedFilterFor(schema *ResourceSchema, ast *FilterAST) *ParsedFilter {
+	f := &ParsedFilter{ast: ast, schema: schema}
 	if ast != nil && ast.Root != nil {
-		cost = estimateCost(ast.Root, &defaultCostFactors)
-		conditions = countConditions(ast.Root)
+		f.cost = estimateCost(ast.Root, &defaultCostFactors)
+		f.conditions = countConditions(ast.Root)
 	}
-	return &ParsedFilter{AST: ast, EstimatedCost: cost, ConditionCount: conditions}
+	return f
 }

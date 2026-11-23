@@ -5,6 +5,7 @@ package parsepgx_test
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -109,8 +110,9 @@ func TestJSONStorage_QueryAndUpdateEveryExecMode(t *testing.T) {
 				require.NoError(t, err)
 				update, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("full"), parse.Scope{})
 				require.NoError(t, err)
-				rows, err := parsepgx.Update(ctx, pool, r, update)
+				res, err := parsepgx.Update(ctx, pool, r, update)
 				require.NoError(t, err)
+				rows := slices.Concat(res.Changed, res.Unchanged)
 				require.Len(t, rows, 1)
 				assert.Equal(t, want, rows[0])
 				applied, err := r.ApplyValidatedPatch(p, want)
@@ -133,10 +135,10 @@ func TestJSONStorage_QueryAndUpdateEveryExecMode(t *testing.T) {
 			require.NoError(t, err)
 			update, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("full"), parse.Scope{})
 			require.NoError(t, err)
-			rows, err := parsepgx.Update(ctx, tx, r, update)
+			res, err := parsepgx.Update(ctx, tx, r, update)
 			require.NoError(t, err)
-			require.Len(t, rows, 1)
-			assert.Equal(t, "inside", rows[0].Text)
+			require.Len(t, res.Changed, 1)
+			assert.Equal(t, "inside", res.Changed[0].Text)
 		})
 	}
 }
@@ -188,9 +190,9 @@ func rejectJSONRow[T any](t *testing.T, pool *pgxpool.Pool, raw string, cause er
 		require.NoError(t, err)
 		update, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("one"), parse.Scope{})
 		require.NoError(t, err)
-		rows, err := parsepgx.Update(ctx, pool, r, update)
+		res, err := parsepgx.Update(ctx, pool, r, update)
 		require.Error(t, err)
-		assert.Nil(t, rows)
+		assert.Zero(t, res, "a failed update reports no rows")
 		if cause != nil {
 			require.ErrorIs(t, err, cause)
 		}

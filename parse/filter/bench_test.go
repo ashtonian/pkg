@@ -38,7 +38,7 @@ func benchSchemas(b *testing.B) (*filter.ResourceSchema, *filter.SortSchema) {
 	}
 	fs.PrimaryKey = "id"
 	fs.SystemFields = map[string]*filter.FieldSchema{
-		"tenant_id": {ExternalName: "tenant_id", SQLExpr: fs.Name + ".tenant_id", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq}},
+		"tenant_id": {ExternalName: "tenant_id", Table: fs.Name, Column: "tenant_id", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq}},
 	}
 	ss, err := filter.GenerateSortSchema[benchItem](g)
 	if err != nil {

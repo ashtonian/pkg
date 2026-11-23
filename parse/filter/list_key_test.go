@@ -31,7 +31,7 @@ func TestNewListQuery_RequiresATypedKey(t *testing.T) {
 		"no such field": {keyed(func(s *filter.ResourceSchema) { s.PrimaryKey = "id; DROP TABLE items" }), nil, "is no sort, filter or system field"},
 		"untyped":       {keyed(func(s *filter.ResourceSchema) { s.SystemFields["id"].DataType = "" }), nil, "declares no type"},
 		"computed": {keyed(func(*filter.ResourceSchema) {}), &filter.SortSchema{Fields: map[string]*filter.SortFieldSchema{
-			"id": {SQLExpr: "lower(items.id)", DataType: core.FieldTypeString},
+			"id": {Expr: "lower(items.id)", DataType: core.FieldTypeString},
 		}}, "is computed"},
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -103,7 +103,15 @@ The client refuses only what the grammar cannot express; the server judges every
 - the client refuses it itself;
 - or the client's types cannot express it.
 
-A new corpus case fails the test until it is classified. The same file holds the list parameters to `ParseList`, parses a document from every `Operation` constructor and checks the code `BuildUpdate` answers for each, and checks that geo filters parse.
+A new corpus case fails the test until it is classified, and a classification that names no corpus case fails it too. `testdata/sdk_wire.json` records the requests the client builds (`ListParams.Values` and `Body`) with the answers parse's handlers gave them, so a change to the client's encoding is a stale fixture the TypeScript SDK is then held to. The same file holds the list parameters to `ParseList`, parses a document from every `Operation` constructor and checks the code `BuildUpdate` answers for each, and checks that geo filters parse.
+
+## Operations
+
+The package builds requests and sends nothing: the caller's `http.Client` carries the timeouts, retries and connection limits, so give it a `Timeout` or each request a context deadline. A request the server refuses answers its E-code ([error catalog](../docs/http-errors.md#error-codes)). When the client and a server disagree on a request, compare the request the client built with `testdata/sdk_wire.json`'s record of it.
+
+## Security
+
+The client encodes values with encoding/json and query parameters with `net/url`, so a value never changes a request's structure. Credentials are the caller's: set them on the `http.Request` the client's parameters are sent with. The server validates every request; the client's own refusals are a convenience, not a control.
 
 ## Key Files
 

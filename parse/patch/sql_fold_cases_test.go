@@ -112,7 +112,7 @@ func runFoldCases(t *testing.T, fdb foldDB) {
 		res, err := patch.BuildPatchSQL(parsed, fdb.dialect,
 			patch.WithAutoTimestamp("updated_at"), patch.WithTimeFunc(func() time.Time { return fixed }))
 		require.NoError(t, err)
-		assert.Equal(t, 1, strings.Count(res.SetClause, "updated_at ="), res.SetClause)
+		assert.Equal(t, 1, strings.Count(res.SetClause, `"updated_at" =`), res.SetClause)
 		// PostgreSQL rejects a repeated column assignment outright.
 		stmt := fmt.Sprintf("UPDATE items SET %s WHERE id = %s", res.SetClause, fdb.dialect.Placeholder(res.ParamCount+1))
 		_, err = fdb.db.Exec(stmt, append(res.Args, 1)...)
@@ -125,8 +125,8 @@ func runFoldCases(t *testing.T, fdb foldDB) {
 		require.NoError(t, err)
 		res, err := patch.BuildPatchSQL(parsed, fdb.dialect, patch.WithAutoTimestampSQL("updated_at", "CURRENT_TIMESTAMP"))
 		require.NoError(t, err)
-		assert.Contains(t, res.SetClause, "updated_at = CURRENT_TIMESTAMP")
-		assert.Equal(t, 1, strings.Count(res.SetClause, "updated_at ="), res.SetClause)
+		assert.Contains(t, res.SetClause, `"updated_at" = CURRENT_TIMESTAMP`)
+		assert.Equal(t, 1, strings.Count(res.SetClause, `"updated_at" =`), res.SetClause)
 		assert.Len(t, res.Args, 1, "only the name is bound")
 		stmt := fmt.Sprintf("UPDATE items SET %s WHERE id = %s", res.SetClause, fdb.dialect.Placeholder(res.ParamCount+1))
 		_, err = fdb.db.Exec(stmt, append(res.Args, 1)...)
@@ -139,7 +139,7 @@ func runFoldCases(t *testing.T, fdb foldDB) {
 		require.NoError(t, err)
 		res, err := patch.BuildPatchSQL(parsed, fdb.dialect, patch.WithAutoTimestampSQL("updated_at", "CURRENT_TIMESTAMP"), patch.WithIncrement("version"))
 		require.NoError(t, err)
-		assert.Equal(t, 1, strings.Count(res.SetClause, "version ="), res.SetClause)
+		assert.Equal(t, 1, strings.Count(res.SetClause, `"version" =`), res.SetClause)
 		assert.Len(t, res.Args, 1, "only the name is bound")
 		stmt := fmt.Sprintf("UPDATE items SET %s WHERE id = %s RETURNING version", res.SetClause, fdb.dialect.Placeholder(res.ParamCount+1))
 		for want := 2; want <= 3; want++ {

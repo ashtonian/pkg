@@ -44,11 +44,11 @@ func TestColumnMapper_ReceivesTheColumn(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.ElementsMatch(t, []string{"display_nm", "owner_ref", "note_text", "kind_code"}, rec.columns)
-	assert.Equal(t, "m_items.display_nm", schema.Fields["displayName"].SQLExpr)
+	assert.Equal(t, "m_items.display_nm", schema.Fields["displayName"].Expr)
 	for name, want := range map[string]string{"owner_ref": "m_items.owner_ref", "kindCode": "m_items.kind_code", "kind_code": "m_items.kind_code"} {
 		f, ok, err := schema.PolicyField(name)
 		require.NoError(t, err, name)
 		require.True(t, ok, name)
-		assert.Equal(t, want, f.SQLExpr, name)
+		assert.Equal(t, want, f.Expr, name)
 	}
 }

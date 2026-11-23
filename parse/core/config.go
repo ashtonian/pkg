@@ -1,11 +1,23 @@
 package core
 
 import (
+	"errors"
+	"fmt"
 	"math"
+	"slices"
 	"time"
 )
 
 // ParserConfig holds shared configuration for filter and patch parsers.
+//
+// Its limits follow one rule, which Effective applies and every filter and
+// patch parser reads through. Zero selects DefaultConfig's value for
+// MaxDepth, MaxCost, MaxConditions and MaxArraySize, so no value forbids
+// nesting altogether: the smallest depth is 1. Zero or less leaves
+// MaxInputSize and MaxPatchCopyBytes unlimited. Zero derives
+// MaxListBodySize from MaxInputSize (ListBodyLimit). A negative MaxDepth,
+// MaxCost, MaxConditions, MaxArraySize or MaxListBodySize is invalid
+// (Validate).
 type ParserConfig struct {
 	// MaxDepth bounds request structure depth: filter boolean nesting,
 	// JSON filter document nesting and patch JSON Pointer segments.
@@ -32,6 +44,15 @@ type ParserConfig struct {
 	Clock             func() time.Time // Relative-time anchor (`now-7d`). Nil = time.Now().UTC.
 }
 
+// Now is the anchor relative-time tokens resolve against: Clock, or the
+// wall clock in UTC when Clock is nil. A nil config reads the wall clock.
+func (c *ParserConfig) Now() time.Time {
+	if c == nil || c.Clock == nil {
+		return time.Now().UTC()
+	}
+	return c.Clock()
+}
+
 // GetCodec returns the configured codec, falling back to the package
 // default (StdlibJSON) when none is configured.
 func (c *ParserConfig) GetCodec() Codec {
@@ -55,8 +76,11 @@ const defaultMaxListBodySize = 1 << 20
 // it is positive; otherwise MaxInputSize plus 16 KiB for the members beside
 // the filter, or 1 MiB when MaxInputSize is unlimited. Nothing in front of a
 // handler bounds a request body as header limits bound a URL, so a list body
-// is always bounded.
+// is always bounded. A nil configuration is DefaultConfig.
 func (c *ParserConfig) ListBodyLimit() int {
+	if c == nil {
+		c = DefaultConfig()
+	}
 	switch {
 	case c.MaxListBodySize > 0:
 		return c.MaxListBodySize
@@ -66,6 +90,59 @@ func (c *ParserConfig) ListBodyLimit() int {
 		return math.MaxInt
 	}
 	return c.MaxInputSize + listBodyHeadroom
+}
+
+// Effective returns the configuration a parser reads: c with each zero
+// MaxDepth, MaxCost, MaxConditions and MaxArraySize replaced by
+// DefaultConfig's; DefaultConfig for a nil c. It returns c itself when no
+// limit needs a default, else a copy, and never changes c. It does not
+// validate c.
+func (c *ParserConfig) Effective() *ParserConfig {
+	if c == nil {
+		return DefaultConfig()
+	}
+	if c.MaxDepth != 0 && c.MaxCost != 0 && c.MaxConditions != 0 && c.MaxArraySize != 0 {
+		return c
+	}
+	def := DefaultConfig()
+	out := *c
+	out.GeneratorOpts = slices.Clone(c.GeneratorOpts)
+	for _, limit := range []struct{ value, def *int }{
+		{&out.MaxDepth, &def.MaxDepth},
+		{&out.MaxCost, &def.MaxCost},
+		{&out.MaxConditions, &def.MaxConditions},
+		{&out.MaxArraySize, &def.MaxArraySize},
+	} {
+		if *limit.value == 0 {
+			*limit.value = *limit.def
+		}
+	}
+	return &out
+}
+
+// Validate refuses a negative MaxDepth, MaxCost, MaxConditions,
+// MaxArraySize or MaxListBodySize, naming the option and the value of each.
+// A nil configuration is valid.
+func (c *ParserConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	var errs []error
+	for _, limit := range []struct {
+		option string
+		value  int
+	}{
+		{"WithMaxDepth", c.MaxDepth},
+		{"WithMaxCost", c.MaxCost},
+		{"WithMaxConditions", c.MaxConditions},
+		{"WithMaxArraySize", c.MaxArraySize},
+		{"WithMaxListBodySize", c.MaxListBodySize},
+	} {
+		if limit.value < 0 {
+			errs = append(errs, fmt.Errorf("%s(%d): a limit is never negative", limit.option, limit.value))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Option configures a Parser.
@@ -84,18 +161,20 @@ func DefaultConfig() *ParserConfig {
 }
 
 // WithMaxPatchCopyBytes bounds the bytes a patch's copy operations may add to
-// a document during typed apply. Default 1 MiB.
+// a document during typed apply. Default 1 MiB; zero or less is unlimited.
 func WithMaxPatchCopyBytes(n int64) Option {
 	return func(c *ParserConfig) { c.MaxPatchCopyBytes = n }
 }
 
 // WithMaxDepth sets the maximum request depth: filter boolean nesting, JSON
-// filter document nesting and patch JSON Pointer segments.
+// filter document nesting and patch JSON Pointer segments. Zero selects the
+// default; the smallest depth is 1.
 func WithMaxDepth(depth int) Option {
 	return func(c *ParserConfig) { c.MaxDepth = depth }
 }
 
-// WithMaxCost sets the maximum estimated query cost.
+// WithMaxCost sets the maximum estimated query cost; zero selects the
+// default.
 func WithMaxCost(cost int) Option {
 	return func(c *ParserConfig) { c.MaxCost = cost }
 }
@@ -117,20 +196,23 @@ func WithMaxListBodySize(size int) Option {
 	return func(c *ParserConfig) { c.MaxListBodySize = size }
 }
 
-// WithMaxConditions sets the maximum number of filter conditions.
+// WithMaxConditions sets the maximum number of filter conditions; zero
+// selects the default.
 func WithMaxConditions(n int) Option {
 	return func(c *ParserConfig) { c.MaxConditions = n }
 }
 
 // WithMaxArraySize bounds $in / $nin members, array $contains elements and
-// the values in a JSON filter document.
+// the values in a JSON filter document; zero selects the default.
 func WithMaxArraySize(n int) Option {
 	return func(c *ParserConfig) { c.MaxArraySize = n }
 }
 
-// WithGeneratorOptions sets GeneratorOptions used by typed parsers.
+// WithGeneratorOptions adds GeneratorOptions used by typed parsers after
+// those already set; a later option overrides an earlier one it conflicts
+// with.
 func WithGeneratorOptions(opts ...GeneratorOption) Option {
-	return func(c *ParserConfig) { c.GeneratorOpts = opts }
+	return func(c *ParserConfig) { c.GeneratorOpts = slices.Concat(c.GeneratorOpts, opts) }
 }
 
 // WithClock pins the anchor for relative-time tokens (`now`, `now-7d`).

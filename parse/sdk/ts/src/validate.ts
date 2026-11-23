@@ -13,9 +13,10 @@
  */
 
 import { SchemaValidationError } from "./core/errors.js";
-import type { FilterFieldSchema, FilterOperator } from "./filter/types.js";
+import type { FilterFieldSchema, FilterOperator, FilterSchema, SortSchema } from "./filter/types.js";
 import { type RelatedSchemas, relatedTargets, validateFilter } from "./filter/validate.js";
 import { validateSort as validateSortImpl } from "./filter/validate.js";
+import type { PatchSchema } from "./patch/types.js";
 import { validatePatch } from "./patch/validate.js";
 import type { ResourceSchema } from "./schema.js";
 
@@ -24,6 +25,14 @@ export { relatedTargets, validateFilter } from "./filter/validate.js";
 export type { RelatedSchemas } from "./filter/validate.js";
 export { validatePatch } from "./patch/validate.js";
 export { validateSort } from "./filter/validate.js";
+
+// A document without a filter, patch or sort section has nothing to filter,
+// patch or sort: the server answers each name with the code for a field it
+// cannot serve (E2071, E2076, E2079). E2078 is the schema route's answer for
+// a resource it does not serve, never a request's.
+const noFilter: FilterSchema = { fields: {} };
+const noPatch: PatchSchema = { paths: {}, max_operations: 0 };
+const noSort: SortSchema = { fields: {}, max_fields: 0 };
 
 /**
  * A pre-bound validator for a specific resource schema.
@@ -43,10 +52,7 @@ export class SchemaValidator {
    * `related` supplies relation targets' schemas, so their nested filters validate too.
    */
   validateFilter(filter: Record<string, unknown>, related?: RelatedSchemas): void {
-    if (!this.schema.filter) {
-      throw new SchemaValidationError("*", "E2078", "No filter schema registered for this resource");
-    }
-    validateFilter(filter, this.schema.filter, related);
+    validateFilter(filter, this.schema.filter ?? noFilter, related);
   }
 
   /** Relation targets whose schemas the filter's nested relation filters need, beyond those `related` knows. */
@@ -56,18 +62,12 @@ export class SchemaValidator {
 
   /** Validate a JSON Merge Patch. Throws {@link SchemaValidationError} on invalid fields or operations. */
   validatePatch(input: Record<string, unknown>): void {
-    if (!this.schema.patch) {
-      throw new SchemaValidationError("*", "E2078", "No patch schema registered for this resource");
-    }
-    validatePatch(input, this.schema.patch);
+    validatePatch(input, this.schema.patch ?? noPatch);
   }
 
   /** Validate a sort string (e.g. `"-price,name"`). Throws on unknown fields or exceeding max sort fields. */
   validateSort(sortStr: string): void {
-    if (!this.schema.sort) {
-      throw new SchemaValidationError("*", "E2078", "No sort schema registered for this resource");
-    }
-    validateSortImpl(sortStr, this.schema.sort);
+    validateSortImpl(sortStr, this.schema.sort ?? noSort);
   }
 
   /** Validate `include` fields. Throws unless each is an includable relation field (E2071 / E2083, as the server). */

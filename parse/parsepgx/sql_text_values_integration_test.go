@@ -94,8 +94,8 @@ func TestSQLTextValuesNativeRows(t *testing.T) {
 	require.NoError(t, err)
 	got, err := parsepgx.Update(ctx, setup, resource, update)
 	require.NoError(t, err)
-	require.Len(t, got, 1)
-	wire, err := json.Marshal(got[0])
+	require.Len(t, got.Changed, 1)
+	wire, err := json.Marshal(got.Changed[0])
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"id":"b","at":"23:59:59.999999","retention":"PT1H30M","actor_ip":"2001:db8::1","network":"2001:db8::/32",
 		"device":"08:00:2b:01:02:05","allowed_ips":["::ffff:10.0.0.9"],"spans":["P7D"]}`, string(wire))

@@ -73,13 +73,13 @@ func TestBuildIncludeQuery_Postgres_TenantScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if !strings.Contains(q.SQL, "FROM widget_tags j") {
+	if !strings.Contains(q.SQL, `FROM "widget_tags" j`) {
 		t.Errorf("missing junction FROM clause: %s", q.SQL)
 	}
-	if !strings.Contains(q.SQL, "j.widget_id = ANY($1)") {
+	if !strings.Contains(q.SQL, `"j"."widget_id" = ANY($1)`) {
 		t.Errorf("missing the owner key set: %s", q.SQL)
 	}
-	if !strings.Contains(q.SQL, "j.tenant_id = $2") {
+	if !strings.Contains(q.SQL, `"j"."tenant_id" = $2`) {
 		t.Errorf("expected tenant predicate after the key set, got: %s", q.SQL)
 	}
 	if !strings.Contains(q.SQL, "WHERE include_rank <= 101 ORDER BY include__.owner_pk, include__.target_id") {
@@ -126,7 +126,7 @@ func TestBuildIncludeQuery_RejectsNonIncludable(t *testing.T) {
 
 func TestBuildIncludeQuery_RejectsNonRelation(t *testing.T) {
 	scalarField := &filter.FieldSchema{
-		ExternalName: "name", SQLExpr: "items.name",
+		ExternalName: "name", Table: "items", Column: "name",
 		DataType: core.FieldTypeString, Includable: true,
 		// No Relation.
 	}
@@ -208,7 +208,7 @@ func TestBuildIncludeQuery_CapsInSQL(t *testing.T) {
 		t.Fatalf("build: %v", err)
 	}
 	if !strings.Contains(q.SQL, "ROW_NUMBER() OVER (PARTITION BY owner_pk ORDER BY target_id)") || !strings.Contains(q.SQL, "include_rank <= 3") ||
-		!strings.Contains(q.SQL, "SELECT DISTINCT j.widget_id AS owner_pk, j.tag_id COLLATE BINARY AS target_id") {
+		!strings.Contains(q.SQL, `SELECT DISTINCT "j"."widget_id" AS owner_pk, "j"."tag_id" COLLATE BINARY AS target_id`) {
 		t.Errorf("expected a per-owner window cap of 2 over distinct pairs: %s", q.SQL)
 	}
 }
@@ -238,8 +238,7 @@ type widgetEdges struct {
 }
 
 // Two typed edges between one owner and one target are one pair: the
-// include names the target once and the facet counts the owner once
-// .
+// include names the target once and the facet counts the owner once.
 func TestRelation_TypedEdgesCountOnce(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {

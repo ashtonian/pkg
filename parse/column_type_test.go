@@ -49,30 +49,30 @@ func TestColumnType_Projection(t *testing.T) {
 	pgColumns, err := r.Columns(pg)
 	require.NoError(t, err)
 	assert.Equal(t, []string{
-		"sessions.id",
-		"abbrev(sessions.addr) AS addr",
-		"sessions.net::text AS net",
-		pg.ReadColumn("sessions.every", core.SQLInterval) + " AS every",
-		"CASE WHEN sessions.allowed IS NULL THEN NULL ELSE ARRAY(SELECT abbrev(a) FROM unnest(sessions.allowed) WITH ORDINALITY AS u(a, n) ORDER BY n) END AS allowed",
-		"sessions.nets::text[] AS nets",
-		"CASE WHEN sessions.spans IS NULL THEN NULL ELSE ARRAY(SELECT " + pg.ReadColumn("a", core.SQLInterval) +
-			" FROM unnest(sessions.spans) WITH ORDINALITY AS u(a, n) ORDER BY n) END AS spans",
-		"sessions.count",
+		`"sessions"."id"`,
+		`abbrev("sessions"."addr") AS "addr"`,
+		`"sessions"."net"::text AS "net"`,
+		pg.ReadColumn(`"sessions"."every"`, core.SQLInterval) + ` AS "every"`,
+		`CASE WHEN "sessions"."allowed" IS NULL THEN NULL ELSE ARRAY(SELECT abbrev(a) FROM unnest("sessions"."allowed") WITH ORDINALITY AS u(a, n) ORDER BY n) END AS "allowed"`,
+		`"sessions"."nets"::text[] AS "nets"`,
+		`CASE WHEN "sessions"."spans" IS NULL THEN NULL ELSE ARRAY(SELECT ` + pg.ReadColumn("a", core.SQLInterval) +
+			` FROM unnest("sessions"."spans") WITH ORDINALITY AS u(a, n) ORDER BY n) END AS "spans"`,
+		`"sessions"."count"`,
 	}, pgColumns)
-	assert.NotContains(t, pg.ReadColumn("sessions.every", core.SQLInterval), "::text AS",
+	assert.NotContains(t, pg.ReadColumn(`"sessions"."every"`, core.SQLInterval), "::text AS",
 		"a text cast would follow the session's IntervalStyle")
 	sqliteColumns, err := r.Columns(filter.SQLiteDialect{})
 	require.NoError(t, err)
 	assert.Equal(t, []string{
-		"sessions.id", "sessions.addr", "sessions.net", "sessions.every",
-		"sessions.allowed", "sessions.nets", "sessions.spans", "sessions.count",
+		`"sessions"."id"`, `"sessions"."addr"`, `"sessions"."net"`, `"sessions"."every"`,
+		`"sessions"."allowed"`, `"sessions"."nets"`, `"sessions"."spans"`, `"sessions"."count"`,
 	}, sqliteColumns)
 
 	only, err := sessionResource(t, parse.ReadColumns("id", "addr"))
 	require.NoError(t, err)
 	onlyColumns, err := only.Columns(filter.PostgresDialect{})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"sessions.id", "abbrev(sessions.addr) AS addr"}, onlyColumns)
+	assert.Equal(t, []string{`"sessions"."id"`, `abbrev("sessions"."addr") AS "addr"`}, onlyColumns)
 }
 
 // Every dialect's projection reads each column under the name ColumnNames
@@ -87,7 +87,8 @@ func TestColumnType_ColumnNamesNameTheProjection(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, columns, len(names))
 		for i, column := range columns {
-			assert.True(t, column == "sessions."+names[i] || strings.HasSuffix(column, " AS "+names[i]), "%T reads %q as %q", d, names[i], column)
+			quoted := d.QuoteIdent(names[i])
+			assert.True(t, column == d.QuoteIdent("sessions")+"."+quoted || strings.HasSuffix(column, " AS "+quoted), "%T reads %q as %q", d, names[i], column)
 		}
 	}
 
@@ -108,13 +109,13 @@ func TestColumnType_PlansReadTheProjection(t *testing.T) {
 	require.NoError(t, err)
 	list, err := r.BuildList(d, req, parse.Scope{})
 	require.NoError(t, err)
-	assert.Contains(t, list.Page.SQL, "SELECT sessions.id, abbrev(sessions.addr) AS addr, ")
+	assert.Contains(t, list.Page.SQL, `SELECT "sessions"."id", abbrev("sessions"."addr") AS "addr", `)
 
 	p, err := r.ParseMergePatch([]byte(`{"addr":"10.0.0.1"}`))
 	require.NoError(t, err)
 	upd, err := r.BuildUpdate(d, p, parse.ByID("s1"), parse.Scope{})
 	require.NoError(t, err)
-	assert.Contains(t, upd.Owner.SQL, " RETURNING sessions.id, abbrev(sessions.addr) AS addr, ")
+	assert.Contains(t, upd.Owner.SQL, ` RETURNING "sessions"."id", abbrev("sessions"."addr") AS "addr", `)
 }
 
 func TestColumnType_RefusesWhatItCannotRead(t *testing.T) {

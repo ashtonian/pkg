@@ -3,11 +3,13 @@ package parse
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
@@ -15,33 +17,86 @@ import (
 
 // ListRequest is a list request validated against its resource: what the
 // caller asked for. Nothing in it is trusted — the server's decisions travel
-// in a Scope.
+// in a Scope. Only a resource's parsers make one (ParseList, ParseListInput,
+// ParseListBody, ParseListPost), only that resource's BuildList compiles it
+// (ErrForeign), and its fields are read through methods: a server that
+// wants another request parses another ListInput.
 type ListRequest struct {
-	// Filter is the JSON filter parameter ANDed with the flat field
-	// parameters, bounded as one expression; nil filters nothing.
-	Filter *filter.ParsedFilter
-	// Sort is the requested order; nil orders by the key.
-	Sort     *filter.SortResult
-	Cursor   string
-	PageSize int
-	// IncludeTotal asks for the matched population's size.
-	IncludeTotal bool
-	// IncludeDeleted asks for soft-deleted rows too; Scope.IncludeDeleted
-	// decides whether the caller gets them.
-	IncludeDeleted bool
-	Search         string
-	// Facets names facetable fields to count by.
-	Facets []string
-	// Include names relation fields whose IDs to project beside the page.
-	Include []string
-	// Fields is the response field mask: the fields each item returns, by
-	// name under the field-name tag; empty is every field. Each is a field a
-	// response carries, one whose column the resource reads or one with no
-	// column, which the service fills. The service applies the mask to the
-	// items it writes; the page's SELECT reads every read column whatever
-	// the mask names.
-	Fields []string
+	filter         *filter.ParsedFilter
+	sort           *filter.SortResult
+	cursor         string
+	pageSize       int
+	includeTotal   bool
+	includeDeleted bool
+	search         string
+	facets         []string
+	include        []string
+	fields         []string
+	// now is the instant the request was parsed at: its filter's
+	// relative-time tokens resolved against it, and BuildList resolves its
+	// policy's, the related tables' policies' and its includes' against it.
+	now time.Time
+	// schema is the filter schema of the resource that parsed the request.
+	schema *filter.ResourceSchema
 }
+
+// Filter is the JSON filter parameter ANDed with the flat field
+// parameters, bounded as one expression; nil filters nothing.
+func (req *ListRequest) Filter() *filter.ParsedFilter { return req.filter }
+
+// WithFilter returns a copy of the request filtered by f instead: its own
+// filter with the memberships resolved (filter.ResolveMemberships), or
+// another filter its resource parsed; nil filters nothing. A filter parsed
+// for another schema is ErrForeign.
+func (req *ListRequest) WithFilter(f *filter.ParsedFilter) (*ListRequest, error) {
+	if f != nil && !f.ParsedFor(req.schema) {
+		return nil, fmt.Errorf("parse: %s: list request filter: %w", req.schema.Name, ErrForeign)
+	}
+	out := *req
+	out.filter = f
+	return &out, nil
+}
+
+// Sort is the requested order; nil orders by the key.
+func (req *ListRequest) Sort() *filter.SortResult {
+	if req.sort == nil {
+		return nil
+	}
+	return &filter.SortResult{Fields: slices.Clone(req.sort.Fields)}
+}
+
+// Cursor is the opaque cursor the request resumes after; empty is the first
+// page.
+func (req *ListRequest) Cursor() string { return req.cursor }
+
+// PageSize is the page size: the request's, clamped to the resource's
+// maximum, or the resource's default.
+func (req *ListRequest) PageSize() int { return req.pageSize }
+
+// IncludeTotal reports whether the request asks for the matched
+// population's size.
+func (req *ListRequest) IncludeTotal() bool { return req.includeTotal }
+
+// IncludeDeleted reports whether the request asks for soft-deleted rows too;
+// Scope.IncludeDeleted decides whether the caller gets them.
+func (req *ListRequest) IncludeDeleted() bool { return req.includeDeleted }
+
+// Search is the free-text search, trimmed; empty searches nothing.
+func (req *ListRequest) Search() string { return req.search }
+
+// Facets names facetable fields to count by.
+func (req *ListRequest) Facets() []string { return slices.Clone(req.facets) }
+
+// Include names relation fields whose IDs to project beside the page.
+func (req *ListRequest) Include() []string { return slices.Clone(req.include) }
+
+// Fields is the response field mask: the fields each item returns, by name
+// under the field-name tag; empty is every field. Each is a field a
+// response carries, one whose column the resource reads or one with no
+// column, which the service fills. The service applies the mask to the
+// items it writes; the page's SELECT reads every read column whatever the
+// mask names.
+func (req *ListRequest) Fields() []string { return slices.Clone(req.fields) }
 
 // ListInput is a list request in transport-neutral form: the parameters
 // ParseList reads from a query string, already typed and split.
@@ -81,38 +136,39 @@ type ListInput struct {
 // relation, E2083).
 func (r *Resource[T]) ParseListInput(in ListInput) (*ListRequest, error) {
 	req := &ListRequest{
-		Cursor: in.Cursor, PageSize: r.pageSize,
-		IncludeTotal: in.IncludeTotal, IncludeDeleted: in.IncludeDeleted,
+		cursor: in.Cursor, pageSize: r.pageSize,
+		includeTotal: in.IncludeTotal, includeDeleted: in.IncludeDeleted,
+		now: r.cfg.Now(), schema: r.filterSchema,
 	}
 	switch {
 	case in.PageSize < 0:
 		return nil, listParamError(filter.ParamPageSize, fmt.Sprintf("page_size must not be negative, got %d", in.PageSize))
 	case in.PageSize > 0:
-		req.PageSize = min(in.PageSize, r.maxPageSize)
+		req.pageSize = min(in.PageSize, r.maxPageSize)
 	}
-	if req.IncludeDeleted && r.deleted == "" {
+	if req.includeDeleted && r.deleted == "" {
 		return nil, listParamError(filter.ParamIncludeDeleted, r.table+" has no deleted rows")
 	}
-	if req.Search = strings.TrimSpace(in.Search); req.Search != "" && !r.searchable() {
+	if req.search = strings.TrimSpace(in.Search); req.search != "" && !r.searchable() {
 		return nil, listParamError(filter.ParamSearch, r.table+" has no search fields")
 	}
 
 	var err error
-	if req.Filter, err = r.parseListFilter(in.Filter, in.FieldFilters); err != nil {
+	if req.filter, err = r.parseListFilter(in.Filter, in.FieldFilters, req.now); err != nil {
 		return nil, err
 	}
 	if in.Sort != "" {
-		if req.Sort, err = filter.ParseSort(r.sortSchema, in.Sort); err != nil {
+		if req.sort, err = filter.ParseSort(r.sortSchema, in.Sort); err != nil {
 			return nil, err
 		}
 	}
-	if req.Include, err = filter.ParseIncludeNames(r.filterSchema, in.Include); err != nil {
+	if req.include, err = filter.ParseIncludeNames(r.filterSchema, in.Include); err != nil {
 		return nil, err
 	}
-	if req.Facets, err = listNames(in.Facets, r.facetName); err != nil {
+	if req.facets, err = listNames(in.Facets, r.facetName); err != nil {
 		return nil, err
 	}
-	if req.Fields, err = listNames(in.Fields, r.maskName); err != nil {
+	if req.fields, err = listNames(in.Fields, r.maskName); err != nil {
 		return nil, err
 	}
 	return req, nil
@@ -142,8 +198,10 @@ func unknownListField(msg, name string) *core.ParseError {
 }
 
 // ParseList reads a list request's query parameters (filter.Param*) into a
-// ListInput and validates it with ParseListInput. A page size that is not a
-// positive integer, or a flag that is not a boolean, is E2067. Every other
+// ListInput and validates it with ParseListInput. A list parameter given
+// more than once, a page size that is not a positive integer, or a flag that
+// is not a boolean, is E2067: facets, include and fields are one
+// comma-separated value, as the body form takes one member each. Every other
 // parameter that AcceptParams does not name is a field filter, so a misspelt
 // filter is E2071 and cannot widen a list.
 func (r *Resource[T]) ParseList(q url.Values) (*ListRequest, error) {
@@ -158,6 +216,9 @@ func (r *Resource[T]) ParseList(q url.Values) (*ListRequest, error) {
 // comma-separated names to lists, and the remaining parameters to field
 // filters.
 func (r *Resource[T]) listInput(q url.Values) (ListInput, error) {
+	if err := listParamsOnce(q); err != nil {
+		return ListInput{}, err
+	}
 	in := ListInput{
 		Filter:  q.Get(filter.ParamFilter),
 		Sort:    q.Get(filter.ParamSort),
@@ -195,13 +256,13 @@ func (r *Resource[T]) listInput(q url.Values) (ListInput, error) {
 
 // parseListFilter is the JSON filter ANDed with the field filters, strictly:
 // a field filter naming no field is E2071.
-func (r *Resource[T]) parseListFilter(doc string, fields map[string][]string) (*filter.ParsedFilter, error) {
-	fp := filter.NewFilterParser(r.filterSchema, r.cfg)
+func (r *Resource[T]) parseListFilter(doc string, fields map[string][]string, now time.Time) (*filter.ParsedFilter, error) {
+	fp := filter.NewFilterParser(r.filterSchema, r.cfg).At(now)
 	jsonAST, err := fp.Parse(doc)
 	if err != nil {
 		return nil, err
 	}
-	flatAST, err := filter.NewQueryParamParser(r.filterSchema, filter.QueryParamFieldsOnly(), filter.QueryParamConfig(r.cfg)).Parse(fields)
+	flatAST, err := filter.NewQueryParamParser(r.filterSchema, filter.QueryParamFieldsOnly(), filter.QueryParamConfig(r.cfg)).At(now).Parse(fields)
 	if err != nil {
 		return nil, err
 	}
@@ -212,11 +273,24 @@ func (r *Resource[T]) parseListFilter(doc string, fields map[string][]string) (*
 	if ast == nil || ast.Root == nil {
 		return nil, nil
 	}
-	return filter.NewParsedFilter(ast), nil
+	return filter.NewParsedFilterFor(r.filterSchema, ast), nil
 }
 
 func (r *Resource[T]) searchable() bool {
 	return r.searchSchema != nil && len(r.searchSchema.Fields) > 0
+}
+
+// listParamsOnce refuses a list parameter (filter.Param*) given more than
+// once. q.Get reads the first, so a second filter, sort or page size would
+// be dropped without a word; flat field filters give a repeat its meaning, a
+// set, and are not checked here.
+func listParamsOnce(q url.Values) error {
+	for _, name := range slices.Sorted(maps.Keys(q)) {
+		if n := len(q[name]); n > 1 && filter.IsListParam(name) {
+			return listParamError(name, fmt.Sprintf("%s is given %d times; a list parameter is given once", name, n))
+		}
+	}
+	return nil
 }
 
 func boolParam(q url.Values, name string) (bool, error) {
@@ -307,7 +381,7 @@ func (s Scope) governed() bool { return s.Governance != nil && !s.Governance.IsE
 // ErrTenantRequired is a list of a tenant-scoped resource built with
 // neither Scope.Tenant nor Scope.Governance, or an update without
 // Scope.Tenant. It is the server's mistake, never the request's.
-var ErrTenantRequired = errors.New("parse: a tenant-scoped resource is listed without Scope.Tenant")
+var ErrTenantRequired = errors.New("a tenant-scoped resource needs Scope.Tenant")
 
 // Statement is one parameterized SQL statement.
 type Statement struct {
@@ -353,15 +427,19 @@ func (p *ListPlan) Dialect() filter.Dialect { return p.dialect }
 // governance), soft-delete masking and policy ANDed with the request's
 // filter, the request's sort with the key as the final keyset column, the
 // cursor's seek, search, and the count and facets when asked. A nil req is a
-// first page with no filter. Computed columns (ReadExpr) compile as d's
-// expressions; a dialect one refuses is an error.
+// first page with no filter; a request another resource parsed, a WithPaths
+// view's or its base's included, is ErrForeign. Computed columns (ReadExpr)
+// compile as d's expressions; a dialect one refuses is an error.
 func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*ListPlan, error) {
-	v, err := r.dialectView(d)
+	if req == nil {
+		req = &ListRequest{pageSize: r.pageSize, now: r.cfg.Now(), schema: r.filterSchema}
+	}
+	if req.schema != r.filterSchema {
+		return nil, fmt.Errorf("parse: %s: list request: %w", r.table, ErrForeign)
+	}
+	exprs, err := r.computedSQL(d)
 	if err != nil {
 		return nil, err
-	}
-	if req == nil {
-		req = &ListRequest{}
 	}
 	// A governed list's rows span tenants; a resource with a tenant column
 	// holds each row's relations to the row's own.
@@ -377,43 +455,34 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		DeleteColumn: r.deleted, IncludeDeleted: s.IncludeDeleted && r.deleted != "",
 	}, s.Governance, s.Policy)
 
-	// Relations the facets, includes and policies reach compile their
-	// targets for d; the filter's own reach theirs as filterAST walks it.
-	if v, err = v.withTargets(d, slices.Concat(req.Facets, req.Include, policyFields(policy))...); err != nil {
+	if err := r.checkTargets(d, req.include...); err != nil {
 		return nil, err
 	}
 
-	pageSize := req.PageSize
-	if pageSize <= 0 {
-		pageSize = r.pageSize
-	}
-	relations := filter.RelationScope{Tenant: tenant, Related: s.Related}
+	relations := filter.RelationScope{Tenant: tenant, Related: s.Related, Now: req.now}
 	if rowTenant {
 		relations.RowTenant = r.tenant
 	}
 	opts := []filter.ListOption{
-		filter.ListLimit(pageSize),
+		filter.ListLimit(req.pageSize),
 		filter.ListMaxLimit(r.maxPageSize),
 		filter.ListPolicy(policy),
-		filter.ListCursor(req.Cursor),
-		filter.ListSearch(req.Search),
-		filter.ListWithCount(req.IncludeTotal),
+		filter.ListNow(req.now),
+		filter.ListCursor(req.cursor),
+		filter.ListSearch(req.search),
+		filter.ListWithCount(req.includeTotal),
 		filter.ListRelationScope(relations),
 	}
-	if req.Filter != nil {
-		ast, err := v.filterAST(d, req.Filter.AST)
-		if err != nil {
-			return nil, err
-		}
-		opts = append(opts, filter.ListFilterAST(ast))
+	if req.filter != nil {
+		opts = append(opts, filter.ListFilterAST(req.filter.AST()))
 	}
-	if req.Sort != nil {
-		opts = append(opts, filter.ListSortResult(v.sortResult(req.Sort)))
+	if req.sort != nil {
+		opts = append(opts, filter.ListSortResult(req.sort))
 	}
-	if len(req.Facets) > 0 {
-		opts = append(opts, filter.ListFacets(req.Facets...))
+	if len(req.facets) > 0 {
+		opts = append(opts, filter.ListFacets(req.facets...))
 	}
-	lq, err := v.listQuery(d, r.cfg)
+	lq, err := newListQuery(r.filterSchema, r.sortSchema, r.searchSchema, d, r.cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -422,18 +491,18 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		return nil, err
 	}
 	plan := &ListPlan{
-		Page:      Statement{SQL: "SELECT " + strings.Join(r.columns(d, v), ", ") + " FROM " + r.table + " " + res.Fragment, Args: res.Args},
+		Page:      Statement{SQL: "SELECT " + strings.Join(r.columns(d, exprs), ", ") + " FROM " + d.QuoteIdent(r.table) + " " + res.Fragment, Args: res.Args},
 		Fragment:  res.Fragment,
 		Facets:    res.Facets,
-		Include:   slices.Clone(req.Include),
+		Include:   slices.Clone(req.include),
 		Keyset:    res.Cursor,
 		Limit:     res.Limit,
 		dialect:   d,
-		fields:    v.filter,
+		fields:    r.filterSchema,
 		table:     r.table,
 		relations: relations,
 	}
-	if req.IncludeTotal {
+	if req.includeTotal {
 		plan.Count = &Statement{SQL: res.CountSQL, Args: res.CountArgs}
 	}
 	return plan, nil

@@ -40,16 +40,7 @@ func TestCivilDateSQL(t *testing.T) {
 			require.NoError(t, err)
 			plan, err := resource.BuildList(backend.dialect, query, parse.Scope{})
 			require.NoError(t, err)
-			rows, err := db.Query(plan.Page.SQL, plan.Page.Args...)
-			require.NoError(t, err)
-			var found []civilTask
-			for rows.Next() {
-				var row civilTask
-				require.NoError(t, rows.Scan(&row.ID, &row.DueOn))
-				found = append(found, row)
-			}
-			require.NoError(t, rows.Err())
-			require.NoError(t, rows.Close())
+			found := listPage(t, db, resource, backend.dialect, plan).Items
 			if backend.name == "sqlite" {
 				require.Len(t, found, 2)
 				assert.Equal(t, "legacy", found[0].ID)
@@ -65,8 +56,10 @@ func TestCivilDateSQL(t *testing.T) {
 				require.NoError(t, err)
 				update, err := resource.BuildUpdate(backend.dialect, patch, parse.ByID("today"), parse.Scope{})
 				require.NoError(t, err)
-				var row civilTask
-				require.NoError(t, db.QueryRow(update.Owner.SQL, update.Owner.Args...).Scan(&row.ID, &row.DueOn))
+				res, err := applyUpdate(t, db, resource, backend.dialect, update, false)
+				require.NoError(t, err)
+				require.Len(t, res.Changed, 1)
+				row := res.Changed[0]
 				if body == `{"due_on":null}` {
 					assert.Nil(t, row.DueOn)
 				} else {

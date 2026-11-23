@@ -2,6 +2,8 @@ package core
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -68,7 +70,9 @@ type GeneratorOptions struct {
 }
 
 // SQLColumnMapper maps a field's column to the SQL expression that reads it.
-// MapColumn is handed the column ColumnName names: the column tag's name,
+// The expression is emitted as returned, so it quotes any name a statement
+// must quote (a reserved word, a mixed-case column). MapColumn is handed the
+// column ColumnName names: the column tag's name,
 // else ColumnConvention (default snake_case) applied to the field's external
 // name, or to its Go name when the field-name tag hides it. Every view of a
 // field (filter, sort, search, server policies) hands it that one column,
@@ -159,29 +163,75 @@ func WithSearchLanguage(lang string) GeneratorOption {
 // SchemaGenerator generates schemas from Go struct types using configurable
 // naming conventions and struct tag keys.
 type SchemaGenerator struct {
-	Opts *GeneratorOptions
+	// opts are fixed when the generator is built: every schema it generates
+	// for the life of a resource reads the same options.
+	opts GeneratorOptions
 }
 
-// NewSchemaGenerator creates a SchemaGenerator with the given options.
+// NewSchemaGenerator creates a SchemaGenerator with the given options. The
+// maps and slices the options hand in are copied, so a later write to them
+// cannot change schemas the generator builds.
 func NewSchemaGenerator(opts ...GeneratorOption) *SchemaGenerator {
-	o := &GeneratorOptions{}
+	var o GeneratorOptions
 	for _, opt := range opts {
-		opt(o)
+		opt(&o)
 	}
-	return &SchemaGenerator{Opts: o}
+	o.ColumnTypes = maps.Clone(o.ColumnTypes)
+	o.DefaultFilterOps = cloneOpNames(o.DefaultFilterOps)
+	o.DefaultPatchOps = cloneOpNames(o.DefaultPatchOps)
+	o.ForeignTagKeys = slices.Clone(o.ForeignTagKeys)
+	return &SchemaGenerator{opts: o}
 }
+
+func cloneOpNames(m map[FieldType][]string) map[FieldType][]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[FieldType][]string, len(m))
+	for t, names := range m {
+		out[t] = slices.Clone(names)
+	}
+	return out
+}
+
+// DefaultFilterOps is GeneratorOptions.DefaultFilterOps for t: the operator
+// names a field of type t defaults to, and whether the options name t.
+func (g *SchemaGenerator) DefaultFilterOps(t FieldType) ([]string, bool) {
+	names, ok := g.opts.DefaultFilterOps[t]
+	return slices.Clone(names), ok
+}
+
+// DefaultPatchOps is GeneratorOptions.DefaultPatchOps for t: the operation
+// names a path of type t defaults to, and whether the options name t.
+func (g *SchemaGenerator) DefaultPatchOps(t FieldType) ([]string, bool) {
+	names, ok := g.opts.DefaultPatchOps[t]
+	return slices.Clone(names), ok
+}
+
+// SortMaxFields is GeneratorOptions.SortMaxFields: zero is the default.
+func (g *SchemaGenerator) SortMaxFields() int { return g.opts.SortMaxFields }
+
+// SearchParam is GeneratorOptions.SearchParam: empty is the default.
+func (g *SchemaGenerator) SearchParam() string { return g.opts.SearchParam }
+
+// SearchLanguage is GeneratorOptions.SearchLanguage: empty is the default.
+func (g *SchemaGenerator) SearchLanguage() string { return g.opts.SearchLanguage }
+
+// MapsColumns reports whether a GeneratorOptions.ColumnMapper turns columns
+// into expressions.
+func (g *SchemaGenerator) MapsColumns() bool { return g.opts.ColumnMapper != nil }
 
 // TableName derives the SQL table name for a type.
 // Priority: SQLTableName (explicit) → TableNameConvention → PluralSnake default.
-// The name is emitted into SQL verbatim, so anything but a plain identifier
-// is an error at schema generation.
+// Statements quote the name, so it reads the table spelt exactly so; anything
+// but a plain identifier (IsIdentifier) is an error at schema generation.
 func (g *SchemaGenerator) TableName(t interface{ Name() string }) (string, error) {
 	name := PluralSnake(t.Name())
 	switch {
-	case g.Opts.SQLTableName != "":
-		name = g.Opts.SQLTableName
-	case g.Opts.TableNameConvention != nil:
-		name = g.Opts.TableNameConvention(t.Name())
+	case g.opts.SQLTableName != "":
+		name = g.opts.SQLTableName
+	case g.opts.TableNameConvention != nil:
+		name = g.opts.TableNameConvention(t.Name())
 	}
 	if !IsIdentifier(name) {
 		return "", fmt.Errorf("table name %q is not a SQL identifier", name)
@@ -189,24 +239,24 @@ func (g *SchemaGenerator) TableName(t interface{ Name() string }) (string, error
 	return name, nil
 }
 
-// ColumnExpr builds the SQL expression that reads the column ColumnName
-// names for field: "table.column", the column a plain identifier. A
-// ColumnMapper is handed that column instead and returns the expression; a
-// mapper's expressions are the developer's own SQL and are emitted as
-// returned, so its column is not checked.
-func (g *SchemaGenerator) ColumnExpr(table, field string, fieldType FieldType, dbTag string) (string, error) {
-	if g.Opts.ColumnMapper != nil {
-		return g.Opts.ColumnMapper.MapColumn(table, g.column(field, dbTag), fieldType), nil
+// MappedExpr is the expression the ColumnMapper writes for the column
+// ColumnName names for field, or "" without a mapper, when statements read
+// the column itself, qualified by table and quoted by the dialect; the
+// column must then be a plain identifier. A mapper's expressions are the
+// developer's own SQL and are emitted as returned, so its column is not
+// checked.
+func (g *SchemaGenerator) MappedExpr(table, field string, fieldType FieldType, dbTag string) (string, error) {
+	if g.opts.ColumnMapper != nil {
+		return g.opts.ColumnMapper.MapColumn(table, g.column(field, dbTag), fieldType), nil
 	}
-	col, err := g.ColumnName(field, dbTag)
-	if err != nil {
+	if _, err := g.ColumnName(field, dbTag); err != nil {
 		return "", err
 	}
-	return table + "." + col, nil
+	return "", nil
 }
 
-// ColumnName returns just the column name (without table prefix), for patch
-// SQL SET clauses and cursor row reads.
+// ColumnName returns the column name a field reads, for every statement:
+// the dialect qualifies and quotes it.
 // Priority: columnTag value → ColumnConvention → SnakeCase default.
 func (g *SchemaGenerator) ColumnName(field, dbTag string) (string, error) {
 	col := g.column(field, dbTag)
@@ -222,8 +272,8 @@ func (g *SchemaGenerator) column(field, dbTag string) string {
 	case dbTag != "" && dbTag != "-":
 		col, _, _ := strings.Cut(dbTag, ",")
 		return col
-	case g.Opts.ColumnConvention != nil:
-		return g.Opts.ColumnConvention(field)
+	case g.opts.ColumnConvention != nil:
+		return g.opts.ColumnConvention(field)
 	}
 	return SnakeCase(field)
 }
@@ -238,8 +288,8 @@ const (
 // FieldNameTag returns the struct tag key to read for external field names.
 // Default: JSONTagKey.
 func (g *SchemaGenerator) FieldNameTag() string {
-	if g.Opts.FieldNameTag != "" {
-		return g.Opts.FieldNameTag
+	if g.opts.FieldNameTag != "" {
+		return g.opts.FieldNameTag
 	}
 	return JSONTagKey
 }
@@ -247,8 +297,8 @@ func (g *SchemaGenerator) FieldNameTag() string {
 // ColumnTagKey returns the struct tag key to read for SQL column names.
 // Default: DefaultColumnTagKey.
 func (g *SchemaGenerator) ColumnTagKey() string {
-	if g.Opts.ColumnTag != "" {
-		return g.Opts.ColumnTag
+	if g.opts.ColumnTag != "" {
+		return g.opts.ColumnTag
 	}
 	return DefaultColumnTagKey
 }

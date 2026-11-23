@@ -46,8 +46,8 @@ func Example() {
 	}
 	fmt.Println(set.SetClause, set.Args)
 	// Output:
-	// name = $1, tags = array_append(COALESCE(tags, '{}'), $2)
-	// labels = json_patch(COALESCE(labels, '{}'), ?1) [{"floor":2,"legacy":null}]
+	// "name" = $1, "tags" = array_append(COALESCE("tags", '{}'), $2)
+	// "labels" = json_patch(COALESCE("labels", '{}'), ?1) [{"floor":2,"legacy":null}]
 }
 
 func ExampleParser_Parse() {
@@ -98,7 +98,7 @@ func ExampleBuildPatchSQL() {
 	fmt.Println("SET:", result.SetClause)
 	fmt.Println("args:", result.Args)
 	// Output:
-	// SET: name = $1, status = $2
+	// SET: "name" = $1, "status" = $2
 	// args: [new active]
 }
 
