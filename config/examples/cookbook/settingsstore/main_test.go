@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -309,7 +310,7 @@ func TestSettingsHandler_StoreFailures(t *testing.T) {
 	require.Len(t, entries, 1)
 	assert.Equal(t, "ERROR", entries[0]["level"])
 	assert.Equal(t, "writing settings", entries[0]["msg"])
-	assert.Contains(t, entries[0]["error"], "loading the stored settings")
+	assert.Contains(t, entries[0]["error"], "the settings fail to load without this write")
 
 	require.NoError(t, db.Close())
 	rec = put(h, `{"limits.max": 300}`)
@@ -406,4 +407,23 @@ func TestSettings_WritesBeginAtReadCommitted(t *testing.T) {
 	write(t, s, map[string]any{"limits.max": 300})
 	write(t, s, map[string]any{"limits.max": nil})
 	assert.Equal(t, []sql.IsolationLevel{sql.LevelReadCommitted, sql.LevelReadCommitted}, levels.levels)
+}
+
+// When the settings fail to load without the write, the 503 says so and
+// names the sources beneath the table to check, not the table alone.
+func TestSettingsHandler_SettingsThatFailWithoutTheWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.db")
+	s, _ := replica(t, path, 100)
+	file := filepath.Join(filepath.Dir(path), "config.yaml")
+	require.NoError(t, os.WriteFile(file, []byte("limits:\n  max: lots\n"), 0o600))
+	var logs bytes.Buffer
+	h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.NewJSONHandler(&logs, nil)))
+	rec := put(h, `{"limits.min": 2}`)
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	var entry struct{ Level, Msg, Error string }
+	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+	assert.Equal(t, "ERROR", entry.Level)
+	assert.Contains(t, entry.Error, "the settings fail to load without this write")
+	assert.Contains(t, entry.Error, file)
+	assert.Contains(t, entry.Error, "APP_")
 }

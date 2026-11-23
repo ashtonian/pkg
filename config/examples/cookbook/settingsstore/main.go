@@ -104,19 +104,26 @@ func (c *AppConfig) Validate() error {
 // Entries reads a settings table for config.WithOverrideEntries.
 type Entries = func(ctx context.Context) (map[string]any, error)
 
-// Sources builds the options the service loads AppConfig with, the table
-// read through entries.
-type Sources func(entries Entries) []config.Option
+// Sources are how the service loads AppConfig: Options builds the options,
+// the table read through entries, and Beneath names the sources beneath the
+// table, for an operator to check when the settings fail to load.
+type Sources struct {
+	Options func(entries Entries) []config.Option
+	Beneath string
+}
 
 // appSources layers the table over the file and APP_* variables.
 func appSources(file string, logger *slog.Logger) Sources {
-	return func(entries Entries) []config.Option {
-		return []config.Option{
-			config.WithFile(file),
-			config.WithEnvPrefix("APP"),
-			config.WithOverrideEntries(entries),
-			config.WithLogger(logger),
-		}
+	return Sources{
+		Options: func(entries Entries) []config.Option {
+			return []config.Option{
+				config.WithFile(file),
+				config.WithEnvPrefix("APP"),
+				config.WithOverrideEntries(entries),
+				config.WithLogger(logger),
+			}
+		},
+		Beneath: file + " and the APP_* variables",
 	}
 }
 
@@ -165,7 +172,7 @@ func NewSettings(db *sql.DB, sources Sources, timeout time.Duration, maxRows int
 // on every load. Write checks a write with the same options, the table
 // replaced by the one the write would leave.
 func (s *Settings) Options() []config.Option {
-	return s.sources(s.read)
+	return s.sources.Options(s.read)
 }
 
 func (s *Settings) read(ctx context.Context) (map[string]any, error) {
@@ -255,16 +262,17 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 }
 
 // check loads table, the one a write of keys leaves, with the service's
-// options. A table that does not load refuses the write, unless the stored
-// table does not load either: then the fault lies beneath the write, and no
-// client can fix it by retrying.
+// options. A table that does not load refuses the write, unless the
+// settings do not load without the write either: then the fault lies in a
+// source beneath it or in a row already stored, and no client can fix it by
+// retrying.
 func (s *Settings) check(ctx context.Context, stored, table map[string]any, keys []string) error {
-	_, err := config.Load[AppConfig](ctx, s.sources(fixed(table))...)
+	_, err := config.Load[AppConfig](ctx, s.sources.Options(fixed(table))...)
 	if err == nil || !errors.Is(err, config.ErrValidation) && !errors.Is(err, config.ErrKey) {
 		return err
 	}
-	if _, storedErr := config.Load[AppConfig](ctx, s.sources(fixed(stored))...); storedErr != nil {
-		return fmt.Errorf("loading the stored settings: %w", storedErr)
+	if _, storedErr := config.Load[AppConfig](ctx, s.sources.Options(fixed(stored))...); storedErr != nil {
+		return fmt.Errorf("the settings fail to load without this write; check %s and the settings table: %w", s.sources.Beneath, storedErr)
 	}
 	reason := ReasonInvalid
 	if unknown, ok := errors.AsType[*config.UnknownKeysError](err); ok && len(unknown.Keys) > 0 {

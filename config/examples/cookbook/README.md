@@ -110,7 +110,7 @@ func newReloader(ctx context.Context, db *sql.DB, boot *BootConfig) (*config.Rel
 
 When the service writes the table itself — an admin API, a settings page — store each key as `config.CanonicalKey` spells it and load the table through `config.WithOverrideEntries`, so the writer and the loader share one key grammar: `limits.max`, `upstreams["api.internal"].timeout` (a map key holding a dot), `routes[1].path`. Every spelling of a key — a former name in an `alias` tag, another letter case — writes the one row, and `Key.Within` finds the rows beneath a key, which its write replaces and its `null` deletes.
 
-A write is checked by the load that will read it. The service's options come from one builder; a write builds the table it would leave and loads it with those options, the table read replaced by that one, so `limits.min` and `limits.max` move together, the file and the environment beneath the table are read as the next reload reads them, and a table the service would refuse is never committed. `DecodeEdits` over the live config is not that check: it misses a lower source that changed and a row deleted since the config loaded. When the stored table fails to load as well, the fault is beneath the write: a 503, logged at `Error`. A refused write is a 422 whose body names the client's own keys and never a value.
+A write is checked by the load that will read it. The service's options come from one builder; a write builds the table it would leave and loads it with those options, the table read replaced by that one, so `limits.min` and `limits.max` move together, the file and the environment beneath the table are read as the next reload reads them, and a table the service would refuse is never committed. `DecodeEdits` over the live config is not that check: it misses a lower source that changed and a row deleted since the config loaded. When the settings fail to load without the write as well, the fault is beneath it — in the file, the environment or a row already stored — and the write is a 503, logged at `Error`. A refused write is a 422 whose body names the client's own keys and never a value.
 
 Writes take turns across replicas: each updates one lock row as its first statement, which the database holds until the write ends, so each reads the table the one before it left. The transaction runs at `READ COMMITTED` whatever the server's default, the level at which a write that waited reads what the one before it committed; SQLite's driver ignores the level, since its transactions are serializable and the lock row's update takes its write lock. A configured cap bounds the table, and values are read with `UseNumber`, so integers keep every digit. The pool, the request timeouts and caps, and the log level (`warn` by default, with one startup entry) are `BootConfig` fields. [`settingsstore/main.go`](settingsstore/main.go) has the `PUT /admin/settings` handler and the `main` that serves it; its test runs every path on SQLite, two replicas writing at once among them.
 
@@ -133,24 +133,31 @@ Writes take turns across replicas: each updates one lock row as its first statem
 | `SETTINGS_IDLE_TIMEOUT` | duration | `60s` | How long a keep-alive connection idles |
 | `SETTINGS_SHUTDOWN_TIMEOUT` | duration | `10s` | The drain deadline on `SIGTERM` |
 
-A 503 is always logged at `Error`: `loading the stored settings` means the table fails to load with no write applied — find the refused key in the entry's error, fix or delete its row, and the next poll recovers; `taking the settings lock` means `Schema` was not applied; anything else is the database. While the stored table does not load, every reload fails and the service keeps its previous config.
+A 503 is always logged at `Error`: `the settings fail to load without this write` means the service's own settings do not load even with the write left out, so no client is at fault. The entry names what to check — `SETTINGS_CONFIG_FILE`, the `APP_*` variables and the settings table — and the wrapped error names the key that fails. Fix the file or the variable and redeploy, or fix or delete the row, and the next poll recovers; `taking the settings lock` means `Schema` was not applied; anything else is the database. While the settings do not load, every reload fails and the service keeps its previous config.
 
 <!-- recipe: settingsstore/main.go -->
 
 ```go
-// Sources builds the options the service loads AppConfig with, the table
-// read through entries.
-type Sources func(entries Entries) []config.Option
+// Sources are how the service loads AppConfig: Options builds the options,
+// the table read through entries, and Beneath names the sources beneath the
+// table, for an operator to check when the settings fail to load.
+type Sources struct {
+	Options func(entries Entries) []config.Option
+	Beneath string
+}
 
 // appSources layers the table over the file and APP_* variables.
 func appSources(file string, logger *slog.Logger) Sources {
-	return func(entries Entries) []config.Option {
-		return []config.Option{
-			config.WithFile(file),
-			config.WithEnvPrefix("APP"),
-			config.WithOverrideEntries(entries),
-			config.WithLogger(logger),
-		}
+	return Sources{
+		Options: func(entries Entries) []config.Option {
+			return []config.Option{
+				config.WithFile(file),
+				config.WithEnvPrefix("APP"),
+				config.WithOverrideEntries(entries),
+				config.WithLogger(logger),
+			}
+		},
+		Beneath: file + " and the APP_* variables",
 	}
 }
 ```
@@ -243,16 +250,17 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 
 ```go
 // check loads table, the one a write of keys leaves, with the service's
-// options. A table that does not load refuses the write, unless the stored
-// table does not load either: then the fault lies beneath the write, and no
-// client can fix it by retrying.
+// options. A table that does not load refuses the write, unless the
+// settings do not load without the write either: then the fault lies in a
+// source beneath it or in a row already stored, and no client can fix it by
+// retrying.
 func (s *Settings) check(ctx context.Context, stored, table map[string]any, keys []string) error {
-	_, err := config.Load[AppConfig](ctx, s.sources(fixed(table))...)
+	_, err := config.Load[AppConfig](ctx, s.sources.Options(fixed(table))...)
 	if err == nil || !errors.Is(err, config.ErrValidation) && !errors.Is(err, config.ErrKey) {
 		return err
 	}
-	if _, storedErr := config.Load[AppConfig](ctx, s.sources(fixed(stored))...); storedErr != nil {
-		return fmt.Errorf("loading the stored settings: %w", storedErr)
+	if _, storedErr := config.Load[AppConfig](ctx, s.sources.Options(fixed(stored))...); storedErr != nil {
+		return fmt.Errorf("the settings fail to load without this write; check %s and the settings table: %w", s.sources.Beneath, storedErr)
 	}
 	reason := ReasonInvalid
 	if unknown, ok := errors.AsType[*config.UnknownKeysError](err); ok && len(unknown.Keys) > 0 {
