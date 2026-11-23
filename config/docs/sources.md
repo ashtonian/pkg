@@ -311,6 +311,46 @@ to it. Read/parser errors and cancellation fail the load, with the cause
 the context ended with, and a load whose context has ended reports
 nothing. The option applies equally to `WithOverrideProvider`.
 
+### Unknown keys of one source
+
+A store that keeps rows for fields since removed would fail every load
+under the strict default. Claim the keys such a source sets that no field
+reads, without relaxing the check for every other source:
+
+```go
+config.WithOverrideEntries(readSettings, config.WithUnknownEntries(
+    func(ctx context.Context, unknown []config.UnknownKey) error {
+        logger.WarnContext(ctx, "stored settings no field reads", "keys", unknown)
+        return nil
+    },
+))
+```
+
+The keys go to the callback instead of `WithUnknownKeys` or the strict
+default: a nil return lets the load go on, an error fails it with
+`ErrValidation`, the error kept as its cause, and a nil callback accepts
+them silently. It is called at every load and reload that finds any, with
+the keys sorted and each one's likely misspelling, and never once the
+load's context has ended. `Snapshot.UnknownKeys` lists them beside the
+keys the load-wide handler accepts.
+
+A key is unknown exactly as for `WithUnknownKeys`: the decoder leaves it
+unused as it decodes the merged sources. A key beneath an interface, one a
+`koanf:",remain"` field collects, and the keys a self-decoding value or a
+decode hook reads are not unknown. An entry naming nothing config reads is,
+and under `WithInvalidEntries` on the same source so are the keys inside a
+withheld entry's value. A key the merge holds is the source's only when it
+set everything the merge keeps there: a value, when it is the
+highest-ranked source to set it; a section no field holds, when it set
+every key the merge keeps in it. A key another source or a default set any
+part of stays the load's, so the same key in a file still fails.
+
+Finding each key's source costs no decode. The load records which source
+set each key as the sources merge, one node for each key a source sets, and
+walks that record once per unknown key; a load that records provenance or
+finds shadowed inputs keeps that record already. The option applies to
+`WithBaseProvider`, `WithOverrideProvider` and both entry options.
+
 ### Stored entries
 
 A settings store keyed in this package's key grammar loads through
@@ -350,7 +390,7 @@ a whole list where the list beneath can change.
 
 | Entry | Load |
 |---|---|
-| Names nothing config reads, or does not parse; or a key inside its value that no field reads | an unknown key, for the unknown-input handler, with the field it most likely misspells |
+| Names nothing config reads, or does not parse; or a key inside its value that no field reads | an unknown key, for the unknown-input handler or the source's `WithUnknownEntries` callback, with the field it most likely misspells |
 | One value under two spellings (`port`, `PORT`; a field and its alias) | fails with a `*KeyError` matching `ErrValidation` |
 | An index past the next element of the list beneath | fails with a `*KeyError` matching `ErrValidation` |
 | A key beneath one set to a value that cannot hold it, or keys selecting both elements and fields of one value | fails with a `*KeyError` matching `ErrValidation` |

@@ -123,20 +123,19 @@ type fileDigests map[string][sha256.Size]byte
 // whole and its struct keys rewritten into the fields' own spelling
 // (keyWalk), so precedence holds whatever letter case a source used. Every
 // source is read and prepared before any merges (see layers.go).
-// With provenance or shadowed-input reporting, origins records what set each
-// value as the trees merge, and inputs what each non-default source set.
+// With provenance, shadowed-input reporting or a source under
+// WithUnknownEntries, origins records what set each value as the trees
+// merge; with shadowed-input reporting, inputs records what each
+// non-default source set.
 type loader struct {
-	// unmergedUnknown is the unknown keys of input that never merged: an
-	// entry naming nothing config reads, or one beneath a withheld entry.
-	unmergedUnknown []UnknownKey
-	k               *koanf.Koanf
-	root            reflect.Type
-	schema          *schemaNode
-	sources         []string
-	aliased         []string    // keys sources set under an alias tag's name, by source
-	origins         *originNode // nil unless the load attributes values
-	provenance      bool        // origins holds all provenance reads, not only what shadow detection does
-	inputs          *inputs     // nil unless the load finds shadowed inputs
+	k          *koanf.Koanf
+	root       reflect.Type
+	schema     *schemaNode
+	sources    []string
+	aliased    []string    // keys sources set under an alias tag's name, by source
+	origins    *originNode // nil unless the load attributes values or a source claims its unknown keys
+	provenance bool        // origins holds all provenance reads, not only what shadow detection does
+	inputs     *inputs     // nil unless the load finds shadowed inputs
 	// unkeyed is the koanf:"-" fields of the typed sections the merge
 	// keeps, set on the decoded config (see unkeyed.go).
 	unkeyed unkeyedSections
@@ -210,7 +209,7 @@ func (l *loader) readProvider(ctx context.Context, name string, p providerSource
 	if p.entries != nil {
 		return l.readEntries(ctx, name, p, src)
 	}
-	if op, ok := p.provider.(OriginProvider); ok && p.parser == nil && l.origins != nil {
+	if op, ok := p.provider.(OriginProvider); ok && p.parser == nil && (l.provenance || l.inputs != nil) {
 		data, annotations, err := op.ReadWithOrigins(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
@@ -318,7 +317,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	case o.provenance:
 		rec = newOriginRecorder(schema)
 		l.origins, l.provenance = rec.tree, true
-	case o.findsShadowed():
+	case o.findsShadowed(), o.claimsUnknown():
 		l.origins = newOriginRoot()
 	}
 	if o.findsShadowed() {
@@ -409,6 +408,12 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if err != nil {
 		return none, err
 	}
+	// The origins record the defaults only with provenance, so a source's
+	// claim on an unknown key looks for them here.
+	var defaults map[string]any
+	if o.claimsUnknown() {
+		defaults = l.k.Raw()
+	}
 	if err := l.mergeLayers(ctx, layers, verdicts); err != nil {
 		return none, err
 	}
@@ -468,10 +473,16 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if err := live(); err != nil {
 		return none, err
 	}
-	unknown, err := o.unknownInput(ctx, root, schema, merged, md.Unused, env, unmatchedEnv, l.unmergedUnknown)
+	claimed, unused, additional := l.claimUnknown(merged, defaults, md.Unused, layers)
+	unknown, err := o.unknownInput(ctx, root, schema, merged, unused, env, unmatchedEnv, additional)
 	if err != nil {
 		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
 	}
+	accepted, err := reportUnknown(ctx, layers, claimed)
+	if err != nil {
+		return none, err
+	}
+	unknown = unknown.withKeys(root, accepted)
 
 	// stage runs one stage that may change the decoded config, recording
 	// what it changed when provenance is on.

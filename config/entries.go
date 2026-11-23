@@ -89,10 +89,11 @@ func (l *loader) readEntries(ctx context.Context, name string, p providerSource,
 		return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 	}
 	edits, refused := prepareEdits(l.schema, deepCopyMap(read))
-	y := &layer{name: name, label: constant(src), byEntry: true, entries: edits, withhold: p.withhold, report: p.rejected}
+	y := &layer{name: name, label: constant(src), byEntry: true, entries: edits, withhold: p.withhold, report: p.rejected,
+		claimsUnknown: p.claimsUnknown, unknownReport: p.unknown}
 	for _, ke := range refused {
 		if ke.Unknown {
-			l.unmergedUnknown = append(l.unmergedUnknown, UnknownKey{Key: ke.Key, Suggestion: ke.suggestion})
+			y.unknown = append(y.unknown, UnknownKey{Key: ke.Key, Suggestion: ke.suggestion})
 		} else {
 			y.refused = append(y.refused, ke)
 		}

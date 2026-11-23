@@ -112,10 +112,11 @@ config.WithUnknownKeys(func(ctx context.Context, unknown *config.UnknownKeysErro
 keys no field of main.AppConfig decodes: server.prot (did you mean server.port?); environment variables no field of main.AppConfig reads: APP_SERVER_PROT (did you mean APP_SERVER_PORT?)
 ```
 
-Or accept some and fail on the rest, by returning a copy of `unknown` without the keys you expect — a section another program reads, a setting you removed but deployed files still carry. Keys and variables are named, never their values. Diagnostics for keys inside a sensitive map or list name only the enclosing field; this also applies to alias warnings. `WithAllowUnknownKeys()` accepts everything silently, for a file shared with another program. A field typed `any` or `map[string]any` accepts everything beneath its key while the rest of the config stays strict.
+Or accept some and fail on the rest, by returning a copy of `unknown` without the keys you expect — a section another program reads, a setting you removed but deployed files still carry. Keys and variables are named, never their values. Diagnostics for keys inside a sensitive map or list name only the enclosing field; this also applies to alias warnings. `WithAllowUnknownKeys()` accepts everything silently, for a file shared with another program. A field typed `any` or `map[string]any` accepts everything beneath its key while the rest of the config stays strict. To accept what one source sets — a settings store that keeps rows for removed fields — and keep every other source strict, give that source `WithUnknownEntries` ([sources and precedence](sources.md#unknown-keys-of-one-source)): the keys it claims go to its own callback, and the handler sees only the rest.
 
 A successful `LoadSnapshot` or reloader publication retains its accepted report
-in `Snapshot.UnknownKeys`; a clean publication sets it to nil. Refused or
+in `Snapshot.UnknownKeys`, the keys `WithUnknownEntries` sources accepted
+included; a clean publication sets it to nil. Refused or
 canceled attempts preserve the previous publication's report. Reports contain
 names and suggestions, never values, and every handler/snapshot/result receives
 a detached copy. JSON uses `unknown_keys` with `keys` and `variables` arrays of

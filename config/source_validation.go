@@ -58,8 +58,9 @@ type SourceOption func(*providerSource)
 // lies beneath those sources and copies the configuration tree once for
 // each source it merges and once more to decode.
 //
-// Unknown entries remain available to the normal unknown-input handler,
-// including declared unknown children of a withheld entry. Read and parser
+// Unknown entries remain available to the unknown-input handler — the
+// load's, or this source's [WithUnknownEntries] report — including
+// declared unknown children of a withheld entry. Read and parser
 // errors and cancellation still fail the load, with the cause the context
 // ended with, and a load whose context has ended reports nothing. A
 // validate tag the default validator cannot apply fails the load with
@@ -131,11 +132,15 @@ func (l *loader) prepareProvider(name string, data map[string]any, p providerSou
 	if err != nil {
 		return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 	}
+	y := &layer{name: name, label: sources, claimsUnknown: p.claimsUnknown, unknownReport: p.unknown}
 	if !p.withhold {
-		return &layer{name: name, label: sources, tree: tree, unkeyed: w.unkeyed}, nil
+		y.tree, y.unkeyed = tree, w.unkeyed
+		return y, nil
 	}
 	edits, rest, refused := sourceEntries(l.schema, textKeyed(data))
-	return &layer{name: name, label: sources, tree: rest, byEntry: true, entries: edits, withhold: true, report: p.rejected, refused: refused}, nil
+	y.tree, y.byEntry, y.entries, y.refused = rest, true, edits, refused
+	y.withhold, y.report = true, p.rejected
+	return y, nil
 }
 
 // reportWithheld hands a WithInvalidEntries report the entries the source

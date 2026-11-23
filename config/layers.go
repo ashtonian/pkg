@@ -32,6 +32,16 @@ type layer struct {
 	report   func(context.Context, []KeyError) error
 	// refused is the entries refused as the source was prepared.
 	refused []*KeyError
+	// claimsUnknown is set for a source under WithUnknownEntries, whose
+	// report receives the keys it sets that no field reads.
+	claimsUnknown bool
+	unknownReport func(context.Context, []UnknownKey) error
+	// unknown is the keys the source sets that no field reads and that
+	// never merge: an entry naming nothing config reads, and the keys
+	// inside a withheld entry's value.
+	unknown []UnknownKey
+	// rank is the source's rank in the load's merge, set as it merges.
+	rank int
 }
 
 // prepare is data, the tree of the source called name, as a layer whose
@@ -84,7 +94,8 @@ type refusal struct {
 func (l *loader) mergeLayers(ctx context.Context, layers []*layer, verdicts []entryVerdict) error {
 	for i, y := range layers {
 		v := verdicts[i]
-		l.unmergedUnknown = append(l.unmergedUnknown, v.unknown...)
+		y.unknown = append(y.unknown, v.unknown...)
+		y.rank = len(l.sources)
 		for _, e := range v.kept {
 			for _, a := range e.aliased {
 				l.aliased = append(l.aliased, a+" in "+y.name)
