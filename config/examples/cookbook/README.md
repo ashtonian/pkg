@@ -108,7 +108,7 @@ func newReloader(ctx context.Context, db *sql.DB, boot *BootConfig) (*config.Rel
 
 ## Settings a service writes
 
-When the service writes the table itself — an admin API, a settings page — store each key as `config.CanonicalKey` spells it and load the table through `config.WithOverrideEntries`, so the writer and the loader share one key grammar: `limits.max`, `upstreams["api.internal"].timeout` (a map key holding a dot), `routes[1].path`. Every spelling of a key — a former name in an `alias` tag, another letter case — writes the one row, and `Key.Within` finds the rows beneath a key, which its write replaces and its `null` deletes.
+When the service writes the table itself — an admin API, a settings page — store each key as `config.CanonicalKey` spells it and load the table through `config.WithOverrideEntries`, so the writer and the loader share one key grammar: `limits.max`, `upstreams["api.internal"].timeout` (a map key holding a dot), `routes[1].path`. Every spelling of a key — a former name in an `alias` tag, another letter case — writes the one row, and `Key.Within` finds the rows beneath a key, which its write replaces and its `null` deletes. A key the schema no longer reads, its field removed by a release, may still be written as `null`: that deletes the rows stored at and beneath it that the schema does not read either. Any other value for such a key, or a `null` with no such row stored, is refused as unknown, and a spelling the schema refuses never deletes a row it reads.
 
 A write is checked by the load that will read it. The service's options come from one builder; a write builds the table it would leave and loads it with those options, the table read replaced by that one, so `limits.min` and `limits.max` move together, the file and the environment beneath the table are read as the next reload reads them, and a table the service would refuse is never committed. `DecodeEdits` over the live config is not that check: it misses a lower source that changed and a row deleted since the config loaded. When the settings fail to load without the write as well, the fault is beneath it — in the file, the environment or a row already stored — and the write is a 503, logged at `Error`. A refused write is a 422 whose body names the client's own keys and never a value.
 
@@ -140,7 +140,7 @@ Both commands read the variables below.
 | `SETTINGS_IDLE_TIMEOUT` | duration | `60s` | How long a keep-alive connection idles |
 | `SETTINGS_SHUTDOWN_TIMEOUT` | duration | `10s` | The drain deadline on `SIGTERM` |
 
-A write that times out waiting for its turn — behind another write of the same replica, for a pooled connection, or for the lock row another replica holds — is contention: a 503 with `reason` `busy` and a `Retry-After` of the query timeout, logged at `Warn`. Frequent ones mean writes take too long or arrive too fast for `SETTINGS_QUERY_TIMEOUT`. Every other 503 is logged at `Error`: `the settings fail to load without this write` means the service's own settings do not load even with the write left out, so no client is at fault. The entry names what to check — `SETTINGS_CONFIG_FILE`, the `APP_*` variables and the settings table — and the wrapped error names the key that fails. Fix the file or the variable and redeploy, or fix or delete the row, and the next poll recovers; `taking the settings lock` means the lock row is gone — run `settingsstore migrate`, which restores it; anything else is the database. While the settings do not load, every reload fails and the service keeps its previous config.
+A write that times out waiting for its turn — behind another write of the same replica, for a pooled connection, or for the lock row another replica holds — is contention: a 503 with `reason` `busy` and a `Retry-After` of the query timeout, logged at `Warn`. Frequent ones mean writes take too long or arrive too fast for `SETTINGS_QUERY_TIMEOUT`. Every other 503 is logged at `Error`: `the settings fail to load without this write` means the service's own settings do not load even with the write left out, so no client is at fault. The entry names what to check — `SETTINGS_CONFIG_FILE`, the `APP_*` variables and the settings table — and the wrapped error names the key that fails. Fix the file or the variable and redeploy, or fix or delete the row — a row whose field a release removed is deleted by writing its key as `null` — and the next poll recovers; `taking the settings lock` means the lock row is gone — run `settingsstore migrate`, which restores it; anything else is the database. While the settings do not load, every reload fails and the service keeps its previous config.
 
 <!-- recipe: settingsstore/main.go -->
 
@@ -174,12 +174,14 @@ func appSources(file string, logger *slog.Logger) Sources {
 ```go
 // Write applies edits to the table, all or nothing, and returns the keys it
 // wrote: each key, spelled canonically, set to its value and replacing the
-// rows stored beneath it, or, set to nil, deleted with them. Unless the
-// table the write leaves loads with the service's options and fits the row
-// cap, the write is refused with a *RefusedError and nothing changes.
+// rows stored beneath it, or, set to nil, deleted with them. A key the
+// schema does not read may be set only to nil, to delete the rows a release
+// that removed its field left. Unless the table the write leaves loads with
+// the service's options and fits the row cap, the write is refused with a
+// *RefusedError and nothing changes.
 func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, error) {
-	writes, err := canonical(edits)
-	if err != nil || len(writes) == 0 {
+	writes, unread, err := canonical(edits)
+	if err != nil || len(writes) == 0 && len(unread) == 0 {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
@@ -219,8 +221,12 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	keys := slices.Sorted(maps.Keys(writes))
-	table, deleted := apply(stored, writes)
+	if missing := unstored(unread, stored); len(missing) > 0 {
+		return nil, &RefusedError{Reason: ReasonUnknown, Keys: missing}
+	}
+	keys := append(slices.Collect(maps.Keys(writes)), unread...)
+	slices.Sort(keys)
+	table, deleted := apply(stored, writes, unread)
 	if len(table) > s.maxRows {
 		return nil, &RefusedError{Reason: ReasonFull, Keys: keys}
 	}

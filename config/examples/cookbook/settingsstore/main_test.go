@@ -513,3 +513,26 @@ func TestRun_SchemaIsAnExplicitStep(t *testing.T) {
 
 	assert.ErrorContains(t, command("serve", "now"), "usage")
 }
+
+// A row whose key the schema no longer reads, its field removed by a
+// release, is deleted by a null write of its key, with the rows beneath it.
+// Only null may name such a key, only to delete such rows, and only where
+// one is stored: a spelling the schema refuses never deletes a row it reads.
+func TestSettings_ANullDeletesARowTheSchemaNoLongerReads(t *testing.T) {
+	s, db := newReplica(t, 100)
+	write(t, s, map[string]any{"limits.max": 200})
+	for key, value := range map[string]string{"legacy": "1", "legacy.part": "2"} {
+		_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ($1, $2)`, key, value)
+		require.NoError(t, err)
+	}
+	h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.DiscardHandler))
+	assert.Equal(t, http.StatusNoContent, put(h, `{"legacy": null}`).Code)
+	assert.Equal(t, map[string]string{"limits.max": "200"}, rowsOf(t, db))
+
+	for _, body := range []string{`{"legacy": 1}`, `{"legacy": null}`, `{"limits.maxx": null}`, `{"limits[\"max\"]": null}`} {
+		rec := put(h, body)
+		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code, body)
+		assert.Contains(t, rec.Body.String(), `"reason":"unknown"`, body)
+	}
+	assert.Equal(t, map[string]string{"limits.max": "200"}, rowsOf(t, db))
+}

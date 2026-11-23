@@ -194,12 +194,14 @@ func (s *Settings) read(ctx context.Context) (map[string]any, error) {
 
 // Write applies edits to the table, all or nothing, and returns the keys it
 // wrote: each key, spelled canonically, set to its value and replacing the
-// rows stored beneath it, or, set to nil, deleted with them. Unless the
-// table the write leaves loads with the service's options and fits the row
-// cap, the write is refused with a *RefusedError and nothing changes.
+// rows stored beneath it, or, set to nil, deleted with them. A key the
+// schema does not read may be set only to nil, to delete the rows a release
+// that removed its field left. Unless the table the write leaves loads with
+// the service's options and fits the row cap, the write is refused with a
+// *RefusedError and nothing changes.
 func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, error) {
-	writes, err := canonical(edits)
-	if err != nil || len(writes) == 0 {
+	writes, unread, err := canonical(edits)
+	if err != nil || len(writes) == 0 && len(unread) == 0 {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
@@ -239,8 +241,12 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	keys := slices.Sorted(maps.Keys(writes))
-	table, deleted := apply(stored, writes)
+	if missing := unstored(unread, stored); len(missing) > 0 {
+		return nil, &RefusedError{Reason: ReasonUnknown, Keys: missing}
+	}
+	keys := append(slices.Collect(maps.Keys(writes)), unread...)
+	slices.Sort(keys)
+	table, deleted := apply(stored, writes, unread)
 	if len(table) > s.maxRows {
 		return nil, &RefusedError{Reason: ReasonFull, Keys: keys}
 	}
@@ -311,20 +317,25 @@ func fixed(table map[string]any) Entries {
 	return func(context.Context) (map[string]any, error) { return table, nil }
 }
 
-// canonical is edits keyed as CanonicalKey spells their keys. A key naming
-// nothing the service reads, or one key spelled two ways, refuses the
-// write.
-func canonical(edits map[string]any) (map[string]any, error) {
-	writes := make(map[string]any, len(edits))
+// canonical is edits keyed as CanonicalKey spells their keys, and unread,
+// the keys it refuses that edits set to nil, each a delete of the rows a
+// release that removed its field left. Any other key naming nothing the
+// service reads, or one key spelled two ways, refuses the write.
+func canonical(edits map[string]any) (writes map[string]any, unread []string, err error) {
+	writes = make(map[string]any, len(edits))
 	var unknown, repeated []string
 	for key, value := range edits {
 		c, err := config.CanonicalKey[AppConfig](key)
 		if errors.Is(err, config.ErrKey) {
-			unknown = append(unknown, key)
+			if value == nil {
+				unread = append(unread, key)
+			} else {
+				unknown = append(unknown, key)
+			}
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if _, ok := writes[c]; ok {
 			repeated = append(repeated, c)
@@ -334,18 +345,57 @@ func canonical(edits map[string]any) (map[string]any, error) {
 	switch {
 	case len(unknown) > 0:
 		slices.Sort(unknown)
-		return nil, &RefusedError{Reason: ReasonUnknown, Keys: unknown}
+		return nil, nil, &RefusedError{Reason: ReasonUnknown, Keys: unknown}
 	case len(repeated) > 0:
 		slices.Sort(repeated)
-		return nil, &RefusedError{Reason: ReasonRepeated, Keys: slices.Compact(repeated)}
+		return nil, nil, &RefusedError{Reason: ReasonRepeated, Keys: slices.Compact(repeated)}
 	}
-	return writes, nil
+	slices.Sort(unread)
+	return writes, unread, nil
 }
 
-// apply is the table stored makes with writes applied, and the stored keys
-// the write deletes: each one within a key written, unless the write sets
-// that key again.
-func apply(stored, writes map[string]any) (table map[string]any, deleted []string) {
+// unreadAt reports whether a stored key the schema does not read is at or
+// beneath unread, a key written null that the schema does not read either.
+// A row the schema reads is never deleted through a spelling it refuses.
+func unreadAt(stored, unread string) bool {
+	if _, err := config.CanonicalKey[AppConfig](stored); err == nil {
+		return false
+	}
+	if stored == unread {
+		return true
+	}
+	s, err := config.ParseKey(stored)
+	if err != nil {
+		return false
+	}
+	u, err := config.ParseKey(unread)
+	return err == nil && s.Within(u)
+}
+
+// unstored is the keys of unread with no row stored at or beneath them for
+// a null write to delete: keys naming nothing at all.
+func unstored(unread []string, stored map[string]any) []string {
+	var missing []string
+	for _, u := range unread {
+		found := false
+		for key := range stored {
+			if unreadAt(key, u) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			missing = append(missing, u)
+		}
+	}
+	return missing
+}
+
+// apply is the table stored makes with writes and unread applied, and the
+// stored keys the write deletes: each one within a key written, unless the
+// write sets that key again, and each the schema does not read at or
+// beneath a key of unread.
+func apply(stored, writes map[string]any, unread []string) (table map[string]any, deleted []string) {
 	written := make([]config.Key, 0, len(writes))
 	for key := range writes {
 		k, err := config.ParseKey(key)
@@ -356,6 +406,8 @@ func apply(stored, writes map[string]any) (table map[string]any, deleted []strin
 	table = map[string]any{}
 	for key, value := range stored {
 		switch {
+		case slices.ContainsFunc(unread, func(u string) bool { return unreadAt(key, u) }):
+			deleted = append(deleted, key)
 		case !covered(key, written):
 			table[key] = value
 		case writes[key] == nil: // not set again under this spelling, where the upsert would replace it
