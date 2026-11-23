@@ -10,6 +10,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/ashtonian/pkg/config"
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 )
 
 // Load returns a Kong option that makes cfg, a config struct inside the CLI
@@ -95,7 +96,7 @@ func LoadReloader[T any](ctx context.Context, cfg *T, envPrefixes []string, opts
 		}
 		kctx.Bind(r)
 		// Published configs are shared and immutable; *cfg is the caller's.
-		startup := copyValue(reflect.ValueOf(r.Config()).Elem()).(T)
+		startup := deepcopy.Value(reflect.ValueOf(r.Config()).Elem()).Interface().(T)
 		return &startup, nil
 	})
 }
