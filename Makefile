@@ -19,6 +19,15 @@ STATICCHECK := GOTOOLCHAIN=go1.27.4 go run honnef.co/go/tools/cmd/staticcheck@v0
 # through go/build, which finds their DSL import only in a workspace holding a
 # module that requires it. go.work holds the published modules alone, so
 # golangci-lint runs under LINT_WORK: go.work plus tools/gorules.
+# go fix's fixers come with the toolchain, so the check pins the same release.
+# Three fixers are off. embedlit flattens literals of embedded structs, which
+# the tests of promoted fields spell out on purpose. omitzero deletes omitempty
+# from struct-typed fields, where only encoding/json ignores it: config's JSON
+# Schema and parse's patch decoding read it, and their tests pin that. stditerators
+# turns Value.Field(i) walks into Value.Fields(), which also builds each field's
+# StructField: about ten times the cost of the walk it replaces.
+GOFIX := GOTOOLCHAIN=go1.27.4 go fix -embedlit=false -omitzero=false -stditerators=false
+GOFMT = $(shell GOTOOLCHAIN=go1.27.4 go env GOROOT)/bin/gofmt
 GOLANGCI_LINT_VERSION := v2.15.0
 LINT_WORK := .lint.work
 # Empty: golangci-lint reports only the issues on lines changed since the merge
@@ -96,7 +105,7 @@ test-httpx-unit:
 test-httpx-integration:
 	$(call scoped,go test $(RACE) -count=1,$(HTTPX_MODULES),integration)
 
-.PHONY: test-parse-race test-parse-race-all lint-cookbook
+.PHONY: test-parse-race test-parse-race-all lint-cookbook fix
 
 ## test-parse-unit: parse unit tests and fuzz seeds, without the race detector.
 test-parse-unit:
@@ -153,14 +162,20 @@ test-parse-sdk:
 parse-sdk-release-check:
 	bash tools/check-parse-sdk-release.sh
 
-## lint: go vet, staticcheck and golangci-lint over every published module's
-## covered packages. Tagged modules take both tags in one pass: no file requires
-## either tag's absence. golangci-lint reports only new issues unless LINT_ALL=1.
+## lint: gofmt over every tracked Go file, then go vet, go fix -diff, staticcheck
+## and golangci-lint over every published module's covered packages. Tagged
+## modules take both tags in one pass: no file requires either tag's absence.
+## golangci-lint reports only new issues unless LINT_ALL=1; gofmt and go fix
+## report every one. make fix applies gofmt's and go fix's.
 lint: $(LINT_WORK)
+	@unformatted="$$(git ls-files '*.go' | xargs $(GOFMT) -l)" || exit 1; \
+	if [ -n "$$unformatted" ]; then printf 'gofmt: run make fix\n%s\n' "$$unformatted"; exit 1; fi
 	$(call scoped,go vet,$(UNTAGGED_MODULES))
+	$(call scoped,$(GOFIX) -diff,$(UNTAGGED_MODULES))
 	$(call scoped,$(STATICCHECK),$(UNTAGGED_MODULES))
 	$(call scoped-over,$(GOLANGCI_LINT),$(UNTAGGED_MODULES),$(call lint-dirs,$(call packages,$(UNTAGGED_MODULES))))
 	$(call scoped,go vet,$(TAGGED_MODULES),$(LINT_TAGS))
+	$(call scoped,$(GOFIX) -diff,$(TAGGED_MODULES),$(LINT_TAGS))
 	$(call scoped,$(STATICCHECK),$(TAGGED_MODULES),$(LINT_TAGS))
 	$(call scoped-over,$(GOLANGCI_LINT) --build-tags=$(LINT_TAGS),$(TAGGED_MODULES),$(call lint-dirs,$(call packages,$(TAGGED_MODULES),$(LINT_TAGS))))
 
@@ -168,9 +183,16 @@ lint: $(LINT_WORK)
 $(LINT_WORK): go.work go.work.sum tools/gorules/go.mod
 	cp go.work $@ && cp go.work.sum $@.sum && go work edit -use=./tools/gorules $@
 
-## lint-cookbook: go vet and staticcheck over the cookbook, outside the workspace.
+## fix: apply gofmt to every tracked Go file and go fix's fixers, as lint checks
+## them, to every published module's covered packages.
+fix:
+	git ls-files '*.go' | xargs $(GOFMT) -w
+	$(call scoped,$(GOFIX),$(UNTAGGED_MODULES))
+	$(call scoped,$(GOFIX),$(TAGGED_MODULES),$(LINT_TAGS))
+
+## lint-cookbook: go vet, go fix -diff and staticcheck over the cookbook, outside the workspace.
 lint-cookbook:
-	cd $(COOKBOOK) && GOWORK=off go vet ./... && GOWORK=off $(STATICCHECK) ./...
+	cd $(COOKBOOK) && GOWORK=off go vet ./... && GOWORK=off $(GOFIX) -diff ./... && GOWORK=off $(STATICCHECK) ./...
 
 ## release-check: each published module as a consumer gets it — outside the
 ## workspace, its dependencies at the versions its go.mod requires. The test
@@ -243,7 +265,7 @@ cookbook-postgres-down:
 ## parse-example-check: vet, staticcheck and test the Parse server example, a
 ## module outside the workspace, against the Parse working tree
 parse-example-check:
-	cd $(PARSE_EXAMPLE) && GOWORK=off go mod tidy -diff && GOWORK=off go vet -tags=unit,integration ./... && GOWORK=off $(STATICCHECK) -tags=unit,integration ./... && GOWORK=off go test $(RACE) -tags=unit,integration -count=1 ./...
+	cd $(PARSE_EXAMPLE) && GOWORK=off go mod tidy -diff && GOWORK=off go vet -tags=unit,integration ./... && GOWORK=off $(GOFIX) -diff -tags=unit,integration ./... && GOWORK=off $(STATICCHECK) -tags=unit,integration ./... && GOWORK=off go test $(RACE) -tags=unit,integration -count=1 ./...
 
 ## parse-sdk-registry-check: bounded registry availability and integrity checks
 parse-sdk-registry-check:
@@ -251,12 +273,12 @@ parse-sdk-registry-check:
 
 ## tool-check: release tooling is a development module, never published
 tool-check:
-	cd tools/modarchive && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test $(RACE) -count=1 ./... && GOWORK=off $(STATICCHECK) ./...
+	cd tools/modarchive && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off $(GOFIX) -diff ./... && GOWORK=off go test $(RACE) -count=1 ./... && GOWORK=off $(STATICCHECK) ./...
 
 ## docs-check: every module's Markdown, in the workspace or not, against its code: Go identifiers,
 ## relative links and anchors, code maps (tools/doccheck)
 docs-check:
-	cd tools/doccheck && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test $(RACE) -count=1 ./... && GOWORK=off $(STATICCHECK) ./... && GOWORK=off go run . -root ../..
+	cd tools/doccheck && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off $(GOFIX) -diff ./... && GOWORK=off go test $(RACE) -count=1 ./... && GOWORK=off $(STATICCHECK) ./... && GOWORK=off go run . -root ../..
 
 ## release-please-check: the release workflow's runner (first-parent notes and their release-please wiring),
 ## the release-notes check of a pull request's commits, and the repository's pnpm contract (tools/check-pnpm.mjs)
