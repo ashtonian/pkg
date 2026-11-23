@@ -352,8 +352,9 @@ func (n *originNode) kept() Source {
 }
 
 // inputKey is the key an input at raw path — its encodePath encoding —
-// sets: cut at a list or a value decoded whole, which the input sets as
-// part of it. It is false for a path no field reads.
+// sets: through a list element a key edit set by index, and cut at any other
+// list or a value decoded whole, which the input sets as part of it. It is
+// false for a path no field reads.
 func inputKey(root *schemaNode, raw string) (keyPath, bool) {
 	var p keyPath
 	n := root
@@ -369,6 +370,12 @@ func inputKey(root *schemaNode, raw string) (keyPath, bool) {
 			p, n = p.field(f.key), f.node
 		case nodeMap:
 			p, n = p.key(name), n.elem
+		case nodeList:
+			i, err := strconv.Atoi(name)
+			if err != nil || i < 0 {
+				return p, true // a map weak decoding reads as the list's one element
+			}
+			p, n = p.index(i), n.elem
 		default:
 			return p, true
 		}

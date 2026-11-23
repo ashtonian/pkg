@@ -575,3 +575,20 @@ func TestShadow_TypedMapRemovesWhatItLacks(t *testing.T) {
 		})
 	}
 }
+
+// An input a key edit set in a list element is named by its element's key.
+func TestShadow_NamesTheListElementAnEntrySet(t *testing.T) {
+	type cfg struct {
+		Pool []editServer `koanf:"pool"`
+	}
+	entries, err := NewEntryProvider(func(context.Context) (map[string]any, error) {
+		return map[string]any{"pool[0].port": 7}, nil
+	})
+	require.NoError(t, err)
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "pool: [{host: x}]\n")
+	snap, err := LoadSnapshot[cfg](t.Context(),
+		WithDefaults(map[string]any{"pool": []editServer{{"a", 1}}}), WithBaseProvider(entries, nil), WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, []Shadow{{Key: "pool[0].port", Source: Source{Kind: SourceBase, Name: "0"}, By: fileInput(file)}}, snap.Shadowed)
+}
