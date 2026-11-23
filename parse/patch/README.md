@@ -15,10 +15,10 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 ## API reference
 
 - Schemas: `GeneratePatchSchema[T]`, `GenerateServerPatchSchema[T]` (adds the `parse:"server"` fields, for the server's own writes), `NewPatchSchema`, `PatchSchema` (`AddPath`, `Path`, `Paths`, `MaxOperations`, `Clone`), `DefaultMaxOperations`, `PathSchema` (`AllowsOp`, `Nullable`; `EnumValues` and `Bounds` advertise its value tags), `Validator`, `DefaultPatchOps`, `IsValidOp`, `Ops`
-- Parsing: `NewParser(schema, cfg)` (`Parse`, `ParseOps`), `ParseMergePatch(body, schema, cfg)`, `ParseMergePatchMap`, `ParsedPatch` (`AuditInfo`, `ParsedFor`: whether a parser validated it against a schema), `PatchOperation`, `RawPatchOp`, `PatchOp`; `ErrUnparsed` for a `ParsedPatch` no parser produced
+- Parsing: `NewParser(schema, cfg)` (`Parse`, `ParseOps`), `ParseMergePatch(body, schema, cfg)`, `ParseMergePatchMap`, `ParsedPatch` (`AuditInfo`, `ParsedFor`: whether a parser validated it against a schema), `PatchOperation`, `RawPatchOp`, `PatchOp` (its `PatchOp*` constants, one per RFC 6902 operation and `array_append`); `ErrUnparsed` for a `ParsedPatch` no parser produced
 - Applying to Go values: `NewApplier[T](gen, cfg)` (`Apply`), the in-memory counterpart of `BuildPatchSQL`
 - SQL: `BuildPatchSQL`, `SQLDialect`, `PatchSQLResult` (`Assignments`, `ChangePredicate`), `ColumnAssignment` (`Column`, `Expression`), `PatchSQLOption` (`WithStartParam`, `WithAutoTimestamp`, `WithAutoTimestampSQL`, `WithIncrement`, `WithTimeFunc`, `WithChangePredicate`)
-- Relations: `RelationPatchOp`, `RelationVerb`, `RenderRelationOp`, `RenderRelationOpOptions` (`Owner` / `RelationOwner` and `TargetVisible`: guarded statements for a relation with a target table), `RenderedRelationStatement`, `RelationPath`
+- Relations: `RelationPatchOp`, `RelationVerb` (`RelationVerb*`: add, remove, replace), `RenderRelationOp`, `RenderRelationOpOptions` (`Owner` / `RelationOwner` and `TargetVisible`: guarded statements for a relation with a target table), `RenderedRelationStatement`, `RelationPath`
 - Policy: `NewPatchPolicyConstraints` (`ForbidPaths`, `ConstrainValues`, `ValidateWith`: `PolicyOption`), `PatchPolicyConstraints`, `ValueConstraint`, `PatchValidator`, `PolicySubject`, `ApplyPatchPolicyConstraints`, `PatchPolicyFromWritableFields`
 - Errors: `ECode*` (aliases of `core.Code*`, each code's one definition), `Codes`, `ErrSQLColumnMissing` (a schema path with no column, the server's: not a `ParseError`); `ConstraintError` (`Constraint`, `Limit`: a declared constraint's E2077 cause), `NewConstraintError`
 
@@ -38,6 +38,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `relation_sql.go` | Relation statements: one delete and one insert builder, owners and values each one array parameter, junction tenancy and target visibility |
 | `policy.go` | Patch policy and value constraints, judged by what operations write (`writes.go`) |
 | `pattern.go` | Path patterns: token check, matching (`*` one token, `**` zero or more), specificity order |
+| `typed_json.go` | A merge patch's document values checked and normalized against the Go type of the member they write |
 | `writes.go` | The paths an operation writes and reads, and the members a written value holds |
 | `errors.go` | E-codes |
 

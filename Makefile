@@ -195,9 +195,14 @@ parse-sdk-registry-check:
 tool-check:
 	cd tools/modarchive && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test $(RACE) -count=1 ./... && GOWORK=off $(STATICCHECK) ./...
 
+## docs-check: every workspace module's Markdown against its code: Go identifiers,
+## relative links and anchors, code maps (tools/doccheck)
+docs-check:
+	cd tools/doccheck && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test $(RACE) -count=1 ./... && GOWORK=off $(STATICCHECK) ./... && GOWORK=off go run . -root ../..
+
 ## release-please-check: the release workflow's runner: first-parent notes and their release-please wiring
 release-please-check:
 	cd tools/release-please && pnpm install --frozen-lockfile && node --test
 
 ## ci: everything CI runs
-ci: lint lint-cookbook test release-check parse-sdk-release-check parse-sdk-registry-check cookbook-check tool-check release-please-check
+ci: lint lint-cookbook test release-check parse-sdk-release-check parse-sdk-registry-check cookbook-check tool-check release-please-check docs-check

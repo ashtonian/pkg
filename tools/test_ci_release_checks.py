@@ -63,7 +63,7 @@ OWNERS = json.loads(scope_input("go-owners"))
 
 class ReleaseChecks(unittest.TestCase):
     def test_archive_examples_remain_required_for_prose(self):
-        self.assertEqual(ci.release_checks(["parse/docs/queries.md"]), ["parse-release-check"])
+        self.assertEqual(ci.release_checks(["parse/docs/queries.md"]), ["parse-release-check", "docs-check"])
         modules = job("modules")
         self.assertIn("contains(needs.scope.outputs.jobs, '\"modules\"')", modules)
         self.assertIn("needs.scope.outputs.checks", modules)
@@ -76,15 +76,17 @@ class ReleaseChecks(unittest.TestCase):
 
     def test_release_checks_follow_the_changed_modules(self):
         cases = {
-            ("parse/internal/dialect/dialect.go",): ["parse-release-check"],
-            ("parse/sdk/ts/src/client.ts", "parse/README.md"): ["parse-release-check"],
-            ("httpx/codec/proto/codec.go",): ["httpx-release-check"],
+            ("parse/internal/dialect/dialect.go",): ["parse-release-check", "docs-check"],
+            ("parse/sdk/ts/src/client.ts", "parse/README.md"): ["parse-release-check", "docs-check"],
+            ("httpx/codec/proto/codec.go",): ["httpx-release-check", "docs-check"],
             ("tools/check-httpx-release.sh",): ["httpx-release-check"],
-            ("state/store.go", "onepassword/client.go"): ["native-release-check"],
-            ("config/watch.go",): ["config-release-check", "cookbook-check"],
-            ("config/kongprovider/load.go",): ["kongprovider-release-check", "cookbook-check"],
+            ("state/store.go", "onepassword/client.go"): ["native-release-check", "docs-check"],
+            ("config/watch.go",): ["config-release-check", "cookbook-check", "docs-check"],
+            ("config/kongprovider/load.go",): ["kongprovider-release-check", "cookbook-check", "docs-check"],
             ("config/examples/cookbook/main.go",): ["cookbook-check"],
-            ("gitx/merge.go", "jsonvalue/value.go"): ["gitx-release-check", "jsonvalue-release-check"],
+            ("gitx/merge.go", "jsonvalue/value.go"): ["gitx-release-check", "jsonvalue-release-check", "docs-check"],
+            ("tools/doccheck/check.go",): ["docs-check"],
+            ("httpx/examples/gin/main.go",): ["httpx-release-check"],
             ("tools/release-please/first-parent.mjs",): ["release-please-check"],
             ("tools/check-parse-sdk-release.sh",): [],
             ("CONTRIBUTING.md", "README.md"): [],
@@ -93,6 +95,11 @@ class ReleaseChecks(unittest.TestCase):
         for paths, want in cases.items():
             with self.subTest(paths=paths):
                 self.assertEqual(ci.release_checks(list(paths)), want)
+
+    def test_the_documentation_check_reads_every_workspace_module(self):
+        used = json.loads(subprocess.check_output(["go", "work", "edit", "-json"], cwd=ROOT))["Use"]
+        trees = {PurePosixPath(u["DiskPath"]).parts[0] + "/" for u in used}
+        self.assertEqual(set(ci.CHECKS["docs-check"]), trees | {"tools/doccheck/"})
 
     def test_shared_unknown_or_unavailable_inputs_run_every_release_check(self):
         every = list(ci.CHECKS)
@@ -106,7 +113,7 @@ class ReleaseChecks(unittest.TestCase):
 class Plan(unittest.TestCase):
     def test_the_modules_job_runs_only_with_a_release_check(self):
         self.assertEqual(ci.plan(["test", "modules"], ["CONTRIBUTING.md"]), (["test"], []))
-        self.assertEqual(ci.plan(["test", "modules"], ["parse/list.go"]), (["test", "modules"], ["parse-release-check"]))
+        self.assertEqual(ci.plan(["test", "modules"], ["parse/list.go"]), (["test", "modules"], ["parse-release-check", "docs-check"]))
 
     def test_the_cookbook_lints_whenever_its_check_runs(self):
         self.assertEqual(ci.plan(["modules"], ["config/examples/cookbook/main.go"]),
@@ -137,13 +144,13 @@ class Plan(unittest.TestCase):
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
             self.assertEqual(json.loads(values["jobs"]), ["test", "modules", "parse-benchmarks"])
             self.assertEqual(json.loads(values["required"]), ["test", "modules"])
-            self.assertEqual(values["checks"], "httpx-release-check parse-release-check")
+            self.assertEqual(values["checks"], "httpx-release-check parse-release-check docs-check")
             self.assertEqual(values["lint-cookbook"], "false")
-            self.assertEqual(json.loads(values["selections"])["modules"], ["httpx-release-check", "parse-release-check"])
+            self.assertEqual(json.loads(values["selections"])["modules"], ["httpx-release-check", "parse-release-check", "docs-check"])
             # The pull request's run, measured from the merge's first parent,
             # made only parse's release check: it does not cover this push's.
             self.assertEqual(json.loads(values["parent-selections"]),
-                             {"test": [parse], "modules": ["parse-release-check"], "parse-benchmarks": [parse]})
+                             {"test": [parse], "modules": ["parse-release-check", "docs-check"], "parse-benchmarks": [parse]})
             for full, listing in (("true", str(files)), ("false", "")):
                 with self.subTest(full=full, listing=listing):
                     self.assertIsNone(ci.changed_paths({"SCOPE_FULL": full, "SCOPE_FILES": listing}))
@@ -165,7 +172,7 @@ class Selections(unittest.TestCase):
 
     def test_the_modules_job_checks_its_release_checks(self):
         jobs, checks, chosen = ci.measure(["test", "modules"], ["gitx/merge.go"], {"test": ["x"], "modules": "all"})
-        self.assertEqual(chosen, {"test": ["x"], "modules": ["gitx-release-check"]})
+        self.assertEqual(chosen, {"test": ["x"], "modules": ["gitx-release-check", "docs-check"]})
 
     def test_lint_holds_the_cookbook_when_it_lints_it(self):
         _, _, chosen = ci.measure(["modules"], ["config/examples/cookbook/main.go"], {"modules": "all"})

@@ -130,6 +130,7 @@ jobs:
             tools/check-*
             tools/release-please/**
             tools/modarchive/**
+            tools/doccheck/**
             config/examples/cookbook/**
             httpx/examples/gin/**
             httpx/internal/bench/**
