@@ -178,8 +178,9 @@ leaf. Sensitive maps, lists and interfaces reach the callback once, whole,
 so a policy can withhold their keys too. A key a `,remain` field collects is
 a key of its section in every tree and printed listing (`plugins.foo`),
 judged as a map entry is, its `Field` the remain field's; a sensitive
-remain field reaches the callback once, whole, at `section[*]`, and its
-result is the section's `[*]` entry. `PrintRedacted`, `RedactedMap` and
+remain field reaches the callback once, whole, at `section[*]`: a map it
+returns sets keys of the section, so a callback that returns what it is
+given gives `Tree`'s keys, and anything else is the section's `[*]` entry. `PrintRedacted`, `RedactedMap` and
 `RedactedTree` show it as one `[REDACTED]` value there; `Tree` withholds
 nothing and shows each key it collects. Empty and nil containers are leaves;
 a nil callback is identity, and is `Tree`. Fields inside a dynamic interface

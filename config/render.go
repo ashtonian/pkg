@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"reflect"
 	"slices"
 	"strconv"
@@ -98,8 +99,9 @@ func (w *valueTree) root(cfg any) *outNode {
 }
 
 // fields adds struct val's keys to mapping n, squashed structs' in place:
-// its members (see members.go). A sensitive remain field is one entry,
-// keyed [*], unless the tree withholds nothing.
+// its members (see members.go), each keyed by its name. A sensitive remain
+// field is one entry, keyed [*], unless the tree withholds nothing or a
+// policy returns a map for it (see spliceCollected).
 func (w *valueTree) fields(n *outNode, val reflect.Value, c cursor) {
 	if w.err != nil {
 		return
@@ -118,7 +120,31 @@ func (w *valueTree) fields(n *outNode, val reflect.Value, c cursor) {
 		if !vals[0].IsValid() {
 			continue // beneath a nil embedded pointer
 		}
-		n.entries = append(n.entries, outEntry{key: keyPath{m.seg}.String(), node: w.atValue(vals[0], m.cursor(c))})
+		node := w.atValue(vals[0], m.cursor(c))
+		if m.kind != memberRemain {
+			n.entries = append(n.entries, outEntry{key: m.seg.name, node: node})
+			continue
+		}
+		if collected, ok := node.scalar.(map[string]any); ok && w.leaf != nil {
+			w.spliceCollected(n, schema, c.path, collected)
+			continue
+		}
+		n.entries = append(n.entries, outEntry{key: keyPath{m.seg}.String(), node: node})
+	}
+}
+
+// spliceCollected adds collected, what a policy returned for the sensitive
+// remain field of the struct at path, to that struct's mapping n as keys
+// of their own, as the remain field holds them: a policy that returns what
+// it is given gives [Tree]'s keys, as it does for a sensitive map. A key a
+// field of the struct reads is no key the remain field could hold.
+func (w *valueTree) spliceCollected(n *outNode, schema *schemaNode, path keyPath, collected map[string]any) {
+	for _, name := range slices.Sorted(maps.Keys(collected)) {
+		if !schema.collects(memberSegment(name)) {
+			w.err = fmt.Errorf("config: the policy's result for %s sets %s, which a field reads, not its remain field", path.any(), path.member(name))
+			return
+		}
+		n.entries = append(n.entries, outEntry{key: name, node: scalarNode(collected[name])})
 	}
 }
 
@@ -369,9 +395,10 @@ func Tree(cfg any) (map[string]any, error) { return TreeFunc(cfg, nil) }
 // The key uses the package's grammar; Field carries the declared metadata.
 // Sensitive maps, lists and interfaces are passed once, whole, including
 // their keys, and so is a sensitive koanf:",remain" field, keyed
-// section[*], its result the "[*]" entry of its section; a key a remain
-// field that is not sensitive collects is a leaf of its section, its Field
-// the remain field. Empty or nil containers are leaves. A nil callback is identity,
+// section[*]: a map it returns sets keys of the section, as the field
+// holds them, and anything else is the section's "[*]" entry. A key a
+// remain field that is not sensitive collects is a leaf of its section,
+// its Field the remain field. Empty or nil containers are leaves. A nil callback is identity,
 // and is [Tree]. The callback receives detached tree values and may change
 // them freely.
 //
