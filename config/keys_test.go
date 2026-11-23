@@ -53,6 +53,36 @@ func TestStrictKeys_InputACustomDecoderConsumes(t *testing.T) {
 	assert.Equal(t, 42, got.Item.Value)
 }
 
+// A value that decodes itself, handed to the load already of its type —
+// by a provider, WithDefaults or a baseline config — is set as it is: its
+// UnmarshalMapstructure reads what a source writes, never the value.
+func TestSources_ATypedSelfDecodingValueIsSetAsItIs(t *testing.T) {
+	type cfg struct {
+		Item customDecoded  `koanf:"item"`
+		Ptr  *customDecoded `koanf:"ptr"`
+		Name string         `koanf:"name"`
+	}
+	typed := map[string]any{"item": customDecoded{Value: 42}, "ptr": &customDecoded{Value: 7}}
+	want := cfg{Item: customDecoded{Value: 42}, Ptr: &customDecoded{Value: 7}}
+	for name, opt := range map[string]Option{
+		"WithBaseProvider": WithBaseProvider(mapSource(typed), nil),
+		"WithDefaults":     WithDefaults(typed),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Load[cfg](t.Context(), opt)
+			require.NoError(t, err)
+			assert.Equal(t, want, *got)
+			assert.NotSame(t, typed["ptr"], got.Ptr, "the config holds a copy")
+		})
+	}
+
+	loaded, err := Load[cfg](t.Context(), WithBaseProvider(mapSource{"item": map[string]any{"raw": 42}, "ptr": map[string]any{"raw": 7}}, nil))
+	require.NoError(t, err)
+	got, err := DecodeEdits(t.Context(), loaded, map[string]any{"name": "x"})
+	require.NoError(t, err, "the baseline's value is set as it is")
+	assert.Equal(t, cfg{Item: customDecoded{Value: 42}, Ptr: &customDecoded{Value: 7}, Name: "x"}, *got)
+}
+
 func TestStrictKeys_InputAHookConsumes(t *testing.T) {
 	type item struct{ Value int }
 	type cfg struct {
