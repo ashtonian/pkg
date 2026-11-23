@@ -27,7 +27,7 @@ type Settings struct {
 // Settings, a struct whose members are paths. Its table is "path_records".
 type PathRecord struct {
 	ID       string          `json:"id"       db:"id"       parse:"filter" filter_ops:"eq,in"`
-	Attrs    json.RawMessage `json:"attrs"    db:"attrs"    parse:"filter" paths:"color:string:filter+sort+facet;size:int:filter+sort;ratio:float;price:decimal:filter+sort+facet;on:bool:facet;seen:timestamp:filter+sort;owner:uuid;dims.w:float"`
+	Attrs    json.RawMessage `json:"attrs"    db:"attrs"    parse:"filter" paths:"color:string:filter+sort+facet;size:int:filter+sort;ratio:float;price:decimal:filter+sort+facet;on:bool:facet;seen:timestamp:filter+sort;owner:uuid;dims.w:float;null:string:filter+sort+facet;n.null:string;tags.0:string:filter+sort+facet"`
 	Settings *Settings       `json:"settings" db:"settings" parse:"filter"`
 }
 
@@ -39,18 +39,20 @@ type PathRecord struct {
 // decimal, its color upper-case and its owner an upper-case UUID. a's
 // timestamp is written as encoding/json writes UTC. Prices are JSON numbers
 // (a, e) or strings in plain notation (b with a scale, g), as a decimal
-// encodes.
+// encodes. Members named null (a, g) and 0 (a's and e's tags objects) are
+// object keys like any other, and b's tags is an array, which has no
+// members: a member's name is never an array index or a NULL.
 func PathRecords() []PathRecord {
 	return []PathRecord{
-		{ID: "a", Attrs: json.RawMessage(`{"color":"red","size":3,"ratio":1.5,"price":10.25,"on":true,"seen":"2026-01-02T03:04:05Z","owner":"0198a3c2-7a1e-7c00-8000-000000000001","dims":{"w":2.5}}`),
+		{ID: "a", Attrs: json.RawMessage(`{"color":"red","size":3,"ratio":1.5,"price":10.25,"on":true,"seen":"2026-01-02T03:04:05Z","owner":"0198a3c2-7a1e-7c00-8000-000000000001","dims":{"w":2.5},"null":"n","n":{"null":"deep"},"tags":{"0":"y0"}}`),
 			Settings: &Settings{Mode: "auto", Level: 2, Window: &Window{From: Base}}},
-		{ID: "b", Attrs: json.RawMessage(`{"color":"blue","size":10,"ratio":2,"price":"9.50","on":false,"seen":"2026-01-02T03:04:06.000000000Z","owner":"0198a3c2-7a1e-7c00-8000-000000000002","dims":{"w":10}}`),
+		{ID: "b", Attrs: json.RawMessage(`{"color":"blue","size":10,"ratio":2,"price":"9.50","on":false,"seen":"2026-01-02T03:04:06.000000000Z","owner":"0198a3c2-7a1e-7c00-8000-000000000002","dims":{"w":10},"tags":["x","y"]}`),
 			Settings: &Settings{Mode: "manual", Level: 5}},
 		{ID: "c", Attrs: json.RawMessage(`{"color":3,"size":"3","ratio":"1.5","price":"1e3","on":"true","seen":"2026-01-02T05:04:05+02:00","owner":"not-a-uuid","dims":5}`)},
 		{ID: "d"},
-		{ID: "e", Attrs: json.RawMessage(`{"color":null,"size":9007199254740993,"ratio":0.1,"price":-1,"seen":"2026-01-02T03:04:05.5Z"}`), Settings: &Settings{}},
+		{ID: "e", Attrs: json.RawMessage(`{"color":null,"size":9007199254740993,"ratio":0.1,"price":-1,"seen":"2026-01-02T03:04:05.5Z","tags":{"0":"x0"}}`), Settings: &Settings{}},
 		{ID: "f", Attrs: json.RawMessage(`{}`)},
-		{ID: "g", Attrs: json.RawMessage(`{"color":"Red","size":3.5,"ratio":-1,"price":"100","on":true,"owner":"0198A3C2-7A1E-7C00-8000-000000000003"}`),
+		{ID: "g", Attrs: json.RawMessage(`{"color":"Red","size":3.5,"ratio":-1,"price":"100","on":true,"owner":"0198A3C2-7A1E-7C00-8000-000000000003","null":"m"}`),
 			Settings: &Settings{Mode: "auto", Level: 7, Window: &Window{From: Base.Add(time.Hour)}}},
 		{ID: "h", Attrs: json.RawMessage(`["color","size"]`)},
 	}
@@ -69,6 +71,10 @@ var PathOrders = map[string]string{
 	"-settings.level": "hfdcgbae",
 	"attrs.price":     "ebagcdfh",
 	"-attrs.price":    "hfdcgabe",
+	"attrs.null":      "gabcdefh",
+	"-attrs.null":     "hfedcbag",
+	"attrs.tags.0":    "eabcdfgh",
+	"-attrs.tags.0":   "hgfdcbae",
 }
 
 // PathFacets are the buckets path facets count over PathRecords; an absent
@@ -79,6 +85,8 @@ var PathFacets = map[string]map[string]int64{
 	"settings.mode":  {"auto": 2, "manual": 1, "": 1},
 	"settings.level": {"0-5": 2, "5+": 2},
 	"attrs.price":    {"10.25": 1, "9.5": 1, "-1": 1, "100": 1},
+	"attrs.null":     {"n": 1, "m": 1},
+	"attrs.tags.0":   {"y0": 1, "x0": 1},
 }
 
 // PathFacetOrders are PathFacets' numeric terms facets cut through a tie,
@@ -142,6 +150,18 @@ func PathCases() []Case {
 
 		{Name: "nested path", Filter: `{"attrs.dims.w":{"$gt":5}}`, Want: ids("b")},
 		{Name: "nested path through a scalar is absent", Filter: `{"attrs.dims.w":{"$null":true}}`, Want: ids("cdefgh")},
+
+		{Name: "member named null eq", Filter: `{"attrs.null":"n"}`, Want: ids("a")},
+		{Name: "member named null ne", Filter: `{"attrs.null":{"$ne":"zzz"}}`, Want: ids("ag")},
+		{Name: "member named null is present", Filter: `{"attrs.null":{"$null":false}}`, Want: ids("ag")},
+		{Name: "member named null in", Filter: `{"attrs.null":{"$in":["m","zzz"]}}`, Want: ids("g")},
+		{Name: "nested member named null eq", Filter: `{"attrs.n.null":"deep"}`, Want: ids("a")},
+		{Name: "nested member named null ne", Filter: `{"attrs.n.null":{"$ne":"zzz"}}`, Want: ids("a")},
+		{Name: "numeric member of an object eq", Filter: `{"attrs.tags.0":"y0"}`, Want: ids("a")},
+		{Name: "numeric member is no array index", Filter: `{"attrs.tags.0":"x"}`, Want: ids("")},
+		{Name: "numeric member ne excludes an array", Filter: `{"attrs.tags.0":{"$ne":"zzz"}}`, Want: ids("ae")},
+		{Name: "numeric member in", Filter: `{"attrs.tags.0":{"$in":["x","x0"]}}`, Want: ids("e")},
+		{Name: "array at an object position is absent", Filter: `{"attrs.tags.0":{"$null":true}}`, Want: ids("bcdfgh")},
 
 		{Name: "struct member eq", Filter: `{"settings.mode":"auto"}`, Want: ids("ag")},
 		{Name: "struct member int", Filter: `{"settings.level":{"$gte":5}}`, Want: ids("bg")},

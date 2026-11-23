@@ -261,9 +261,9 @@ func TestColumnStorage_JSONPredicatesAndPathsFollowPhysicalType(t *testing.T) {
 			require.NoError(t, err)
 			plan, err := r.BuildList(filter.PostgresDialect{}, req, parse.Scope{})
 			require.NoError(t, err)
-			assert.Contains(t, plan.Page.SQL, "jsonb_typeof("+tt.expr+" #> '{key}')")
+			assert.Contains(t, plan.Page.SQL, "jsonb_typeof("+tt.expr+" -> 'key')")
 			assert.Contains(t, plan.Page.SQL, "ORDER BY ")
-			assert.Contains(t, plan.Page.SQL, tt.expr+" #>> '{key}'")
+			assert.Contains(t, plan.Page.SQL, tt.expr+" ->> 'key'")
 			if tt.storage != core.SQLJSON {
 				assert.NotContains(t, plan.Page.SQL, `("documents"."data")::jsonb`)
 			}

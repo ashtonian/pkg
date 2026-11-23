@@ -93,15 +93,15 @@ A path's value is the member when it has the declared JSON kind:
 | uuid | a string that is a UUID once ASCII-lower-cased | lower-cased text |
 | array of a type above | a JSON array | its elements of that type, each read as a member of the type is; elements of another kind are no elements, and an array with none is absent ([array elements](#array-elements)) |
 
-Anything else is **absent**: a missing key, JSON null, another kind, a timestamp with another offset, a non-object on the way, a NULL column. Absent is SQL NULL on every backend, so the NULL rules above apply: `$ne` / `$nin` / `$not` never match it and `$null: true` does.
+Anything else is **absent**: a missing key, JSON null, another kind, a timestamp with another offset, a non-object on the way, a NULL column. Absent is SQL NULL on every backend, so the NULL rules above apply: `$ne` / `$nin` / `$not` never match it and `$null: true` does. Every member is an object key: `tags.0` is the member named `0`, absent when `tags` is an array, and a member named `null` is one like any other.
 
 | Backend | Rendering |
 |---|---|
-| PostgreSQL | `CASE WHEN jsonb_typeof(doc #> '{a,b}') = '<kind>' THEN (doc #>> '{a,b}')[::numeric \| ::boolean] END`; `json` and `text` storage read as jsonb. Containment where it is exact, below |
+| PostgreSQL | `CASE WHEN jsonb_typeof(doc -> 'a' -> 'b') = '<kind>' THEN (doc -> 'a' ->> 'b')[::numeric \| ::boolean] END`, one object key per `->`, which is NULL on an array or a scalar; `json` and `text` storage read as jsonb. Containment where it is exact, below |
 | SQLite | `CASE WHEN json_type(doc, '$."a"."b"') IN (…) THEN json_extract(doc, '$."a"."b"') END` |
 | Memory | `filter.PathValue(doc, field)` — the reference rule the SQL renderings are tested against row by row, and how `filter.Evaluate` reads a path |
 
-On PostgreSQL a string, bool, int or float path of a `jsonb` column compares `$eq` by containment, `doc @> '{"a":{"b":v}}'`, and `$in` with at most `PostgresDialect.ContainmentMaxValues` members as `doc @> ANY($1::jsonb[])`, which a GIN index on the document serves (`jsonb_path_ops` suffices). Containment compares numbers by value and keeps a member holding an array apart from its elements, as the typed expression does, but it is False where the typed comparison is Unknown, so it is used only where an even number of `$not` (usually none) enclose the condition within its statement or subquery (`$and` / `$or` are monotone, so the statement is monotone in the condition there, and `$some` / `$none` and relation predicates select their elements and rows): there a row is selected exactly when it is with every Unknown condition False. Under an odd number of `$not`, for decimals (a decimal member may be a string), and on a path through a segment `#>` reads as an array index (`items.0`), the typed expression stays. An array path of strings, bools or numbers takes `$contains` by containment on the same terms, `doc @> '{"tags":["a","b"]}'`, and `$some` of an element `$eq` or `$in` (ContainmentMaxValues at most) at any polarity, as `(doc IS NOT NULL AND doc @> '{"tags":["a"]}')`: an element condition is never Unknown, and containment holds exactly when the array has an equal element. `SQLResult.Where` is therefore a selection predicate for a WHERE, ON or FILTER clause, not a value to negate or project.
+On PostgreSQL a string, bool, int or float path of a `jsonb` column compares `$eq` by containment, `doc @> '{"a":{"b":v}}'`, and `$in` with at most `PostgresDialect.ContainmentMaxValues` members as `doc @> ANY($1::jsonb[])`, which a GIN index on the document serves (`jsonb_path_ops` suffices). Containment compares numbers by value and keeps a member holding an array apart from its elements, as the typed expression does, but it is False where the typed comparison is Unknown, so it is used only where an even number of `$not` (usually none) enclose the condition within its statement or subquery (`$and` / `$or` are monotone, so the statement is monotone in the condition there, and `$some` / `$none` and relation predicates select their elements and rows): there a row is selected exactly when it is with every Unknown condition False. Under an odd number of `$not`, and for decimals (a decimal member may be a string), the typed expression stays. An array path of strings, bools or numbers takes `$contains` by containment on the same terms, `doc @> '{"tags":["a","b"]}'`, and `$some` of an element `$eq` or `$in` (ContainmentMaxValues at most) at any polarity, as `(doc IS NOT NULL AND doc @> '{"tags":["a"]}')`: an element condition is never Unknown, and containment holds exactly when the array has an equal element. `SQLResult.Where` is therefore a selection predicate for a WHERE, ON or FILTER clause, not a value to negate or project.
 
 A facetable path counts like a column: terms over its values, ranges over its numbers (`facet:"range:0-5,5+"` on a struct member, `PathDecl.Facet` per request); an absent member is in no bucket. An array path counts terms only, each row once per distinct element.
 
@@ -128,7 +128,7 @@ An array path's value is its elements of the declared type, each read as a membe
 
 | Backend | Array column | Array path |
 |---|---|---|
-| PostgreSQL | `EXISTS (SELECT 1 FROM unnest(col) AS elem1__(v) WHERE elem1__.v IS NOT NULL AND …)` | `EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(doc #> '{tags}') = 'array' THEN doc #> '{tags}' END) AS elem1__(v) WHERE <typed element> IS NOT NULL AND …)`, or containment ([JSON paths](#json-paths)) |
+| PostgreSQL | `EXISTS (SELECT 1 FROM unnest(col) AS elem1__(v) WHERE elem1__.v IS NOT NULL AND …)` | `EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(doc -> 'tags') = 'array' THEN doc -> 'tags' END) AS elem1__(v) WHERE <typed element> IS NOT NULL AND …)`, or containment ([JSON paths](#json-paths)) |
 | SQLite | `EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(col) = 'array' THEN col END) AS elem1__ WHERE <typed element> …)` over the JSON text column | the same over `json_each(…, '$."tags"')`; a decimal element reads its literal as written, `parse_decimal(elem1__.json -> elem1__.fullkey)` |
 | Memory | `filter.Evaluate` over the Go slice, or a decoded JSON array | each element as `filter.PathValue` reads it |
 
@@ -142,7 +142,7 @@ A JSON array of objects filters by its elements: every predicate inside one `$so
 
 ```text
 {"items":{"$some":{"sku":"a","qty":{"$gt":2}}}}
-postgres EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(orders.items) = 'array' THEN orders.items END) AS elem1__(v) WHERE (… elem1__.v #>> '{qty}' … AND … elem1__.v #>> '{sku}' …))
+postgres EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(orders.items) = 'array' THEN orders.items END) AS elem1__(v) WHERE (… elem1__.v ->> 'qty' … AND … elem1__.v ->> 'sku' …))
 sqlite   EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(orders.items) = 'array' THEN orders.items END) AS elem1__ WHERE (… json_extract(…elem1__.value…, '$."qty"') …))
 ```
 

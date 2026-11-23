@@ -1769,7 +1769,7 @@
         "op": "like",
         "value": "eu-%"
       },
-      "sqlPostgres": "(CASE WHEN jsonb_typeof(\"conf_entities\".\"meta\" #\u003e '{region}') = 'string' THEN (\"conf_entities\".\"meta\" #\u003e\u003e '{region}') END) LIKE $1 ESCAPE '\\'",
+      "sqlPostgres": "(CASE WHEN jsonb_typeof(\"conf_entities\".\"meta\" -\u003e 'region') = 'string' THEN (\"conf_entities\".\"meta\" -\u003e\u003e 'region') END) LIKE $1 ESCAPE '\\'",
       "sqlSqlite": "(CASE WHEN json_type(\"conf_entities\".\"meta\", '$.\"region\"') = 'text' THEN json_extract(\"conf_entities\".\"meta\", '$.\"region\"') END) GLOB ?1"
     },
     {
@@ -1828,7 +1828,7 @@
           }
         ]
       },
-      "sqlPostgres": "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(\"conf_entities\".\"lines\") = 'array' THEN \"conf_entities\".\"lines\" END) AS elem1__(v) WHERE (elem1__.v @\u003e $1::jsonb AND (CASE WHEN jsonb_typeof(elem1__.v #\u003e '{qty}') = 'number' THEN (elem1__.v #\u003e\u003e '{qty}')::numeric END) \u003e $2))",
+      "sqlPostgres": "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(\"conf_entities\".\"lines\") = 'array' THEN \"conf_entities\".\"lines\" END) AS elem1__(v) WHERE (elem1__.v @\u003e $1::jsonb AND (CASE WHEN jsonb_typeof(elem1__.v -\u003e 'qty') = 'number' THEN (elem1__.v -\u003e\u003e 'qty')::numeric END) \u003e $2))",
       "sqlSqlite": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"conf_entities\".\"lines\") = 'array' THEN \"conf_entities\".\"lines\" END) AS elem1__ WHERE ((CASE WHEN json_type((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"sku\"') = 'text' THEN json_extract((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"sku\"') END) = ?1 AND (CASE WHEN json_type((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"qty\"') IN ('integer', 'real') THEN json_extract((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"qty\"') END) \u003e ?2))"
     },
     {
@@ -1961,7 +1961,7 @@
           }
         ]
       },
-      "sqlPostgres": "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(\"conf_entities\".\"meta\" #\u003e '{sizes}') = 'array' THEN \"conf_entities\".\"meta\" #\u003e '{sizes}' END) AS elem1__(v) WHERE (CASE WHEN jsonb_typeof(elem1__.v) = 'number' THEN (elem1__.v #\u003e\u003e '{}')::numeric END) IS NOT NULL AND ((CASE WHEN jsonb_typeof(elem1__.v) = 'number' THEN (elem1__.v #\u003e\u003e '{}')::numeric END) \u003e= $1 AND (CASE WHEN jsonb_typeof(elem1__.v) = 'number' THEN (elem1__.v #\u003e\u003e '{}')::numeric END) \u003c $2))",
+      "sqlPostgres": "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(\"conf_entities\".\"meta\" -\u003e 'sizes') = 'array' THEN \"conf_entities\".\"meta\" -\u003e 'sizes' END) AS elem1__(v) WHERE (CASE WHEN jsonb_typeof(elem1__.v) = 'number' THEN (elem1__.v #\u003e\u003e '{}')::numeric END) IS NOT NULL AND ((CASE WHEN jsonb_typeof(elem1__.v) = 'number' THEN (elem1__.v #\u003e\u003e '{}')::numeric END) \u003e= $1 AND (CASE WHEN jsonb_typeof(elem1__.v) = 'number' THEN (elem1__.v #\u003e\u003e '{}')::numeric END) \u003c $2))",
       "sqlSqlite": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"conf_entities\".\"meta\", '$.\"sizes\"') = 'array' THEN \"conf_entities\".\"meta\" END, '$.\"sizes\"') AS elem1__ WHERE (CASE WHEN elem1__.type IN ('integer', 'real') THEN elem1__.value END) IS NOT NULL AND ((CASE WHEN elem1__.type IN ('integer', 'real') THEN elem1__.value END) \u003e= ?1 AND (CASE WHEN elem1__.type IN ('integer', 'real') THEN elem1__.value END) \u003c ?2))"
     },
     {
@@ -2002,7 +2002,7 @@
           }
         ]
       },
-      "sqlPostgres": "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(\"conf_entities\".\"meta\" #\u003e '{labels}') = 'array' THEN \"conf_entities\".\"meta\" #\u003e '{labels}' END) AS elem1__(v) WHERE (CASE WHEN jsonb_typeof(elem1__.v) = 'string' THEN (elem1__.v #\u003e\u003e '{}') END) IS NOT NULL AND ((CASE WHEN jsonb_typeof(elem1__.v) = 'string' THEN (elem1__.v #\u003e\u003e '{}') END) LIKE $1 ESCAPE '\\' OR (CASE WHEN jsonb_typeof(elem1__.v) = 'string' THEN (elem1__.v #\u003e\u003e '{}') END) = $2))",
+      "sqlPostgres": "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(\"conf_entities\".\"meta\" -\u003e 'labels') = 'array' THEN \"conf_entities\".\"meta\" -\u003e 'labels' END) AS elem1__(v) WHERE (CASE WHEN jsonb_typeof(elem1__.v) = 'string' THEN (elem1__.v #\u003e\u003e '{}') END) IS NOT NULL AND ((CASE WHEN jsonb_typeof(elem1__.v) = 'string' THEN (elem1__.v #\u003e\u003e '{}') END) LIKE $1 ESCAPE '\\' OR (CASE WHEN jsonb_typeof(elem1__.v) = 'string' THEN (elem1__.v #\u003e\u003e '{}') END) = $2))",
       "sqlSqlite": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"conf_entities\".\"meta\", '$.\"labels\"') = 'array' THEN \"conf_entities\".\"meta\" END, '$.\"labels\"') AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL AND ((CASE WHEN elem1__.type = 'text' THEN elem1__.value END) GLOB ?1 OR (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) = ?2))"
     },
     {
@@ -2054,7 +2054,7 @@
         "field": "meta.labels",
         "op": "some"
       },
-      "sqlPostgres": "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(\"conf_entities\".\"meta\" #\u003e '{labels}') = 'array' THEN \"conf_entities\".\"meta\" #\u003e '{labels}' END) AS elem1__(v) WHERE (CASE WHEN jsonb_typeof(elem1__.v) = 'string' THEN (elem1__.v #\u003e\u003e '{}') END) IS NOT NULL)",
+      "sqlPostgres": "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(\"conf_entities\".\"meta\" -\u003e 'labels') = 'array' THEN \"conf_entities\".\"meta\" -\u003e 'labels' END) AS elem1__(v) WHERE (CASE WHEN jsonb_typeof(elem1__.v) = 'string' THEN (elem1__.v #\u003e\u003e '{}') END) IS NOT NULL)",
       "sqlSqlite": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"conf_entities\".\"meta\", '$.\"labels\"') = 'array' THEN \"conf_entities\".\"meta\" END, '$.\"labels\"') AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL)"
     },
     {
@@ -2091,7 +2091,7 @@
         "field": "meta.sizes",
         "op": "null"
       },
-      "sqlPostgres": "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(\"conf_entities\".\"meta\" #\u003e '{sizes}') = 'array' THEN \"conf_entities\".\"meta\" #\u003e '{sizes}' END) AS elem1__(v) WHERE (CASE WHEN jsonb_typeof(elem1__.v) = 'number' THEN (elem1__.v #\u003e\u003e '{}')::numeric END) IS NOT NULL)",
+      "sqlPostgres": "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(\"conf_entities\".\"meta\" -\u003e 'sizes') = 'array' THEN \"conf_entities\".\"meta\" -\u003e 'sizes' END) AS elem1__(v) WHERE (CASE WHEN jsonb_typeof(elem1__.v) = 'number' THEN (elem1__.v #\u003e\u003e '{}')::numeric END) IS NOT NULL)",
       "sqlSqlite": "NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"conf_entities\".\"meta\", '$.\"sizes\"') = 'array' THEN \"conf_entities\".\"meta\" END, '$.\"sizes\"') AS elem1__ WHERE (CASE WHEN elem1__.type IN ('integer', 'real') THEN elem1__.value END) IS NOT NULL)"
     },
     {

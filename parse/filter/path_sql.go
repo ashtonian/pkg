@@ -39,10 +39,31 @@ const (
 // maxDecimalMember is decimals.MaxMemberLength as SQL text.
 var maxDecimalMember = strconv.Itoa(decimals.MaxMemberLength)
 
-// pgPathLiteral is the text[] literal of a path's segments; segments are
-// identifiers, so no element needs quoting.
-func pgPathLiteral(segs []string) string {
-	return "'{" + strings.Join(segs, ",") + "}'"
+// pgMember is the jsonb member of doc at segs, read one object member at a
+// time with ->, and pgMemberText its text, the last member read with ->>.
+// Both operators take a text key, which reads an object's member and is
+// NULL on an array or a scalar: no segment is read as an array subscript or
+// a NULL element, as a text[] path given to #> reads `0` or `null`, so
+// PostgreSQL reads the member the reference rule (memberAt) reads. Segments
+// are identifiers (pathSegment), so no literal needs escaping.
+func pgMember(doc string, segs []string) string {
+	return doc + pgKeys(segs, " -> ")
+}
+
+func pgMemberText(doc string, segs []string) string {
+	last := len(segs) - 1
+	return doc + pgKeys(segs[:last], " -> ") + pgKeys(segs[last:], " ->> ")
+}
+
+func pgKeys(segs []string, op string) string {
+	var b strings.Builder
+	for _, s := range segs {
+		b.WriteString(op)
+		b.WriteString("'")
+		b.WriteString(s)
+		b.WriteString("'")
+	}
+	return b.String()
 }
 
 // sqlitePathLiteral is the JSON path of a path's segments, every label
@@ -78,7 +99,7 @@ func pgPathDocument(d dialect.Dialect, p *JSONPath) string {
 }
 
 // pgTypedMember is a JSON value of type t, NULL when it has another kind:
-// kind is its jsonb_typeof, text its text (#>>).
+// kind is its jsonb_typeof, text its text (->> or #>> '{}').
 func pgTypedMember(t core.FieldType, kind, text string) string {
 	switch t {
 	case core.FieldTypeString:
