@@ -981,3 +981,44 @@ func TestSources_EntryTypedSectionKeepsItsUnkeyedFields(t *testing.T) {
 	assertUnkeyedKept(t, unkeyedOf("e"), got.Section, "f")
 	assertUnkeyedKept(t, unkeyedOf("e"), got.ByName["c"], "e")
 }
+
+// startsOnRead is an empty provider that runs start as it is read.
+type startsOnRead func()
+
+func (s startsOnRead) Read() (map[string]any, error) { s(); return map[string]any{}, nil }
+func (startsOnRead) ReadBytes() ([]byte, error)      { return nil, errors.New("startsOnRead: use Read") }
+
+// A typed section's koanf:"-" fields are copied as its source is read: a
+// provider whose data changes once its read returns changes nothing in the
+// config, and the load does not race with the change.
+func TestSources_UnkeyedFieldsAreCopiedAsTheSourceIsRead(t *testing.T) {
+	shared := &unkeyedSection{Host: "h", Hook: "hook h", Target: &unkeyedTarget{Name: "target h"}}
+	stop, started, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	mutate := startsOnRead(func() {
+		go func() {
+			defer close(done)
+			for i := 0; ; i++ {
+				shared.Hook = fmt.Sprint("hook ", i)
+				shared.Target.Name = fmt.Sprint("target ", i)
+				if i == 0 {
+					close(started)
+				}
+				select {
+				case <-stop:
+					return
+				default:
+				}
+			}
+		}()
+		<-started
+	})
+	got, err := Load[unkeyedConfig](t.Context(), WithBaseProvider(mapSource{"ptr": shared}, nil), WithBaseProvider(mutate, nil))
+	close(stop)
+	<-done
+	require.NoError(t, err)
+	require.NotNil(t, got.Ptr)
+	assert.Equal(t, "hook h", got.Ptr.Hook)
+	require.NotNil(t, got.Ptr.Target)
+	assert.Equal(t, "target h", got.Ptr.Target.Name)
+	assert.NotSame(t, shared.Target, got.Ptr.Target)
+}

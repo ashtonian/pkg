@@ -19,12 +19,36 @@ import (
 // section, or anything holding it, drops the record beneath it, as it drops
 // the section's keys; one that sets keys inside the section keeps it.
 
-// unkeyedFields is the koanf:"-" fields of one typed section a source set:
-// the section as the source holds it, and its node's unkeyed fields.
+// unkeyedFields is the koanf:"-" fields of one typed section a source set,
+// copied as the source is read: the load reads a source's data only while
+// it reads the source, so data the source changes afterwards, or shares
+// with another goroutine, never reaches the config.
 type unkeyedFields struct {
 	path    keyPath
-	section reflect.Value // past pointers; read only, copied when applied
-	fields  [][]int
+	section reflect.Type // past pointers
+	fields  []unkeyedField
+}
+
+// unkeyedField is one koanf:"-" field of a section: its index and a copy of
+// the value the source's section holds there, the zero value where a nil
+// embedded pointer stands in the way.
+type unkeyedField struct {
+	index []int
+	value reflect.Value
+}
+
+// recordUnkeyed records the fields at indexes of section, a struct value
+// past its pointers, at path.
+func recordUnkeyed(path keyPath, section reflect.Value, indexes [][]int) unkeyedFields {
+	u := unkeyedFields{path: path, section: section.Type(), fields: make([]unkeyedField, 0, len(indexes))}
+	for _, index := range indexes {
+		from, err := section.FieldByIndexErr(index)
+		if err != nil {
+			from = reflect.Zero(section.Type().FieldByIndex(index).Type)
+		}
+		u.fields = append(u.fields, unkeyedField{index: index, value: deepcopy.Value(from)})
+	}
+	return u
 }
 
 // unkeyedSections is, by key path, the unkeyedFields a load keeps: each
@@ -151,7 +175,7 @@ func (u unkeyedFields) setAt(v reflect.Value, n *schemaNode, p keyPath, keys map
 		v = v.Elem()
 	}
 	if len(p) == 0 {
-		if v.Type() == u.section.Type() {
+		if v.Type() == u.section {
 			u.setOn(v)
 		}
 		return
@@ -184,17 +208,13 @@ func (u unkeyedFields) setAt(v reflect.Value, n *schemaNode, p keyPath, keys map
 }
 
 // setOn sets each of u's fields on section v, addressable, to a copy of the
-// source's: what a field reached through a nil embedded pointer holds is
-// its zero value.
+// recorded value: one record serves every candidate a key check decodes,
+// and none shares memory with another or with the record.
 func (u unkeyedFields) setOn(v reflect.Value) {
-	for _, index := range u.fields {
-		from, err := u.section.FieldByIndexErr(index)
-		if err != nil {
-			from = reflect.Zero(u.section.Type().FieldByIndex(index).Type)
-		}
-		to, ok := fieldForSet(v, index, !from.IsZero())
+	for _, f := range u.fields {
+		to, ok := fieldForSet(v, f.index, !f.value.IsZero())
 		if ok {
-			to.Set(deepcopy.Value(from))
+			to.Set(deepcopy.Value(f.value))
 		}
 	}
 }
