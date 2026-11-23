@@ -21,3 +21,6 @@ node_modules/
 /gitx/cmd/mergeinserts/mergeinserts
 /httpx/examples/quickstart/quickstart
 /parse/examples/server/server
+
+# Python bytecode from the tools/ tests
+__pycache__/

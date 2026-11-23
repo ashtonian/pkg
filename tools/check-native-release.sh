@@ -12,7 +12,10 @@ trap 'chmod -R u+w "$scratch" 2>/dev/null; rm -rf "$scratch"' EXIT
 # so the consumer's dependencies hit the shared build cache.
 export GOWORK=off GOTOOLCHAIN=local GOFLAGS='-mod=mod -modcacherw -trimpath'
 export GOMODCACHE="$scratch/modcache" GOPROXY="file://$scratch/proxy,https://proxy.golang.org"
-export GOPRIVATE='' GONOPROXY='' GONOSUMDB=github.com/ashtonian/pkg/process,github.com/ashtonian/pkg/state,github.com/ashtonian/pkg/onepassword
+# GOENV=off keeps the user's go env file out: an empty variable does not
+# override it, and a GOPRIVATE there adds a cache-only lookup pass that
+# answers a nested module's path with its cached parent.
+export GOENV=off GOPRIVATE='' GONOPROXY='' GONOSUMDB=github.com/ashtonian/pkg/process,github.com/ashtonian/pkg/state,github.com/ashtonian/pkg/onepassword
 while IFS=$'\t' read -r module version source; do
   name=${module##*/}
   mkdir "$scratch/consumer-$name"

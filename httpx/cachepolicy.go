@@ -142,22 +142,69 @@ func addAge(a, b time.Duration) time.Duration {
 	return a + b
 }
 
-// usableWithoutValidation reports whether a stored response may be served
-// as-is to a request with directives req (RFC 9111 §4.2, §5.2.1).
-func usableWithoutValidation(f freshness, resp, req cacheDirectives) bool {
-	if req.noCache || resp.noCache {
+// reusePath is how a stored response would reach the caller.
+type reusePath int
+
+const (
+	reuseDirect            reusePath = iota // as-is, without contacting the origin
+	reuseWhileRevalidating                  // stale, while a background request refreshes it
+	reuseOnError                            // stale, because validation failed
+)
+
+// reusePolicy is one request's freshness decision for one stored response
+// (RFC 9111 §4.2.4, §5.2; RFC 5861). Every reuse path consults it, evaluated
+// at the instant that path would serve. Precedence, strongest first:
+//
+//  1. no-cache, in the request or the response, allows no reuse without
+//     a successful validation.
+//  2. The request's max-age (age at most N) and min-fresh (at least N of
+//     freshness left, so never a stale response) are requirements that no
+//     stale permission relaxes.
+//  3. A stale response needs a permission covering its staleness: the
+//     request's max-stale on any path, otherwise the path's own window — the
+//     larger of the response's stale-while-revalidate or stale-if-error and
+//     the configured one. must-revalidate withdraws every permission.
+type reusePolicy struct {
+	entry     *CachedResponse
+	resp, req cacheDirectives
+
+	// Configured stale windows.
+	staleWhileRevalidate, staleIfError time.Duration
+}
+
+// freshness evaluates the stored response at now.
+func (p reusePolicy) freshness(now time.Time) freshness {
+	return computeFreshness(p.entry, p.resp, now)
+}
+
+// allows reports whether path may serve the stored response at freshness f.
+func (p reusePolicy) allows(path reusePath, f freshness) bool {
+	if p.req.noCache || p.resp.noCache {
 		return false
 	}
-	if req.maxAge >= 0 && f.age > req.maxAge {
+	if p.req.maxAge >= 0 && f.age > p.req.maxAge {
 		return false
+	}
+	if p.req.minFresh >= 0 {
+		return f.fresh() && f.lifetime-f.age >= p.req.minFresh
 	}
 	if f.fresh() {
-		return req.minFresh < 0 || f.lifetime-f.age >= req.minFresh
+		return true
 	}
-	if resp.mustRevalidate {
+	if p.resp.mustRevalidate {
 		return false
 	}
-	return req.maxStaleAny || (req.maxStale >= 0 && f.staleness() <= req.maxStale)
+	if p.req.maxStaleAny || (p.req.maxStale >= 0 && f.staleness() <= p.req.maxStale) {
+		return true
+	}
+	var window time.Duration
+	switch path {
+	case reuseWhileRevalidating:
+		window = max(p.resp.staleWhileRevalidate, p.staleWhileRevalidate)
+	case reuseOnError:
+		window = max(p.resp.staleIfError, p.staleIfError)
+	}
+	return window > 0 && f.staleness() <= window
 }
 
 // hasValidator reports whether h carries a validator a conditional request

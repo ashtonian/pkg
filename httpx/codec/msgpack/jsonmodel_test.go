@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ashtonian/pkg/httpx"
 	wire "github.com/vmihailenco/msgpack/v5"
 )
 
@@ -318,5 +319,153 @@ func TestCodecPreservesJSONMembers(t *testing.T) {
 	var value struct{ Name string }
 	if err := Codec.Decode(wireData.Bytes(), &value); err == nil {
 		t.Fatal("duplicate member hid an earlier type error")
+	}
+}
+
+// A number literal means the same over both codecs: a receiver decoding
+// the msgpack body gets what decoding the JSON body gives it, or the
+// msgpack encoder refuses the literal rather than change its value.
+func TestCodecNumbersMatchJSON(t *testing.T) {
+	type targets struct {
+		Any     any
+		Float   float64
+		Int     int64
+		Uint    uint64
+		IntErr  bool
+		UintErr bool
+	}
+	decode := func(codec httpx.Codec, data []byte) targets {
+		var got targets
+		var a struct{ N any }
+		var f struct{ N float64 }
+		var i struct{ N int64 }
+		var u struct{ N uint64 }
+		if err := codec.Decode(data, &a); err != nil {
+			t.Fatalf("%T into any: %v", codec, err)
+		}
+		if err := codec.Decode(data, &f); err != nil {
+			t.Fatalf("%T into float64: %v", codec, err)
+		}
+		got.Any, got.Float = a.N, f.N
+		got.IntErr = codec.Decode(data, &i) != nil
+		got.UintErr = codec.Decode(data, &u) != nil
+		got.Int, got.Uint = i.N, u.N
+		return got
+	}
+	for _, tt := range []struct {
+		literal string
+		refused bool
+	}{
+		{"9007199254740993", false},
+		{"9007199254740993.0", true},
+		{"9.007199254740993e15", true},
+		{"1e3", false},
+		{"1000.0", false},
+		{"-1e3", false},
+		{"9007199254740992.0", false}, // 2^53, which float64 holds
+		{"9007199254740994e0", false}, // 2^53+2, which float64 holds
+		{"-9007199254740993.0", true},
+		{"9223372036854775807.0", true}, // int64 max
+		{"-9223372036854775808.0", false},
+		{"9223372036854775808.0", false},  // 2^63, which float64 holds
+		{"18446744073709551615e0", true},  // uint64 max
+		{"18446744073709551616.0", false}, // 2^64, outside the 64-bit range
+		{"18446744073709552000", false},   // 2^64 as encoding/json writes the float64
+		{"-100000000000000000000", false}, // -1e20 as encoding/json writes it
+		{"18446744073709551616", true},    // 2^64 spelled exactly: a json.Number would keep it
+		{"100000000000000000001", true},
+		{"1.8446744073709551617e19", false}, // outside the range: a float over both
+		{"6.02e23", false},
+		{"0.1", false},
+		{"1.5", false},
+		{"0.0", false},
+		{"-0", false},
+		{"1e-400", false},
+		{"0e99999999999999999999", false},
+		{"1e-99999999999999999999", false},
+	} {
+		t.Run(tt.literal, func(t *testing.T) {
+			value := map[string]json.Number{"N": json.Number(tt.literal)}
+			viaMsgpack, err := Codec.Encode(value)
+			if tt.refused {
+				if err == nil {
+					t.Fatal("encoded a value float64 cannot hold exactly")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			viaJSON, err := httpx.JSON.Encode(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, got := decode(httpx.JSON, viaJSON), decode(Codec, viaMsgpack)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("msgpack decodes %+v, JSON %+v", got, want)
+			}
+		})
+	}
+}
+
+// Every finite float64 a Go value holds encodes over Codec, including those
+// encoding/json writes in integer syntax beyond the 64-bit range, and
+// decodes to the float64 the JSON codec gives.
+func TestCodecEncodesEveryFloat64(t *testing.T) {
+	for _, f := range []float64{1e20, -1e20, 1 << 64, math.MaxFloat64, -math.MaxFloat64, 1e21, 9.999999999999999e20, math.SmallestNonzeroFloat64, 0.5} {
+		data, err := Codec.Encode(struct{ N float64 }{f})
+		if err != nil {
+			t.Fatalf("%v: %v", f, err)
+		}
+		var got struct{ N float64 }
+		if err := Codec.Decode(data, &got); err != nil || got.N != f {
+			t.Fatalf("%v decoded as %v, %v", f, got.N, err)
+		}
+	}
+}
+
+// MessagePack has one negative zero, the float encoding/json writes as -0,
+// an integer syntax: -0.0 decodes like it, so an integer target accepts 0
+// where JSON refuses -0.0. The value is the same.
+func TestCodecNegativeZero(t *testing.T) {
+	data, err := Codec.Encode(map[string]json.Number{"N": "-0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f struct{ N float64 }
+	var i struct{ N int64 }
+	if err := Codec.Decode(data, &f); err != nil || !math.Signbit(f.N) || f.N != 0 {
+		t.Fatalf("float64 %v, %v", f.N, err)
+	}
+	if err := Codec.Decode(data, &i); err != nil || i.N != 0 {
+		t.Fatalf("int64 %v, %v", i.N, err)
+	}
+}
+
+// A float from another MessagePack peer stays a float: integer targets
+// refuse an integral one, as they refuse 1000.0 in JSON.
+func TestCodecDecodesFloatsAsFloats(t *testing.T) {
+	for _, tt := range []struct {
+		value   any
+		wantInt bool
+	}{
+		{float64(1000), false},
+		{float32(1000), false},
+		{float64(1.5), false},
+		{math.Copysign(0, -1), true}, // encoding/json writes -0
+		{int64(1000), true},
+	} {
+		data, err := NativeCodec.Encode(map[string]any{"N": tt.value})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var i struct{ N int64 }
+		var f struct{ N float64 }
+		if err := Codec.Decode(data, &f); err != nil {
+			t.Fatalf("%T(%v) into float64: %v", tt.value, tt.value, err)
+		}
+		if got := Codec.Decode(data, &i) == nil; got != tt.wantInt {
+			t.Fatalf("%T(%v) decodes into int64: %v, want %v", tt.value, tt.value, got, tt.wantInt)
+		}
 	}
 }

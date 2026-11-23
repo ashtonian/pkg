@@ -57,7 +57,10 @@ must deliver bytes immediately.
 
 Keys include the effective target authority (including `Request.Host`) and
 hash `Authorization`, `Cookie` and every configured identity header. A change
-in one of those values creates a distinct partition. Other headers are not
+in one of those values creates a distinct partition. The target excludes the
+URL fragment, which never reaches the origin: `/doc#summary` and `/doc` share
+one stored response, and a write through either invalidates it. Path escaping
+and the query string remain part of the key. Other headers are not
 included automatically: for API-key authentication, configure
 `WithCacheIdentityHeaders("X-API-Key")`, or the actual custom header name.
 Configure every header the application uses to identify the caller.
@@ -88,46 +91,91 @@ pass through without being stored. Each primary key retains one matching
 | `Cache-Control: no-store` | Do not store; a revalidation replacement retires the older representation |
 | `no-cache` | Revalidate before reuse |
 | `must-revalidate` | Do not use stale fallback after expiry |
-| `max-age`, `min-fresh`, `max-stale` | Respect the request's freshness constraints |
-| `only-if-cached` on a cache-eligible GET | Return a synthetic 504 if no acceptable cached response exists |
+| `max-age`, `min-fresh`, `max-stale` | Request freshness requirements and permission, applied to hits and stale fallback alike ([precedence](#request-freshness-and-stale-permissions)) |
+| `only-if-cached` | Never contact the origin: serve an acceptable stored response, otherwise a synthetic 504 |
 | ETag / Last-Modified | Conditional revalidation; merge 304 metadata and recheck storage policy |
 | `Vary: *`, including a wildcard within a list | Refuse storage |
 | `Date` / `Age` | Correct freshness for response delay and time already spent cached |
 | No explicit freshness | Store only with a validator, and revalidate every use |
-| HEAD, Range, conditional GET, or GET with a body | Bypass cache |
+| HEAD, Range, conditional GET, or GET with a body | Bypass cache; a synthetic 504 under `only-if-cached` |
 | Unsafe method with a response below 400 | Invalidate target plus same-origin `Location` / `Content-Location` targets within the request's cache partition |
 | Read failure | Preserve the original read error; never cache a truncated body as successful |
 
-Stale permissions can come from RFC 5861 response directives or configured
-`WithStaleIfError` / `WithStaleWhileRevalidate`. They remain subject to
-`no-cache` and `must-revalidate`. Stale-if-error accepts inner transport
-errors, including open-circuit and local rate/concurrency refusals, or 5xx
-responses. Caller cancellation and expired caller deadlines remain errors;
-fallback does not cover failures while reading a response body.
+`only-if-cached` (RFC 9111 §5.2.1.7) takes precedence over every reason to
+forward. Combined with `no-store`, the request may still reuse a stored
+response, because `no-store` forbids storing, not reuse; nothing new is
+stored, since nothing is fetched. The cache neither builds partial content nor
+evaluates a caller's preconditions, so a Range or conditional GET with
+`only-if-cached` receives the 504 even when a full response is stored, as do
+HEAD, unsafe methods and a GET with a body. The cache closes the body of every
+request it answers without forwarding. The 504's `Cache-Status` carries
+`detail=only-if-cached` and the reason it was not answered from storage:
+`fwd=miss` (nothing stored is acceptable), `fwd=bypass` (a request form
+storage never answers) or `fwd=method`.
 
 Invalidation applies within the request's cache partition and this transport's
 coordination state. It does not invalidate other identities' entries or
 related collection URLs. An in-flight fetch that crosses an invalidation in
 the same transport cannot publish its older representation back into the store.
 
+### Request freshness and stale permissions
+
+A stored response reaches the caller as a hit, as a stale-while-revalidate
+response or as a stale-if-error fallback. Each path applies the same decision
+for the request, evaluated when it would serve, in this order:
+
+1. `no-cache`, in the request or the response, allows no reuse until a
+   validation succeeds.
+2. The request's `max-age=N` (age at most N seconds) and `min-fresh=N` (at
+   least N seconds of freshness left, so never a stale response) are
+   requirements. No stale permission relaxes them: when the stored response
+   misses one, the request validates before it is answered, and an origin
+   failure returns that failure.
+3. A response past its lifetime needs a permission covering its staleness:
+   the request's `max-stale` on any path, otherwise the path's window, the
+   larger of the response's RFC 5861 `stale-while-revalidate` or
+   `stale-if-error` and the configured `WithStaleWhileRevalidate` or
+   `WithStaleIfError`. `must-revalidate` withdraws every permission.
+
+A response the origin returns while validating, a 304 or a new 200, answers
+the request whatever its remaining freshness. Stale-if-error measures age
+when the validation fails, so the time spent waiting on the origin counts
+against its window and against `max-age`. A request carrying both `min-fresh`
+and `max-stale` receives only fresh responses.
+
+Stale-if-error accepts inner transport errors, including open-circuit and
+local rate/concurrency refusals, or 5xx responses. Caller cancellation and
+expired caller deadlines remain errors; fallback does not cover failures while
+reading a response body.
+
 ## Background work and stores
 
 Background revalidations coalesce per key and are bounded by concurrency
-and timeout (defaults: 8, 30 seconds). `CacheTransport.Close()` cancels them
-and waits. Call it during shutdown, then close idle transport connections.
-The direct constructor returns that handle. If you instead use `WithCache`
-or `WithCacheT`, find the cache using `TransportStack`:
+and timeout (defaults: 8, 30 seconds). Closing idle connections does not stop
+them. `CacheTransport.Close()` cancels them and waits; the direct constructor
+returns that handle. A cache that `WithCache` or a `WithCacheT` layer
+constructs belongs to the build: give the builder a `Lifecycle` and close it
+at shutdown, once the client's callers have stopped:
 
 ```go
-for _, transport := range httpx.TransportStack(client) {
-    if cache, ok := transport.(*httpx.CacheTransport); ok {
-        if err := cache.Close(); err != nil {
-            return err
-        }
-    }
+var background httpx.Lifecycle
+client, err := httpx.NewStandard(
+    httpx.WithCache(nil, httpx.WithStaleWhileRevalidate(time.Minute)),
+    httpx.WithLifecycle(&background),
+)
+if err != nil {
+    return err
 }
-client.CloseIdleConnections()
+defer func() { err = errors.Join(err, background.Close()) }()
 ```
+
+For a chain, including `ResilientChain` and `APIClientChain`, use
+`Chain.BuildWithLifecycle(&background, base)` or
+`Chain.ClientWithLifecycle(&background, base, timeout)`. `Close` cancels each
+owned cache's refreshes and waits for them, then closes the idle connections
+of a base transport the builder constructed. It never closes a store, a base
+passed to `WithTransport` or `Build`, or a cache the caller constructed, even
+when `Unwrap` reaches it. See [builders and lifecycle](composition.md#optional-builders-and-lifecycle).
 
 A custom `CacheStore` implements one context-aware, error-bearing contract:
 
@@ -138,6 +186,11 @@ type CacheStore interface {
     Delete(ctx context.Context, key string) error
 }
 ```
+
+httpx v0.4.0 and earlier kept the URL fragment in the key. Entries a
+persistent store holds under such keys are never read or invalidated again;
+they expire at the TTL they were written with, at most `WithMaxRetention`.
+Keys of fragment-free URLs are unchanged.
 
 Use `(nil, false, nil)` for a miss. A successful `Set` means storage accepted
 the value; return an error for rejected writes. Stores must be concurrent-safe,

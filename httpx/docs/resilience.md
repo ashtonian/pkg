@@ -63,7 +63,7 @@ attempt; they do not turn every unsuccessful HTTP status into an error.
 | Open circuit | Reject before calling the origin with `ErrCircuitOpen`; admit recovery probes after the configured interval. A cache outside the breaker can still serve usable entries. |
 | Local rate or concurrency refusal | Return `ErrRateLimited` or `ErrLimiterTimeout`. These are not retried by default and do not count as origin failures in the recommended order. An outer cache may serve a permitted stale-if-error response instead. |
 | Cancellation or expired request budget | Stop retry waits and admission waits. Context errors retain `context.Canceled` / `context.DeadlineExceeded` for `errors.Is`. |
-| Inner transport error or 5xx with a previously cached response | `stale-if-error` may serve that representation when its cache policy permits, including after an open-circuit/local admission error. Caller cancellation and expired deadlines remain errors. `Cache-Status` identifies fallback; `no-cache` and `must-revalidate` prohibit stale use. |
+| Inner transport error or 5xx with a previously cached response | `stale-if-error` may serve that representation when its cache policy permits, including after an open-circuit/local admission error. Caller cancellation and expired deadlines remain errors. `Cache-Status` identifies fallback; `no-cache` and `must-revalidate` prohibit stale use, and the request's `max-age` / `min-fresh` still apply ([precedence](caching.md#request-freshness-and-stale-permissions)). |
 | Failure while reading/decompressing/decoding the body | Surface it to the body reader or typed helper. Retry operates on the round trip and does not restart a response after body consumption begins. |
 
 ### Choosing a backup upstream
@@ -145,5 +145,20 @@ custom predicate; a replayable body alone does not make a write safe.
 `NewAdaptiveHedgingTransport` derives the delay from a bounded latency
 sample window. It is available as an individual transport; choose it only
 when its observed latency distribution is appropriate for your workload.
+The window holds the latencies of the requests the delay controls: those
+the predicate selects and that have a replayable body, timed from the first
+attempt until a response arrives, whatever its status. Requests sent
+unhedged, and calls ending in an error, a local rejection or cancellation,
+are not counted, so cheap writes or fast failures cannot pull the delay
+down and hedge reads they never competed with. A hedged request's latency
+is its winning response's, which is at least the delay at which the hedge
+launched, so hedging does not bias the percentile it is steered by. The
+delay starts at 100 ms. From the tenth sample it is the sample at 0-based
+index ⌊percentile·n⌋ of the last n ≤ 1000 samples sorted (the largest at
+percentile 1), recomputed with each sample up to the 64th and then every 64.
+Recomputations never overlap and none is dropped: one requested while
+another runs follows it, so the delay trails the window by at most 64
+samples plus those recorded during a computation. Recording takes no lock
+and a request reads the delay with one atomic load.
 
 All [options and defaults](reference.md#retry) are documented in the reference.
