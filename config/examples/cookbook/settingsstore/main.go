@@ -140,6 +140,7 @@ const (
 	ReasonInvalid  = "invalid"  // the settings the write leaves do not load
 	ReasonFull     = "full"     // the table would grow past a cap
 	ReasonEnclosed = "enclosed" // a key lies inside a list or a scalar a stored row sets
+	ReasonOverlap  = "overlap"  // one write names a key and a key within it
 )
 
 // ErrBusy is a write that timed out waiting for its turn: behind another
@@ -502,7 +503,8 @@ func childText(at config.Key, kind config.SegmentKind, name string) (string, boo
 // canonical is edits keyed as CanonicalKey spells their keys, and unread,
 // the keys it refuses that edits set to nil, each a delete of the rows a
 // release that removed its field left. Any other key naming nothing the
-// service reads, or one key spelled two ways, refuses the write.
+// service reads, one key spelled two ways, or a key and a key within it
+// refuses the write.
 func canonical(edits map[string]any) (writes map[string]any, unread []string, err error) {
 	writes = make(map[string]any, len(edits))
 	var unknown, repeated []string
@@ -532,8 +534,51 @@ func canonical(edits map[string]any) (writes map[string]any, unread []string, er
 		slices.Sort(repeated)
 		return nil, nil, &RefusedError{Reason: ReasonRepeated, Keys: slices.Compact(repeated)}
 	}
+	// Refused rather than folded together: which wins is the load's merge
+	// to decide, and the client can send the parent with the child in it.
+	if overlap := overlapping(writes); len(overlap) > 0 {
+		return nil, nil, &RefusedError{Reason: ReasonOverlap, Keys: overlap}
+	}
 	slices.Sort(unread)
 	return writes, unread, nil
+}
+
+// overlapping is the keys of writes within another of them, and the keys
+// they are within. Each key's parents are looked up by their spelling, a
+// field spelled as a map key, as Key.Within compares them, so the cost is
+// the keys' segments, not their pairs.
+func overlapping(writes map[string]any) []string {
+	parsed := make(map[string]config.Key, len(writes))
+	bySpelling := make(map[string]string, len(writes))
+	for key := range writes {
+		k, err := config.ParseKey(key)
+		if err != nil {
+			continue
+		}
+		parsed[key] = k
+		bySpelling[fieldsAsMapKeys(k).String()] = key
+	}
+	var overlap []string
+	for key, k := range parsed {
+		for n := len(k) - 1; n > 0; n-- {
+			if parent, ok := bySpelling[fieldsAsMapKeys(k[:n]).String()]; ok {
+				overlap = append(overlap, key, parent)
+			}
+		}
+	}
+	slices.Sort(overlap)
+	return slices.Compact(overlap)
+}
+
+// fieldsAsMapKeys is k with every field a map key of the same name.
+func fieldsAsMapKeys(k config.Key) config.Key {
+	out := slices.Clone(k)
+	for i := range out {
+		if out[i].Kind == config.SegmentField {
+			out[i].Kind = config.SegmentKey
+		}
+	}
+	return out
 }
 
 // unreadAt reports whether a stored key the schema does not read is at or

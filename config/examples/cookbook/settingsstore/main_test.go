@@ -162,14 +162,14 @@ func TestSettings_KeysAreStoredCanonically(t *testing.T) {
 func TestSettings_AWriteReplacesTheRowsBeneathIt(t *testing.T) {
 	s, db := newReplica(t, 100)
 	write(t, s, map[string]any{
-		`upstreams["a"]`:         map[string]any{"url": "https://a.example"},
-		`upstreams["a"].timeout`: "2s",
-		"routes[0]":              map[string]any{"path": "/v1", "upstream": "a"},
-		"routes[1].path":         "/v2",
-		"routes[1].upstream":     "a",
-		"limits.min":             5,
-		"limits.max":             300,
+		`upstreams["a"]`:     map[string]any{"url": "https://a.example"},
+		"routes[0]":          map[string]any{"path": "/v1", "upstream": "a"},
+		"routes[1].path":     "/v2",
+		"routes[1].upstream": "a",
+		"limits.min":         5,
+		"limits.max":         300,
 	})
+	write(t, s, map[string]any{`upstreams["a"].timeout`: "2s"})
 
 	write(t, s, map[string]any{`upstreams["a"]`: map[string]any{"url": "https://b.example"}})
 	assert.NotContains(t, rowsOf(t, db), `upstreams["a"].timeout`)
@@ -673,4 +673,27 @@ func TestSettings_ByteCap(t *testing.T) {
 	assert.Contains(t, err.Error(), "more than 60 bytes")
 	_, err = narrow.Write(t.Context(), map[string]any{"routes": nil})
 	assert.ErrorContains(t, err, "more than 60 bytes")
+}
+
+// One write naming a key and a key within it, under any spellings, is
+// refused naming both: the load would merge the two, so the client sends
+// the parent with the child folded in.
+func TestSettings_AWriteNamingAKeyAndOneWithinIt(t *testing.T) {
+	s, db := newReplica(t, 100)
+	for name, tc := range map[string]struct {
+		edits map[string]any
+		keys  []string
+	}{
+		"a field and one within it": {map[string]any{"limits": map[string]any{"min": 2}, "limits.max": 300}, []string{"limits", "limits.max"}},
+		"a list and an element's":   {map[string]any{"routes": []any{}, "routes[0].path": "/b"}, []string{"routes", "routes[0].path"}},
+		"a deleted entry and its":   {map[string]any{`upstreams["a"]`: nil, `upstreams["a"].timeout`: "2s"}, []string{`upstreams["a"]`, `upstreams["a"].timeout`}},
+		"other spellings":           {map[string]any{"LIMITS": map[string]any{"min": 2}, "limits.ceiling": 300}, []string{"limits", "limits.max"}},
+		"three deep, one refusal":   {map[string]any{"routes": nil, "routes[0]": nil, "routes[0].path": "/b", "limits.min": 2}, []string{"routes", "routes[0]", "routes[0].path"}},
+	} {
+		_, err := s.Write(t.Context(), tc.edits)
+		refused := refusal(t, err)
+		assert.Equal(t, ReasonOverlap, refused.Reason, name)
+		assert.Equal(t, tc.keys, refused.Keys, name)
+	}
+	assert.Empty(t, rowsOf(t, db))
 }
