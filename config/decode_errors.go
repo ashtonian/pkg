@@ -46,11 +46,17 @@ func (e *decodeFailure) Unwrap() error { return e.err }
 func withhold(root *schemaNode, tree any, e error) (error, bool) {
 	switch u := e.(type) {
 	case *mapstructure.DecodeError:
-		p, _, exact := treeKey(root, tree, u.Name())
+		p, used, exact := treeKey(root, tree, u.Name())
 		if safe := diagnosticPath(root, p); len(safe) < len(p) {
 			return fmt.Errorf("'%s' cannot be decoded (sensitive contents are not shown)", safe.orRoot()), true
 		}
 		c, n, err := root.walkTo(cursor{}, p)
+		if !exact && err == nil && n.kind == nodeLeaf && n.typ.Kind() == reflect.Map && strings.HasPrefix(u.Name()[used:], "[") {
+			// A map keyed by anything but strings decodes whole, so the
+			// decoder's name for the entry that failed, written as the
+			// source keyed it, is no key of this package's.
+			return fmt.Errorf("'%s' cannot be decoded into %s: an entry's key or value does not decode into the map's key or element type (entries are not shown)", p.orRoot(), gowalker.TypeText(n.typ)), true
+		}
 		if !exact || err != nil {
 			return fmt.Errorf("'%s' (exact location unavailable) cannot be decoded (the value may be sensitive and is not shown)", p.orRoot()), true
 		}

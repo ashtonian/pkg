@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/netip"
 	"os"
@@ -662,4 +663,49 @@ func TestSources_TypedSectionKeepsPrivatelySquashedFields(t *testing.T) {
 	got, err := Load[cfg](t.Context(), WithDefaults(map[string]any{"section": privatelySquashed{sectionBase{"h"}, 1}}))
 	require.NoError(t, err)
 	assert.Equal(t, privatelySquashed{sectionBase{"h"}, 1}, got.Section)
+}
+
+type ownTextKeys struct {
+	Timeouts map[time.Duration]string `koanf:"timeouts"`
+	Levels   map[slog.Level]string    `koanf:"levels"`
+}
+
+// A map keyed by a type whose text is not its kind's — one with text
+// methods, such as slog.Level, or time.Duration — loads from a typed default
+// with its own keys, and a higher source replaces it whole: their text
+// would not decode back to the keys.
+func TestSources_MapKeyedByATypeWithItsOwnTextStaysWhole(t *testing.T) {
+	typed := map[string]any{
+		"timeouts": map[time.Duration]string{time.Second: "s"},
+		"levels":   map[slog.Level]string{slog.LevelWarn: "w"},
+	}
+	want := ownTextKeys{Timeouts: map[time.Duration]string{time.Second: "s"}, Levels: map[slog.Level]string{slog.LevelWarn: "w"}}
+	for name, opt := range map[string]Option{
+		"WithDefaults":     WithDefaults(typed),
+		"WithBaseProvider": WithBaseProvider(mapSource(typed), nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Load[ownTextKeys](t.Context(), opt)
+			require.NoError(t, err)
+			assert.Equal(t, want, *got)
+		})
+	}
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "levels: {ERROR: e}\n")
+	got, err := Load[ownTextKeys](t.Context(), WithDefaults(typed), WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, map[slog.Level]string{slog.LevelError: "e"}, got.Levels, "the file's map replaces the default's")
+	assert.Equal(t, want.Timeouts, got.Timeouts)
+}
+
+// A map decoded whole names itself and its type when an entry does not
+// decode, never the entry.
+func TestSources_MapDecodedWholeSaysWhyItCannotBeDecoded(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "timeouts: {soon: hunter2}\n")
+	_, err := Load[ownTextKeys](t.Context(), WithFile(file))
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), "'timeouts' cannot be decoded into map[time.Duration]string: an entry's key or value does not decode")
+	assert.NotContains(t, err.Error(), "soon")
+	assert.NotContains(t, err.Error(), "hunter2")
 }

@@ -239,8 +239,18 @@ func (w *keyWalk) mapValues(elem reflect.Type, v reflect.Value, path keyPath) an
 
 var wholeMapType = reflect.TypeFor[wholeMap]()
 
-// keysAsText reports a map key type whose text decodes back to the key.
+// keysAsText reports a map key type whose text, as keyText writes it,
+// decodes back to the key: a string or integer kind with no text methods of
+// its own. A type with them reads and writes its text through them —
+// slog.Level decodes "WARN", not "4" — and time.Duration decodes unit text,
+// so its kind's text is not the key's.
 func keysAsText(t reflect.Type) bool {
+	if t == durationType {
+		return false
+	}
+	if p := reflect.PointerTo(t); p.Implements(textMarshalerTyp) || p.Implements(textUnmarshaler) {
+		return false
+	}
 	switch t.Kind() {
 	case reflect.String,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
