@@ -275,8 +275,11 @@ validates them:
 
 Judging a source costs one decode when its entries all apply, and at most
 one per entry plus one per entry failing on its own when they do not. The
-callback receives sorted key/error pairs after every read, including an
-empty report; nil discards reports. Its error fails the load with
+callback receives sorted key/error pairs on every load, including an empty
+report; nil discards reports. A load reads every source before it merges
+any, so the callback runs only once the last source is read: a slow
+provider delays it, and a source that fails to read fails the load with
+nothing reported. Its error fails the load with
 `ErrSource`. Defaults must validate before any source is read. Unknown keys
 still reach the normal diagnostics, including declared unknown children of
 a withheld entry. A `validate` tag the default validator cannot apply

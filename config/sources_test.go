@@ -1022,3 +1022,26 @@ func TestSources_UnkeyedFieldsAreCopiedAsTheSourceIsRead(t *testing.T) {
 	assert.Equal(t, "target h", got.Ptr.Target.Name)
 	assert.NotSame(t, shared.Target, got.Ptr.Target)
 }
+
+// A load reads every source before it merges any, so a WithInvalidEntries
+// report runs once the last source is read.
+func TestSources_EverySourceIsReadBeforeAnyMerges(t *testing.T) {
+	var events []string
+	reading := func(name string, data map[string]any) func(context.Context) (map[string]any, error) {
+		return func(context.Context) (map[string]any, error) {
+			events = append(events, "read "+name)
+			return data, nil
+		}
+	}
+	above, err := NewMapProvider(reading("override", map[string]any{"name": "above"}), "")
+	require.NoError(t, err)
+	got, err := Load[cancelJudgedCfg](t.Context(),
+		WithBaseEntries(reading("base", map[string]any{"port": 0, "name": "below"}), WithInvalidEntries(func(context.Context, []KeyError) error {
+			events = append(events, "report base")
+			return nil
+		})),
+		WithOverrideProvider(above, nil))
+	require.NoError(t, err)
+	assert.Equal(t, cancelJudgedCfg{Port: 5, Name: "above"}, *got)
+	assert.Equal(t, []string{"read base", "read override", "report base"}, events)
+}

@@ -3,7 +3,6 @@ package config
 import (
 	"context"
 	"fmt"
-	"slices"
 )
 
 // WithBaseEntries adds stored entries keyed in this package's key grammar —
@@ -81,43 +80,22 @@ func entrySource(read func(ctx context.Context) (map[string]any, error), opts []
 	return s
 }
 
-// addEntries sets the entries p reads over the sources merged so far, as
-// key edits (see edits.go), and merges them as the source called name.
-func (l *loader) addEntries(ctx context.Context, name string, p providerSource, src Source) error {
+// readEntries reads the entries p reads and prepares them as key edits (see
+// edits.go), which set them over the layers beneath as the source called
+// name merges. An entry naming nothing config reads is an unknown key.
+func (l *loader) readEntries(ctx context.Context, name string, p providerSource, src Source) (*layer, error) {
 	read, err := p.entries(ctx)
 	if err != nil {
-		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+		return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 	}
 	edits, refused := prepareEdits(l.schema, deepCopyMap(read))
-	var invalid []*KeyError
+	y := &layer{name: name, label: constant(src), byEntry: true, entries: edits, withhold: p.withhold, report: p.rejected}
 	for _, ke := range refused {
 		if ke.Unknown {
 			l.unmergedUnknown = append(l.unmergedUnknown, UnknownKey{Key: ke.Key, Suggestion: ke.suggestion})
 		} else {
-			invalid = append(invalid, ke)
+			y.refused = append(y.refused, ke)
 		}
 	}
-	if p.withhold {
-		kept, rejected, unknown, err := l.checker.withhold(ctx, l.k.Raw(), l.unkeyed, edits)
-		if err != nil {
-			return err
-		}
-		edits, invalid = kept, append(invalid, rejected...)
-		l.unmergedUnknown = append(l.unmergedUnknown, unknown...)
-	}
-	for _, e := range edits {
-		for _, a := range e.aliased {
-			l.aliased = append(l.aliased, a+" in "+name)
-		}
-	}
-	tree, unset := setEdits(l.k.Raw, edits)
-	invalid = append(invalid, unset...)
-	if p.withhold {
-		if err := l.reportWithheld(ctx, name, p, slices.Clone(invalid)); err != nil {
-			return err
-		}
-	} else if len(invalid) > 0 {
-		return fmt.Errorf("loading %s: %w", name, joinKeyErrors(invalid))
-	}
-	return l.mergeSource(name, tree, editsUnkeyed(edits), constant(src))
+	return y, nil
 }

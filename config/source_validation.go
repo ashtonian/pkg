@@ -16,8 +16,11 @@ type SourceOption func(*providerSource)
 
 // WithInvalidEntries withholds the source's invalid entries and reports
 // them, preserving lower-precedence values. report receives the sorted
-// rejected keys after each read, including an empty slice when none were
-// rejected; nil discards the report. Its error fails the load with
+// rejected keys on every load, including an empty slice when none were
+// rejected; nil discards the report. A load reads every source before it
+// merges any, so report runs only once the last source is read: a slow
+// provider delays it, and a source that fails to read fails the load with
+// nothing reported. Its error fails the load with
 // ErrSource. Report errors omit values; their wrapped causes are intended
 // only for trusted diagnostics.
 //
@@ -175,51 +178,45 @@ func sourceEntries(schema *schemaNode, data map[string]any) (edits []edit, rest 
 	return edits, rest, append(refused, failed...)
 }
 
-func (l *loader) prepareProvider(ctx context.Context, name string, data map[string]any, p providerSource, label func(map[string]any) (labeler, error)) error {
+// prepareProvider is data, the tree of the provider p called name, as a
+// layer whose values label attributes. Under WithInvalidEntries the
+// provider is set entry by entry (see sourceEntries).
+func (l *loader) prepareProvider(name string, data map[string]any, p providerSource, label func(map[string]any) (labeler, error)) (*layer, error) {
 	w := keyWalk{schema: l.schema}
 	tree := w.tree(l.root, textKeyed(data))
 	if len(w.twice) > 0 || len(w.noText) > 0 || !p.withhold && len(w.notJSON) > 0 {
 		_, err := l.rewrite(name, data)
-		return err
+		return nil, err
 	}
 	for _, a := range w.aliased {
 		l.aliased = append(l.aliased, a+" in "+name)
 	}
 	sources, err := label(tree)
 	if err != nil {
-		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+		return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 	}
-	if p.withhold {
-		edits, rest, refused := sourceEntries(l.schema, textKeyed(data))
-		kept, rejected, unknown, err := l.checker.withhold(ctx, l.k.Raw(), l.unkeyed, edits)
-		if err != nil {
-			return err
-		}
-		l.unmergedUnknown = append(l.unmergedUnknown, unknown...)
-		tree, _ = setEdits(func() map[string]any { return nil }, kept) // a field holds no index to bound
-		mergeTrees(rest, tree)
-		if err := l.reportWithheld(ctx, name, p, slices.Concat(refused, rejected)); err != nil {
-			return err
-		}
+	if !p.withhold {
+		return &layer{name: name, label: sources, tree: tree, unkeyed: w.unkeyed}, nil
 	}
-	return l.mergeSource(name, tree, w.unkeyed, sources)
+	edits, rest, refused := sourceEntries(l.schema, textKeyed(data))
+	return &layer{name: name, label: sources, tree: rest, byEntry: true, entries: edits, withhold: true, report: p.rejected, refused: refused}, nil
 }
 
 // reportWithheld hands a WithInvalidEntries report the entries the source
 // called name withheld, sorted by key. A load whose context has ended
 // reports nothing: the report is the caller's code.
-func (l *loader) reportWithheld(ctx context.Context, name string, p providerSource, withheld []*KeyError) error {
-	if p.rejected == nil {
+func (l *loader) reportWithheld(ctx context.Context, name string, report func(context.Context, []KeyError) error, withheld []*KeyError) error {
+	if report == nil {
 		return nil
 	}
 	if err := ended(ctx); err != nil {
 		return err
 	}
-	report := make([]KeyError, len(withheld))
+	out := make([]KeyError, len(withheld))
 	for i, ke := range sortKeyErrors(withheld) {
-		report[i] = *ke
+		out[i] = *ke
 	}
-	if err := p.rejected(ctx, report); err != nil {
+	if err := report(ctx, out); err != nil {
 		return fmt.Errorf("reporting invalid entries in %s: %w: %w", name, ErrSource, err)
 	}
 	return nil
