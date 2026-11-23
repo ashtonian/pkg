@@ -408,6 +408,24 @@ func TestCanonicalKey(t *testing.T) {
 	}
 }
 
+// A key's spelling does not depend on validation: a validate tag the
+// default validator cannot read, on another field, leaves CanonicalKey as it
+// is.
+func TestCanonicalKey_IgnoresValidateTags(t *testing.T) {
+	type misspeltRule struct {
+		Port  int `koanf:"port" alias:"listen"`
+		Other int `koanf:"other" validate:"requird"`
+	}
+	_, err := Load[misspeltRule](t.Context())
+	require.ErrorIs(t, err, ErrSchema, "the tag is one the default validator refuses")
+	got, err := CanonicalKey[misspeltRule]("LISTEN")
+	require.NoError(t, err)
+	assert.Equal(t, "port", got)
+	got, err = CanonicalKey[misspeltRule]("other")
+	require.NoError(t, err)
+	assert.Equal(t, "other", got)
+}
+
 // undivable's validate tag parses but cannot apply to its field: the
 // validator meets it only as it validates a value.
 type undivable struct {

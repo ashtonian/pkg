@@ -160,8 +160,9 @@ another letter case (`MAIN.Port` → `primary.port`); a map entry quoted; an
 integer-keyed map's entry in decimal (`ports["080"]` → `ports["80"]`); and a
 key beneath an interface or remain field as a field wherever it can be one
 (`extra["x"]` → `extra.x`). It refuses what `CheckKey` refuses as unknown,
-with an `Unknown` `*KeyError`, and reads no value. A store that keys its rows
-by it holds one row per key, whatever spelling a client sent.
+with an `Unknown` `*KeyError`, and reads no value and no `validate` tag: a
+key's spelling does not depend on validation. A store that keys its rows by
+it holds one row per key, whatever spelling a client sent.
 
 `Key.Within(p)` reports whether a key is `p` or beneath it, so a store can
 find the rows a write of `p` replaces: `primary.port` and `primary` are

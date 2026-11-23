@@ -106,9 +106,11 @@ func DecodeKey[T any](ctx context.Context, key string, value any, opts ...Option
 // be one. A settings store keys its rows by it, so two spellings of one key
 // are one row. A key that does not parse, is not concrete or names nothing
 // config reads returns an Unknown *KeyError matching ErrKey. It reads no
-// value: whether one is valid for the key is CheckKey's to say.
-func CanonicalKey[T any](key string, opts ...Option) (string, error) {
-	schema, err := loadSchema(reflect.TypeFor[T](), buildOptions(opts))
+// value and no validate tag: whether a value is valid for the key is
+// CheckKey's to say. A declaration a load refuses for anything but its
+// validate tags, such as a misspelt tag key, matches ErrSchema.
+func CanonicalKey[T any](key string) (string, error) {
+	schema, err := rootSchema(reflect.TypeFor[T]())
 	if err != nil {
 		return "", err
 	}
