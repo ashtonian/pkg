@@ -25,7 +25,7 @@ func TestParseFilterWithCostPreservesResolvedOptions(t *testing.T) {
 		parsed, err := parser.ParseFilterWithCost(`{"created_at":{"$gt":"now-7d"}}`, 10)
 		require.NoError(t, err)
 		require.Positive(t, decodes)
-		require.Equal(t, core.FormatTimestamp(frozen.Add(-7*24*time.Hour)), parsed.AST.Root.Value)
+		require.Equal(t, core.FormatTimestamp(frozen.Add(-7*24*time.Hour)), parsed.AST().Root.Value)
 	})
 	for _, test := range []struct {
 		name  string

@@ -17,9 +17,9 @@ import (
 // keyset no ListQuery sort declares.
 func rankKeys() []filter.CursorKey {
 	return []filter.CursorKey{
-		{Name: "score", SQLExpr: "score", Column: "score", DataType: core.FieldTypeFloat, Direction: filter.SortDesc},
-		{Name: "label", SQLExpr: "items.label", Column: "label", DataType: core.FieldTypeString, Direction: filter.SortAsc, Nullable: true},
-		{Name: "id", SQLExpr: "items.id", Column: "id", DataType: core.FieldTypeString, Direction: filter.SortAsc},
+		{Name: "score", Column: "score", DataType: core.FieldTypeFloat, Direction: filter.SortDesc},
+		{Name: "label", Table: "items", Column: "label", DataType: core.FieldTypeString, Direction: filter.SortAsc, Nullable: true},
+		{Name: "id", Table: "items", Column: "id", DataType: core.FieldTypeString, Direction: filter.SortAsc},
 	}
 }
 
@@ -40,9 +40,9 @@ func TestOrderByKeys_ReverseInvertsEveryKey(t *testing.T) {
 	for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
 		forward := filter.OrderByKeys(d, rankKeys(), false)
 		backward := filter.OrderByKeys(d, rankKeys(), true)
-		assert.Contains(t, forward, "score DESC")
+		assert.Contains(t, forward, `"score" DESC`)
 		assert.Contains(t, forward, "ASC NULLS LAST")
-		assert.Contains(t, backward, "score ASC")
+		assert.Contains(t, backward, `"score" ASC`)
 		assert.Contains(t, backward, "DESC NULLS FIRST")
 	}
 }

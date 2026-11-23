@@ -10,20 +10,22 @@ Configuration, schema generation, value normalization, JSON Pointers, and errors
 | [Error handling and codes](../docs/http-errors.md) | Consumer guide |
 | [Concurrency and trust boundaries](../docs/operations.md) | Consumer guide |
 
+A parser is configured by a `ParserConfig` built from `Option`s, and a schema generator by `GeneratorOption`s; both are tabled with their defaults in [parser and generator options](../docs/schema-configuration.md#parser-and-generator-options).
+
 Start with the [runnable package example](../README.md#quick-start). The focused [core example](example_test.go) is compiled and output-checked in the unit suite.
 
 ## API reference
 
-- Config: `DefaultConfig`, `ParserConfig`, `Option`, `(*ParserConfig).GetCodec`, `(*ParserConfig).ListBodyLimit` (the bound a POST list body takes: `MaxListBodySize`, or one derived from `MaxInputSize`), and the options `WithMaxDepth`, `WithMaxCost`, `WithMaxInputSize`, `WithMaxListBodySize`, `WithMaxConditions`, `WithMaxArraySize`, `WithMaxPatchCopyBytes`, `WithGeneratorOptions`, `WithClock`, `WithCodec` ([options and defaults](../docs/schema-configuration.md))
-- Generation: `NewSchemaGenerator`, `SchemaGenerator` (`TableName`, `ColumnExpr`, `ColumnName`, `FieldColumn`, `FieldNameTag`, `ColumnTagKey`, `StructFields`), `JSONTagKey` (the tag encoding/json names members by; the default field-name tag), `DefaultColumnTagKey`, `GeneratorOptions`, `GeneratorOption` (`WithSQLTableName`, `WithColumnTypes`, `WithColumnMapper`, `WithColumnConvention`, `WithTableConvention`, `WithFieldNameTag`, `WithColumnTag`, `WithSortMaxFields`, `WithSearchParam`, `WithForeignTagKeys`), `SQLColumnMapper`, `NamingConvention` (`SnakeCase`, the default, `CamelCase`, `PascalCase`, `LowerCase`), `TableConvention` (`PluralSnake`, the default, `Singular`, `PluralCamel`)
-- Types: `FieldType` (`FieldTypeString` … `FieldTypeGeo`), `SQLType` (`SQLInet`, `SQLCIDR`, `SQLInterval` and their arrays: database types a resource declares for its dialect to read as text; `Valid`, `IsArray`, `IsJSON`), `IsValueType` / `CheckValueStorage` / `ImpliedSQLType` (the declarations a value type's column takes), `TypeOf`, `TypeInfo`, `IsDocument`, `NumericKind`, `IsUUIDType` / `UUIDText` (any UUID type: a named 16-byte array whose zero value writes the nil UUID's text), `Decimal` / `IsDecimalType` (any decimal type with the `Coefficient` / `Exponent` method set, recognized by shape)
+- Config: `DefaultConfig`, `ParserConfig` (one rule for its limits: zero is the default for depth, cost, conditions and array size, zero or less is unlimited for input size and copy bytes, zero derives the list body size), `Option`, `(*ParserConfig).Effective` (the configuration every filter and patch parser reads, defaults filled in; nil is `DefaultConfig`), `(*ParserConfig).Validate` (refuses a negative limit, naming the option), `(*ParserConfig).GetCodec`, `(*ParserConfig).ListBodyLimit` (the bound a POST list body takes: `MaxListBodySize`, or one derived from `MaxInputSize`; nil-safe), and the options `WithMaxDepth`, `WithMaxCost`, `WithMaxInputSize`, `WithMaxListBodySize`, `WithMaxConditions`, `WithMaxArraySize`, `WithMaxPatchCopyBytes`, `WithGeneratorOptions`, `WithClock`, `WithCodec` ([options and defaults](../docs/schema-configuration.md))
+- Generation: `NewSchemaGenerator`, `SchemaGenerator` (`TableName`, `MappedExpr`, `ColumnName`, `FieldColumn`, `FieldNameTag`, `ColumnTagKey`, `StructFields`; its options are copied at construction and read through `DefaultFilterOps`, `DefaultPatchOps`, `SortMaxFields`, `SearchParam`, `SearchLanguage`, `MapsColumns`), `JSONTagKey` (the tag encoding/json names members by; the default field-name tag), `DefaultColumnTagKey`, `GeneratorOptions`, `GeneratorOption` (`WithSQLTableName`, `WithColumnTypes`, `WithColumnMapper`, `WithColumnConvention`, `WithTableConvention`, `WithFieldNameTag`, `WithColumnTag`, `WithSortMaxFields`, `WithSearchParam`, `WithForeignTagKeys`), `SQLColumnMapper`, `NamingConvention` (`SnakeCase`, the default, `CamelCase`, `PascalCase`, `LowerCase`), `TableConvention` (`PluralSnake`, the default, `Singular`, `PluralCamel`)
+- Types: `FieldType` (the `FieldType*` constants, `FieldTypeString` … `FieldTypeGeo`), `SQLType` (`SQLInet`, `SQLCIDR`, `SQLInterval` and their arrays `SQLInetArray`, `SQLCIDRArray`, `SQLIntervalArray`: database types a resource declares for its dialect to read as text; `Valid`, `IsArray`, `IsJSON`), `IsValueType` / `CheckValueStorage` / `ImpliedSQLType` (the declarations a value type's column takes), `TypeOf`, `TypeInfo`, `IsDocument`, `NumericKind`, `IsUUIDType` / `UUIDText` (any UUID type: a named 16-byte array whose zero value writes the nil UUID's text), `Decimal` / `IsDecimalType` (any decimal type with the `Coefficient` / `Exponent` method set, recognized by shape)
 - Value types, each with one canonical text in JSON, text, SQL parameters and cursors: `Date` / `ParseDate`, `LocalTime` / `ParseLocalTime`, `Interval` / `ParseInterval`, `Inet` / `ParseInet` / `InetFromAddr` / `InetFromPrefix`, `CIDR` / `ParseCIDR` / `CIDRFromPrefix`, `MACAddr` / `ParseMACAddr`
-- Values: `NormalizeInt`, `NormalizeUint`, `NormalizeFloat`, `NormalizeScalar`, `NormalizeJSON`, `JSONEqual` (document equality as jsonb compares), `CompareNumbers`, `IsNumber`, `DecimalText` / `CompareDecimals` / `MaxDecimalDigits` (canonical exact decimal text and its order), `PortableDecimal` (a JSON number literal every backend compares as the same value), `AnySlice`, `FormatTimestamp` / `TimestampLayout` (canonical timestamp text: UTC, nine fractional digits, fixed width)
+- Values: `NormalizeInt`, `NormalizeUint`, `NormalizeFloat`, `NormalizeScalar`, `NormalizeJSON`, `JSONEqual` (document equality as jsonb compares), `CompareNumbers`, `IsNumber`, `DecimalText` / `CompareDecimals` / `MaxDecimalDigits` (canonical exact decimal text and its order), `PortableDecimal` (a JSON number literal every backend compares as the same value), `AnySlice`, `FormatTimestamp` / `TimestampLayout` (canonical timestamp text: UTC, nine fractional digits, fixed width), `CheckNUL` / `ErrNUL` (a request string holding U+0000, which no backend compares as written, refused where request values are read; stored values are not checked)
 - Pointers: `ParsePointer`, `FormatPointer`, `EscapePointerToken`
 - Relations: `RelationSchema` (`OwnerKey`: its `PrimaryKey`, or `DefaultPrimaryKey`; `RelatedTable`: the table its nested predicates test), `RelationKind` (`ManyToMany`, the zero kind, `HasMany`, `BelongsTo`), `DefaultPrimaryKey` (`"id"`, a resource's or relation owner's key when none is declared), `ParseRelationTag`, `IsIdentifier`
-- Errors: `Code` and its constants `Code*` (`CodeUnknownField` = E2071, …: each code's one definition, with its status and default message; filter, patch and parse alias them as `ECode*`), `ParseError` (`ErrorCode`, `ErrorMessage`, `ErrorHTTPStatus`, `IsErrorUserFacing`), `ParseErrorKind`, `DetailField` / `DetailParameter` (the `Details` keys)
-- Documents: `JSONFieldsOf` (a struct type's members as encoding/json names them, no other tag read), `ValidateJSONKeyRepresentation` (a stored document's member names against its Go type, in one pass), `CanonicalJSONMapKey` (a member name as a map key and back)
-- Fields: `StructFieldsOf`, `StructFields` (`External`, `ColumnTagged`), `Field` (`Value`, `Settable`, `Hidden`, `HasFieldNameOption`, `Quoted`, `Wire`), `Tags`, `Capabilities` (`Has`), `Capability` (`CapabilityFilter`, … — the `parse` tag's values, which the `paths` tag's member capabilities share), `Bounds` (`IsZero`, `BoundsValues`, `CountsItems`, `Check`: a field's `minlen` / `maxlen` / `min` / `max` / `minitems` / `maxitems`, the tags the `Constraint*` constants name) — one walk of a struct type shared by every schema
+- Errors: `Code` and its constants `Code*` (`CodeUnknownField` = E2071, …: each code's one definition, with its status and default message; filter, patch and parse alias them as `ECode*`), `Codes` (the table, sorted: the catalog), `ParseError` (`ErrorCode`, `ErrorMessage`, `ErrorHTTPStatus`, `IsErrorUserFacing`), `ParseErrorKind` (`ParseErrorKind*`: the grammar that refused the request), `DetailField` / `DetailParameter` (the `Details` keys)
+- Documents: `JSONFieldsOf` (a struct type's members as encoding/json names them, no other tag read; the module's internal key validation of stored documents reads it)
+- Fields: `StructFieldsOf`, `StructFields` (`External`, `ColumnTagged`, `FoldedMatch`: the field encoding/json decodes a member into by case folding), `Field` (`Value`, `Settable`, `Hidden`, `HasFieldNameOption`, `Quoted`, `Wire`), `Tags`, `Capabilities` (`Has`), `Capability` (the `Capability*` constants, `CapabilityFilter`, … — the `parse` tag's values, which the `paths` tag's member capabilities share), `Bounds` (`IsZero`, `BoundsValues`, `CountsItems`, `Check`: a field's `minlen` / `maxlen` / `min` / `max` / `minitems` / `maxitems`, the tags the `Constraint*` constants name) — one walk of a struct type shared by every schema; `ParseEnumTag` (an `enum` tag's values: comma-separated, or single-quoted to hold a comma, a leading or trailing space or an empty value)
 - Codec: `Codec`, `StdlibJSON`; naming: `Pluralize`; the declared-constraint names `Constraint*` (`ConstraintEnum`, …), which `patch.ConstraintError` reports
 
 ## Code map
@@ -34,7 +36,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `types.go` | `FieldType`, `SQLType` |
 | `errors.go` | `ParseError`, `ParseErrorKind`, the `Detail*` keys |
 | `code.go` | The error codes and their status and message table; no application catalog dependency |
-| `config.go` | `ParserConfig`, `DefaultConfig`, the parser options, `ListBodyLimit` |
+| `config.go` | `ParserConfig` and its limit rule (`Effective`, `Validate`), `DefaultConfig`, the parser options, `ListBodyLimit` |
 | `naming.go` | Column and table naming conventions, each a function, `Pluralize` |
 | `generator.go` | `SchemaGenerator`, `GeneratorOptions` and their options, `SQLColumnMapper` |
 | `tag_keys.go` | The tag keys parse reads, and the walked fields' keys that misspell one, which `SchemaGenerator.StructFields` refuses |
@@ -46,7 +48,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `number_literal.go` | The JSON number grammar (`scanNumber`), the one reader of number text; exact integer reading in any spelling |
 | `wire.go` | `Wire`, `WireString`, `Field.Quoted` (encoding/json quotes the field), `Field.Wire` (its request form), `SchemaGenerator.MemberWire` (a document member's); `FromWire` / `ToWire` between the wire form and the canonical value |
 | `decimal.go` | `Decimal`, `IsDecimalType`, canonical decimal text (`DecimalText`), exact decimal order (`CompareDecimals`) |
-| `value.go` | `NormalizeScalar`, canonical timestamps, `AnySlice` |
+| `value.go` | `NormalizeScalar`, canonical timestamps, `AnySlice`, `CheckNUL` |
 | `date.go` | `Date`: SQL DATE, `YYYY-MM-DD` |
 | `localtime.go` | `LocalTime`: SQL TIME, `HH:MM:SS[.ffffff]` without trailing zeros |
 | `interval.go` | `Interval`: SQL INTERVAL as months, days and microseconds; ISO 8601 text as PostgreSQL's `iso_8601` style writes it; the postgres-style and pgx text drivers return |
@@ -56,10 +58,30 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `json.go` | `NormalizeJSON` — canonical JSON documents |
 | `json_equal.go` | `JSONEqual` — document equality, numbers by value |
 | `json_fields.go` | `JSONFieldsOf` — encoding/json's member naming for document types, on gowalker's `WithJSONFields` with ties dropped; no row tag read |
-| `json_keys.go` | `ValidateJSONKeyRepresentation`, `CanonicalJSONMapKey` — a stored document's member names keep their JSON spelling; each type's shape and map key rule found once |
 | `pointer.go` | RFC 6901 pointers |
 | `relation.go` | Relation tag grammar, `IsIdentifier` |
 | `doc.go` | Package documentation |
+
+## Build, run and test
+
+From the module directory (`parse/`):
+
+```bash
+go test -tags=unit ./core/...          # normalization, generation, pointers, codes; the core example
+go test -tags=unit -race ./core/...    # as the nightly run does
+```
+
+## Operations
+
+core does no I/O and starts no goroutines, so it has no health check, metrics or logs of its own. Its failures are values:
+
+- A `*core.ParseError` is the request's fault: `Code` names it, `ErrorHTTPStatus()` gives its status and `Message` is written for the client. Every code is in the [error catalog](../docs/http-errors.md#error-codes).
+- A plain error from schema generation or `(*ParserConfig).Validate` is the server's configuration, raised at startup by `NewResource` or the generator, naming the field or option to fix.
+- Every request is bounded by the [parser limits](../docs/schema-configuration.md#parser-and-generator-options); one over a limit is refused with its code (E2061, E2063, E2074, E2088, E2089), never parsed in part.
+
+## Security
+
+Struct tags, column mappers, naming conventions and `WithColumnTypes` are trusted server configuration: they name the tables and columns SQL is built from, and generation refuses a name that is not an identifier. Request text is untrusted and reaches the parsers only through the limits above. `Code.IsErrorUserFacing` reports whether a code's message may be shown to a client.
 
 ## Dependencies
 

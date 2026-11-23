@@ -31,9 +31,9 @@ import (
 //
 // Fixture entity opts into the full activation matrix on the Tags field.
 type widget struct {
-	ID       string   `db:"id" json:"id" sort_field:"true" sort_default:"asc"`
+	ID       string   `db:"id" json:"id" parse:"sort" sort_default:"asc"`
 	TenantID string   `db:"tenant_id" json:"tenant_id" parse:"filter"`
-	Name     string   `db:"name" json:"name" parse:"filter,patch" sort_field:"true"`
+	Name     string   `db:"name" json:"name" parse:"filter,patch,sort"`
 	Color    string   `db:"color" json:"color" parse:"filter,patch,facet" facet:"terms:10"`
 	Tags     []string `db:"-" json:"-" parse:"filter,patch,facet,include" filter_ops:"eq,in,nin" facet:"terms:10" relation:"widget_tags,widget_id,tag_id,id,tenant_id"`
 }

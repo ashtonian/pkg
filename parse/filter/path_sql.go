@@ -6,6 +6,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/decimals"
+	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // FieldExpr is the SQL expression of a field's value: its column (a decimal
@@ -16,17 +17,18 @@ func FieldExpr(d Dialect, f *FieldSchema) string {
 	if f.Path != nil {
 		return d.PathExpr(f.Path, f.DataType)
 	}
+	column := f.sql(d)
 	switch {
 	case f.DataType == core.FieldTypeDate:
-		return d.ReadColumn(f.SQLExpr, core.SQLDate)
+		return d.ReadColumn(column, core.SQLDate)
 	case f.DataType == core.FieldTypeDecimal:
-		return d.DecimalColumn(f.SQLExpr)
+		return d.DecimalValue(DecimalColumn(column))
 	case f.DataType == core.FieldTypeInterval:
-		return d.ReadColumn(f.SQLExpr, core.SQLInterval)
+		return d.ReadColumn(column, core.SQLInterval)
 	case f.DataType == core.FieldTypeArray && f.Elem == core.FieldTypeInterval:
-		return d.ReadColumn(f.SQLExpr, core.SQLIntervalArray)
+		return d.ReadColumn(column, core.SQLIntervalArray)
 	}
-	return f.SQLExpr
+	return column
 }
 
 const (
@@ -37,10 +39,31 @@ const (
 // maxDecimalMember is decimals.MaxMemberLength as SQL text.
 var maxDecimalMember = strconv.Itoa(decimals.MaxMemberLength)
 
-// pgPathLiteral is the text[] literal of a path's segments; segments are
-// identifiers, so no element needs quoting.
-func pgPathLiteral(segs []string) string {
-	return "'{" + strings.Join(segs, ",") + "}'"
+// pgMember is the jsonb member of doc at segs, read one object member at a
+// time with ->, and pgMemberText its text, the last member read with ->>.
+// Both operators take a text key, which reads an object's member and is
+// NULL on an array or a scalar: no segment is read as an array subscript or
+// a NULL element, as a text[] path given to #> reads `0` or `null`, so
+// PostgreSQL reads the member the reference rule (memberAt) reads. Segments
+// are identifiers (pathSegment), so no literal needs escaping.
+func pgMember(doc string, segs []string) string {
+	return doc + pgKeys(segs, " -> ")
+}
+
+func pgMemberText(doc string, segs []string) string {
+	last := len(segs) - 1
+	return doc + pgKeys(segs[:last], " -> ") + pgKeys(segs[last:], " ->> ")
+}
+
+func pgKeys(segs []string, op string) string {
+	var b strings.Builder
+	for _, s := range segs {
+		b.WriteString(op)
+		b.WriteString("'")
+		b.WriteString(s)
+		b.WriteString("'")
+	}
+	return b.String()
 }
 
 // sqlitePathLiteral is the JSON path of a path's segments, every label
@@ -67,30 +90,16 @@ func orderedAsText(f *FieldSchema) bool {
 	return f.Path != nil && (f.DataType == core.FieldTypeTimestamp || f.DataType == core.FieldTypeUUID)
 }
 
-// PathExpr renders p's typed value for PostgreSQL. The document is read as
-// jsonb; jsonb_typeof selects the member's JSON kind before any cast, so a
-// wrong-typed member is NULL rather than a cast error. An element path
-// reads its row's element, jsonb_array_elements' v.
-func (PostgresDialect) PathExpr(p *JSONPath, t core.FieldType) string {
-	if p.element {
-		v := p.Column + ".v"
-		return pgTypedMember(t, "jsonb_typeof("+v+")", "("+v+" #>> '{}')")
-	}
-	doc := pgPathDocument(p)
-	path := pgPathLiteral(p.Segments)
-	return pgTypedMember(t, "jsonb_typeof("+doc+" #> "+path+")", "("+doc+" #>> "+path+")")
-}
-
 // pgPathDocument is p's document as jsonb.
-func pgPathDocument(p *JSONPath) string {
+func pgPathDocument(d dialect.Dialect, p *JSONPath) string {
 	if p.Storage != StorageJSONB {
-		return "(" + p.Column + ")::jsonb"
+		return "(" + p.document(d) + ")::jsonb"
 	}
-	return p.Column
+	return p.document(d)
 }
 
 // pgTypedMember is a JSON value of type t, NULL when it has another kind:
-// kind is its jsonb_typeof, text its text (#>>).
+// kind is its jsonb_typeof, text its text (->> or #>> '{}').
 func pgTypedMember(t core.FieldType, kind, text string) string {
 	switch t {
 	case core.FieldTypeString:
@@ -129,30 +138,17 @@ func sqliteTimestamp(kind, val string) string {
 
 func hexGlob(n int) string { return strings.Repeat("[0-9a-f]", n) }
 
-// PathExpr renders p's typed value for SQLite, whose documents are JSON
-// text: json_type selects the member's kind; json_extract reads it. A
-// decimal member is read as the JSON literal `->` returns, which keeps the
-// number as written where json_extract would round it to a double, through
-// parse_decimal (parsesqlite). An element path reads its json_each row: its
-// type and value are json_type's and json_extract's of the element, and
-// its literal is the source document's (the hidden json column) at its
-// fullkey.
-func (SQLiteDialect) PathExpr(p *JSONPath, t core.FieldType) string {
-	kind, val, literal := sqlitePathMember(p)
-	return sqliteTypedMember(t, kind, val, literal)
-}
-
 // sqlitePathMember is p's member as SQLite reads it: its json_type, its
 // json_extract value and its JSON text as written (`->`). An element path's
 // are its json_each row's type and value, and the source document's text at
 // the row's fullkey.
-func sqlitePathMember(p *JSONPath) (kind, val, literal string) {
+func sqlitePathMember(d dialect.Dialect, p *JSONPath) (kind, val, literal string) {
+	doc := p.document(d)
 	if p.element {
-		row := p.Column
-		return row + ".type", row + ".value", row + ".json -> " + row + ".fullkey"
+		return doc + ".type", doc + ".value", doc + ".json -> " + doc + ".fullkey"
 	}
 	path := sqlitePathLiteral(p.Segments)
-	return "json_type(" + p.Column + ", " + path + ")", "json_extract(" + p.Column + ", " + path + ")", p.Column + " -> " + path
+	return "json_type(" + doc + ", " + path + ")", "json_extract(" + doc + ", " + path + ")", doc + " -> " + path
 }
 
 // sqliteTypedMember is a JSON value of type t, NULL when it has another

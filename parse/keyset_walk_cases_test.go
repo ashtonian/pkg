@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,11 +73,10 @@ var trackBase = time.Date(2026, 1, 1, 0, 0, 0, 123456789, time.UTC)
 
 // trackDB is one database under test.
 type trackDB struct {
-	db       *sql.DB
-	dialect  filter.Dialect
-	schema   string
-	insert   func(db *sql.DB, s trackSeed) error
-	scanTime func(src any) (time.Time, error)
+	db      *sql.DB
+	dialect filter.Dialect
+	schema  string
+	insert  func(db *sql.DB, s trackSeed) error
 }
 
 func runTrackWalks(t *testing.T, tdb trackDB) {
@@ -129,7 +129,7 @@ func walkTrack(t *testing.T, tdb trackDB, p *parse.Resource[trackItem], sortPara
 		}
 		res, err := lq.Build(opts...)
 		require.NoError(t, err)
-		items := queryTrack(t, tdb, res)
+		items := queryTrack(t, tdb, p, res)
 		page, err := filter.NewPage(items, res.Limit, res.Cursor, func(it trackItem, col string) (any, error) {
 			return filter.CursorValueByTag(it, "db", col)
 		})
@@ -169,45 +169,14 @@ func trackSuffix(id uuid.UUID) string {
 	return string(rune('a' + id[15] - 1))
 }
 
-func queryTrack(t *testing.T, tdb trackDB, res *filter.ListResult) []trackItem {
+func queryTrack(t *testing.T, tdb trackDB, p *parse.Resource[trackItem], res *filter.ListResult) []trackItem {
 	t.Helper()
-	q := "SELECT id, rank, name, created_at, price FROM track_items " + res.Fragment
-	rows, err := tdb.db.Query(q, res.Args...)
-	require.NoError(t, err, q)
-	defer func() { require.NoError(t, rows.Close()) }()
-	var out []trackItem
-	for rows.Next() {
-		var it trackItem
-		var rank sql.NullInt64
-		var created any
-		var price decimal.NullDecimal
-		require.NoError(t, rows.Scan(&it.ID, &rank, &it.Name, &created, &price))
-		if rank.Valid {
-			it.Rank = &rank.Int64
-		}
-		if price.Valid {
-			it.Price = &price.Decimal
-		}
-		it.CreatedAt, err = tdb.scanTime(created)
-		require.NoError(t, err)
-		out = append(out, it)
-	}
-	require.NoError(t, rows.Err())
-	return out
+	columns, err := p.Columns(tdb.dialect)
+	require.NoError(t, err)
+	st := parse.Statement{SQL: "SELECT " + strings.Join(columns, ", ") + " FROM " + tdb.dialect.QuoteIdent("track_items") + " " + res.Fragment, Args: res.Args}
+	return resourceRows(t, tdb.db, p, tdb.dialect, st)
 }
 
 func trackTime(s trackSeed) time.Time {
 	return trackBase.Add(time.Duration(s.created) * time.Second)
-}
-
-func scanTimeValue(src any) (time.Time, error) {
-	switch v := src.(type) {
-	case time.Time:
-		return v, nil
-	case string:
-		return time.Parse(time.RFC3339Nano, v)
-	case []byte:
-		return time.Parse(time.RFC3339Nano, string(v))
-	}
-	return time.Time{}, fmt.Errorf("unexpected created_at %T", src)
 }

@@ -15,7 +15,9 @@ import (
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
-// Regression tests for the 2026-09-30 review's filter findings.
+// Filter values and names as the wire carries them: JSON numbers within the
+// domain every backend compares alike, field names that are no SQL
+// identifier, and not_null in both grammars.
 
 type docRow struct {
 	ID   string         `json:"id" db:"id" parse:"sort"`
@@ -23,7 +25,7 @@ type docRow struct {
 	Nums []uint64       `json:"nums" db:"nums" parse:"filter"`
 }
 
-// N02: a JSON number some backend would round is rejected, not answered
+// A JSON number some backend would round is rejected, not answered
 // differently per backend.
 func TestFilter_JSONNumbersStayInThePortableDomain(t *testing.T) {
 	p, err := parse.NewResource[docRow]("doc_rows")
@@ -61,7 +63,7 @@ func TestPortableDecimal(t *testing.T) {
 	}
 }
 
-// N11: a facet over a field whose external name is not an SQL identifier
+// A facet over a field whose external name is not an SQL identifier
 // executes.
 func TestFacet_ExternalNameIsNotAnAlias(t *testing.T) {
 	type labelled struct {
@@ -96,7 +98,7 @@ type nullable struct {
 	Other *string `json:"other" parse:"filter" filter_ops:"eq"`
 }
 
-// N13: not_null has a wire spelling, and every NULL test is one capability.
+// not_null has a wire spelling, and every NULL test is one capability.
 func TestFilter_NotNullIsAWireOperator(t *testing.T) {
 	p, err := parse.NewResource[nullable]("nullables")
 	require.NoError(t, err)
@@ -109,7 +111,7 @@ func TestFilter_NotNullIsAWireOperator(t *testing.T) {
 	} {
 		f, parseErr := p.ParseFilter(filterJSON)
 		require.NoError(t, parseErr, filterJSON)
-		assert.Equal(t, want, f.AST.Root.Op, filterJSON)
+		assert.Equal(t, want, f.AST().Root.Op, filterJSON)
 	}
 
 	_, err = p.ParseFilter(`{"other":{"$not_null":true}}`)

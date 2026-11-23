@@ -22,6 +22,5 @@ func TestKeysetWalk_Postgres(t *testing.T) {
 				trackID(s.id), s.rank, s.name, trackTime(s), s.price)
 			return err
 		},
-		scanTime: scanTimeValue,
 	})
 }

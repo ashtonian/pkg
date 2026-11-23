@@ -3,6 +3,7 @@
 package filter
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"testing"
@@ -14,9 +15,9 @@ import (
 )
 
 var (
-	statusField = &FieldSchema{ExternalName: "status", SQLExpr: "items.status", DataType: core.FieldTypeString}
+	statusField = &FieldSchema{ExternalName: "status", Table: "items", Column: "status", DataType: core.FieldTypeString}
 	colorField  = &FieldSchema{ExternalName: "attrs.color", DataType: core.FieldTypeString,
-		Path: &JSONPath{Column: "items.attrs", Segments: []string{"color"}, Storage: StorageJSONB}}
+		Path: &JSONPath{Table: "items", Column: "attrs", Segments: []string{"color"}, Storage: StorageJSONB}}
 )
 
 func buildWhere(t *testing.T, d Dialect, root *FilterNode) *SQLResult {
@@ -56,8 +57,8 @@ func TestSetsBindOneParameter(t *testing.T) {
 // text and one parameter whatever the list's size.
 func TestContainsBindsOneSet(t *testing.T) {
 	tagsPath := &FieldSchema{ExternalName: "attrs.tags", DataType: core.FieldTypeArray, Elem: core.FieldTypeString,
-		Path: &JSONPath{Column: "items.attrs", Segments: []string{"tags"}, Storage: StorageJSONB}}
-	labels := &FieldSchema{ExternalName: "labels", SQLExpr: "items.labels", DataType: core.FieldTypeArray, Elem: core.FieldTypeString}
+		Path: &JSONPath{Table: "items", Column: "attrs", Segments: []string{"tags"}, Storage: StorageJSONB}}
+	labels := &FieldSchema{ExternalName: "labels", Table: "items", Column: "labels", DataType: core.FieldTypeArray, Elem: core.FieldTypeString}
 	contains := func(f *FieldSchema, n int) *FilterNode {
 		return &FilterNode{Field: f, Op: OpContains, Value: members(n)}
 	}
@@ -85,18 +86,18 @@ func TestContainsBindsOneSet(t *testing.T) {
 
 func TestSetCostIsIndependentOfSize(t *testing.T) {
 	cost := func(n int) int {
-		return NewParsedFilter(&FilterAST{Root: &FilterNode{Field: statusField, Op: OpIn, Value: members(n)}}).EstimatedCost
+		return NewParsedFilter(&FilterAST{Root: &FilterNode{Field: statusField, Op: OpIn, Value: members(n)}}).EstimatedCost()
 	}
 	assert.Equal(t, cost(1), cost(100_000))
 }
 
 func TestSetRendering(t *testing.T) {
 	decimalPath := &FieldSchema{ExternalName: "attrs.price", DataType: core.FieldTypeDecimal,
-		Path: &JSONPath{Column: "items.attrs", Segments: []string{"price"}, Storage: StorageJSONB}}
+		Path: &JSONPath{Table: "items", Column: "attrs", Segments: []string{"price"}, Storage: StorageJSONB}}
 	boolPath := &FieldSchema{ExternalName: "attrs.on", DataType: core.FieldTypeBool,
-		Path: &JSONPath{Column: "items.attrs", Segments: []string{"on"}, Storage: StorageJSONB}}
+		Path: &JSONPath{Table: "items", Column: "attrs", Segments: []string{"on"}, Storage: StorageJSONB}}
 	textColor := &FieldSchema{ExternalName: "attrs.color", DataType: core.FieldTypeString,
-		Path: &JSONPath{Column: "items.attrs", Segments: []string{"color"}, Storage: StorageText}}
+		Path: &JSONPath{Table: "items", Column: "attrs", Segments: []string{"color"}, Storage: StorageText}}
 	noContainment := PostgresDialect{ContainmentMaxValues: -1}
 	tests := []struct {
 		name  string
@@ -106,21 +107,21 @@ func TestSetRendering(t *testing.T) {
 		args  []any
 	}{
 		{"pg column", PostgresDialect{}, &FilterNode{Field: statusField, Op: OpIn, Value: []any{"a", "b"}},
-			"items.status = ANY($1)", []any{[]string{"a", "b"}}},
+			`"items"."status" = ANY($1)`, []any{[]string{"a", "b"}}},
 		{"pg column nin", PostgresDialect{}, &FilterNode{Field: statusField, Op: OpNin, Value: []any{"a"}},
-			"items.status <> ALL($1)", []any{[]string{"a"}}},
+			`"items"."status" <> ALL($1)`, []any{[]string{"a"}}},
 		{"pg NULL member makes a miss unknown", PostgresDialect{}, &FilterNode{Field: statusField, Op: OpIn, Value: []any{"a", nil}},
-			"(items.status = ANY($1) OR NULL)", []any{[]string{"a"}}},
+			`("items"."status" = ANY($1) OR NULL)`, []any{[]string{"a"}}},
 		{"pg NULL member in nin", PostgresDialect{}, &FilterNode{Field: statusField, Op: OpNin, Value: []any{nil, "a"}},
-			"(items.status <> ALL($1) AND NULL)", []any{[]string{"a"}}},
+			`("items"."status" <> ALL($1) AND NULL)`, []any{[]string{"a"}}},
 		{"only NULL members", PostgresDialect{}, &FilterNode{Field: statusField, Op: OpNin, Value: []any{nil}}, "NULL", []any{}},
 		{"empty in", PostgresDialect{}, &FilterNode{Field: statusField, Op: OpIn, Value: []any{}}, "1=0", []any{}},
 		{"pg path string set by containment", PostgresDialect{}, &FilterNode{Field: colorField, Op: OpIn, Value: []any{"red", "blue"}},
-			"items.attrs @> ANY($1::jsonb[])", []any{[]string{`{"color":"red"}`, `{"color":"blue"}`}}},
+			`"items"."attrs" @> ANY($1::jsonb[])`, []any{[]string{`{"color":"red"}`, `{"color":"blue"}`}}},
 		{"pg path set beyond the containment bound", PostgresDialect{ContainmentMaxValues: 1}, &FilterNode{Field: colorField, Op: OpIn, Value: []any{"red", "blue"}},
-			"(CASE WHEN jsonb_typeof(items.attrs #> '{color}') = 'string' THEN (items.attrs #>> '{color}') END) IN (SELECT unnest($1::text[]) AS v)", []any{[]string{"red", "blue"}}},
+			`(CASE WHEN jsonb_typeof("items"."attrs" -> 'color') = 'string' THEN ("items"."attrs" ->> 'color') END) IN (SELECT unnest($1::text[]) AS v)`, []any{[]string{"red", "blue"}}},
 		{"pg path set without containment", noContainment, &FilterNode{Field: colorField, Op: OpNin, Value: []any{"red"}},
-			"(CASE WHEN jsonb_typeof(items.attrs #> '{color}') = 'string' THEN (items.attrs #>> '{color}') END) NOT IN (SELECT unnest($1::text[]) AS v)", []any{[]string{"red"}}},
+			`(CASE WHEN jsonb_typeof("items"."attrs" -> 'color') = 'string' THEN ("items"."attrs" ->> 'color') END) NOT IN (SELECT unnest($1::text[]) AS v)`, []any{[]string{"red"}}},
 		{"pg path decimal set", PostgresDialect{}, &FilterNode{Field: decimalPath, Op: OpIn, Value: []any{"9.5", "100"}},
 			FieldExpr(PostgresDialect{}, decimalPath) + " IN (SELECT unnest($1::text[])::numeric AS v)", []any{[]string{"9.5", "100"}}},
 		{"pg path bool set", noContainment, &FilterNode{Field: boolPath, Op: OpIn, Value: []any{true}},
@@ -128,11 +129,11 @@ func TestSetRendering(t *testing.T) {
 		{"pg text storage keeps the typed set", PostgresDialect{}, &FilterNode{Field: textColor, Op: OpIn, Value: []any{"red"}},
 			FieldExpr(PostgresDialect{}, textColor) + " IN (SELECT unnest($1::text[]) AS v)", []any{[]string{"red"}}},
 		{"sqlite column", SQLiteDialect{}, &FilterNode{Field: statusField, Op: OpIn, Value: []any{"a", "b"}},
-			"items.status IN (SELECT value AS v FROM json_each(?1))", []any{`["a","b"]`}},
-		{"sqlite floats are REAL", SQLiteDialect{}, &FilterNode{Field: &FieldSchema{ExternalName: "score", SQLExpr: "items.score", DataType: core.FieldTypeFloat}, Op: OpNin, Value: []any{2.5, 8.172340535545245e18, 1.0}},
-			"items.score NOT IN (SELECT value AS v FROM json_each(?1))", []any{`[2.5,8.172340535545245e+18,1]`}},
-		{"sqlite decimals", SQLiteDialect{}, &FilterNode{Field: &FieldSchema{ExternalName: "amount", SQLExpr: "items.amount", DataType: core.FieldTypeDecimal}, Op: OpIn, Value: []any{"9.5"}},
-			"parse_decimal(items.amount) IN (SELECT value AS v FROM json_each(?1))", []any{`["9.5"]`}},
+			`"items"."status" IN (SELECT value AS v FROM json_each(?1))`, []any{`["a","b"]`}},
+		{"sqlite floats are REAL", SQLiteDialect{}, &FilterNode{Field: &FieldSchema{ExternalName: "score", Table: "items", Column: "score", DataType: core.FieldTypeFloat}, Op: OpNin, Value: []any{2.5, 8.172340535545245e18, 1.0}},
+			`"items"."score" NOT IN (SELECT value AS v FROM json_each(?1))`, []any{`[2.5,8.172340535545245e+18,1]`}},
+		{"sqlite decimals", SQLiteDialect{}, &FilterNode{Field: &FieldSchema{ExternalName: "amount", Table: "items", Column: "amount", DataType: core.FieldTypeDecimal}, Op: OpIn, Value: []any{"9.5"}},
+			`parse_decimal("items"."amount") IN (SELECT value AS v FROM json_each(?1))`, []any{`["9.5"]`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -147,27 +148,27 @@ func TestContainmentOnlyWhereSelectionIsTwoValued(t *testing.T) {
 	eq := func(f *FieldSchema, v any) *FilterNode { return &FilterNode{Field: f, Op: OpEq, Value: v} }
 	typed := FieldExpr(PostgresDialect{}, colorField) + " = $1"
 	nested := &FieldSchema{ExternalName: "attrs.dims.w", DataType: core.FieldTypeFloat,
-		Path: &JSONPath{Column: "items.attrs", Segments: []string{"dims", "w"}, Storage: StorageJSONB}}
-	indexed := &FieldSchema{ExternalName: "attrs.list.0", DataType: core.FieldTypeString,
-		Path: &JSONPath{Column: "items.attrs", Segments: []string{"list", "0"}, Storage: StorageJSONB}}
+		Path: &JSONPath{Table: "items", Column: "attrs", Segments: []string{"dims", "w"}, Storage: StorageJSONB}}
+	numbered := &FieldSchema{ExternalName: "attrs.list.0", DataType: core.FieldTypeString,
+		Path: &JSONPath{Table: "items", Column: "attrs", Segments: []string{"list", "0"}, Storage: StorageJSONB}}
 	decimalPath := &FieldSchema{ExternalName: "attrs.price", DataType: core.FieldTypeDecimal,
-		Path: &JSONPath{Column: "items.attrs", Segments: []string{"price"}, Storage: StorageJSONB}}
+		Path: &JSONPath{Table: "items", Column: "attrs", Segments: []string{"price"}, Storage: StorageJSONB}}
 	tests := []struct {
 		name  string
 		node  *FilterNode
 		where string
 		args  []any
 	}{
-		{"selected", eq(colorField, "red"), "items.attrs @> $1::jsonb", []any{`{"color":"red"}`}},
-		{"nested members nest the fragment", eq(nested, 2.5), "items.attrs @> $1::jsonb", []any{`{"dims":{"w":2.5}}`}},
+		{"selected", eq(colorField, "red"), `"items"."attrs" @> $1::jsonb`, []any{`{"color":"red"}`}},
+		{"nested members nest the fragment", eq(nested, 2.5), `"items"."attrs" @> $1::jsonb`, []any{`{"dims":{"w":2.5}}`}},
 		{"under and / or", &FilterNode{Op: OpOr, Children: []*FilterNode{eq(colorField, "red"), {Op: OpAnd, Children: []*FilterNode{eq(colorField, "blue"), eq(nested, 1.0)}}}},
-			"(items.attrs @> $1::jsonb OR (items.attrs @> $2::jsonb AND items.attrs @> $3::jsonb))", []any{`{"color":"red"}`, `{"color":"blue"}`, `{"dims":{"w":1}}`}},
+			`("items"."attrs" @> $1::jsonb OR ("items"."attrs" @> $2::jsonb AND "items"."attrs" @> $3::jsonb))`, []any{`{"color":"red"}`, `{"color":"blue"}`, `{"dims":{"w":1}}`}},
 		{"under not, typed", notNode(eq(colorField, "red")), "NOT (" + typed + ")", []any{"red"}},
 		{"under not of or, typed", notNode(&FilterNode{Op: OpOr, Children: []*FilterNode{eq(colorField, "red"), eq(colorField, "blue")}}),
 			"NOT ((" + typed + " OR " + FieldExpr(PostgresDialect{}, colorField) + " = $2))", []any{"red", "blue"}},
-		{"double negation selects again", notNode(notNode(eq(colorField, "red"))), "NOT (NOT (items.attrs @> $1::jsonb))", []any{`{"color":"red"}`}},
+		{"double negation selects again", notNode(notNode(eq(colorField, "red"))), `NOT (NOT ("items"."attrs" @> $1::jsonb))`, []any{`{"color":"red"}`}},
 		{"NULL equality stays typed", eq(colorField, nil), FieldExpr(PostgresDialect{}, colorField) + " = $1", []any{nil}},
-		{"an index segment stays typed", eq(indexed, "x"), FieldExpr(PostgresDialect{}, indexed) + " = $1", []any{"x"}},
+		{"a numeric member is an object key", eq(numbered, "x"), `"items"."attrs" @> $1::jsonb`, []any{`{"list":{"0":"x"}}`}},
 		{"decimals stay typed", eq(decimalPath, "9.5"), FieldExpr(PostgresDialect{}, decimalPath) + " = $1::numeric", []any{"9.5"}},
 	}
 	for _, tt := range tests {
@@ -181,14 +182,30 @@ func TestContainmentOnlyWhereSelectionIsTwoValued(t *testing.T) {
 
 func TestSetMembersOutsideTheDialect(t *testing.T) {
 	big := uint64(math.MaxInt64) + 1
-	count := &FieldSchema{ExternalName: "count", SQLExpr: "items.count", DataType: core.FieldTypeInt}
+	count := &FieldSchema{ExternalName: "count", Table: "items", Column: "count", DataType: core.FieldTypeInt}
 
 	res := buildWhere(t, PostgresDialect{}, &FilterNode{Field: count, Op: OpIn, Value: []any{uint64(1), big}})
 	assert.Equal(t, []any{[]uint64{1, big}}, res.Args, "unsigned members above int64 bind for a numeric column")
 
+	// Each is a value the request named and the dialect cannot hold: E2073,
+	// naming the field.
 	_, err := NewSQLBuilder(&ResourceSchema{Name: "items"}, PostgresDialect{}).Build(&FilterAST{Root: &FilterNode{Field: count, Op: OpIn, Value: []any{int64(-1), big}}})
-	assert.Error(t, err, "no PostgreSQL integer array holds both")
+	assertValueMismatch(t, err, "count", "no PostgreSQL integer array holds both")
 
 	_, err = NewSQLBuilder(&ResourceSchema{Name: "items"}, SQLiteDialect{}).Build(&FilterAST{Root: &FilterNode{Field: count, Op: OpIn, Value: []any{big}}})
-	assert.Error(t, err, "SQLite integers end at int64")
+	assertValueMismatch(t, err, "count", "SQLite integers end at int64")
+
+	// A document's integer array takes $contains as a set of its own.
+	counts := &FieldSchema{ExternalName: "doc.counts", DataType: core.FieldTypeArray, Elem: core.FieldTypeInt,
+		Path: &JSONPath{Table: "items", Column: "doc", Segments: []string{"counts"}, Storage: StorageJSON}}
+	_, err = NewSQLBuilder(&ResourceSchema{Name: "items"}, SQLiteDialect{}).Build(&FilterAST{Root: &FilterNode{Field: counts, Op: OpContains, Value: []any{big}}})
+	assertValueMismatch(t, err, "doc.counts", "a document array's set ends at int64 too")
+}
+
+func assertValueMismatch(t *testing.T, err error, field, msg string) {
+	t.Helper()
+	require.ErrorIs(t, err, ECodeValueTypeMismatch, msg)
+	pe, ok := errors.AsType[*core.ParseError](err)
+	require.True(t, ok, msg)
+	assert.Equal(t, field, pe.Details[core.DetailField], msg)
 }

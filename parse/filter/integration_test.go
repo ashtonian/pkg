@@ -63,13 +63,13 @@ func integrationSchema() *filter.ResourceSchema {
 		Name:       "products",
 		PrimaryKey: "id",
 		SystemFields: map[string]*filter.FieldSchema{
-			"id": {ExternalName: "id", SQLExpr: "products.id", Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64},
+			"id": {ExternalName: "id", Table: "products", Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64},
 		},
 		Fields: map[string]*filter.FieldSchema{
-			"name":     {ExternalName: "name", SQLExpr: "products.name", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpLike, filter.OpILike}},
-			"category": {ExternalName: "category", SQLExpr: "products.category", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpIn}, Facetable: true},
-			"price":    {ExternalName: "price", SQLExpr: "products.price", DataType: core.FieldTypeFloat, AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpGt, filter.OpGte, filter.OpLt, filter.OpLte}},
-			"status":   {ExternalName: "status", SQLExpr: "products.status", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpIn}, EnumValues: []string{"active", "inactive"}},
+			"name":     {ExternalName: "name", Table: "products", Column: "name", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpLike, filter.OpILike}},
+			"category": {ExternalName: "category", Table: "products", Column: "category", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpIn}, Facetable: true},
+			"price":    {ExternalName: "price", Table: "products", Column: "price", DataType: core.FieldTypeFloat, AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpGt, filter.OpGte, filter.OpLt, filter.OpLte}},
+			"status":   {ExternalName: "status", Table: "products", Column: "status", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpIn}, EnumValues: []string{"active", "inactive"}},
 		},
 	}
 }
@@ -77,8 +77,8 @@ func integrationSchema() *filter.ResourceSchema {
 func integrationSortSchema() *filter.SortSchema {
 	return &filter.SortSchema{
 		Fields: map[string]*filter.SortFieldSchema{
-			"name":  {SQLExpr: "products.name"},
-			"price": {SQLExpr: "products.price"},
+			"name":  {Table: "products", Column: "name"},
+			"price": {Table: "products", Column: "price"},
 		},
 		DefaultField: "name",
 		DefaultDir:   filter.SortAsc,
@@ -434,15 +434,15 @@ func TestIntegration_CursorWalkNoLossNoDup(t *testing.T) {
 	schema := &filter.ResourceSchema{
 		Name: "events", PrimaryKey: "id",
 		SystemFields: map[string]*filter.FieldSchema{
-			"id": {ExternalName: "id", SQLExpr: "events.id", Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64},
+			"id": {ExternalName: "id", Table: "events", Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64},
 		},
 		Fields: map[string]*filter.FieldSchema{
-			"created_at": {ExternalName: "created_at", SQLExpr: "events.created_at", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpGt, filter.OpLt}},
+			"created_at": {ExternalName: "created_at", Table: "events", Column: "created_at", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpGt, filter.OpLt}},
 		},
 	}
 	sortSchema := &filter.SortSchema{
 		Fields: map[string]*filter.SortFieldSchema{
-			"created_at": {SQLExpr: "events.created_at"},
+			"created_at": {Table: "events", Column: "created_at"},
 		},
 	}
 

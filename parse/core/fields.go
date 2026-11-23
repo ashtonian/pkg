@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/ashtonian/pkg/gowalker"
 )
@@ -30,12 +31,29 @@ type StructFields struct {
 	// misspelt are the walked fields' misspelt tag keys, which each
 	// generator refuses but for the ones it names as another library's.
 	misspelt []misspeltTagKey
+	// view is the walked struct's compiled view, which matches a name the
+	// way encoding/json decodes it.
+	view *gowalker.Shape
 }
 
 // External returns the field named name under the field-name tag.
 func (s *StructFields) External(name string) (*Field, bool) {
 	f, ok := s.external[name]
 	return f, ok
+}
+
+// FoldedMatch returns the field encoding/json decodes a member named name
+// into when no field has that exact name but one matches it under Unicode
+// simple case folding: the shallowest, then the first in declaration order
+// (gowalker's Shape.Match). A field whose tag sets case:strict never matches
+// this way. It allocates nothing and keeps no reference to name.
+func (s *StructFields) FoldedMatch(name []byte) (*Field, bool) {
+	f, match := s.view.MatchBytes(name)
+	if match != gowalker.FoldedMatch {
+		return nil, false
+	}
+	field, ok := s.external[f.Name()]
+	return field, ok
 }
 
 // ColumnTagged returns the field whose column tag names column exactly.
@@ -229,7 +247,7 @@ func (g *SchemaGenerator) StructFields(t reflect.Type) (*StructFields, error) {
 	}
 	var errs []error
 	for _, m := range s.misspelt {
-		if !slices.Contains(g.Opts.ForeignTagKeys, m.written) {
+		if !slices.Contains(g.opts.ForeignTagKeys, m.written) {
 			errs = append(errs, m.err())
 		}
 	}
@@ -327,7 +345,7 @@ func isStructType(t reflect.Type) bool {
 // buildStructFields lists the named fields and the ones the field-name tag
 // hides, in declaration order, an embedded struct's in place of it.
 func buildStructFields(s *gowalker.Schema, k fieldsKey) (*StructFields, error) {
-	out := &StructFields{Type: s.Type(), external: map[string]*Field{}, columnTagged: map[string]*Field{}}
+	out := &StructFields{Type: s.Type(), external: map[string]*Field{}, columnTagged: map[string]*Field{}, view: s.Root()}
 	for _, d := range s.Root().Declarations() {
 		sf := d.GoField
 		if sf.Anonymous && isStructType(sf.Type) && sf.Tag.Get(k.name) == "-" {
@@ -402,14 +420,69 @@ func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
 		SortDefault:      tag.Get("sort_default"),
 	}
 	if enum := tag.Get(ConstraintEnum); enum != "" {
-		for v := range strings.SplitSeq(enum, ",") {
-			t.Enum = append(t.Enum, strings.TrimSpace(v)) // enum:"a, b" admits "b"
+		if t.Enum, err = ParseEnumTag(enum); err != nil {
+			return Tags{}, fmt.Errorf("%s:%q: %w", ConstraintEnum, enum, err)
 		}
 	}
 	if t.Bounds, err = readBounds(tag); err != nil {
 		return Tags{}, err
 	}
 	return t, nil
+}
+
+// ParseEnumTag reads an enum tag's comma-separated values. A plain value
+// is trimmed; a value in single quotes is kept as written, commas and edge
+// spaces included, a doubled quote inside it standing for one quote. The
+// forms mix by value:
+//
+//	enum:"a, b"                             a | b
+//	enum:"'net 30, eom',' padded','it''s'"  net 30, eom |  padded | it's
+//	enum:"'',a"                             (empty) | a
+//
+// An empty plain value, an unterminated quote and text after a closing
+// quote are errors.
+func ParseEnumTag(tag string) ([]string, error) {
+	var values []string
+	rest := tag
+	for {
+		rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
+		var v string
+		if strings.HasPrefix(rest, "'") {
+			var b strings.Builder
+			i := 1
+			for {
+				j := strings.IndexByte(rest[i:], '\'')
+				if j < 0 {
+					return nil, fmt.Errorf("value %d: unterminated quote", len(values)+1)
+				}
+				b.WriteString(rest[i : i+j])
+				i += j + 1
+				if !strings.HasPrefix(rest[i:], "'") {
+					break
+				}
+				b.WriteByte('\'')
+				i++
+			}
+			v, rest = b.String(), strings.TrimLeftFunc(rest[i:], unicode.IsSpace)
+			if rest != "" && rest[0] != ',' {
+				return nil, fmt.Errorf("value %d: text after its closing quote", len(values)+1)
+			}
+		} else {
+			end := strings.IndexByte(rest, ',')
+			if end < 0 {
+				end = len(rest)
+			}
+			v, rest = strings.TrimSpace(rest[:end]), rest[end:]
+			if v == "" {
+				return nil, fmt.Errorf("value %d is empty; '' declares the empty string", len(values)+1)
+			}
+		}
+		values = append(values, v)
+		if rest == "" {
+			return values, nil
+		}
+		rest = rest[1:] // the comma
+	}
 }
 
 // boolTag reads a tag that is "true", "false" or absent, so a misspelt

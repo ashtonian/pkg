@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
@@ -64,38 +65,73 @@ type Dialect interface {
 	// scans, or column itself when the database's own encoding scans.
 	ReadColumn(column string, t core.SQLType) string
 
-	// DecimalColumn renders a decimal column as the dialect's exact decimal
-	// value, the value PathExpr reads a decimal member as and DecimalParam
-	// binds: equal decimals are equal values.
-	DecimalColumn(column string) string
+	// DecimalValue renders a decimal operand as the dialect's exact decimal
+	// value: equal decimals are equal values, whether a column, a document
+	// member (the value PathExpr reads a decimal member as) or a bound
+	// canonical text holds them.
+	DecimalValue(o DecimalOperand) string
 
-	// DecimalParam renders the placeholder of a bound decimal, its
-	// canonical text (core.DecimalText), as the dialect's exact decimal
-	// value.
-	DecimalParam(placeholder string) string
-
-	// DecimalOrder renders a decimal value (DecimalColumn, PathExpr or
-	// DecimalParam) as what orders decimals exactly: the value itself where
-	// the database's own type orders it, a key that orders as it does where
+	// DecimalOrder renders a decimal operand as what orders decimals
+	// exactly: the exact value itself where the database's own type orders
+	// it, a key read from the operand that orders as the value does where
 	// there is none.
-	DecimalOrder(value string) string
-}
+	DecimalOrder(o DecimalOperand) string
 
-// TwoValuedDialect is a Dialect with a second rendering of some predicates,
-// one an index serves better, that is exact only where a predicate's Unknown
-// and False select alike. SQLBuilder uses it for a condition an even number
-// of negations (usually none) enclose within its statement or subquery: the
-// statement is then monotone in the condition (False < Unknown < True), and
-// a Kleene result that is True with the condition Unknown is True whatever
-// it is, so a row is selected exactly when it would be with the condition
-// False.
-type TwoValuedDialect interface {
-	Dialect
-
-	// TwoValuedCondition renders `field <op> value` as a predicate True
-	// exactly where Condition's is True. ok is false when it has no such
-	// rendering for the predicate; it then binds nothing.
+	// TwoValuedCondition renders `field <op> value` a second way, one an
+	// index serves better, True exactly where Condition's is True: it is
+	// exact only where a predicate's Unknown and False select alike.
+	// SQLBuilder uses it for a condition an even number of negations
+	// (usually none) enclose within its statement or subquery: the
+	// statement is then monotone in the condition (False < Unknown <
+	// True), and a Kleene result that is True with the condition Unknown is
+	// True whatever it is, so a row is selected exactly when it would be
+	// with the condition False. ok is false when the dialect has no second
+	// rendering of the predicate; it then binds nothing.
 	TwoValuedCondition(field *FieldSchema, op FilterOperator, value any, bind func(any) string) (sql string, ok bool, err error)
+
+	// MarshalValue converts a value to the form the dialect binds for a
+	// column of type t: composite values (arrays, documents) as the
+	// database's driver takes them.
+	MarshalValue(value any, t core.TypeInfo) (any, error)
+
+	// elementRows is a FROM item yielding a row aliased alias per element
+	// of the array f holds — a JSON array document, an array path member or
+	// an array column — and none when f holds no array. `$some` / `$none`,
+	// an array path's NULL tests and `$contains`, and list facets read it.
+	elementRows(f *FieldSchema, alias string) string
+	// objectElement is row alias's element as the document its element
+	// paths read, NULL for an element that is not an object.
+	objectElement(alias string) string
+	// scalarElement is row alias's element as a field of f's element type
+	// (f.Element), NULL for an element of another kind.
+	scalarElement(f *FieldSchema, alias string) *FieldSchema
+	// containsElement answers `$some` of an element equal to a value, or to
+	// one of a set, by containment, which an index on the document serves;
+	// ok is false where the dialect reads the element table instead.
+	containsElement(f *FieldSchema, cond *FilterNode, bind func(any) string) (sql string, ok bool, err error)
+	// setRows binds a set's members as one parameter and reads them back
+	// as rows of one column, v, of the type FieldExpr reads field as.
+	setRows(field *FieldSchema, members []any, bind func(any) string) (string, error)
+	// memberSet tests expr, a value of field's type, for membership in
+	// members (in) or absence from them, the set bound as one parameter:
+	// `$in` / `$nin` and a lookup's WhereIn render through it.
+	memberSet(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error)
+
+	// numberKey renders an int, float or decimal field's value as its
+	// terms facet key: the canonical decimal text (core.DecimalText)
+	// FacetKeys gives the same value.
+	numberKey(f *FieldSchema) string
+	// timestampKey renders a timestamp column's value as its terms facet
+	// key: the canonical text (core.FormatTimestamp) FacetKeys gives the
+	// same instant.
+	timestampKey(expr string) string
+	// textKey renders any other value's facet key as TEXT, so the UNION
+	// ALL branches of a facet query share one key column type.
+	textKey(expr string) string
+
+	// search renders a free-text search of schema's fields for query, its
+	// parameters numbered after startIdx.
+	search(schema *SearchSchema, query string, startIdx int) (*searchCondition, error)
 }
 
 // ErrUnknownDSN is returned by DialectFromDSN for a DSN that names no
@@ -119,17 +155,71 @@ func DialectFromDSN(dsn string) (Dialect, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := base.(dialect.SQLite); ok {
+	switch k := dialect.KindOf(base); k {
+	case dialect.KindPostgres:
+		return PostgresDialect{}, nil
+	case dialect.KindSQLite:
 		return SQLiteDialect{}, nil
+	default:
+		return nil, dialect.Unsupported(k, "DialectFromDSN")
 	}
-	return PostgresDialect{}, nil
 }
 
-// decimalComparison renders a decimal field's equality or ordering, expr
-// being the field's exact value (FieldExpr): it compares with the value's
-// canonical text bound as Dialect.DecimalParam reads it, and orders through
-// Dialect.DecimalOrder. ok is false for any other operator.
-func decimalComparison(d Dialect, field *FieldSchema, expr string, op FilterOperator, value any, bind func(any) string) (sql string, ok bool, err error) {
+// DecimalOperand is what a decimal value is read from: a column, a document
+// member or a bound parameter. A dialect renders it as the exact decimal
+// value (Dialect.DecimalValue) or as what orders it (Dialect.DecimalOrder),
+// each from the operand itself, so the order of a value never re-reads the
+// value's own SQL. Build one with DecimalColumn, DecimalMember or
+// DecimalParam; the zero DecimalOperand is none, and a dialect panics on it.
+type DecimalOperand struct {
+	source decimalSource
+	sql    string
+	path   *JSONPath
+}
+
+type decimalSource uint8
+
+const (
+	decimalFromColumn decimalSource = iota + 1
+	decimalFromMember
+	decimalFromParam
+)
+
+// DecimalColumn is a decimal column, or a column mapper's expression, as
+// expr reads it: the database's own encoding of the value.
+func DecimalColumn(expr string) DecimalOperand {
+	return DecimalOperand{source: decimalFromColumn, sql: expr}
+}
+
+// DecimalMember is a decimal member of a document: a JSON number, or a
+// string holding a decimal.
+func DecimalMember(p *JSONPath) DecimalOperand {
+	return DecimalOperand{source: decimalFromMember, path: p}
+}
+
+// DecimalParam is a bound decimal's placeholder: its canonical text
+// (core.DecimalText).
+func DecimalParam(placeholder string) DecimalOperand {
+	return DecimalOperand{source: decimalFromParam, sql: placeholder}
+}
+
+func (o DecimalOperand) invalid() string {
+	return "parse: DecimalOperand of source " + strconv.Itoa(int(o.source)) + " is no operand"
+}
+
+// fieldDecimal is the operand a decimal field's value is read from.
+func fieldDecimal(d Dialect, f *FieldSchema) DecimalOperand {
+	if f.Path != nil {
+		return DecimalMember(f.Path)
+	}
+	return DecimalColumn(f.sql(d))
+}
+
+// decimalComparison renders a decimal field's equality or ordering: it
+// compares the field's exact value with its canonical text bound as a
+// parameter, and orders both through Dialect.DecimalOrder. ok is false for
+// any other operator.
+func decimalComparison(d Dialect, field *FieldSchema, op FilterOperator, value any, bind func(any) string) (sql string, ok bool, err error) {
 	switch op {
 	case OpEq, OpNe, OpGt, OpGte, OpLt, OpLte:
 	default:
@@ -140,12 +230,12 @@ func decimalComparison(d Dialect, field *FieldSchema, expr string, op FilterOper
 			return "", true, fmt.Errorf("field %s: %w", field.ExternalName, err)
 		}
 	}
-	param := func(v any) string { return d.DecimalParam(bind(v)) }
+	render := d.DecimalValue
 	if isOrdering(op) {
-		expr = d.DecimalOrder(expr)
-		param = func(v any) string { return d.DecimalOrder(d.DecimalParam(bind(v))) }
+		render = d.DecimalOrder
 	}
-	return comparison(expr, op, value, param)
+	param := func(v any) string { return render(DecimalParam(bind(v))) }
+	return comparison(render(fieldDecimal(d, field)), op, value, param)
 }
 
 // comparison renders the operators every dialect spells alike: equality,
@@ -235,7 +325,7 @@ type SQLBuilderOption func(*sqlBuilderConfig)
 type sqlBuilderConfig struct {
 	startParam int
 	scope      relationScope
-	related    map[string]*PolicyConstraints
+	related    relatedPolicies
 }
 
 // RelationScope is how a statement reaches related rows: which tenant's
@@ -263,11 +353,22 @@ type RelationScope struct {
 	// predicate on one without its table's policy is
 	// ErrRelatedPolicyRequired.
 	Related map[string]*PolicyConstraints
+	// Now is the instant Related's relative-time tokens (`now-30d`)
+	// resolve against: the request's, so its page, count, facets and
+	// includes admit the same related rows. Zero is one reading per
+	// statement: the list's own instant (ListNow), the wall clock
+	// elsewhere.
+	Now time.Time
 }
 
 // tenancy is s's hold on tenant-scoped relations.
 func (s RelationScope) tenancy() relationScope {
 	return relationScope{tenant: s.Tenant, unscoped: s.Unscoped, row: rowTenant{column: s.RowTenant}}
+}
+
+// policies is s's policy for policy-scoped relations.
+func (s RelationScope) policies() relatedPolicies {
+	return relatedPolicies{byTable: s.Related, now: s.Now}
 }
 
 // relationScope is how a builder scopes tenant-scoped junctions: bound to a
@@ -295,10 +396,10 @@ type rowTenant struct {
 
 // over is sc for a statement over schema's table: a row tenant names the
 // table's column, typed as schema declares it.
-func (sc relationScope) over(schema *ResourceSchema) relationScope {
+func (sc relationScope) over(d Dialect, schema *ResourceSchema) relationScope {
 	if sc.row.column != "" && schema != nil {
 		sc.row.typ = tenantColumnType(schema, sc.row.column)
-		sc.row.expr = schema.Name + "." + sc.row.column
+		sc.row.expr = qualified(d, schema.Name, sc.row.column)
 	}
 	return sc
 }
@@ -335,20 +436,25 @@ func (sc relationScope) check() error {
 	return nil
 }
 
+// ErrRelationTenantRequired is a tenant-scoped pair table joined under a
+// scope that names no tenant and does not opt out: the server built the
+// list without the tenant it must hold relations to.
+var ErrRelationTenantRequired = errors.New("filter: a tenant-scoped pair table is joined without a tenant; bind one or opt out with an unscoped relation scope")
+
 // clause returns " AND <alias>.<column>" compared with the tenant for
 // table's tenant column of type typ ("" when undeclared): the bound tenant
 // (through bind), or the owner row's tenant column. It is "" for a table
 // without one or an unscoped scope, and an error when no scope was chosen.
-func (sc relationScope) clause(table, column, alias string, typ core.FieldType, bind func(any) string) (string, error) {
+func (sc relationScope) clause(d Dialect, table, column, alias string, typ core.FieldType, bind func(any) string) (string, error) {
 	switch {
 	case column == "" || sc.unscoped:
 		return "", nil
 	case sc.row.column != "":
-		return sc.row.match(alias+"."+column, typ), nil
+		return sc.row.match(qualified(d, alias, column), typ), nil
 	case sc.tenant == nil:
-		return "", fmt.Errorf("relation junction %s is tenant-scoped (%s): bind a tenant or opt out explicitly with an unscoped-relations option", table, column)
+		return "", fmt.Errorf("relation junction %s (tenant column %s): %w", table, column, ErrRelationTenantRequired)
 	}
-	return " AND " + alias + "." + column + " = " + bind(sc.tenant), nil
+	return " AND " + qualified(d, alias, column) + " = " + bind(sc.tenant), nil
 }
 
 // match is " AND <col> = <the row's tenant>". A UUID column and a string
@@ -370,6 +476,7 @@ func (rt rowTenant) match(col string, typ core.FieldType) string {
 // WithStartParam sets the starting parameter index offset. The first generated
 // placeholder will be startParam+1. For example, WithStartParam(3) produces
 // $4, $5, ... (Postgres) or ?4, ?5, ... (SQLite). Default is 0 (first param $1).
+// A negative offset is an error from Build.
 func WithStartParam(n int) SQLBuilderOption {
 	return func(c *sqlBuilderConfig) { c.startParam = n }
 }
@@ -377,7 +484,16 @@ func WithStartParam(n int) SQLBuilderOption {
 // WithRelationScope scopes the relations the filter reaches
 // (RelationScope).
 func WithRelationScope(s RelationScope) SQLBuilderOption {
-	return func(c *sqlBuilderConfig) { c.scope, c.related = s.tenancy(), s.Related }
+	return func(c *sqlBuilderConfig) { c.scope, c.related = s.tenancy(), s.policies() }
+}
+
+// checkStartParam refuses a negative placeholder offset: the first
+// placeholder, n+1, would be one no dialect numbers.
+func checkStartParam(n int) error {
+	if n < 0 {
+		return fmt.Errorf("filter: start parameter %d is negative: the first placeholder is the offset plus one", n)
+	}
+	return nil
 }
 
 // SQLBuilder generates parameterized SQL from a filter AST using a dialect.
@@ -386,11 +502,14 @@ type SQLBuilder struct {
 	dialect    Dialect
 	startParam int
 	scope      relationScope
-	related    map[string]*PolicyConstraints
+	related    relatedPolicies
 	// depth and visible are a relation predicate's nesting and the table
 	// names its enclosing queries already use (buildRelated).
 	depth   int
 	visible []string
+	// exprs are the computed columns of the schema the builder compiles,
+	// resolved for its dialect.
+	exprs columnExprs
 }
 
 type buildState struct {
@@ -401,7 +520,7 @@ type buildState struct {
 	bind func(any) string
 	// negated is whether an odd number of $not enclose the node being built
 	// within its statement or subquery, where a condition's Unknown and
-	// False may select differently (TwoValuedDialect).
+	// False may select differently (Dialect.TwoValuedCondition).
 	negated bool
 }
 
@@ -441,33 +560,51 @@ func NewSQLBuilder(schema *ResourceSchema, dialect Dialect, opts ...SQLBuilderOp
 		schema:     schema,
 		dialect:    dialect,
 		startParam: cfg.startParam,
-		scope:      cfg.scope.over(schema),
+		scope:      cfg.scope.over(dialect, schema),
 		related:    cfg.related,
 	}
 }
 
-// Build walks the AST and generates a parameterized SQL WHERE clause.
+// Build walks the AST and generates a parameterized SQL WHERE clause. A
+// *core.ParseError means the request is at fault; anything the server
+// supplied that cannot be built — scope, policy, a relation's declaration,
+// a programmatic AST, the dialect — is a plain error wrapping its cause,
+// such as ErrRelatedPolicyRequired or ErrPolicyInvalid.
 func (b *SQLBuilder) Build(ast *FilterAST) (*SQLResult, error) {
+	exprs, err := b.schema.ComputedSQL(b.dialect)
+	if err != nil {
+		return nil, err
+	}
+	return b.build(ast, exprs)
+}
+
+// build is Build with the schema's computed columns resolved for the
+// builder's dialect.
+func (b *SQLBuilder) build(ast *FilterAST, exprs columnExprs) (*SQLResult, error) {
+	if err := checkStartParam(b.startParam); err != nil {
+		return nil, err
+	}
 	if err := b.scope.check(); err != nil {
 		return nil, err
 	}
 	if ast == nil || ast.Root == nil {
 		return &SQLResult{Where: "1=1"}, nil
 	}
+	root := *b
+	root.exprs = exprs
+	root.related = b.related.at(time.Now().UTC())
 
 	s := &buildState{paramIndex: b.startParam, args: make([]any, 0, 8)}
 
-	where, err := b.buildNode(s, ast.Root)
+	where, err := root.buildNode(s, ast.Root)
 	if err != nil {
 		if pe, ok := errors.AsType[*core.ParseError](err); ok {
 			return nil, pe
 		}
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeSQLGenerationFailed.String(),
-			Message: "SQL generation failed: " + err.Error(),
-			Cause:   err,
+		if ce, ok := errors.AsType[*computedError](err); ok {
+			return nil, ce.err
 		}
+		return nil, fmt.Errorf("filter: building SQL: %w", err)
 	}
 
 	return &SQLResult{
@@ -570,6 +707,7 @@ func (b *SQLBuilder) buildCondition(s *buildState, node *FilterNode) (string, er
 	if node.Field == nil {
 		return "", errors.New("condition node has no field schema")
 	}
+	node = b.computed(node)
 	if (node.Field.Elements != nil || isScalarArray(node.Field)) && node.Field.Relation == nil && (node.Op == OpSome || node.Op == OpNone) {
 		return b.buildElements(s, node)
 	}
@@ -589,8 +727,8 @@ func (b *SQLBuilder) buildCondition(s *buildState, node *FilterNode) (string, er
 		return b.buildRelated(s, node)
 	}
 	bind := s.binder(b.dialect)
-	if tv, ok := b.dialect.(TwoValuedDialect); ok && !s.negated {
-		sql, ok, err := tv.TwoValuedCondition(node.Field, node.Op, node.Value, bind)
+	if !s.negated {
+		sql, ok, err := b.dialect.TwoValuedCondition(node.Field, node.Op, node.Value, bind)
 		if err != nil || ok {
 			return sql, err
 		}
@@ -599,6 +737,18 @@ func (b *SQLBuilder) buildCondition(s *buildState, node *FilterNode) (string, er
 		return b.buildArrayPath(s, node)
 	}
 	return b.dialect.Condition(node.Field, node.Op, node.Value, bind)
+}
+
+// computed is n reading its field through the computed column's expression
+// when the field is one.
+func (b *SQLBuilder) computed(n *FilterNode) *FilterNode {
+	f := b.exprs.field(n.Field)
+	if f == n.Field {
+		return n
+	}
+	out := *n
+	out.Field = f
+	return &out
 }
 
 // buildPairTable compiles a key comparison on a pair table the relation tag
@@ -639,7 +789,7 @@ func (b *SQLBuilder) buildPairTable(s *buildState, node *FilterNode) (string, er
 		}
 	}
 	key := &FieldSchema{
-		ExternalName: f.ExternalName, SQLExpr: rel.JoinTable + "." + rel.TargetColumn, Column: rel.TargetColumn,
+		ExternalName: f.ExternalName, Table: rel.JoinTable, Column: rel.TargetColumn,
 		DataType: f.DataType, NumberKind: f.NumberKind,
 	}
 	pair := *f

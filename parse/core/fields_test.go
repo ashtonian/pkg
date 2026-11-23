@@ -489,3 +489,42 @@ func TestStructFields_ErrorsLeaveTagValuesOut(t *testing.T) {
 		})
 	}
 }
+
+type foldedInner struct {
+	Alpha int `json:"alpha"`
+}
+
+type foldedRow struct {
+	foldedInner
+	Upper  int `json:"ALPHA"`
+	Strict int `json:"name,case:strict"`
+	Hidden int `json:"-"`
+}
+
+// A name matches by case only where no field has it exactly, the shallower
+// field taking it, and never a case:strict field: as encoding/json decodes,
+// in a row walk and a document walk alike.
+func TestStructFields_FoldedMatch(t *testing.T) {
+	row, err := core.StructFieldsOf(reflect.TypeFor[foldedRow](), core.JSONTagKey, core.DefaultColumnTagKey)
+	require.NoError(t, err)
+	doc, err := core.JSONFieldsOf(reflect.TypeFor[foldedRow]())
+	require.NoError(t, err)
+	for _, walk := range []*core.StructFields{row, doc} {
+		for name, want := range map[string]string{
+			"Alpha":  "ALPHA",
+			"alpha":  "",
+			"ALPHA":  "",
+			"NAME":   "",
+			"Hidden": "",
+			"other":  "",
+		} {
+			f, ok := walk.FoldedMatch([]byte(name))
+			if want == "" {
+				assert.False(t, ok, name)
+				continue
+			}
+			require.True(t, ok, name)
+			assert.Equal(t, want, f.External, name)
+		}
+	}
+}

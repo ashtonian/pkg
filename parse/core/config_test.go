@@ -4,9 +4,11 @@ package core_test
 
 import (
 	"math"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -35,4 +37,68 @@ func TestParserConfig_ListBodyLimit(t *testing.T) {
 			assert.Equal(t, tt.want, cfg.ListBodyLimit())
 		})
 	}
+}
+
+// Zero selects the default for the count limits and nothing else; a
+// configuration that needs no default is returned as it is.
+func TestParserConfig_Effective(t *testing.T) {
+	def := core.DefaultConfig()
+	assert.Equal(t, def, (*core.ParserConfig)(nil).Effective())
+
+	zero := &core.ParserConfig{MaxDepth: 0, MaxCost: 0, MaxConditions: 0, MaxArraySize: 0, MaxInputSize: 0, MaxPatchCopyBytes: 0, MaxListBodySize: 0}
+	got := zero.Effective()
+	assert.Equal(t, def.MaxDepth, got.MaxDepth)
+	assert.Equal(t, def.MaxCost, got.MaxCost)
+	assert.Equal(t, def.MaxConditions, got.MaxConditions)
+	assert.Equal(t, def.MaxArraySize, got.MaxArraySize)
+	assert.Zero(t, got.MaxInputSize, "zero input size stays unlimited")
+	assert.Zero(t, got.MaxPatchCopyBytes, "zero copy budget stays unlimited")
+	assert.Zero(t, got.MaxListBodySize, "zero list body size stays derived")
+	assert.Zero(t, zero.MaxDepth, "the receiver is unchanged")
+
+	handBuilt := &core.ParserConfig{MaxDepth: 10}
+	got = handBuilt.Effective()
+	assert.Equal(t, 10, got.MaxDepth)
+	assert.Equal(t, def.MaxCost, got.MaxCost, "a hand-built configuration's unset limits are the defaults")
+
+	set := &core.ParserConfig{MaxDepth: 1, MaxCost: 2, MaxConditions: 3, MaxArraySize: 4}
+	assert.Same(t, set, set.Effective())
+}
+
+func TestParserConfig_Validate(t *testing.T) {
+	assert.NoError(t, (*core.ParserConfig)(nil).Validate())
+	assert.NoError(t, (&core.ParserConfig{}).Validate(), "zero is a default, not an error")
+	assert.NoError(t, (&core.ParserConfig{MaxInputSize: -1, MaxPatchCopyBytes: -1}).Validate(), "zero or less is unlimited")
+	err := (&core.ParserConfig{MaxDepth: -1, MaxCost: -2, MaxConditions: -3, MaxArraySize: -4, MaxListBodySize: -5}).Validate()
+	for _, want := range []string{
+		"WithMaxDepth(-1): a limit is never negative",
+		"WithMaxCost(-2)",
+		"WithMaxConditions(-3)",
+		"WithMaxArraySize(-4)",
+		"WithMaxListBodySize(-5)",
+	} {
+		assert.ErrorContains(t, err, want)
+	}
+}
+
+func TestParserConfig_NilListBodyLimit(t *testing.T) {
+	assert.Equal(t, core.DefaultConfig().ListBodyLimit(), (*core.ParserConfig)(nil).ListBodyLimit())
+}
+
+func TestWithGeneratorOptions_Appends(t *testing.T) {
+	cfg := core.DefaultConfig()
+	core.WithGeneratorOptions(core.WithColumnTag("sql"))(cfg)
+	core.WithGeneratorOptions(core.WithFieldNameTag("bson"))(cfg)
+	assert.Len(t, cfg.GeneratorOpts, 2)
+	gen := core.NewSchemaGenerator(cfg.GeneratorOpts...)
+	assert.Equal(t, "bson", gen.FieldNameTag())
+	type row struct {
+		Name string `sql:"full_name" bson:"name"`
+	}
+	walk, err := gen.StructFields(reflect.TypeFor[row]())
+	require.NoError(t, err)
+	column, ok, err := gen.FieldColumn(walk.Fields[0])
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "full_name", column, "the first option still applies")
 }

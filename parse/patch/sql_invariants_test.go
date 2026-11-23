@@ -51,7 +51,7 @@ func TestMergeObjectBuildsSQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("merge-derived object op rejected: %v", err)
 	}
-	if !strings.Contains(res.SetClause, "config = (COALESCE(jsonb_path_query_first(config,") || strings.Contains(res.SetClause, "config = $1") {
+	if !strings.Contains(res.SetClause, `"config" = (COALESCE(jsonb_path_query_first("config",`) || strings.Contains(res.SetClause, `"config" = $1`) {
 		t.Errorf("SetClause = %q; want a merge into config, not a whole-column set", res.SetClause)
 	}
 }
@@ -67,13 +67,14 @@ func TestScalarAndNullMergeStillBuildSQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scalar+null merge rejected: %v", err)
 	}
-	if !strings.Contains(res.SetClause, "name =") || !strings.Contains(res.SetClause, "config = NULL") {
+	if !strings.Contains(res.SetClause, `"name" =`) || !strings.Contains(res.SetClause, `"config" = NULL`) {
 		t.Errorf("SetClause = %q", res.SetClause)
 	}
 }
 
-// TestTestOpRejectedInSQL (Q2 = a): test ops were silently dropped from
-// SQL — optimistic-concurrency intent unenforced. Reject with a clear error.
+// TestTestOpRejectedInSQL: a test op cannot be compiled to SQL, so it is
+// refused with its own error rather than dropped, which would leave the
+// caller's optimistic-concurrency check unenforced.
 func TestTestOpRejectedInSQL(t *testing.T) {
 	parsed, err := patch.NewParser(p3Schema(), nil).Parse([]byte(`[{"op":"test","path":"/name","value":"expected"},{"op":"replace","path":"/name","value":"new"}]`))
 	if err != nil {

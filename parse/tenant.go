@@ -15,7 +15,7 @@ import (
 // cannot hold: text that is not a UUID for a UUID column, or not a decimal
 // integer in range for an integer column. Like ErrTenantRequired, it is the
 // server's mistake, never the request's.
-var ErrTenantInvalid = errors.New("parse: Scope.Tenant is not a value of the tenant column's type")
+var ErrTenantInvalid = errors.New("Scope.Tenant is not a value of the tenant column's type")
 
 // tenantColumn is a resource's TenantColumn and its Go type.
 type tenantColumn struct {
@@ -126,7 +126,7 @@ func (k tenantKey) value(table, text string) (any, error) {
 	for i, c := range k.columns {
 		v, err := c.value(text)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %s: %w", ErrTenantInvalid, c.name(table), err)
+			return nil, fmt.Errorf("%s: %w", c.name(table), err)
 		}
 		if i == k.binds {
 			bound = v
@@ -245,13 +245,13 @@ func (n *tenantNode) reached() []*tenantColumn {
 func (r *Resource[T]) bindTenant(text string) (any, error) {
 	if text == "" {
 		if r.tenant != "" {
-			return nil, fmt.Errorf("%s: %w", r.table, ErrTenantRequired)
+			return nil, fmt.Errorf("parse: %s: %w", r.table, ErrTenantRequired)
 		}
 		return nil, nil
 	}
 	v, err := r.tenantNode.key.value(r.table, text)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", r.table, err)
+		return nil, fmt.Errorf("parse: %s: %w: %w", r.table, ErrTenantInvalid, err)
 	}
 	return v, nil
 }

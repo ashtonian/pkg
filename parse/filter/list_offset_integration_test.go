@@ -16,14 +16,14 @@ import (
 func TestListOffsetDoesNotOffsetStandaloneQueries(t *testing.T) {
 	bound := 50.0
 	schema := &filter.ResourceSchema{Name: "items", PrimaryKey: "id", SystemFields: map[string]*filter.FieldSchema{
-		"id": {ExternalName: "id", SQLExpr: "items.id", Column: "id", DataType: core.FieldTypeString},
+		"id": {ExternalName: "id", Table: "items", Column: "id", DataType: core.FieldTypeString},
 	}, Fields: map[string]*filter.FieldSchema{
-		"status": {ExternalName: "status", SQLExpr: "items.status", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq}, Facetable: true},
-		"price": {ExternalName: "price", SQLExpr: "items.price", DataType: core.FieldTypeFloat, Facetable: true, FacetSchema: &filter.FacetSchema{
+		"status": {ExternalName: "status", Table: "items", Column: "status", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq}, Facetable: true},
+		"price": {ExternalName: "price", Table: "items", Column: "price", DataType: core.FieldTypeFloat, Facetable: true, FacetSchema: &filter.FacetSchema{
 			Type: filter.FacetTypeRange, Ranges: []filter.FacetRange{{Key: "low", Max: &bound}, {Key: "high", Min: &bound}},
 		}},
 	}}
-	search := &filter.SearchSchema{Language: "english", Fields: []filter.SearchField{{Name: "status", SQLExpr: "items.status"}}}
+	search := &filter.SearchSchema{Language: "english", Fields: []filter.SearchField{{Name: "status", Table: "items", Column: "status"}}}
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			var dialect filter.Dialect = filter.SQLiteDialect{}

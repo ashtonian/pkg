@@ -67,6 +67,12 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		if !tags.Parse.Patch && !serverField {
 			continue
 		}
+		if tags.Parse.Patch && tags.Immutable {
+			// Nothing creates rows through a patch, so every patch of the
+			// field would change it. The server's own write is not a
+			// request's: a server field may stay immutable.
+			return nil, fmt.Errorf("field %s: an immutable field cannot have the patch capability", field.GoName)
+		}
 		fieldName := field.External
 		if serverField {
 			fieldName, _ = serverFieldName(g, field)
@@ -203,7 +209,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 // package-level slice let configuring one resource rewrite another's allowed
 // operations, and race with its requests.
 func defaultOpsFor(g *core.SchemaGenerator, ft core.FieldType) (ops []PatchOp, configured bool, err error) {
-	if names, ok := g.Opts.DefaultPatchOps[ft]; ok {
+	if names, ok := g.DefaultPatchOps(ft); ok {
 		ops := make([]PatchOp, 0, len(names))
 		for _, name := range names {
 			op := PatchOp(strings.TrimSpace(name))
@@ -235,8 +241,9 @@ func isNullableType(t reflect.Type) bool {
 	return false
 }
 
-// defaultPatchOps maps FieldType to standard patch operators.
-// Unexported per ; call DefaultPatchOps() for a defensive copy.
+// defaultPatchOps maps FieldType to standard patch operators. It is
+// unexported so no caller can change another's defaults; DefaultPatchOps
+// returns a copy.
 //
 // FieldTypeArray includes PatchOpArrayAppend so
 // every array-shaped field gets atomic single-statement append for
@@ -275,9 +282,10 @@ func DefaultPatchOps() map[core.FieldType][]PatchOp {
 }
 
 // relationPatchOps returns the allowed-ops subset for a relation-patch
-// path: replace / add / remove. JSON Patch's move / copy / test verbs
-// have no clean translation to "set / extend / shrink junction
-// membership" so they're rejected at validation (E2117). .
+// path: replace / add / remove. JSON Patch's move / copy / test have no
+// translation to setting, extending or shrinking a membership, so the parser
+// refuses them on a generated relation path (E2064); BuildPatchSQL refuses
+// one a hand-built schema allows (E2117).
 func relationPatchOps() []PatchOp {
 	return []PatchOp{PatchOpReplace, PatchOpAdd, PatchOpRemove}
 }

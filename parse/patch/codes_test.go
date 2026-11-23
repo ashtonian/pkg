@@ -3,6 +3,7 @@
 package patch_test
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 
@@ -79,7 +80,6 @@ func TestEveryCodeIsProvoked(t *testing.T) {
 		patch.ECodeRelationValueInvalid:   func() error { return jsonPatch(`[{"op":"add","path":"/tags","value":[]}]`, nil) },
 		patch.ECodeRelationPatchTooLarge:  func() error { return jsonPatch(`[{"op":"add","path":"/tags","value":["a","b","c"]}]`, nil) },
 		patch.ECodeTestOpSQL:              func() error { return compile(`[{"op":"test","path":"/name","value":"x"}]`) },
-		patch.ECodeSQLColumnMissing:       func() error { return compile(`[{"op":"replace","path":"/loose","value":"x"}]`) },
 		patch.ECodeOpNotSQLCompilable:     func() error { return compile(`[{"op":"move","from":"/note","path":"/name"}]`) },
 	}
 	for _, code := range patch.Codes() {
@@ -93,4 +93,11 @@ func TestEveryCodeIsProvoked(t *testing.T) {
 		}
 	}
 	assert.Len(t, cases, len(patch.Codes()), "a case for a code patch does not define")
+
+	// A schema path with no column is the server's schema, not the request.
+	err := compile(`[{"op":"replace","path":"/loose","value":"x"}]`)
+	assert.ErrorIs(t, err, patch.ErrSQLColumnMissing)
+	assert.ErrorContains(t, err, "path /loose")
+	_, isParseError := errors.AsType[*core.ParseError](err)
+	assert.False(t, isParseError)
 }

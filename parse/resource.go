@@ -1,7 +1,9 @@
 package parse
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -61,11 +63,12 @@ type Resource[T any] struct {
 	access map[string]columnAccess
 	// maskable are the names a list's field mask may name (maskableFields).
 	maskable map[string]bool
-	// readExprs are the computed columns (ReadExpr) and their per-dialect
-	// views; nil without any.
+	// readExprs are the computed columns (ReadExpr); nil without any.
 	readExprs *computedColumns
-	// relations are the declared relations' targets (Relate), by field.
-	relations map[string]RelatedResource
+	// view marks a WithPaths view: a value for one request that shares its
+	// base's patch schemas and tenant graph, so it declares no relation and
+	// is no relation's target.
+	view bool
 }
 
 // ResourceOption configures NewResource.
@@ -80,6 +83,7 @@ type resourceConfig struct {
 	queryOnly           []string
 	sqlTypes            []columnType
 	readExprs           []columnExpr
+	customize           []func(Schemas) error
 }
 
 type columnType struct {
@@ -100,8 +104,11 @@ func TenantColumn(column string) ResourceOption {
 	return func(c *resourceConfig) { c.tenant = column }
 }
 
-// DeletedColumn names the soft-delete timestamp. Lists exclude deleted rows
-// unless Scope.IncludeDeleted.
+// DeletedColumn names the soft-delete timestamp: a row is live while it is
+// NULL, so its field must hold NULL (a pointer or an sql.Scanner such as
+// sql.NullTime),
+// and it is neither the key nor the tenant column. Lists exclude deleted rows
+// unless Scope.IncludeDeleted; updates never reach them.
 func DeletedColumn(column string) ResourceOption {
 	return func(c *resourceConfig) { c.deleted = column }
 }
@@ -161,6 +168,53 @@ func AcceptParams(names ...string) ResourceOption {
 	return func(c *resourceConfig) { c.accepted = append(c.accepted, names...) }
 }
 
+// Schemas are the schemas NewResource generates from T's struct tags, as
+// CustomizeSchemas hands them over.
+type Schemas struct {
+	Filter *filter.ResourceSchema
+	Sort   *filter.SortSchema
+	// Search is nil when T has no search fields.
+	Search      *filter.SearchSchema
+	Patch       *patch.PatchSchema
+	ServerPatch *patch.PatchSchema
+}
+
+// CustomizeSchemas changes the generated schemas while the resource is
+// built: a patch path pattern (patch.PatchSchema.AddPath), a validator, a
+// narrower operator set. NewResource runs the functions in order, before its
+// checks, so a customized schema is held to the read set (ReadColumns), the
+// column declarations and the computed columns as a generated one is; an
+// error fails NewResource. The key and system fields are set after the
+// functions run. The resource keeps copies: a schema a function holds on to
+// changes nothing once NewResource returns, and the accessors hand out
+// copies too.
+func CustomizeSchemas(fn func(Schemas) error) ResourceOption {
+	return func(c *resourceConfig) { c.customize = append(c.customize, fn) }
+}
+
+// customizeSchemas runs fns over the generated schemas and keeps copies of
+// the result.
+func (r *Resource[T]) customizeSchemas(fns []func(Schemas) error) error {
+	if len(fns) == 0 {
+		return nil
+	}
+	s := Schemas{Filter: r.filterSchema, Sort: r.sortSchema, Search: r.searchSchema, Patch: r.patchSchema, ServerPatch: r.serverPatchSchema}
+	for _, fn := range fns {
+		if fn == nil {
+			return errors.New("nil schema customization")
+		}
+		if err := fn(s); err != nil {
+			return err
+		}
+	}
+	if len(s.Filter.Computed) > 0 {
+		return errors.New("computed columns are declared with ReadExpr, not on the filter schema")
+	}
+	r.filterSchema, r.sortSchema, r.searchSchema = s.Filter.Clone(), s.Sort.Clone(), s.Search.Clone()
+	r.patchSchema, r.serverPatchSchema = s.Patch.Clone(), s.ServerPatch.Clone()
+	return nil
+}
+
 // NewResource builds the resource for T stored in table. Identifiers are
 // declared here, never taken from a request: table and every column option
 // must be SQL identifiers, and the columns must be T's (a `db` tag, or the
@@ -191,13 +245,9 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		pageSize:    cfg.pageSize,
 		maxPageSize: cfg.maxPage,
 		accepted:    slices.Clone(cfg.accepted),
-		relations:   map[string]RelatedResource{},
 	}
 	if err := r.generateSchemas(parserOpts); err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
-	}
-	if r.cfg.MaxListBodySize < 0 {
-		return nil, fmt.Errorf("parse: %s: list body limit %d must not be negative", table, r.cfg.MaxListBodySize)
 	}
 	walk, err := r.gen.StructFields(reflect.TypeFor[T]())
 	if err != nil {
@@ -222,6 +272,12 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 			return nil, fmt.Errorf("parse: %s: %s column %q is not a column of %s", table, c.option, c.column, reflect.TypeFor[T]())
 		}
 	}
+	if err := checkDeletedColumn(cfg, columns[cfg.deleted]); err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", table, err)
+	}
+	if err := r.customizeSchemas(cfg.customize); err != nil {
+		return nil, fmt.Errorf("parse: %s: customizing schemas: %w", table, err)
+	}
 	r.filterSchema.SystemFields = systemFields(table, cfg, columns, fieldsByColumn)
 	r.filterSchema.PrimaryKey = cfg.pk
 	var tenant *tenantColumn
@@ -241,10 +297,14 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	if r.readExprs, err = newComputedColumns(table, cfg, columns, read); err != nil {
 		return nil, err
 	}
+	r.filterSchema.Computed = r.readExprs.schemaColumns()
 	if err := r.readExprs.checkDocuments(r.filterSchema, r.sortSchema); err != nil {
 		return nil, err
 	}
 	if err := r.checkComputedPatches(); err != nil {
+		return nil, err
+	}
+	if err := r.checkIdentityPatches(); err != nil {
 		return nil, err
 	}
 	for _, name := range order {
@@ -599,32 +659,32 @@ func (r *Resource[T]) ColumnSQLType(column string) (core.SQLType, bool) {
 // Columns is the projection every statement over the resource reads for
 // dialect d: a list's page, an update's RETURNING, and a repository's own
 // reads of the table. It is T's columns in field order, or the ReadColumns
-// among them, table-qualified; a computed column (ReadExpr) is read through
+// among them, table-qualified and quoted by d; a computed column (ReadExpr) is read through
 // d's expression and a column with a declared ColumnType as d reads that
 // type, each under the column's own name, so rows scan by name. A dialect a
 // computed column's expression refuses is an error.
 func (r *Resource[T]) Columns(d filter.Dialect) ([]string, error) {
-	v, err := r.dialectView(d)
+	exprs, err := r.computedSQL(d)
 	if err != nil {
 		return nil, err
 	}
-	return r.columns(d, v), nil
+	return r.columns(d, exprs), nil
 }
 
-// columns is Columns for v, r's schemas already compiled for d.
-func (r *Resource[T]) columns(d filter.Dialect, v *dialectView) []string {
+// columns is Columns with the computed columns' SQL for d already resolved.
+func (r *Resource[T]) columns(d filter.Dialect, exprs map[string]string) []string {
 	out := make([]string, len(r.read))
 	for i, name := range r.read {
-		stored := r.table + "." + name
+		stored := d.QuoteIdent(r.table) + "." + d.QuoteIdent(name)
 		col := stored
-		if expr, ok := v.exprs[name]; ok {
+		if expr, ok := exprs[name]; ok {
 			col = expr
 		}
 		if t, ok := r.sqlTypes[name]; ok {
 			col = d.ReadColumn(col, t)
 		}
 		if col != stored {
-			col += " AS " + name
+			col += " AS " + d.QuoteIdent(name)
 		}
 		out[i] = col
 	}
@@ -669,6 +729,64 @@ func (r *Resource[T]) columnValue(rv reflect.Value, column string) (any, error) 
 	return fv.Interface(), nil
 }
 
+// checkDeletedColumn refuses a deleted column no row can be live under: the
+// key or the tenant column, which a live row always holds, or a field that
+// cannot hold NULL, such as a bool soft-delete flag, under which every row
+// would be live.
+func checkDeletedColumn(cfg resourceConfig, t reflect.Type) error {
+	switch {
+	case cfg.deleted == "":
+		return nil
+	case cfg.deleted == cfg.pk:
+		return fmt.Errorf("deleted column %q is the key column", cfg.deleted)
+	case cfg.deleted == cfg.tenant:
+		return fmt.Errorf("deleted column %q is the tenant column", cfg.deleted)
+	case !holdsNull(t):
+		return fmt.Errorf("deleted column %q is %s, which cannot hold NULL: a row is live while the column is NULL, so declare a pointer or an sql.Scanner such as sql.NullTime", cfg.deleted, t)
+	}
+	return nil
+}
+
+// holdsNull reports whether a field of type t scans a NULL: a pointer, or
+// an sql.Scanner (sql.NullTime, sql.Null[T], a driver's nullable type), to
+// which the driver hands NULL as nil.
+func holdsNull(t reflect.Type) bool {
+	return t.Kind() == reflect.Pointer || reflect.PointerTo(t).Implements(reflect.TypeFor[sql.Scanner]())
+}
+
+// checkIdentityPatches refuses a patch path, request or server, that writes
+// the key or the tenant column. An update's WHERE holds the scope's tenant
+// and the row's key, so such a write would move the row out of its tenant
+// or away from every relation correlated on its key; a tenant transfer is
+// not a patch.
+func (r *Resource[T]) checkIdentityPatches() error {
+	for _, schema := range []*patch.PatchSchema{r.patchSchema, r.serverPatchSchema} {
+		if schema == nil {
+			continue
+		}
+		for path, ps := range schema.Paths() {
+			if err := r.checkIdentityWrite(ps.SQLColumn); err != nil {
+				return fmt.Errorf("parse: %s: patch path %s: %w", r.table, path, err)
+			}
+		}
+	}
+	return nil
+}
+
+// checkIdentityWrite refuses a write of column when it is the key or the
+// tenant column.
+func (r *Resource[T]) checkIdentityWrite(column string) error {
+	switch {
+	case column == "":
+		return nil
+	case column == r.pk:
+		return fmt.Errorf("writes the key column %q", column)
+	case column == r.tenant:
+		return fmt.Errorf("writes the tenant column %q", column)
+	}
+	return nil
+}
+
 // systemFields are the columns policies constrain without the request
 // filtering on them: the key, the tenant and the soft-delete column, typed
 // from T's fields, in the wire form their fields travel in (a json:",string"
@@ -681,7 +799,7 @@ func systemFields(table string, cfg resourceConfig, columns map[string]reflect.T
 			wire = f.Wire()
 		}
 		return &filter.FieldSchema{
-			ExternalName: column, SQLExpr: table + "." + column, Column: column,
+			ExternalName: column, Table: table, Column: column,
 			DataType: info.Type, NumberKind: info.NumberKind, Wire: wire, AllowedOperators: ops,
 		}
 	}
@@ -722,9 +840,12 @@ func resourceColumns(gen *core.SchemaGenerator, walk *core.StructFields) ([]stri
 }
 
 // WithPaths returns a view of r for one request with decls declared as JSON
-// paths — filterable, and sortable or facetable as each declares — leaving r and its other requests unchanged. A tenant's custom fields
-// are declared this way; the view parses, lists and updates like r. A path
-// into a computed column (ReadExpr) is refused: it reads a stored document.
+// paths — filterable, and sortable or facetable as each declares — leaving
+// r and its other requests unchanged. A tenant's custom fields are declared
+// this way; the view parses, lists and updates like r, with the relations r
+// declared before it. A path into a computed column (ReadExpr) is refused:
+// it reads a stored document. A view declares no relations and is no
+// relation's target (Relate).
 func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) {
 	// A struct document's quoted member (json:",string") is stored as text
 	// its path reads as NULL; the bare schema has no Go types to tell.
@@ -740,19 +861,19 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 		}
 		w, err := r.gen.MemberWire(f.Type, strings.Split(members, "."))
 		if err != nil {
-			return nil, fmt.Errorf("%s: path %q: %w", r.table, d.Path, err)
+			return nil, fmt.Errorf("parse: %s: path %q: %w", r.table, d.Path, err)
 		}
 		if w != "" {
-			return nil, fmt.Errorf("%s: path %q: json:\",string\" stores the member as text, which its path cannot compare; drop the option, or declare the member a string", r.table, d.Path)
+			return nil, fmt.Errorf("parse: %s: path %q: json:\",string\" stores the member as text, which its path cannot compare; drop the option, or declare the member a string", r.table, d.Path)
 		}
 	}
 	fs, err := r.filterSchema.WithPaths(decls...)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", r.table, err)
+		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
 	}
 	ss, err := r.sortSchema.WithPaths(r.filterSchema, decls...)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", r.table, err)
+		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
 	}
 	if err := r.readExprs.checkDocuments(fs, ss); err != nil {
 		return nil, err
@@ -772,7 +893,6 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 		return nil, err
 	}
 	view := *r
-	view.filterSchema, view.sortSchema = fs, ss
-	view.readExprs = r.readExprs.withoutViews()
+	view.filterSchema, view.sortSchema, view.view = fs, ss, true
 	return &view, nil
 }

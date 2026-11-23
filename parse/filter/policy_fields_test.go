@@ -43,8 +43,8 @@ func TestPolicyField_SharedColumnIsRefused(t *testing.T) {
 // A hand-built schema whose Fields and PolicyFields give one name two
 // fields is refused rather than resolved to the request field.
 func TestPolicyField_FieldsAndPolicyFieldsOverlap(t *testing.T) {
-	request := &filter.FieldSchema{ExternalName: "owner", SQLExpr: "items.owner_name", DataType: core.FieldTypeString}
-	hidden := &filter.FieldSchema{ExternalName: "owner", SQLExpr: "items.owner_id", DataType: core.FieldTypeInt}
+	request := &filter.FieldSchema{ExternalName: "owner", Table: "items", Column: "owner_name", DataType: core.FieldTypeString}
+	hidden := &filter.FieldSchema{ExternalName: "owner", Table: "items", Column: "owner_id", DataType: core.FieldTypeInt}
 	tests := []struct {
 		name    string
 		policy  *filter.FieldSchema

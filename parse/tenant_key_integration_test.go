@@ -4,7 +4,6 @@ package parse_test
 
 import (
 	"database/sql"
-	"fmt"
 	"net/url"
 	"testing"
 
@@ -76,47 +75,41 @@ func runIntegerTenantKeys(t *testing.T, db *sql.DB, d parse.Dialect) {
 		require.NoError(t, err, stmt)
 	}
 	devices := intTenantResources(t)
-	ids := func(st parse.Statement) []int64 {
-		t.Helper()
-		var out []int64
-		for _, row := range queryRows(t, db, st.SQL, st.Args) {
-			out = append(out, asInt64(t, row[0]))
-		}
-		return out
-	}
-	list := func(tenant string, q url.Values) *parse.ListPlan {
+	list := func(tenant string, q url.Values) *filter.Page[intTenantDevice] {
 		t.Helper()
 		req, err := devices.ParseList(q)
 		require.NoError(t, err)
 		plan, err := devices.BuildList(d, req, parse.Scope{Tenant: tenant})
 		require.NoError(t, err)
-		return plan
+		return listPage(t, db, devices, d, plan)
+	}
+	ids := func(page *filter.Page[intTenantDevice]) []int {
+		var out []int
+		for _, item := range page.Items {
+			out = append(out, item.ID)
+		}
+		return out
 	}
 
 	t.Run("lists and counts the tenant's rows", func(t *testing.T) {
-		plan := list("1", url.Values{filter.ParamIncludeTotal: {"true"}})
-		assert.Equal(t, []int64{1, 2}, ids(plan.Page))
-		assert.Equal(t, [][]any{{int64(2)}}, normalizeInts(t, queryRows(t, db, plan.Count.SQL, plan.Count.Args)))
-		assert.Equal(t, []int64{3}, ids(list("2", nil).Page))
+		page := list("1", url.Values{filter.ParamIncludeTotal: {"true"}})
+		assert.Equal(t, []int{1, 2}, ids(page))
+		require.NotNil(t, page.PageInfo.TotalCount)
+		assert.Equal(t, int64(2), *page.PageInfo.TotalCount)
+		assert.Equal(t, []int{3}, ids(list("2", nil)))
 	})
 
 	t.Run("relation predicates reach only the tenant's related rows", func(t *testing.T) {
-		plan := list("1", url.Values{filter.ParamFilter: {`{"commands":{"$some":{"status":"pending"}}}`}})
-		assert.Equal(t, []int64{1}, ids(plan.Page), "tenant 2's pending command on device 2 is not tenant 1's")
-		plan = list("1", url.Values{filter.ParamFilter: {`{"tags":21}`}})
-		assert.Empty(t, ids(plan.Page), "device 1's pair with tenant 2's tag is not tenant 1's")
+		page := list("1", url.Values{filter.ParamFilter: {`{"commands":{"$some":{"status":"pending"}}}`}})
+		assert.Equal(t, []int{1}, ids(page), "tenant 2's pending command on device 2 is not tenant 1's")
+		page = list("1", url.Values{filter.ParamFilter: {`{"tags":21}`}})
+		assert.Empty(t, ids(page), "device 1's pair with tenant 2's tag is not tenant 1's")
 	})
 
 	t.Run("includes return only the tenant's pairs", func(t *testing.T) {
-		plan := list("1", url.Values{filter.ParamInclude: {"tags"}})
-		queries, err := devices.IncludeQueries(plan, []any{int64(1), int64(2)})
-		require.NoError(t, err)
-		require.Len(t, queries, 1)
-		var pairs [][2]string
-		for _, row := range queryRows(t, db, queries[0].SQL, queries[0].Args) {
-			pairs = append(pairs, [2]string{fmt.Sprint(row[0]), fmt.Sprint(row[1])})
-		}
-		assert.Equal(t, [][2]string{{"1", "20"}}, pairs)
+		page := list("1", url.Values{filter.ParamInclude: {"tags"}})
+		assert.Equal(t, []int{1, 2}, ids(page))
+		assert.Equal(t, map[string][]string{"1": {"20"}}, page.Relations["tags"], "not device 1's pair with tenant 2's tag")
 	})
 
 	t.Run("updates and membership writes stay in the tenant", func(t *testing.T) {
@@ -124,20 +117,18 @@ func runIntegerTenantKeys(t *testing.T, db *sql.DB, d parse.Dialect) {
 		require.NoError(t, err)
 		plan, err := devices.BuildUpdate(d, p, parse.ByID(3), parse.Scope{Tenant: "1"})
 		require.NoError(t, err)
-		assert.Empty(t, queryRows(t, db, plan.Owner.SQL, plan.Owner.Args), "device 3 is tenant 2's")
+		res, err := applyUpdate(t, db, devices, d, plan, false)
+		require.NoError(t, err)
+		assert.Zero(t, res, "device 3 is tenant 2's")
 
 		p, err = devices.ParseMergePatch([]byte(`{"tags":[20, 21]}`))
 		require.NoError(t, err)
 		plan, err = devices.BuildUpdate(d, p, parse.ByID(2), parse.Scope{Tenant: "1"})
 		require.NoError(t, err)
-		owners := queryRows(t, db, plan.Owner.SQL, plan.Owner.Args)
-		require.Len(t, owners, 1)
-		stmts, err := devices.RelationStatements(plan, []any{owners[0][0]})
+		res, err = applyUpdate(t, db, devices, d, plan, false)
 		require.NoError(t, err)
-		for _, st := range stmts {
-			_, err := db.Exec(st.SQL, st.Args...)
-			require.NoError(t, err, st.SQL)
-		}
+		require.Len(t, res.Unchanged, 1)
+		assert.Equal(t, int64(1), res.RelationRows, "only tenant 1's tag 20 is paired")
 		pairs := normalizeInts(t, queryRows(t, db, "SELECT device_id, tag_id, tenant_id FROM device_tags WHERE device_id = 2 ORDER BY tag_id", nil))
 		assert.Equal(t, [][]any{{int64(2), int64(20), int64(1)}}, pairs, "tenant 2's tag is not paired")
 	})

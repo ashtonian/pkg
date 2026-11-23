@@ -2,7 +2,7 @@
 
 [Package overview](../README.md)
 
-A relation lets a request filter rows by the rows they are related to. Declare it on the owner resource with `Resource.Relate` — a has-many, a belongs-to or a many-to-many to another `Resource` — and requests filter by the related rows with the target's own filter. The older `relation:"…"` struct tag declares a pair table compared by key alone. Every relation predicate compiles to one correlated `EXISTS` / `NOT EXISTS`, so a row matches once however many related rows it has.
+A relation lets a request filter rows by the rows they are related to. Declare it on the owner resource with `Resource.Relate` — a has-many, a belongs-to or a many-to-many to another `Resource` — and requests filter by the related rows with the target's own filter. A `relation:"…"` struct tag declares a [pair table](pair-tables.md) instead: membership compared by the target's key alone, for a target that is not a `Resource` or a request that only matches related keys. Every relation predicate compiles to one correlated `EXISTS` / `NOT EXISTS`, so a row matches once however many related rows it has.
 
 ## Declare relations
 
@@ -24,7 +24,7 @@ commands.MustRelate("device", parse.BelongsTo(devices, "device_id"))
 |---|---|---|
 | `HasMany(target, fk)` | an owner to the target rows whose `fk` holds its key | `target.fk = owner.<key>`; `References(col)` names another owner column |
 | `BelongsTo(target, fk)` | an owner to the target row its `fk` names | `target.<key> = owner.fk`; `References(col)` names another target column |
-| `ManyToMany(target, junction)` | owners and targets through a pair table | `junction.Source = owner.<key>`, `target.<key> = junction.Target` |
+| `ManyToMany(target, junction)` | owners and targets through a pair table, a `Junction` (`Through(table, source, target)` builds one without a tenant column) | `junction.Source = owner.<key>`, `target.<key> = junction.Target` |
 
 `Relate` checks every column against both resources' types and returns an error; `MustRelate` panics. A relation's name must be a name no server policy already resolves on the owner: a request field, a system field, or any [policy field](queries.md#policy-fields), the owner's columns among them. Otherwise the relation would change what a policy on that name constrains. A relation may lead back to its own table (an asset's parent); the query aliases it so it does not shadow the owner.
 
@@ -33,6 +33,9 @@ commands.MustRelate("device", parse.BelongsTo(devices, "device_id"))
 | `Indexed()` | An index leads with the correlation column (the foreign key, or the pair table's owner column): the relation costs 8 instead of 80 against `MaxCost` (default 50). A belongs-to correlates on the target's key and is always indexed. |
 | `PolicyScoped()` | The related rows are those the server's policy for the target table admits (`Scope.Related[<table>]`), not the request's tenant: rows another tenant shares, such as platform device types. A list using the relation without that policy fails with `filter.ErrRelatedPolicyRequired`. |
 | `References(column)` | The column a foreign key holds when it is not the referenced resource's key |
+| `Includable()` | A list may include the related rows' keys (`include=<name>`): a has-many's children, a many-to-many's targets, as visible to the request ([include related keys](#include-related-keys)). A belongs-to's key is the owner's own foreign-key column |
+| `Facetable()` | A list may count its rows per related key (`facets=<name>`): distinct owners per visible child or target ([facet by related keys](#facet-by-related-keys)). A belongs-to facets through its foreign-key column |
+| `Writable()` | A patch may change a many-to-many's membership with target keys ([change membership](#change-membership)). The pair table must hold nothing but the pairs and their tenant |
 | `Describe(label, description)` | The label and description schema discovery serves for the relation field, as the `label` and `description` tags do for a column |
 
 Related rows are live rows only (the target's `DeletedColumn`) and, unless policy-scoped, rows of the request's tenant (the target's `TenantColumn`). A pair table's `Tenant` column is bound to the request's tenant, as one value with every other tenant column the request reaches ([Tenant key](#tenant-key)). A governed list's rows span tenants, and each row's related rows are its own tenant's ([Governed lists](#governed-lists)).
@@ -49,17 +52,18 @@ One request has one tenant, and every statement binds it as one value: `Scope.Te
 | None, or only pair tables | The text as given | Never |
 | A string or UUID beside an integer | — | `Relate` refuses the declaration |
 
-`Relate` refuses a relation that would make any resource reach a string or UUID tenant column and an integer one, whichever declaration comes last: a relation on a target refuses itself when an owner already relating to that target would reach both. A refused relation is not declared, and the graph stays as it was. `Relate` therefore changes the tenant key of every resource that reaches its owner; declare the whole graph before serving.
+`Relate` refuses a relation that would make any resource reach a string or UUID tenant column and an integer one, whichever declaration comes last: a relation on a target refuses itself when an owner already relating to that target would reach both. A refused relation is not declared, and the graph stays as it was. `Relate` therefore changes the tenant key of every resource that reaches its owner; declare the whole graph before serving. A `WithPaths` view is a value for one request that shares its resource's patch schemas and tenant graph, so `Relate` refuses one as the owner or the target; relate the resources it is derived from.
 
 A pair table's `Tenant` column has no Go type. It holds the request's one tenant in the one type: the type of the typed tenant columns the resource reaches, or the text when it reaches none. An owner without a tenant column whose relations reach an integer tenant column binds an integer to every one of its pair tables, so declare those pair tenant columns with the integer type in the database; to keep a pair table's tenant as text, keep integer tenant columns out of that resource's reach.
 
 ### Governed lists
 
-`Scope.Governance` replaces the tenant floor: the list reads the rows the governance tree admits, of any tenant — a grant of another tenant's row, a parent tenant's view of its children's. A row's relations are its own tenant's. Every tenant-scoped related row, at every depth — a target's `TenantColumn`, a pair table's `Tenant` — is compared with the tenant column of the listed row it hangs from (`filter.RelationScope.RowTenant`) instead of being bound to one tenant:
+`Scope.Governance` replaces the tenant floor: the list reads the rows the governance tree admits, of any tenant — a grant of another tenant's row, a parent tenant's view of its children's. A row's relations are its own tenant's. Every tenant-scoped related row, at every depth — a target's `TenantColumn`, a pair table's `Tenant` — is compared with the tenant column of the listed row it hangs from (`filter.RelationScope.RowTenant`) instead of being bound to one tenant. Documents governed to tenant A's rows and B's `b1`, filtered by `{"notes":{"$some":{"body":"urgent"}}}`:
 
-```
-WHERE … EXISTS (SELECT 1 FROM notes WHERE notes.document_id = documents.id
-  AND notes.tenant_id = documents.tenant_id AND notes.deleted_at IS NULL AND notes.body = $1)
+<!-- output of ExampleResource_BuildList_governed -->
+```text
+WHERE (EXISTS (SELECT 1 FROM "notes" WHERE "notes"."document_id" = "documents"."id" AND "notes"."tenant_id" = "documents"."tenant_id" AND "notes"."deleted_at" IS NULL AND "notes"."body" = $1) AND ("documents"."tenant_id" = $2 OR "documents"."id" = $3)) …
+[urgent A b1]
 ```
 
 A granted row of tenant B is filtered, counted, faceted and included by B's related rows, and a row of tenant A hanging from it (A's note on B's document, A's pair to it) is not its relation. `Scope.Tenant` is neither required nor used. Under the floor every listed row is the request's tenant, so the two agree: a governance tree that admits only the request's tenant lists exactly what the floor lists, and a nil or empty tree is the floor (`ErrTenantRequired` without `Scope.Tenant`). Includes join the owner's table to read each owner's tenant (`filter.WithIncludeOwner`), and facets project it beside the owner's key, both under the list's `RelationScope.RowTenant`. Updates refuse governance (`ErrUpdateScope`).
@@ -77,7 +81,12 @@ A relation pairs owner and target rows by one column on each side: the owner's k
 | Filtered only | Read, or named in that resource's `QueryOnlyColumns` |
 | `Includable()` or `Facetable()` | Read |
 
-A many-to-many correlates on both resources' keys, which are always read; its pair table is no resource. A refused relation is not declared: `relation "members": members does not read column "team_id"` names the resource and the column to read, or to name in `QueryOnlyColumns`.
+A many-to-many correlates on both resources' keys, which are always read; its pair table is no resource. A refused relation is not declared, and the error names the resource and the column to read, or to name in `QueryOnlyColumns`. An includable has-many whose foreign key the target only queries:
+
+<!-- output of ExampleResource_Relate_readColumns -->
+```text
+parse: teams: relation "members": members does not read column "team_id"
+```
 
 ## Filter by related rows
 
@@ -89,17 +98,19 @@ A many-to-many correlates on both resources' keys, which are always read; its pa
 | `{"commands":"c1"}`, `{"commands":{"$in":["c1","c2"]}}` | some visible command has that key; `$ne` / `$nin` are `$none` |
 | `{"commands":{"$null":true}}` | no visible command (`$none: {}`); `$null: false` is `$some: {}` |
 
-`$some` / `$none` apply to has-many and many-to-many relations, `$is` / `$is_not` to belongs-to. A NULL foreign key is tested with the foreign-key column's own `$null` (`{"type_id":{"$null":true}}`), which says nothing about whether the type is visible. The target's own relations may be used inside the target's filter, two levels deep (`devices → commands → receipts`, E2074 beyond); a filter holds at most 8 relation predicates (E2089 beyond). A relation predicate costs the relation (8 indexed, 80 not) plus its nested filter's cost. Flat parameters (`?commands=c1`) and policy constraints that name a relation take the same path.
+`$some` / `$none` apply to has-many and many-to-many relations, `$is` / `$is_not` to belongs-to. A NULL foreign key is tested with the foreign-key column's own `$null` (`{"type_id":{"$null":true}}`), which says nothing about whether the type is visible. The target's own relations may be used inside the target's filter, two levels deep (`devices → commands → receipts`, E2074 beyond), a key comparison on a relation (`{"receipts":"r1"}`, `$in`, `$ne`, `$nin`, `$null`) counting a level as the `$some` / `$none` it abbreviates does; a filter holds at most 8 relation predicates (E2089 beyond). A relation predicate costs the relation (8 indexed, 80 not) plus its nested filter's cost. Flat parameters (`?commands=c1`) and policy constraints that name a relation take the same path.
 
+<!-- output of ExampleResource_Relate -->
 ```text
 {"commands":{"$some":{"status":"pending","attempts":{"$gt":2}}}}
-postgres WHERE (EXISTS (SELECT 1 FROM commands WHERE commands.device_id = devices.id AND commands.tenant_id = $1 AND (commands.attempts > $2 AND commands.status = $3)) AND devices.tenant_id = $4) … [t1 2 pending t1]
-
+WHERE (EXISTS (SELECT 1 FROM "commands" WHERE "commands"."device_id" = "devices"."id" AND "commands"."tenant_id" = $1 AND ("commands"."attempts" > $2 AND "commands"."status" = $3)) AND "devices"."tenant_id" = $4) … [t1 2 pending t1]
 {"commands":{"$none":{"status":"failed"}}}
-postgres WHERE (NOT EXISTS (SELECT 1 FROM commands WHERE commands.device_id = devices.id AND commands.tenant_id = $1 AND commands.status = $2) AND devices.tenant_id = $3) … [t1 failed t1]
+WHERE (NOT EXISTS (SELECT 1 FROM "commands" WHERE "commands"."device_id" = "devices"."id" AND "commands"."tenant_id" = $1 AND "commands"."status" = $2) AND "devices"."tenant_id" = $3) … [t1 failed t1]
+{"tags":{"$some":{"label":"red"}}}
+WHERE (EXISTS (SELECT 1 FROM "device_tags" "rel1__" JOIN "tags" ON "tags"."id" = "rel1__"."tag_id" WHERE "rel1__"."device_id" = "devices"."id" AND "rel1__"."tenant_id" = $1 AND "tags"."tenant_id" = $2 AND "tags"."deleted_at" IS NULL AND "tags"."label" = $3) AND "devices"."tenant_id" = $4) … [t1 t1 red t1]
 ```
 
-The output above is `ExampleResource_Relate`, checked by the unit lane. A many-to-many with a target filter joins the target inside the subquery: `EXISTS (SELECT 1 FROM device_tags rel1__ JOIN tags ON tags.id = rel1__.tag_id WHERE rel1__.device_id = devices.id AND rel1__.tenant_id = $1 AND tags.tenant_id = $2 AND tags.label = $3)`. A target's [computed column](queries.md#computed-columns) (`parse.ReadExpr`) filters as the target's expression for the owner's dialect, and fails the build where the subquery aliases the target's table, as a relation back to the owner's table does; any other target field computed from something other than its table's column cannot be used through a relation (the build fails); a relation without a target resource takes no target filter (E2083).
+A many-to-many with a target filter, the last, joins the target to the pair table inside the subquery. A target's [computed column](queries.md#computed-columns) (`parse.ReadExpr`) filters as the target's expression for the owner's dialect, and fails the build where the subquery aliases the target's table, as a relation back to the owner's table does; any other target field computed from something other than its table's column cannot be used through a relation (the build fails); a relation without a target resource takes no target filter (E2083).
 
 ### Outside SQL
 
@@ -119,67 +130,14 @@ Declare `Facetable()` on a has-many or many-to-many and `facets=tags` counts the
 
 ### Change membership
 
-Declare `Writable()` on a many-to-many and a patch changes its membership with target keys: a merge patch `{"tags": ["red", "blue"]}` replaces the set, `{"tags": []}` or `{"tags": null}` clears it, and a JSON Patch `add` / `remove` on `/tags` with a list of at least one key adds or removes keys. A key is never null (E2118); the parser decides each operation's value, so a membership change it accepts always renders. Keys travel as the target's key does: a target key tagged `json:",string"` takes them as JSON strings (`{"tags":["5"]}`), as responses write it and the relation's filter shorthands take it, and the schema document marks the path `"wire": "string"` ([quoted values](schema-configuration.md#quoted-values)). `BuildUpdate` returns the owner statement and `RelationStatements` the membership statements for the keys it returned (`parsepgx.Update` runs both in one transaction). Pairs are made only with targets the request may relate — live, in the tenant, or admitted by the target's policy — by selecting the owner and target rows rather than binding raw keys, and a replace or remove reaches only pairs to such targets, so pairs the request cannot see stay:
+Declare `Writable()` on a many-to-many and a patch changes its membership with target keys: a merge patch `{"tags": ["red", "blue"]}` replaces the set, `{"tags": []}` or `{"tags": null}` clears it, and a JSON Patch `add` / `remove` on `/tags` with a list of at least one key adds or removes keys. A key is never null (E2118); the parser decides each operation's value, so a membership change it accepts always renders. Keys travel as the target's key does: a target key tagged `json:",string"` takes them as JSON strings (`{"tags":["5"]}`), as responses write it and the relation's filter shorthands take it, and the schema document marks the path `"wire": "string"` ([quoted values](schema-configuration.md#quoted-values)). `BuildUpdate` returns the owner statement and `RelationStatements` the membership statements for the keys it returned (`parsepgx.Update` runs both in one transaction). Pairs are made only with targets the request may relate — live, in the tenant, or admitted by the target's policy — by selecting the owner and target rows rather than binding raw keys, and a replace or remove reaches only pairs to such targets, so pairs the request cannot see stay. A JSON Patch `add` of `["red","blue"]` to `/tags` on device `d1`:
 
-```sql
-INSERT INTO device_tags (device_id, tag_id, tenant_id)
-SELECT owner__.id, target__.id, owner__.tenant_id FROM devices owner__, tags target__
-WHERE owner__.id = ANY($1) AND owner__.tenant_id = $2 AND target__.id = ANY($3)
-  AND target__.tenant_id = $4 AND target__.deleted_at IS NULL ON CONFLICT DO NOTHING
+<!-- output of ExampleResource_RelationStatements -->
+```text
+INSERT INTO "device_tags" ("device_id", "tag_id", "tenant_id") SELECT "owner__"."id", "target__"."id", "owner__"."tenant_id" FROM "devices" owner__, "tags" target__ WHERE "owner__"."id" = ANY($1) AND "owner__"."tenant_id" = $2 AND "target__"."id" = ANY($3) AND "target__"."tenant_id" = $4 AND "target__"."deleted_at" IS NULL ON CONFLICT DO NOTHING
+[[d1] t1 [red blue] t1]
 ```
 
 The owner keys and the target keys each bind as one array parameter (`= ANY($n)` on PostgreSQL, `IN (SELECT value FROM json_each(?n))` on SQLite), so a statement's parameter count is the same for one key as for a thousand; one operation names at most `PatchSchema.MaxRelationValues` keys (1000 by default, E2119 beyond, repeats counted once). A has-many is never written through its parent (that would insert or delete child rows); a belongs-to is written through its foreign-key column like any other column. A writable pair table's tenant comes from the owner or the target.
 
-## Pair tables compared by key
-
-A relation field is virtual (`db:"-"`): it is not a column but a way to filter rows by what they are related to. `relation:"<table>,<owner column>,<target column>[,<owner key>[,<tenant column>]]"` names the table that holds the pairs. Every relation predicate compiles to a correlated `EXISTS` / `NOT EXISTS`, so a row matches once however many related rows it has.
-
-| Shape | How to declare it | Filter | Include | Patch |
-|---|---|---|---|---|
-| Many-to-many (products ↔ collections) | `relation:"product_collections,product_id,collection_id"` — the junction | yes | yes | yes: membership rows, rendered by `patch.RenderRelationOp` for your transaction |
-| One-to-many (a product's reviews) | `relation:"reviews,product_id,id"` — the child table in the junction's place, its key as the target | by child ID, or child existence | yes: the children's IDs | **never** tag `patch`: membership patches would insert or delete child rows |
-| Belongs-to (a product's supplier) | the foreign-key column itself, `SupplierID uuid.UUID db:"supplier_id" parse:"filter"` | by the parent's ID | — | the column, like any other |
-
-```text
-{"collections":"0190f3c2-…-000000000001"}                  products in a collection
-postgres WHERE EXISTS (SELECT 1 FROM product_collections WHERE product_collections.product_id = products.id AND product_collections.collection_id = $1)
-
-{"collections":{"$nin":["0190f3c2-…-000000000001"]}}       products not in it
-postgres WHERE NOT EXISTS (SELECT 1 FROM product_collections WHERE product_collections.product_id = products.id AND product_collections.collection_id = ANY($1))
-
-{"reviews":{"$null":false}}                                products with at least one review
-postgres WHERE EXISTS (SELECT 1 FROM reviews WHERE reviews.product_id = products.id)
-
-{"supplier_id":"0190f3c2-…-0000000000aa"}                  a supplier's products
-postgres WHERE products.supplier_id = $1
-```
-
-`$eq x` means some related row is x, `$ne x` that none is, `$null: true` that there is none. `include=collections` returns each owner's related IDs in the page's `_relations`, distinct and capped per owner in SQL (`filter.BuildIncludeQuery`, default 100). A relation facet counts distinct owners per target.
-
-A tag relation compares related IDs only; filter by a related row's attributes through a declared relation. It costs 8 when the field is tagged `indexed:"true"` and 80 when not, against a default `MaxCost` of 50 (`core.WithMaxCost`); tag it indexed when the pair table is indexed on the owner column, as it should be. Outside SQL its key comparisons resolve as memberships of the pair table (`ResolveMemberships`); other operators on it are SQL-only.
-
-A junction with a tenant column (`relation:"…,id,tenant_id"`) binds the caller's tenant in every statement and refuses to build without one (`filter.RelationScope.Tenant`, `RenderRelationOpOptions.TenantValue`), or, for rows of several tenants, compares it with the owner row's tenant column (`RelationScope.RowTenant`, as a [governed list](#governed-lists) does); `RelationScope.Unscoped` is the explicit opt-out for platform tooling.
-
-## Declare the relation
-
-The tag grammar is `relation:"table,owner_column,target_column[,primary_key[,tenant_column]]"`. The owner primary key defaults to `id`. Every component must be an identifier. The field is a virtual slice of target IDs, usually `db:"-"`; its `parse` capabilities independently allow filtering, including, faceting, and patching.
-
-For a virtual relation hidden from the base row JSON, add `relation_name:"tag_ids"` beside `json:"-"` to preserve its external capability name. This avoids deriving `TagIDs` as an unintended snake-case spelling. It only affects the hidden-relation fallback, does not change visible JSON names, and does not grant additional filter/include/facet/patch capabilities. Duplicate external names are rejected during schema generation.
-
-## Load related IDs
-
-1. Validate the requested names with `filter.ParseIncludes(schema, parameter)`.
-2. Execute the base page query and collect its owner IDs.
-3. For each requested relation, call `filter.BuildIncludeQuery(field, dialect, ownerIDs, options...)`. The owner IDs bind as one set, typed as the relation's owner correlation field (`FieldSchema.RelatedBy`, which a resource sets), so the statement's text is the same for every page; a field without one is an error. Scope it with `WithIncludeRelationScope`: a `Tenant` for tenant-scoped junctions, or a `RowTenant` with `WithIncludeOwner(ownerSchema)` when the owners span tenants.
-4. Execute its SQL and read the rows with the query's `Scan`, which groups target IDs by owner and lists the owners whose IDs were cut at the cap in `Truncated`.
-5. Attach the result to `filter.Page[T].Relations`, whose JSON name is `_relations`.
-
-Includes return IDs, not nested child objects. The default cap is 100 distinct targets per owner; change it with `filter.WithMaxIncludePerRelation`. The query reads one more than the cap, so `Scan` knows a cut list from a complete one; put `Truncated` in the page's `Truncated[field]` (`_truncated` on the wire). `Resource.IncludeQueries` and `parsepgx.QueryPage` do this for you. The caller owns execution and transaction consistency.
-
-## Update membership
-
-`patch.BuildPatchSQL` separates junction operations into `RelationOps`. For each operation, `patch.RenderRelationOp` produces statements for the selected owner IDs, owners and values each bound as one array. Without a target table there are no target rows to select, so PostgreSQL's insert reads the owners and values as rows of the pair table's own type (`jsonb_populate_recordset(NULL::<pair table>, $n)`), which types each key as its column; an unquoted column name is matched as PostgreSQL folds it, to lower case. Run owner authorization/selection and every resulting statement in one transaction. Membership `replace` removes targets not in the new set and adds missing ones; `add` and `remove` modify the selected memberships.
-
-Bind the trusted tenant with `patch.RenderRelationOpOptions.TenantValue`. Serialize conflicting replacements of the same owner (for example by locking the owner row in PostgreSQL) so concurrent replacements do not combine memberships. The package renders SQL; it does not open a transaction or acquire locks.
-
-See [query options](queries.md#configuration), [patch compilation](patches.md#sql-compilation), and [integration responsibilities](integrations.md).
+See [pair tables](pair-tables.md), [query options](queries.md#configuration), [patch compilation](patches.md#sql-compilation), and [integration responsibilities](integrations.md).

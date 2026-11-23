@@ -1,4 +1,8 @@
-package core
+// Package jsonkeys checks that a stored JSON document spells its members as
+// encoding/json writes them for the Go value it decodes into, so a document
+// read from a row or written by a patch has one spelling per member: the
+// row scan of a stored document and typed patch application share it.
+package jsonkeys
 
 import (
 	"bytes"
@@ -14,13 +18,13 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/ashtonian/pkg/gowalker"
+	"github.com/ashtonian/pkg/parse/core"
 )
 
-// CanonicalJSONMapKey decodes a member name into a key of map key type t, as
+// CanonicalMapKey decodes a member name into a key of map key type t, as
 // encoding/json decodes it, and returns the key and the member name
 // encoding/json writes for that key.
-func CanonicalJSONMapKey(t reflect.Type, name string) (reflect.Value, string, error) {
+func CanonicalMapKey(t reflect.Type, name string) (reflect.Value, string, error) {
 	if t == nil || !t.Comparable() {
 		return reflect.Value{}, "", fmt.Errorf("invalid JSON map key type %v", t)
 	}
@@ -129,16 +133,16 @@ func encodedJSONMapKey(t reflect.Type, name string) (reflect.Value, string, erro
 	return reflect.Value{}, "", fmt.Errorf("JSON key %s encodes no member", t)
 }
 
-// ValidateJSONKeyRepresentation checks that raw, a document decoded into
-// decoded (a non-nil pointer to the decoded value), spells every member the
-// value holds as encoding/json writes it: a struct member by its field's
+// Validate checks that raw, a document decoded into decoded (a non-nil
+// pointer to the decoded value), spells every member the value holds as
+// encoding/json writes it: a struct member by its field's
 // name exactly, not in another case; a map member by its key's name, so
 // "01" is not an int key and "0:0:0:0:0:0:0:1" not a netip.Addr one; and
 // no member the value holds twice. Members the type does not hold, and
 // interface, json.RawMessage and self-decoding subtrees, are opaque. Only
 // decoded's type is read. Each type's members and key rules are found once
-// (JSONFieldsOf), so validation is one pass over raw.
-func ValidateJSONKeyRepresentation(raw []byte, decoded any) error {
+// (core.JSONFieldsOf), so validation is one pass over raw.
+func Validate(raw []byte, decoded any) error {
 	target := reflect.ValueOf(decoded)
 	if !target.IsValid() || target.Kind() != reflect.Pointer || target.IsNil() {
 		return fmt.Errorf("JSON key validation target must be a non-nil pointer, got %T", decoded)
@@ -171,12 +175,11 @@ var decodedJSONOptions = jsonv2.JoinOptions(jsontext.AllowDuplicateNames(true), 
 type jsonShape struct {
 	kind shapeKind
 	typ  reflect.Type
-	// fields and byName name a struct's members; members holds each
-	// member's shape, in fields order. view is the struct's compiled view,
-	// which says what a member no field names exactly decodes into.
-	fields  []*Field
+	// walk, fields and byName name a struct's members; members holds each
+	// member's shape, in fields order.
+	walk    *core.StructFields
+	fields  []*core.Field
 	byName  map[string]int
-	view    *gowalker.Shape
 	members []*jsonShape
 	// key is a map's key rule; elem a map's value or a list's element.
 	key  jsonKeyRule
@@ -245,16 +248,11 @@ func buildJSONShape(t reflect.Type, building map[reflect.Type]*jsonShape) (*json
 	case reflect.Struct:
 		shape := &jsonShape{kind: shapeStruct, typ: t}
 		building[t] = shape
-		walk, err := JSONFieldsOf(t)
+		walk, err := core.JSONFieldsOf(t)
 		if err != nil {
 			return nil, err
 		}
-		schema, err := jsonEngine.CompileType(t)
-		if err != nil {
-			return nil, walkError(t, err)
-		}
-		shape.view = schema.Root()
-		shape.fields = walk.Fields
+		shape.walk, shape.fields = walk, walk.Fields
 		shape.byName = make(map[string]int, len(walk.Fields))
 		for i, f := range walk.Fields {
 			shape.byName[f.External] = i
@@ -418,8 +416,8 @@ func (v *keyValidator) structMember(shape *jsonShape, seen []bool, name []byte) 
 	if !ok {
 		// Decoding gives a member no field names exactly to a field its name
 		// matches by case, if one does.
-		if f, match := shape.view.MatchBytes(name); match == gowalker.FoldedMatch {
-			return fmt.Errorf("JSON member %q is noncanonical for %s; use %q", v.dec.StackPointer(), shape.typ, f.Name())
+		if f, folded := shape.walk.FoldedMatch(name); folded {
+			return fmt.Errorf("JSON member %q is noncanonical for %s; use %q", v.dec.StackPointer(), shape.typ, f.External)
 		}
 		return v.skip() // not a member of the type
 	}
@@ -448,7 +446,7 @@ func (v *keyValidator) repeatedMapMember(shape *jsonShape, spans []nameSpan) err
 	slices.SortFunc(spans, func(a, b nameSpan) int { return bytes.Compare(names[a.start:a.end], names[b.start:b.end]) })
 	for i := 1; i < len(spans); i++ {
 		if name := names[spans[i].start:spans[i].end]; bytes.Equal(name, names[spans[i-1].start:spans[i-1].end]) {
-			return fmt.Errorf("duplicate JSON map member %q in %s", string(v.dec.StackPointer())+"/"+EscapePointerToken(string(name)), shape.typ)
+			return fmt.Errorf("duplicate JSON map member %q in %s", string(v.dec.StackPointer())+"/"+core.EscapePointerToken(string(name)), shape.typ)
 		}
 	}
 	return nil
@@ -468,7 +466,7 @@ func canonicalKeyName(shape *jsonShape, name []byte) bool {
 	case keyUnsigned:
 		return canonicalIntegerText(name)
 	}
-	_, canonical, err := CanonicalJSONMapKey(shape.typ.Key(), string(name))
+	_, canonical, err := CanonicalMapKey(shape.typ.Key(), string(name))
 	return err == nil && canonical == string(name)
 }
 
@@ -479,7 +477,7 @@ func canonicalIntegerText(s []byte) bool {
 		return false
 	}
 	for _, c := range s {
-		if !isDigit(c) {
+		if c < '0' || c > '9' {
 			return false
 		}
 	}
@@ -513,3 +511,9 @@ func (v *keyValidator) skip() error {
 	}
 	return nil
 }
+
+var (
+	rawJSONType       = reflect.TypeFor[json.RawMessage]()
+	textMarshalerType = reflect.TypeFor[encoding.TextMarshaler]()
+	jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
+)

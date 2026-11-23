@@ -85,9 +85,7 @@ func TestDeclaredRelations_Writes_SQLite(t *testing.T) {
 		_, err := db.Exec(stmt)
 		require.NoError(t, err, stmt)
 	}
-	runRelationWrites(t, relationResources(t), filter.SQLiteDialect{}, func(t *testing.T, q string, args []any) [][]any {
-		return queryRows(t, db, q, args)
-	})
+	runRelationWrites(t, relationResources(t), filter.SQLiteDialect{}, db)
 }
 
 func TestElementPredicates_SQLite(t *testing.T) {
@@ -117,13 +115,13 @@ func TestDeclaredRelations_Memberships_SQLite(t *testing.T) {
 func TestDeclaredRelations_SQL(t *testing.T) {
 	r := relationResources(t)
 	plan := relationPlan(t, r.devices, `{"commands":{"$some":{"status":"pending","attempts":{"$gt":2}}}}`, relationScopeT1())
-	assert.Contains(t, plan.Page.SQL, "EXISTS (SELECT 1 FROM commands WHERE commands.device_id = devices.id AND commands.tenant_id = $1 AND commands.deleted_at IS NULL AND (commands.attempts > $2 AND commands.status = $3))")
+	assert.Contains(t, plan.Page.SQL, `EXISTS (SELECT 1 FROM "commands" WHERE "commands"."device_id" = "devices"."id" AND "commands"."tenant_id" = $1 AND "commands"."deleted_at" IS NULL AND ("commands"."attempts" > $2 AND "commands"."status" = $3))`)
 
 	plan = relationPlan(t, r.devices, `{"tags":{"$some":{"label":"red"}}}`, relationScopeT1())
-	assert.Contains(t, plan.Page.SQL, "EXISTS (SELECT 1 FROM device_tags rel1__ JOIN tags ON tags.id = rel1__.tag_id WHERE rel1__.device_id = devices.id AND rel1__.tenant_id = $1 AND tags.tenant_id = $2 AND tags.deleted_at IS NULL AND tags.label = $3)")
+	assert.Contains(t, plan.Page.SQL, `EXISTS (SELECT 1 FROM "device_tags" "rel1__" JOIN "tags" ON "tags"."id" = "rel1__"."tag_id" WHERE "rel1__"."device_id" = "devices"."id" AND "rel1__"."tenant_id" = $1 AND "tags"."tenant_id" = $2 AND "tags"."deleted_at" IS NULL AND "tags"."label" = $3)`)
 
 	assets := relationPlan(t, r.assets, `{"parent":{"$is":{"name":"root"}}}`, parse.Scope{Tenant: "t1"})
-	assert.Contains(t, assets.Page.SQL, "EXISTS (SELECT 1 FROM assets assets_rel1__ WHERE assets_rel1__.id = assets.parent_id AND assets_rel1__.tenant_id = $1 AND assets_rel1__.name = $2)", "the target is aliased away from its owner")
+	assert.Contains(t, assets.Page.SQL, `EXISTS (SELECT 1 FROM "assets" "assets_rel1__" WHERE "assets_rel1__"."id" = "assets"."parent_id" AND "assets_rel1__"."tenant_id" = $1 AND "assets_rel1__"."name" = $2)`, "the target is aliased away from its owner")
 }
 
 func relationPlan(t *testing.T, r interface {
@@ -157,6 +155,11 @@ func TestDeclaredRelations_Refuse(t *testing.T) {
 		{"$some on a belongs-to", `{"type":{"$some":{}}}`, filter.ECodeInvalidOperator.String()},
 		{"a non-object target filter", `{"commands":{"$some":"c1"}}`, filter.ECodeInvalidJSON.String()},
 		{"three levels deep", `{"commands":{"$some":{"device":{"$is":{"commands":{"$some":{}}}}}}}`, filter.ECodeDepthExceeded.String()},
+		{"a key equality three levels deep", `{"commands":{"$some":{"device":{"$is":{"commands":"c1"}}}}}`, filter.ECodeDepthExceeded.String()},
+		{"a key set three levels deep", `{"commands":{"$some":{"device":{"$is":{"commands":{"$in":["c1"]}}}}}}`, filter.ECodeDepthExceeded.String()},
+		{"a key inequality three levels deep", `{"commands":{"$some":{"device":{"$is":{"commands":{"$ne":"c1"}}}}}}`, filter.ECodeDepthExceeded.String()},
+		{"a key exclusion three levels deep", `{"commands":{"$some":{"device":{"$is":{"commands":{"$nin":["c1"]}}}}}}`, filter.ECodeDepthExceeded.String()},
+		{"a key NULL test three levels deep", `{"commands":{"$some":{"device":{"$is":{"commands":{"$null":true}}}}}}`, filter.ECodeDepthExceeded.String()},
 		{"nine relation predicates", `{"$and":[` + strings.Repeat(`{"commands":{"$some":{}}},`, 8) + `{"commands":{"$some":{}}}]}`, filter.ECodeMaxConditions.String()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -166,6 +169,9 @@ func TestDeclaredRelations_Refuse(t *testing.T) {
 			assert.Equal(t, tc.code, pe.Code, pe.Message)
 		})
 	}
+
+	_, err := r.devices.ParseList(url.Values{filter.ParamFilter: {`{"commands":{"$some":{"device":"d1"}}}`}})
+	require.NoError(t, err, "a key comparison two levels deep")
 
 	req, err := r.devices.ParseList(url.Values{filter.ParamFilter: {`{"type":{"$is":{}}}`}})
 	require.NoError(t, err)
@@ -204,13 +210,13 @@ func TestDeclaredRelations_EveryEntryReachesOnlyVisibleRows(t *testing.T) {
 	s.Policy = &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: "commands", Operator: filter.OpEq, Value: "c4"}}}
 	plan, err := r.devices.BuildList(filter.PostgresDialect{}, nil, s)
 	require.NoError(t, err)
-	assert.Contains(t, plan.Page.SQL, "commands.deleted_at IS NULL", "the policy's key comparison is a relation predicate")
+	assert.Contains(t, plan.Page.SQL, `"commands"."deleted_at" IS NULL`, "the policy's key comparison is a relation predicate")
 
 	req, err := r.devices.ParseList(url.Values{"commands": {"c1"}})
 	require.NoError(t, err)
 	plan, err = r.devices.BuildList(filter.PostgresDialect{}, req, s)
 	require.NoError(t, err)
-	assert.Equal(t, 2, strings.Count(plan.Page.SQL, "commands.deleted_at IS NULL"), plan.Page.SQL)
+	assert.Equal(t, 2, strings.Count(plan.Page.SQL, `"commands"."deleted_at" IS NULL`), plan.Page.SQL)
 }
 
 // A relation's label and description reach schema discovery as a column's
@@ -220,7 +226,7 @@ func TestRelate_DescribeReachesDiscovery(t *testing.T) {
 	devices := parse.MustResource[relDevice]("devices", parse.TenantColumn("tenant_id"))
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Describe("Commands", "Commands sent to the device")))
 	reg := parse.NewSchemaRegistry()
-	parse.RegisterResource(reg, devices)
+	require.NoError(t, parse.RegisterResource(reg, devices))
 
 	f := reg.SchemaFor("devices").Filter.Fields["commands"]
 	require.NotNil(t, f)

@@ -22,7 +22,7 @@
 //	description:"Help text" — UI description
 //	group:"section"         — UI sidebar section grouping
 //	order:"1"               — UI display order within group
-//	facet:"terms"           — facet type: "terms", "terms:20", "range:0-50,50-100,100+"
+//	facet:"terms"           — facet type: "terms", "terms:20", "range:0-50,50-100,100+" (half-open, disjoint)
 //	parse:"filter,include"  — relation field projectable with the include parameter
 //	geo:"jsonb"             — geo field (jsonb | geography | geometry); geo_srid, geo_lat, geo_lon refine it
 //
@@ -46,17 +46,21 @@
 // [PostgresDialect] generates PostgreSQL SQL ($1 placeholders, jsonb
 // documents, native arrays, PostGIS geo). [SQLiteDialect] generates SQLite
 // SQL (?1 placeholders, JSON text documents and arrays matched through
-// json_each). A dialect's Condition builds a predicate's SQL and arguments
-// together. A `$in` / `$nin` set binds as one array parameter whatever its
-// size: PostgreSQL compares a column with `= ANY`, typed by the column, and
-// joins a path's set unnested; SQLite reads the set with json_each. SQLite
-// has no exact decimal type, so it compares and orders decimals through two
-// deterministic functions the database must have, which parse/parsesqlite
-// registers.
+// json_each). These are the only dialects: [Dialect] has unexported
+// methods, so no type outside the module implements it. A dialect's
+// Condition builds a predicate's SQL and arguments together. A `$in` /
+// `$nin` set binds as one array parameter whatever its size: PostgreSQL
+// compares a column with `= ANY`, typed by the column, and joins a path's
+// set unnested; SQLite reads the set with json_each. SQLite has no exact
+// decimal type and no geometry, so it compares and orders decimals and
+// decides geo filters through deterministic functions the database must
+// have: [github.com/ashtonian/pkg/parse/parsesqlite.Register] registers them,
+// and [github.com/ashtonian/pkg/parse/parsesqlite.Functions] lists them for
+// another driver.
 //
-// A [TwoValuedDialect] renders some predicates a second way that an index
-// serves, used where an even number of $not (usually none) enclose them:
-// PostgreSQL compares a jsonb path's `$eq` and small `$in` sets by
+// A dialect's TwoValuedCondition renders some predicates a second way that
+// an index serves, used where an even number of $not (usually none) enclose
+// them: PostgreSQL compares a jsonb path's `$eq` and small `$in` sets by
 // containment, which a GIN index on the document serves. [SQLResult].Where
 // is therefore a selection predicate.
 //

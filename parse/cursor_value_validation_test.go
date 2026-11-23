@@ -128,7 +128,7 @@ func TestGeneratedSortSchemaValidatesCursorRangeAndNullableValues(t *testing.T) 
 func TestSystemFieldCursorTieBreakerValidatesType(t *testing.T) {
 	for _, dt := range []core.FieldType{core.FieldTypeInt, core.FieldTypeUUID} {
 		schema := &filter.ResourceSchema{Name: "rows", PrimaryKey: "id", SystemFields: map[string]*filter.FieldSchema{
-			"id": {SQLExpr: "rows.id", DataType: dt, NumberKind: reflect.Uint8},
+			"id": {Table: "rows", Column: "id", DataType: dt, NumberKind: reflect.Uint8},
 		}}
 		for _, dialect := range []filter.Dialect{filter.SQLiteDialect{}, filter.PostgresDialect{}} {
 			values := []any{true, nil, "not-a-key", int64(256)}
@@ -152,7 +152,7 @@ func TestSystemFieldCursorTieBreakerValidatesType(t *testing.T) {
 			require.NoError(t, err)
 			result, err := lq.Build(filter.ListCursor(encoded))
 			require.NoError(t, err)
-			require.Contains(t, result.OrderBy, "rows.id")
+			require.Contains(t, result.OrderBy, `"rows"."id"`)
 		}
 	}
 }

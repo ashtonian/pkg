@@ -1,6 +1,8 @@
 // Package parsepgx runs parse plans on PostgreSQL through pgx.
 // QueryPage answers a list plan — the page, its total, its facets and its
-// includes — and Update applies an update plan with its relation changes.
+// includes —, Update applies an update plan with its relation changes,
+// UpdateBatch applies a batch plan, and Query reads one statement's rows.
+// Rows scan through the resource's row contract (parse.RowScanner).
 // Both take the caller's context, connection and transaction; the core
 // parse packages stay free of I/O.
 package parsepgx
@@ -9,8 +11,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
@@ -32,9 +36,8 @@ type DB interface {
 // ErrDialect is a plan compiled for a dialect other than PostgreSQL.
 var ErrDialect = errors.New("parsepgx: plan is not compiled for PostgreSQL")
 
-// QueryPage reads the page plan selects, scanned into T by its db tags
-// (pgx.RowToStructByNameLax: fields of columns the resource does not read
-// stay zero), and returns it as r.Page builds it: with its
+// QueryPage reads the page plan selects, scanned into T through r's row
+// contract (parse.RowScanner), and returns it as r.Page builds it: with its
 // total when the plan counts, its facet counts when the plan facets, and the
 // related IDs of the page's rows for each relation the plan includes.
 //
@@ -59,7 +62,7 @@ func QueryPage[T any](ctx context.Context, db Querier, r *parse.Resource[T], pla
 	b := &pgx.Batch{}
 	b.Queue(plan.Page.SQL, plan.Page.Args...).Query(func(rows pgx.Rows) error {
 		var err error
-		items, err = pgx.CollectRows(rows, rowToResource(r))
+		items, err = collect(rows, r)
 		return wrap("page", err)
 	})
 	if plan.Count != nil {
@@ -92,6 +95,23 @@ func QueryPage[T any](ctx context.Context, db Querier, r *parse.Resource[T], pla
 	return page, nil
 }
 
+// Query runs st, a statement over r compiled for PostgreSQL that reads
+// r.Columns (a repository's own read of the table, or a plan's Current or
+// Reread), and returns its rows scanned through r's row contract.
+func Query[T any](ctx context.Context, db Querier, r *parse.Resource[T], st parse.Statement) ([]T, error) {
+	var rows []T
+	b := &pgx.Batch{}
+	b.Queue(st.SQL, st.Args...).Query(func(rs pgx.Rows) error {
+		var err error
+		rows, err = collect(rs, r)
+		return err
+	})
+	if err := db.SendBatch(ctx, b).Close(); err != nil {
+		return nil, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
+	}
+	return rows, nil
+}
+
 // queryIncludes reads the related IDs of the page's rows, one statement per
 // included relation, in one batch.
 func queryIncludes[T any](ctx context.Context, db Querier, r *parse.Resource[T], plan *parse.ListPlan, page *filter.Page[T]) error {
@@ -120,44 +140,44 @@ func queryIncludes[T any](ctx context.Context, db Querier, r *parse.Resource[T],
 	return db.SendBatch(ctx, b).Close()
 }
 
-// Update applies plan and returns the target rows the plan's scope admits,
-// as the update left them; none when no row in the scope is a target.
+// Update applies plan and reports its target rows as the update left them,
+// split into the rows whose columns it wrote and the rows it left
+// (parse.Resource.UpdatedRows), and how many junction rows its membership
+// changes touched; neither split holding a row means the target is not
+// found. A guarded plan (SkipUnchanged: plan.Current set) sends Current
+// before Owner in one batch, which runs in one transaction, so Current's
+// lock holds every target while Owner compares them.
+//
 // A plan that changes relation memberships runs in a transaction — a
 // savepoint when db is one — so its rows and memberships change together:
-// the owner statement first, then the membership changes for the keys of the
-// rows returned, never the requested ones, then, for a resource with
-// computed columns (parse.ReadExpr), those rows again (Resource.Reread), so
-// a column over a relation's pairs reads them as the update left them. A
-// SkipUnchanged plan
-// (plan.Current set) returns the rows its update left unchanged too, after
-// the ones it changed, and changes the memberships of both; a caller that
-// audits or notifies per changed row runs plan.Current and then plan.Owner
-// itself and splits them with parse.Resource.Unchanged. A plan that writes nothing (plan.Writes false:
-// an empty patch) reads its targets; a caller that audits or notifies per
-// updated row checks plan.Writes first.
-func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse.UpdatePlan) ([]T, error) {
+// the owner statement, then the membership changes for the keys of the
+// rows it returned (changed, then unchanged), never the requested keys,
+// then, for a resource with computed columns (parse.ReadExpr), those rows
+// again (Resource.Reread), so a column over a relation's pairs reads them as
+// the update left them.
+func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse.UpdatePlan) (parse.UpdateResult[T], error) {
 	if plan == nil {
-		return nil, fmt.Errorf("parsepgx: %s: nil update plan", r.Table())
+		return parse.UpdateResult[T]{}, fmt.Errorf("parsepgx: %s: nil update plan", r.Table())
 	}
 	if err := postgres(r.Table(), plan.Dialect()); err != nil {
-		return nil, err
+		return parse.UpdateResult[T]{}, err
 	}
+	var res parse.UpdateResult[T]
 	if !plan.HasRelations() {
 		changed, unchanged, err := queryTargets(ctx, db, r, plan)
 		if err != nil {
-			return nil, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
+			return parse.UpdateResult[T]{}, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
 		}
-		return append(changed, unchanged...), nil
+		res.Changed, res.Unchanged = changed, unchanged
+		return res, nil
 	}
-
-	var rows []T
 	err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
 		changed, unchanged, err := queryTargets(ctx, tx, r, plan)
 		if err != nil {
 			return err
 		}
-		rows = append(changed, unchanged...)
-		keys, err := ownerKeys(r, rows)
+		res.Changed, res.Unchanged = changed, unchanged
+		keys, err := ownerKeys(r, slices.Concat(changed, unchanged))
 		if err != nil {
 			return err
 		}
@@ -167,12 +187,13 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 		}
 		b := &pgx.Batch{}
 		for _, s := range stmts {
-			b.Queue(s.SQL, s.Args...)
+			b.Queue(s.SQL, s.Args...).Exec(func(tag pgconn.CommandTag) error {
+				res.RelationRows += tag.RowsAffected()
+				return nil
+			})
 		}
-		// The changed and the unchanged rows are read again apart, so rows
-		// keeps the changed ones first.
-		var reread [2][]T
-		queued := false
+		// The changed and the unchanged rows are read again apart, so each
+		// keeps its side of the split.
 		for i, part := range [2][]any{keys[:len(changed)], keys[len(changed):]} {
 			stmt, err := r.Reread(plan, part)
 			if err != nil {
@@ -181,58 +202,126 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 			if stmt == nil {
 				continue
 			}
-			queued = true
 			b.Queue(stmt.SQL, stmt.Args...).Query(func(rs pgx.Rows) error {
-				var err error
-				reread[i], err = pgx.CollectRows(rs, rowToResource(r))
-				return wrap("reread", err)
+				rows, err := collect(rs, r)
+				if err != nil {
+					return wrap("reread", err)
+				}
+				if i == 0 {
+					res.Changed = rows
+				} else {
+					res.Unchanged = rows
+				}
+				return nil
 			})
 		}
-		if err := wrap("relations", tx.SendBatch(ctx, b).Close()); err != nil {
-			return err
-		}
-		if queued {
-			rows = append(reread[0], reread[1]...)
-		}
-		return nil
+		return wrap("relations", tx.SendBatch(ctx, b).Close())
 	})
 	if err != nil {
-		return nil, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
+		return parse.UpdateResult[T]{}, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
 	}
-	return rows, nil
+	return res, nil
 }
 
 // queryTargets runs plan's owner statement and returns the target rows as
-// it left them: the ones it changed, and the ones a SkipUnchanged plan left
-// unchanged. A plan's Current goes first in the same batch, which runs in
-// one transaction (db's own when db is a pgx.Tx): its lock holds every
-// target while the guarded update compares them, so the rows it read and
-// the update did not return are exactly the unchanged ones.
+// it left them, split by parse.Resource.UpdatedRows. A plan's Current goes
+// first in the same batch, which runs in one transaction (db's own when db
+// is a pgx.Tx): its lock holds every target while the guarded update
+// compares them, so the rows it read and the update did not return are
+// exactly the unchanged ones. A statement-mode pooler, which may send the
+// two statements on different connections, breaks that split.
 func queryTargets[T any](ctx context.Context, db Querier, resource *parse.Resource[T], plan *parse.UpdatePlan) (changed, unchanged []T, err error) {
 	var current, owner []T
 	b := &pgx.Batch{}
 	if plan.Current != nil {
 		b.Queue(plan.Current.SQL, plan.Current.Args...).Query(func(r pgx.Rows) error {
 			var err error
-			current, err = pgx.CollectRows(r, rowToResource(resource))
+			current, err = collect(r, resource)
 			return wrap("current", err)
 		})
 	}
 	b.Queue(plan.Owner.SQL, plan.Owner.Args...).Query(func(r pgx.Rows) error {
 		var err error
-		owner, err = pgx.CollectRows(r, rowToResource(resource))
+		owner, err = collect(r, resource)
 		return wrap("owner", err)
 	})
 	if err := db.SendBatch(ctx, b).Close(); err != nil {
 		return nil, nil, err
 	}
-	if plan.Current == nil {
-		return owner, nil, nil
+	return resource.UpdatedRows(plan, owner, current)
+}
+
+// UpdateBatch applies plan in one transaction — a savepoint when db is one.
+// Every chunk's Current goes first, in one batch, locking its targets in key
+// order; each chunk's rows must be exactly its keys
+// (UpdateBatchChunk.CheckCurrent: parse.ErrUpdateBatchTargets otherwise,
+// and nothing is written). Every Owner then goes in a second batch. The
+// result's Changed are the rows the owners wrote, chunk by chunk; its
+// Unchanged the locked rows a SkipUnchanged owner left as they were.
+func UpdateBatch[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse.UpdateBatchPlan) (parse.UpdateResult[T], error) {
+	if plan == nil {
+		return parse.UpdateResult[T]{}, fmt.Errorf("parsepgx: %s: nil update batch plan", r.Table())
 	}
-	if unchanged, err = resource.Unchanged(owner, current); err != nil {
-		return nil, nil, err
+	if err := postgres(r.Table(), plan.Dialect()); err != nil {
+		return parse.UpdateResult[T]{}, err
 	}
-	return owner, unchanged, nil
+	if len(plan.Chunks) == 0 {
+		return parse.UpdateResult[T]{}, nil
+	}
+	var res parse.UpdateResult[T]
+	err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		current := make([][]T, len(plan.Chunks))
+		b := &pgx.Batch{}
+		for i, chunk := range plan.Chunks {
+			b.Queue(chunk.Current.SQL, chunk.Current.Args...).Query(func(rs pgx.Rows) error {
+				var err error
+				current[i], err = collect(rs, r)
+				return wrap("current", err)
+			})
+		}
+		if err := tx.SendBatch(ctx, b).Close(); err != nil {
+			return err
+		}
+		for i, chunk := range plan.Chunks {
+			keys, err := ownerKeys(r, current[i])
+			if err != nil {
+				return err
+			}
+			if err := chunk.CheckCurrent(keys); err != nil {
+				return err
+			}
+		}
+		owner := make([][]T, len(plan.Chunks))
+		b = &pgx.Batch{}
+		for i, chunk := range plan.Chunks {
+			if chunk.Owner == nil {
+				continue
+			}
+			b.Queue(chunk.Owner.SQL, chunk.Owner.Args...).Query(func(rs pgx.Rows) error {
+				var err error
+				owner[i], err = collect(rs, r)
+				return wrap("owner", err)
+			})
+		}
+		if b.Len() > 0 {
+			if err := tx.SendBatch(ctx, b).Close(); err != nil {
+				return err
+			}
+		}
+		for i := range plan.Chunks {
+			unchanged, err := r.Unchanged(owner[i], current[i])
+			if err != nil {
+				return err
+			}
+			res.Changed = append(res.Changed, owner[i]...)
+			res.Unchanged = append(res.Unchanged, unchanged...)
+		}
+		return nil
+	})
+	if err != nil {
+		return parse.UpdateResult[T]{}, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
+	}
+	return res, nil
 }
 
 func ownerKeys[T any](r *parse.Resource[T], items []T) ([]any, error) {

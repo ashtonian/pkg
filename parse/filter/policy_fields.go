@@ -106,9 +106,10 @@ func policyFieldSchema(g *core.SchemaGenerator, table string, field *core.Field,
 			return nil, err
 		}
 	}
-	// FieldColumn's base, so ColumnExpr names the same column: the external
+	// FieldColumn's base, so MappedExpr names the same column: the external
 	// name, or a hidden field's Go name.
-	if fs.SQLExpr, err = g.ColumnExpr(table, cmp.Or(field.External, field.GoName), fs.DataType, field.Tags.Column); err != nil {
+	fs.Table = table
+	if fs.Expr, err = g.MappedExpr(table, cmp.Or(field.External, field.GoName), fs.DataType, field.Tags.Column); err != nil {
 		return nil, err
 	}
 	if err := applyStorage(g, fs, field); err != nil {

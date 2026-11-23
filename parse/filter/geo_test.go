@@ -118,8 +118,8 @@ func geoTestSchema() *filter.ResourceSchema {
 		Name: "devices",
 		Fields: map[string]*filter.FieldSchema{
 			"location": {
-				ExternalName:     "location",
-				SQLExpr:          "devices.location",
+				ExternalName: "location",
+				Table:        "devices", Column: "location",
 				DataType:         core.FieldTypeGeo,
 				AllowedOperators: []filter.FilterOperator{filter.OpNear, filter.OpWithin},
 				GeoConfig: &filter.GeoFieldConfig{
@@ -270,15 +270,15 @@ func TestGeoSQL_SQLite(t *testing.T) {
 		args               []any
 	}{
 		{"near", `{"location":{"$near":{"lat":40.7128,"lon":-74.006,"distance":"5km"}}}`,
-			"parse_geo_near(json(devices.location), ?1, ?2, ?3, ?4, ?5)", []any{"lat", "lon", 40.7128, -74.006, 5000.0}},
+			`parse_geo_near(json("devices"."location"), ?1, ?2, ?3, ?4, ?5)`, []any{"lat", "lon", 40.7128, -74.006, 5000.0}},
 		{"within a box", `{"location":{"$within":` + box + `}}`,
-			"parse_geo_in_box(json(devices.location), ?1, ?2, ?3, ?4, ?5, ?6)", []any{"lat", "lon", 40.65, 40.80, -74.10, -73.70}},
+			`parse_geo_in_box(json("devices"."location"), ?1, ?2, ?3, ?4, ?5, ?6)`, []any{"lat", "lon", 40.65, 40.80, -74.10, -73.70}},
 		{"intersects a box", `{"location":{"$intersects":` + box + `}}`,
-			"parse_geo_in_box(json(devices.location), ?1, ?2, ?3, ?4, ?5, ?6)", []any{"lat", "lon", 40.65, 40.80, -74.10, -73.70}},
+			`parse_geo_in_box(json("devices"."location"), ?1, ?2, ?3, ?4, ?5, ?6)`, []any{"lat", "lon", 40.65, 40.80, -74.10, -73.70}},
 		{"within a polygon", `{"location":{"$within":` + polygon + `}}`,
-			"parse_geo_covered_by(json(devices.location), ?1, ?2, ?3)", []any{"lat", "lon", ring}},
+			`parse_geo_covered_by(json("devices"."location"), ?1, ?2, ?3)`, []any{"lat", "lon", ring}},
 		{"intersects a polygon", `{"location":{"$intersects":` + polygon + `}}`,
-			"parse_geo_covered_by(json(devices.location), ?1, ?2, ?3)", []any{"lat", "lon", ring}},
+			`parse_geo_covered_by(json("devices"."location"), ?1, ?2, ?3)`, []any{"lat", "lon", ring}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -365,7 +365,7 @@ func TestGeoCostEstimation(t *testing.T) {
 
 	pf := filter.NewParsedFilter(ast)
 	// Unindexed geo field should have high cost (50x base).
-	assert.True(t, pf.EstimatedCost >= 50, "expected geo cost >= 50, got %d", pf.EstimatedCost)
+	assert.True(t, pf.EstimatedCost() >= 50, "expected geo cost >= 50, got %d", pf.EstimatedCost())
 }
 
 func TestGeoCostEstimation_Indexed(t *testing.T) {
@@ -377,8 +377,8 @@ func TestGeoCostEstimation_Indexed(t *testing.T) {
 
 	pf := filter.NewParsedFilter(ast)
 	// Indexed geo field should have moderate cost (5x base).
-	assert.True(t, pf.EstimatedCost >= 5 && pf.EstimatedCost < 50,
-		"expected indexed geo cost in [5, 50), got %d", pf.EstimatedCost)
+	assert.True(t, pf.EstimatedCost() >= 5 && pf.EstimatedCost() < 50,
+		"expected indexed geo cost in [5, 50), got %d", pf.EstimatedCost())
 }
 
 // --- SQL output format verification ---

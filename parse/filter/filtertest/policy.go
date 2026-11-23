@@ -20,8 +20,10 @@ type PolicyCase struct {
 	// is SQLOnly.
 	Search string
 	Want   []string
-	// Err is the code the policy is refused with; Want is unused.
-	Err core.Code
+	// Err is the error the policy is refused with, matched by errors.Is; Want
+	// is unused. A refused policy is the server's fault, never a
+	// *core.ParseError.
+	Err error
 	// SQLOnly marks a case a memory backend cannot evaluate: raw SQL or a
 	// search. Memory backends skip it.
 	SQLOnly bool
@@ -42,7 +44,7 @@ type PolicyBackend func(t *testing.T, q PolicyQuery) ([]string, error)
 
 // SearchSchema is the free-text search a policy case's Search runs: name.
 func SearchSchema() *filter.SearchSchema {
-	return &filter.SearchSchema{Fields: []filter.SearchField{{Name: "name", SQLExpr: "records.name", Column: "name"}}, Param: filter.ParamSearch}
+	return &filter.SearchSchema{Fields: []filter.SearchField{{Name: "name", Table: "records", Column: "name"}}, Param: filter.ParamSearch}
 }
 
 func constraint(field string, op filter.FilterOperator, value any) *filter.PolicyConstraints {
@@ -91,9 +93,9 @@ func PolicyCases() []PolicyCase {
 		{Name: "one lookup shared by two fields beside a request filter", Filter: `{"active":false}`, Policy: sharedBy(false), Want: ids("b")},
 
 		{Name: "negated group", Policy: &filter.PolicyConstraints{Not: true, Or: []*filter.PolicyConstraints{beta, constraint("count", filter.OpGt, int64(2))}}, Want: ids("afg")},
-		{Name: "negated empty group", Policy: &filter.PolicyConstraints{Not: true}, Err: core.CodeInvalidOperator},
-		{Name: "negated empty group under AND", Policy: &filter.PolicyConstraints{And: []*filter.PolicyConstraints{beta, {Not: true}}}, Err: core.CodeInvalidOperator},
-		{Name: "negated group of empty groups", Policy: &filter.PolicyConstraints{Not: true, Or: []*filter.PolicyConstraints{{}}}, Err: core.CodeInvalidOperator},
+		{Name: "negated empty group", Policy: &filter.PolicyConstraints{Not: true}, Err: filter.ErrPolicyInvalid},
+		{Name: "negated empty group under AND", Policy: &filter.PolicyConstraints{And: []*filter.PolicyConstraints{beta, {Not: true}}}, Err: filter.ErrPolicyInvalid},
+		{Name: "negated group of empty groups", Policy: &filter.PolicyConstraints{Not: true, Or: []*filter.PolicyConstraints{{}}}, Err: filter.ErrPolicyInvalid},
 		{Name: "empty group admits every row", Policy: &filter.PolicyConstraints{And: []*filter.PolicyConstraints{{}}}, Want: ids("abcdefgh")},
 
 		{Name: "unknown admits no row", Policy: &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{filter.UnknownConstraint()}}, Want: ids("")},
@@ -107,7 +109,7 @@ func PolicyCases() []PolicyCase {
 		{Name: "an invalid value compiled to unknown", Policy: &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{
 			{Field: "count", Operator: filter.OpEq, Value: "many", UnknownIfInvalid: true},
 		}}, Want: ids("")},
-		{Name: "an invalid value refused", Policy: constraint("count", filter.OpEq, "many"), Err: core.CodeValueTypeMismatch},
+		{Name: "an invalid value refused", Policy: constraint("count", filter.OpEq, "many"), Err: filter.ErrPolicyInvalid},
 
 		{Name: "$null without a value", Policy: constraint("name", filter.OpNull, nil), Want: ids("d")},
 		{Name: "$null true", Policy: constraint("name", filter.OpNull, true), Want: ids("d")},
@@ -117,8 +119,8 @@ func PolicyCases() []PolicyCase {
 		{Name: "$not_null false", Policy: constraint("name", filter.OpNotNull, false), Want: ids("d")},
 		{Name: "$exists true", Policy: constraint("name", filter.OpExists, true), Want: ids("abcefgh")},
 		{Name: "$exists false", Policy: constraint("name", filter.OpExists, false), Want: ids("d")},
-		{Name: "$null with a value that is no boolean", Policy: constraint("name", filter.OpNull, "yes"), Err: core.CodeValueTypeMismatch},
-		{Name: "$exists without a value", Policy: constraint("name", filter.OpExists, nil), Err: core.CodeValueTypeMismatch},
+		{Name: "$null with a value that is no boolean", Policy: constraint("name", filter.OpNull, "yes"), Err: filter.ErrPolicyInvalid},
+		{Name: "$exists without a value", Policy: constraint("name", filter.OpExists, nil), Err: filter.ErrPolicyInvalid},
 	}
 }
 
@@ -141,10 +143,12 @@ func RunPolicy(t *testing.T, sql bool, backend PolicyBackend) {
 				q.Filter = ast
 			}
 			got, err := backend(t, q)
-			if c.Err != "" {
-				var pe *core.ParseError
-				if !errors.As(err, &pe) || pe.Code != c.Err.String() {
-					t.Fatalf("err = %v (ids %v), want %s", err, got, c.Err)
+			if c.Err != nil {
+				if !errors.Is(err, c.Err) {
+					t.Fatalf("err = %v (ids %v), want %v", err, got, c.Err)
+				}
+				if _, ok := errors.AsType[*core.ParseError](err); ok {
+					t.Fatalf("err = %v is a ParseError; a policy is the server's, not the request's", err)
 				}
 				return
 			}

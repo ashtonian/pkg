@@ -30,7 +30,7 @@ func runQuotedMatrix(t *testing.T, db *sql.DB, dialect filter.Dialect, intType s
 		require.NoError(t, err, r.ID)
 	}
 	filtertest.RunQuoted(t, func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
-		res, err := filter.NewSQLBuilder(schema, dialect).Build(f.AST)
+		res, err := filter.NewSQLBuilder(schema, dialect).Build(f.AST())
 		if err != nil {
 			return nil, err
 		}

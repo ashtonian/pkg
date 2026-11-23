@@ -9,136 +9,13 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
-// elementTable is a dialect's table of an array's elements: one row per
-// element, which `$some` / `$none`, an array path's NULL tests and
-// `$contains`, and list facets read.
-type elementTable interface {
-	// elementRows is a FROM item yielding a row aliased alias per element
-	// of the array f holds — a JSON array document, an array path member or
-	// an array column — and none when f holds no array.
-	elementRows(f *FieldSchema, alias string) string
-	// objectElement is row alias's element as the document its element
-	// paths read, NULL for an element that is not an object.
-	objectElement(alias string) string
-	// scalarElement is row alias's element as a field of f's element type
-	// (f.Element), NULL for an element of another kind.
-	scalarElement(f *FieldSchema, alias string) *FieldSchema
-}
-
-// elementRows reads a JSON array as jsonb_array_elements, an array path's
-// member when it is one, and an array column with unnest.
-func (PostgresDialect) elementRows(f *FieldSchema, alias string) string {
-	var array string
-	switch {
-	case f.Path != nil:
-		array = pgPathDocument(f.Path) + " #> " + pgPathLiteral(f.Path.Segments)
-	case f.DataType == core.FieldTypeArray:
-		return "unnest(" + f.SQLExpr + ") AS " + alias + "(v)"
-	default:
-		array = pgDocument(f)
-	}
-	return "jsonb_array_elements(CASE WHEN jsonb_typeof(" + array + ") = 'array' THEN " + array + " END) AS " + alias + "(v)"
-}
-
-func (PostgresDialect) objectElement(alias string) string { return alias + ".v" }
-
-// scalarElement reads a native array column's element as it is, and a JSON
-// array's as an element path (PathExpr).
-func (PostgresDialect) scalarElement(f *FieldSchema, alias string) *FieldSchema {
-	e := bound(elementOf(f))
-	if f.Path == nil {
-		e.SQLExpr = alias + ".v"
-		return &e
-	}
-	e.SQLExpr = ""
-	e.Path = &JSONPath{Column: alias, Storage: StorageJSONB, element: true}
-	return &e
-}
-
-// elementRows reads a JSON array, an array path's member or an array
-// column's JSON text, with json_each when it is an array: json_each would
-// read an object's members, or a scalar as one row.
-func (SQLiteDialect) elementRows(f *FieldSchema, alias string) string {
-	if p := f.Path; p != nil {
-		path := sqlitePathLiteral(p.Segments)
-		return "json_each(CASE WHEN json_type(" + p.Column + ", " + path + ") = 'array' THEN " + p.Column + " END, " + path + ") AS " + alias
-	}
-	return "json_each(CASE WHEN json_type(" + f.SQLExpr + ") = 'array' THEN " + f.SQLExpr + " END) AS " + alias
-}
-
-// objectElement is an object element's JSON text; json_extract would refuse
-// a scalar's text.
-func (SQLiteDialect) objectElement(alias string) string {
-	return "(CASE WHEN " + alias + ".type = 'object' THEN " + alias + ".value END)"
-}
-
-// scalarElement reads every element as an element path (PathExpr): an
-// array column is JSON text too.
-func (SQLiteDialect) scalarElement(f *FieldSchema, alias string) *FieldSchema {
-	e := bound(elementOf(f))
-	e.SQLExpr = ""
-	e.Path = &JSONPath{Column: alias, Storage: StorageJSONB, element: true}
-	return &e
-}
-
-// elementContainment is a dialect that answers `$some` of an element equal
-// to a value, or to one of a set, by containment, which an index on the
-// document serves.
-type elementContainment interface {
-	containsElement(f *FieldSchema, cond *FilterNode, bind func(any) string) (sql string, ok bool, err error)
-}
-
-// containsElement renders `$some` of a string, boolean or number element of
-// a jsonb array path equal to a value (`$eq`) as `doc @> fragment`, and to
-// one of at most ContainmentMaxValues values (`$in`) as `doc @> ANY(...)`,
-// each fragment the path's objects down to a one-element array. Containment
-// holds exactly when the member is an array with an equal element; the
-// document's NULL test keeps a NULL document False rather than Unknown, so
-// `$some` stays two-valued under any negation. Decimals keep the element
-// table (a decimal element may be held as a string), as does a path through
-// a segment `#>` would read as an array index.
-func (d PostgresDialect) containsElement(f *FieldSchema, cond *FilterNode, bind func(any) string) (string, bool, error) {
-	p := f.Path
-	if p == nil || p.Storage != StorageJSONB || !containable(f.Elem) || slices.ContainsFunc(p.Segments, isArrayIndex) ||
-		cond == nil || cond.Field == nil || !isElement(cond.Field) {
-		return "", false, nil
-	}
-	fragment := func(v any) (string, error) { return containmentFragment(p.Segments, []any{v}) }
-	switch cond.Op {
-	case OpEq:
-		if cond.Value == nil {
-			return "", false, nil // `= NULL` holds for no element; [null] would contain it
-		}
-		frag, err := fragment(cond.Value)
-		if err != nil {
-			return "", false, fmt.Errorf("field %s: %w", f.ExternalName, err)
-		}
-		return "(" + p.Column + " IS NOT NULL AND " + p.Column + " @> " + bind(frag) + "::jsonb)", true, nil
-	case OpIn:
-		members, ok := core.AnySlice(cond.Value)
-		if !ok || len(members) == 0 || len(members) > d.containmentMaxValues() || slices.Contains(members, nil) {
-			return "", false, nil
-		}
-		frags, err := typedSlice(members, fragment)
-		if err != nil {
-			return "", false, fmt.Errorf("field %s: %w", f.ExternalName, err)
-		}
-		return "(" + p.Column + " IS NOT NULL AND " + p.Column + " @> ANY(" + bind(frags) + "::jsonb[]))", true, nil
-	}
-	return "", false, nil
-}
-
 // buildElements compiles `$some` / `$none` to one EXISTS / NOT EXISTS over
-// the array's elements (elementTable), the node's child holding for one
+// the array's elements (Dialect.elementRows), the node's child holding for one
 // element: a filter on a JSON array document's element paths, or a
 // condition on a scalar array's element. A scalar array's elements are its
 // values of its element type, so an element of another kind is no element.
 func (b *SQLBuilder) buildElements(s *buildState, node *FilterNode) (string, error) {
 	f := node.Field
-	table, ok := b.dialect.(elementTable)
-	if !ok {
-		return "", fmt.Errorf("field %s: dialect %s reads no array elements for $%s", f.ExternalName, b.dialect.Name(), node.Op)
-	}
 	negate := ""
 	if node.Op == OpNone {
 		negate = "NOT "
@@ -147,8 +24,8 @@ func (b *SQLBuilder) buildElements(s *buildState, node *FilterNode) (string, err
 	if len(node.Children) > 0 {
 		child = node.Children[0]
 	}
-	if c, ok := b.dialect.(elementContainment); ok && isScalarArray(f) {
-		sql, ok, err := c.containsElement(f, child, s.binder(b.dialect))
+	if isScalarArray(f) {
+		sql, ok, err := b.dialect.containsElement(f, child, s.binder(b.dialect))
 		if err != nil || ok {
 			return negate + sql, err
 		}
@@ -156,14 +33,14 @@ func (b *SQLBuilder) buildElements(s *buildState, node *FilterNode) (string, err
 	alias := elementAlias(b.depth + 1)
 	var conds []string
 	if isScalarArray(f) {
-		elem := table.scalarElement(f, alias)
+		elem := b.dialect.scalarElement(f, alias)
 		conds = append(conds, FieldExpr(b.dialect, elem)+" IS NOT NULL")
 		if child != nil {
 			child = bindElement(child, elem)
 		}
 	} else if child != nil {
 		var err error
-		if child, err = rebaseElements(child, table.objectElement(alias), map[*FieldSchema]*FieldSchema{}); err != nil {
+		if child, err = rebaseElements(child, b.dialect.objectElement(alias), map[*FieldSchema]*FieldSchema{}); err != nil {
 			return "", err
 		}
 	}
@@ -175,7 +52,7 @@ func (b *SQLBuilder) buildElements(s *buildState, node *FilterNode) (string, err
 		}
 		conds = append(conds, cond)
 	}
-	sql := negate + "EXISTS (SELECT 1 FROM " + table.elementRows(f, alias)
+	sql := negate + "EXISTS (SELECT 1 FROM " + b.dialect.elementRows(f, alias)
 	if len(conds) > 0 {
 		sql += " WHERE " + strings.Join(conds, " AND ")
 	}
@@ -210,13 +87,6 @@ func (b *SQLBuilder) buildArrayPath(s *buildState, node *FilterNode) (string, er
 	return "", unsupportedOperator(f, node.Op)
 }
 
-// setRelation is a dialect that binds a set's members as one parameter and
-// reads them back as rows of one column, v, of the type FieldExpr reads
-// field as.
-type setRelation interface {
-	setRows(field *FieldSchema, members []any, bind func(any) string) (string, error)
-}
-
 // containsAll renders "each of values equals an element of f's array", the
 // elements read as f's element type from rows aliased alias. The values are
 // one parameter, and the SQL's size is independent of their number: the
@@ -233,22 +103,14 @@ func containsAll(d Dialect, f *FieldSchema, values []any, alias string, bind fun
 	if slices.Contains(values, nil) {
 		return "1=0", nil // no element equals NULL
 	}
-	table, ok := d.(elementTable)
-	if !ok {
-		return "", fmt.Errorf("field %s: dialect %s reads no array elements for $contains", f.ExternalName, d.Name())
-	}
-	rel, ok := d.(setRelation)
-	if !ok {
-		return "", fmt.Errorf("field %s: dialect %s binds no set for $contains", f.ExternalName, d.Name())
-	}
-	elem := table.scalarElement(f, alias)
-	set, err := rel.setRows(elem, values, bind)
+	elem := d.scalarElement(f, alias)
+	set, err := d.setRows(elem, values, bind)
 	if err != nil {
 		return "", err
 	}
 	// set holds one placeholder, so its two uses read one parameter.
 	e := FieldExpr(d, elem)
-	return "((SELECT count(DISTINCT " + e + ") FROM " + table.elementRows(f, alias) + " WHERE " + e + " IN (" + set + "))" +
+	return "((SELECT count(DISTINCT " + e + ") FROM " + d.elementRows(f, alias) + " WHERE " + e + " IN (" + set + "))" +
 		" = (SELECT count(DISTINCT v) FROM (" + set + ") AS " + alias + "set))", nil
 }
 
@@ -285,7 +147,7 @@ func rebaseElements(n *FilterNode, value string, moved map[*FieldSchema]*FieldSc
 		if !ok {
 			c := bound(f)
 			p := *f.Path
-			p.Column, p.Storage = value, StorageJSONB
+			p.Table, p.Column, p.Expr, p.Storage = "", "", value, StorageJSONB
 			c.Path = &p
 			m = &c
 			moved[f] = m

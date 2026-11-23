@@ -51,23 +51,25 @@ type RelationLookup interface {
 // need a lookup and, for tenant-scoped relations, a RelationScope.Tenant (ResolveRelationScope); without one
 // they are refused rather than answered empty.
 func ResolveMemberships(ctx context.Context, f *ParsedFilter, lookup MembershipLookup, opts ...ResolveOption) (*ParsedFilter, error) {
-	if f == nil || f.AST == nil || !hasMember(f.AST.Root) && !hasRelation(f.AST.Root) {
+	if f == nil || f.ast == nil || !hasMember(f.ast.Root) && !hasRelation(f.ast.Root) {
 		return f, nil
 	}
 	cfg := resolveConfig{}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	cfg.related = cfg.related.at(time.Now().UTC())
 	if cfg.scope.row.column != "" {
 		return nil, errors.New("filter: ResolveMemberships reads one tenant's rows; resolve each tenant's with RelationScope.Tenant instead of RowTenant")
 	}
 	r := newMemberResolver(lookup, cfg)
-	root, err := r.resolve(ctx, f.AST.Root)
+	root, err := r.resolve(ctx, f.ast.Root)
 	if err != nil {
 		return nil, err
 	}
+	// The resolved filter keeps the schema the input was parsed for.
 	out := *f
-	out.AST = &FilterAST{Root: root}
+	out.ast = &FilterAST{Root: root}
 	return &out, nil
 }
 

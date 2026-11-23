@@ -1,12 +1,12 @@
 package filter
 
 import (
+	"iter"
 	"reflect"
-	"regexp"
 	"slices"
-	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // FilterOperator represents a comparison or logical operator.
@@ -78,6 +78,14 @@ type ResourceSchema struct {
 	// PolicyField refuses both. A request never reaches these fields, and
 	// schema documents leave them out.
 	PolicyFields map[string]*FieldSchema
+	// Computed are the columns the resource reads through an expression
+	// (parse.ReadExpr), in declaration order. A statement built for a
+	// dialect reads such a column's fields, sort keys and search fields
+	// through the expression resolved for that dialect (ComputedSQL), and a
+	// relation's target the same way; the schema itself, and FieldExpr,
+	// name the column. A dialect an expression refuses fails every
+	// statement that compiles the schema.
+	Computed []ComputedColumn
 
 	// policyRefused are the names a generated schema refuses to policies,
 	// with the error each returns (PolicyField).
@@ -99,15 +107,45 @@ func (s *ResourceSchema) RequestField(name string) (*FieldSchema, bool) {
 	return nil, false
 }
 
+// RequestFields yields every field a request filter may name, under the
+// name it is named by: exactly the names RequestField resolves. A schema
+// document lists these.
+func (s *ResourceSchema) RequestFields() iter.Seq2[string, *FieldSchema] {
+	return func(yield func(string, *FieldSchema) bool) {
+		for name, f := range s.Fields {
+			if !yield(name, f) {
+				return
+			}
+		}
+		if _, shadowed := s.Fields[s.PrimaryKey]; shadowed || s.PrimaryKey == "" {
+			return
+		}
+		if key, ok := s.SystemFields[s.PrimaryKey]; ok {
+			yield(s.PrimaryKey, key)
+		}
+	}
+}
+
 // FieldSchema defines a single filterable field.
+//
+// A field reads Column of Table, which the dialect quotes, unless Expr is
+// set. Schema generation sets all three; a schema built by hand sets Table
+// too, since SQLite reads a lone quoted name that names no column as a
+// string literal, which a misspelt column would then compare as.
 type FieldSchema struct {
 	ExternalName string
-	SQLExpr      string
+	// Table is the table, or the statement's alias of it, whose Column the
+	// field reads.
+	Table string
 	// Column is the row column the field reads: its own column, or a path's
 	// document column. Schema generation sets it from the field's column
-	// name, so it names the column even when a column mapper makes SQLExpr
-	// a computed expression. RowColumn falls back to SQLExpr without it.
-	Column   string
+	// name, so it names the column even when a column mapper makes Expr a
+	// computed expression.
+	Column string
+	// Expr is the field's SQL when it is not Column of Table: a column
+	// mapper's expression (core.SQLColumnMapper) or a computed column's,
+	// emitted as written.
+	Expr     string
 	DataType core.FieldType
 	// NumberKind is the Go numeric kind the field decodes into
 	// (reflect.Int8 … reflect.Float64). Integer and float values are
@@ -124,9 +162,11 @@ type FieldSchema struct {
 	Elem             core.FieldType
 	AllowedOperators []FilterOperator
 	Indexed          bool
-	EnumValues       []string
-	Validate         func(value any) error
-	Relation         *core.RelationSchema
+	// EnumValues are the values a string field, or each element of an
+	// array of strings, may take; generation refuses them on other types.
+	EnumValues []string
+	Validate   func(value any) error
+	Relation   *core.RelationSchema
 	// Related is the relation target's filter schema: requests filter the
 	// related rows with it (`$some`, `$none`, `$is`, `$is_not`). Nil for a
 	// relation compared by key alone.
@@ -136,8 +176,8 @@ type FieldSchema struct {
 	// predicates as memberships (ResolveMemberships).
 	RelatedBy *FieldSchema
 	// Path makes the field a typed member of a document column; its value
-	// expression is Dialect.PathExpr (render with FieldExpr) and SQLExpr is
-	// empty.
+	// expression is Dialect.PathExpr (render with FieldExpr), and Table,
+	// Column and Expr are the document's.
 	Path *JSONPath
 	// Storage is how a document column holds its JSON (storage tag);
 	// empty means jsonb.
@@ -183,9 +223,27 @@ func (f *FieldSchema) AllowsOperator(op FilterOperator) bool {
 	return slices.Contains(f.AllowedOperators, op)
 }
 
-func isNullTest(op FilterOperator) bool {
-	return op == OpNull || op == OpNotNull || op == OpExists
+// EffectiveOperators are the operators the field takes (AllowsOperator):
+// AllowedOperators as declared, then the NULL tests a declared one implies.
+// A schema document lists these, so a client reads the capability rather
+// than re-deriving it.
+func (f *FieldSchema) EffectiveOperators() []FilterOperator {
+	ops := slices.Clone(f.AllowedOperators)
+	if !slices.ContainsFunc(ops, isNullTest) {
+		return ops
+	}
+	for _, op := range nullTests {
+		if !slices.Contains(ops, op) {
+			ops = append(ops, op)
+		}
+	}
+	return ops
 }
+
+// nullTests are the NULL tests, in the order the vocabulary is documented.
+var nullTests = []FilterOperator{OpNull, OpNotNull, OpExists}
+
+func isNullTest(op FilterOperator) bool { return slices.Contains(nullTests, op) }
 
 // --- Filter AST ---
 
@@ -214,7 +272,7 @@ type FilterAST struct {
 // SQLResult contains the generated SQL WHERE clause and bound arguments.
 // Where is a selection predicate: it selects exactly the rows the filter
 // holds True, for a WHERE, ON or FILTER clause. On a row the filter holds
-// Unknown it may be False (TwoValuedDialect), so it is not a value to
+// Unknown it may be False (Dialect.TwoValuedCondition), so it is not a value to
 // negate or project.
 type SQLResult struct {
 	Where      string
@@ -222,11 +280,49 @@ type SQLResult struct {
 	ParamCount int // Number of parameters consumed (highest param index minus start offset).
 }
 
-// ParsedFilter wraps a FilterAST with metadata.
+// ParsedFilter is a validated filter: its AST, with the AST's estimated cost
+// and condition count. Its fields are read through methods, so a filter a
+// resource parsed cannot be given other conditions afterwards.
 type ParsedFilter struct {
-	AST            *FilterAST
-	EstimatedCost  int
-	ConditionCount int
+	ast        *FilterAST
+	cost       int
+	conditions int
+	// schema is the schema the filter was parsed against (ParsedFor); nil
+	// for one NewParsedFilter wraps.
+	schema *ResourceSchema
+}
+
+// AST returns the filter's syntax tree; nil filters nothing. The tree is
+// the filter's own: read it, never change it.
+func (f *ParsedFilter) AST() *FilterAST {
+	if f == nil || f.ast == nil {
+		return nil
+	}
+	// A copy, so assigning Root changes nothing the filter holds.
+	ast := *f.ast
+	return &ast
+}
+
+// EstimatedCost is the filter's cost under the default cost factors.
+func (f *ParsedFilter) EstimatedCost() int {
+	if f == nil {
+		return 0
+	}
+	return f.cost
+}
+
+// ConditionCount is the number of leaf conditions in the filter.
+func (f *ParsedFilter) ConditionCount() int {
+	if f == nil {
+		return 0
+	}
+	return f.conditions
+}
+
+// ParsedFor reports whether the filter was parsed against schema
+// (NewParsedFilterFor): a resource compiles only the filters it parsed.
+func (f *ParsedFilter) ParsedFor(schema *ResourceSchema) bool {
+	return f != nil && schema != nil && f.schema == schema
 }
 
 // --- Sort Schema ---
@@ -247,16 +343,19 @@ type SortSchema struct {
 	MaxFields    int
 }
 
-// SortFieldSchema defines a single sortable field.
+// SortFieldSchema defines a single sortable field. ORDER BY and keyset
+// predicates read Column of Table, quoted by the dialect, unless Expr is set,
+// as a FieldSchema does.
 type SortFieldSchema struct {
-	// SQLExpr is the expression emitted into ORDER BY and keyset
-	// predicates, usually table-qualified (`items.rank`).
-	SQLExpr string
+	// Table is the table, or the statement's alias of it, whose Column the
+	// key reads.
+	Table string
 	// Column is the row column the key's value is read from when a cursor
-	// is minted — the bare column name, never the qualified expression
-	//. Empty falls back to SQLExpr's last identifier
-	// segment (see RowColumn).
+	// is minted.
 	Column string
+	// Expr is the key's SQL when it is not Column of Table (a column
+	// mapper's or a computed column's), emitted as written.
+	Expr string
 	// DataType lets keyset values bind and compare by type (timestamps
 	// chronologically, numbers exactly).
 	DataType core.FieldType
@@ -273,47 +372,51 @@ type SortFieldSchema struct {
 	Path *JSONPath
 }
 
-// RowColumn returns the row column for the key: Column, or the last
-// segment of a plain (optionally table-qualified) identifier SQLExpr, or ""
-// when the expression is computed and has no row column.
+// RowColumn returns the row column the key's value is read from: Column,
+// or a path's document column; "" for a computed key, which has none.
 func (s *SortFieldSchema) RowColumn() string {
-	if s.Column != "" {
-		return s.Column
+	if s.Column == "" && s.Path != nil {
+		return s.Path.Column
 	}
-	return identifierColumn(s.SQLExpr)
+	return s.Column
 }
 
 // RowColumn returns the row column the field's values come from: Column, or
-// the last segment of a plain (optionally table-qualified) identifier — a
-// path's document column, else SQLExpr. It is "" for a relation, whose values
-// are another table's, and for a computed expression.
+// a path's document column. It is "" for a relation, whose values are
+// another table's, and for a computed expression.
 func (f *FieldSchema) RowColumn() string {
 	switch {
 	case f.Relation != nil:
 		return ""
-	case f.Column != "":
-		return f.Column
-	case f.Path != nil:
-		return identifierColumn(f.Path.Column)
-	default:
-		return identifierColumn(f.SQLExpr)
+	case f.Column == "" && f.Path != nil:
+		return f.Path.Column
 	}
+	return f.Column
 }
 
-// identifierColumn is the column a plain, optionally table-qualified,
-// identifier names; "" for any other expression.
-func identifierColumn(expr string) string {
-	if !identifierRe.MatchString(expr) {
-		return ""
+// columnSQL is the SQL that reads column of table, each quoted by d, or
+// expr when it is set: a column mapper's or a computed column's SQL, as
+// written. A table qualifies every column, so on SQLite a misspelt one is
+// an error rather than a string.
+func columnSQL(d dialect.Dialect, table, column, expr string) string {
+	switch {
+	case expr != "":
+		return expr
+	case table == "":
+		return d.QuoteIdent(column)
 	}
-	if i := strings.LastIndexByte(expr, '.'); i >= 0 {
-		return expr[i+1:]
-	}
-	return expr
+	return qualified(d, table, column)
 }
 
-// identifierRe admits plain, optionally table-qualified, SQL identifiers.
-var identifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$`)
+// qualified is column of qualifier, a table or a statement's alias of one,
+// each quoted.
+func qualified(d dialect.Dialect, qualifier, column string) string {
+	return d.QuoteIdent(qualifier) + "." + d.QuoteIdent(column)
+}
+
+// sql is the SQL that reads the field's column (columnSQL): the document's,
+// for a path.
+func (f *FieldSchema) sql(d dialect.Dialect) string { return columnSQL(d, f.Table, f.Column, f.Expr) }
 
 // SortResult holds parsed sort fields.
 type SortResult struct {

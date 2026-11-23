@@ -68,7 +68,7 @@ func runPathMatrix(t *testing.T, p pathDB, storage filter.JSONStorage) {
 		schema = withStorage(t, schema, storage)
 	}
 	query := func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
-		res, err := filter.NewSQLBuilder(schema, p.dialect).Build(f.AST)
+		res, err := filter.NewSQLBuilder(schema, p.dialect).Build(f.AST())
 		if err != nil {
 			return nil, err
 		}
@@ -84,8 +84,8 @@ func runPathMatrix(t *testing.T, p pathDB, storage filter.JSONStorage) {
 				}
 			}
 		})
-		if len(names) != 11 {
-			t.Fatalf("declared paths = %v, want the fixture's 11", names)
+		if len(names) != 14 {
+			t.Fatalf("declared paths = %v, want the fixture's 14", names)
 		}
 		for _, name := range names {
 			f := schema.Fields[name]

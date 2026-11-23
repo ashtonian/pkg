@@ -3,6 +3,7 @@
 package parse_test
 
 import (
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -23,13 +24,13 @@ func TestReadExpr_Columns(t *testing.T) {
 			columns, err := computedAccounts.Columns(tt.dialect)
 			require.NoError(t, err)
 			assert.Equal(t, []string{
-				"accounts.id",
-				"accounts.tenant_id",
-				"accounts.name",
-				"(" + tt.email + ") AS email",
-				"(" + memberCountExpr + ") AS member_count",
-				"(" + tt.groupIDs + ") AS group_ids",
-				"(" + tt.contact + ") AS contact",
+				`"accounts"."id"`,
+				`"accounts"."tenant_id"`,
+				`"accounts"."name"`,
+				"(" + tt.email + `) AS "email"`,
+				"(" + memberCountExpr + `) AS "member_count"`,
+				"(" + tt.groupIDs + `) AS "group_ids"`,
+				"(" + tt.contact + `) AS "contact"`,
 			}, columns)
 		})
 	}
@@ -44,7 +45,7 @@ func TestReadExpr_Columns(t *testing.T) {
 	cols, err := windows.Columns(filter.PostgresDialect{})
 	require.NoError(t, err)
 	assert.Contains(t, cols[1], "(windows.ends - windows.starts)", "a declared read cast applies to the expression")
-	assert.Contains(t, cols[1], " AS idle")
+	assert.Contains(t, cols[1], ` AS "idle"`)
 }
 
 // One resource compiles each dialect's statements against that dialect's
@@ -84,8 +85,22 @@ func TestReadExpr_SchemasCompileAgainstEachDialectsExpression(t *testing.T) {
 		})
 	}
 
-	assert.Equal(t, "accounts.member_count", computedAccounts.FilterSchema().Fields["member_count"].SQLExpr, "the shared schema stays dialect-neutral")
-	assert.Equal(t, "accounts.email", computedAccounts.SortSchema().Fields["email"].SQLExpr)
+	assert.Equal(t, `"accounts"."member_count"`, filter.FieldExpr(filter.PostgresDialect{}, computedAccounts.FilterSchema().Fields["member_count"]), "the shared schema stays dialect-neutral")
+	assert.Empty(t, computedAccounts.SortSchema().Fields["email"].Expr, "the shared schema stays dialect-neutral")
+}
+
+// The resource's ListQuery compiles its computed columns as BuildList does.
+func TestReadExpr_ListQueryCompilesTheDialectsExpression(t *testing.T) {
+	for _, tt := range computedDialects {
+		t.Run(tt.dialect.Name(), func(t *testing.T) {
+			lq, err := computedAccounts.ListQuery(tt.dialect)
+			require.NoError(t, err)
+			res, err := lq.Build(filter.ListFilter(`{"member_count":{"$gte":1}}`), filter.ListSort("-member_count"))
+			require.NoError(t, err)
+			assert.Contains(t, res.Where, "("+memberCountExpr+") >= ")
+			assert.Contains(t, res.OrderBy, "("+memberCountExpr+") DESC")
+		})
+	}
 }
 
 // A column mapper writes each field's SQL, so a computed column's fields are
@@ -116,13 +131,12 @@ func TestReadExpr_UnderAColumnMapper(t *testing.T) {
 	assert.Contains(t, plan.Count.SQL, label, "search")
 	assert.Contains(t, plan.Facets.SQL, label)
 	for _, sql := range []string{plan.Page.SQL, plan.Count.SQL, plan.Facets.SQL} {
-		assert.NotContains(t, sql, "(tallies.label)")
+		assert.NotContains(t, sql, `"tallies"."label"`)
 	}
 }
 
-// Views are keyed by the expressions, not the dialect: two PostgreSQL
-// dialects with one expression share a view, and each build still compiles
-// under its own dialect's settings.
+// Each build compiles under its own dialect's settings: two PostgreSQL
+// dialects that resolve one expression order it by their own collation.
 func TestReadExpr_DialectSettingsApplyPerBuild(t *testing.T) {
 	req, err := computedAccounts.ParseList(url.Values{filter.ParamSort: {"email"}})
 	require.NoError(t, err)
@@ -215,6 +229,8 @@ func TestReadExpr_RefusedDialect(t *testing.T) {
 			}
 			assert.ErrorIs(t, err, filter.ErrUnsupportedDialect)
 			assert.ErrorContains(t, err, `parse: accounts: computed column "group_ids" for dialect sqlite`)
+			_, isParseError := errors.AsType[*core.ParseError](err)
+			assert.False(t, isParseError, "a dialect refusal is no filter error")
 			_, err = tenants.BuildList(filter.PostgresDialect{}, req, tt.scope)
 			assert.NoError(t, err)
 		})
@@ -246,6 +262,10 @@ func TestReadExpr_Refusals(t *testing.T) {
 		{"the tenant", parse.ReadExpr("tenant_id", parse.SQL("'t1'")), `computed column "tenant_id": is the key, tenant or deleted column`},
 		{"not read", parse.ReadColumns("id", "tenant_id", "name", "email", "group_ids"), `computed column "member_count": is not read`},
 		{"patched", parse.ReadExpr("name", parse.SQL("upper(accounts.name)")), `computed column "name": is patched at /name`},
+		{"customized", parse.CustomizeSchemas(func(s parse.Schemas) error {
+			s.Filter.Computed = []filter.ComputedColumn{{Column: "name", Expr: func(filter.Dialect) (string, error) { return "1", nil }}}
+			return nil
+		}), "computed columns are declared with ReadExpr"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -330,7 +350,7 @@ func TestReadExpr_RelationFiltersCompileTheTargetsExpressions(t *testing.T) {
 			}
 		})
 	}
-	assert.Equal(t, "accounts.email", accountTenants.FilterSchema().Fields["accounts"].Related.Fields["email"].SQLExpr, "the relation's schema stays dialect-neutral")
+	assert.Equal(t, `"accounts"."email"`, filter.FieldExpr(filter.PostgresDialect{}, accountTenants.FilterSchema().Fields["accounts"].Related.Fields["email"]), "the relation's schema stays dialect-neutral")
 }
 
 // Rebinding walks the filter, not the relation graph: around the
@@ -341,7 +361,7 @@ func TestReadExpr_RelationCycles(t *testing.T) {
 	scope := parse.Scope{Tenant: "t1"}
 	for _, tt := range computedDialects {
 		sql := pageSQL(t, accessGroups, tt.dialect, `{"accounts":{"$some":{"email":"","groups":{"$some":{"id":20}}}}}`, scope)
-		assert.Contains(t, sql, "access_groups_rel2__.id = ")
+		assert.Contains(t, sql, `"access_groups_rel2__"."id" = `)
 		assert.Contains(t, sql, "("+tt.email+") = ")
 
 		req, err := accessGroups.ParseList(url.Values{filter.ParamFilter: {`{"accounts":{"$some":{"groups":{"$some":{"size":2}}}}}`}})
@@ -364,6 +384,17 @@ func TestReadExpr_RelationIncludesCompileTheTargetsPolicy(t *testing.T) {
 	plan, err := accountTenants.BuildList(filter.SQLiteDialect{}, req, scope)
 	require.NoError(t, err)
 	_, err = accountTenants.IncludeQueries(plan, []any{"t1"})
+	assert.ErrorContains(t, err, "field member_count is not a column of accounts and cannot be filtered through a relation")
+
+	// A membership change holds its pairs to the targets the same policy
+	// admits.
+	groups := parse.MustResource[accessGroup]("access_groups", parse.TenantColumn("tenant_id"))
+	groups.MustRelate("accounts", parse.ManyToMany(computedAccounts, parse.Through("account_groups", "group_id", "account_id"), parse.Writable(), parse.PolicyScoped()))
+	p, err := groups.ParseMergePatch([]byte(`{"accounts":[1]}`))
+	require.NoError(t, err)
+	update, err := groups.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByID(20), scope)
+	require.NoError(t, err)
+	_, err = groups.RelationStatements(update, []any{int64(20)})
 	assert.ErrorContains(t, err, "field member_count is not a column of accounts and cannot be filtered through a relation")
 }
 
@@ -424,8 +455,8 @@ func TestReadExpr_Reread(t *testing.T) {
 	require.NotNil(t, stmt)
 	columns, err := computedAccounts.Columns(pg)
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(stmt.SQL, "SELECT "+strings.Join(columns, ", ")+" FROM accounts WHERE "), stmt.SQL)
-	assert.Contains(t, stmt.SQL, "accounts.tenant_id = ")
+	assert.True(t, strings.HasPrefix(stmt.SQL, "SELECT "+strings.Join(columns, ", ")+` FROM "accounts" WHERE `), stmt.SQL)
+	assert.Contains(t, stmt.SQL, `"accounts"."tenant_id" = `)
 	assert.Contains(t, stmt.Args, "t1")
 
 	_, err = accessGroups.Reread(groups, []any{1})
@@ -467,7 +498,7 @@ func TestReadExpr_PolicyFieldsCompileAgainstEachDialectsExpression(t *testing.T)
 	field, ok, err := computedAccounts.FilterSchema().PolicyField("contact")
 	require.NoError(t, err)
 	require.True(t, ok)
-	assert.Equal(t, "accounts.contact", field.SQLExpr, "the shared schema stays dialect-neutral")
+	assert.Equal(t, `"accounts"."contact"`, filter.FieldExpr(filter.PostgresDialect{}, field), "the shared schema stays dialect-neutral")
 }
 
 func computedPatch(t *testing.T, accounts *parse.Resource[computedAccount], body string) *patch.ParsedPatch {

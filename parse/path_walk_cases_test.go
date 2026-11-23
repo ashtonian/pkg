@@ -4,7 +4,6 @@ package parse_test
 
 import (
 	"database/sql"
-	"encoding/json"
 	"net/url"
 	"slices"
 	"strconv"
@@ -28,35 +27,15 @@ func runPathWalks(t *testing.T, p pathDB) {
 	loadPathRecords(t, p)
 	r, err := parse.NewResource[filtertest.PathRecord]("path_records", parse.PageSize(walkPage, 10))
 	require.NoError(t, err)
-	walkOrders(t, walker[filtertest.PathRecord]{db: p.db, dialect: p.dialect, resource: r, scan: scanPathRecord,
+	walkOrders(t, walker[filtertest.PathRecord]{db: p.db, dialect: p.dialect, resource: r,
 		id: func(r filtertest.PathRecord) string { return r.ID }}, filtertest.PathOrders)
 }
 
-func scanPathRecord(rows *sql.Rows) (filtertest.PathRecord, error) {
-	var rec filtertest.PathRecord
-	var attrs, settings any
-	if err := rows.Scan(&rec.ID, &attrs, &settings); err != nil {
-		return rec, err
-	}
-	if s, ok := textOf(attrs).(string); ok {
-		rec.Attrs = json.RawMessage(s)
-	}
-	if s, ok := textOf(settings).(string); ok {
-		rec.Settings = &filtertest.Settings{}
-		if err := json.Unmarshal([]byte(s), rec.Settings); err != nil {
-			return rec, err
-		}
-	}
-	return rec, nil
-}
-
-// walker lists a resource's rows from db: scan reads one row of the
-// resource's SELECT, id names it.
+// walker lists a resource's rows from db; id names a row.
 type walker[T any] struct {
 	db       *sql.DB
 	dialect  filter.Dialect
 	resource *parse.Resource[T]
-	scan     func(*sql.Rows) (T, error)
 	id       func(T) string
 }
 
@@ -93,17 +72,7 @@ func (w walker[T]) walk(t *testing.T, sortParam, cursor string, backward bool) (
 		require.NoError(t, err)
 		plan, err := w.resource.BuildList(w.dialect, req, parse.Scope{})
 		require.NoError(t, err)
-		rows, err := w.db.Query(plan.Page.SQL, plan.Page.Args...)
-		require.NoError(t, err, plan.Page.SQL)
-		var items []T
-		for rows.Next() {
-			item, err := w.scan(rows)
-			require.NoError(t, err)
-			items = append(items, item)
-		}
-		require.NoError(t, rows.Err())
-		require.NoError(t, rows.Close())
-		page, err := w.resource.Page(items, plan)
+		page, err := w.resource.Page(resourceRows(t, w.db, w.resource, w.dialect, plan.Page), plan)
 		require.NoError(t, err)
 		ids := ""
 		for _, it := range page.Items {

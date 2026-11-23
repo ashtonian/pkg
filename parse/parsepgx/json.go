@@ -1,67 +1,50 @@
 package parsepgx
 
 import (
-	"fmt"
-	"reflect"
-
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/ashtonian/pkg/jsonvalue"
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/filter"
 )
 
-func rowToResource[T any](resource *parse.Resource[T]) pgx.RowToFunc[T] {
-	return func(row pgx.CollectableRow) (T, error) {
-		return pgx.RowToStructByNameLax[T](resourceRow[T]{CollectableRow: row, resource: resource})
+// collect scans rows, the result of one of r's statements, through r's row
+// contract and closes them. The scanner is built from the first row's field
+// descriptions, which every exec mode has by then: a column PostgreSQL
+// reports as json or jsonb is decoded as a stored document whether or not
+// the resource declares its type. A row that fails yields no rows at all.
+func collect[T any](rows pgx.Rows, r *parse.Resource[T]) ([]T, error) {
+	defer rows.Close()
+	var (
+		scanner *parse.RowScanner[T]
+		out     []T
+	)
+	for rows.Next() {
+		if scanner == nil {
+			var err error
+			if scanner, err = r.RowScanner(filter.PostgresDialect{}, parse.ScanJSON(jsonColumns(rows.FieldDescriptions())...)); err != nil {
+				return nil, err
+			}
+		}
+		item, err := scanner.Scan(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
-type resourceRow[T any] struct {
-	pgx.CollectableRow
-	resource *parse.Resource[T]
-}
-
-func (r resourceRow[T]) Scan(dest ...any) error {
-	for i, field := range r.FieldDescriptions() {
-		storage, _ := r.resource.ColumnSQLType(field.Name)
-		// Result OIDs also cover JSON fields inferred without a ColumnType option.
-		if storage.IsJSON() || field.DataTypeOID == pgtype.JSONOID || field.DataTypeOID == pgtype.JSONBOID {
-			dest[i] = jsonScanner{target: dest[i]}
+func jsonColumns(fields []pgconn.FieldDescription) []string {
+	var names []string
+	for _, f := range fields {
+		if f.DataTypeOID == pgtype.JSONOID || f.DataTypeOID == pgtype.JSONBOID {
+			names = append(names, f.Name)
 		}
 	}
-	return r.CollectableRow.Scan(dest...)
-}
-
-type jsonScanner struct{ target any }
-
-func (s jsonScanner) Scan(source any) error {
-	target := reflect.ValueOf(s.target)
-	if !target.IsValid() || target.Kind() != reflect.Pointer || target.IsNil() {
-		return fmt.Errorf("JSON scan target must be a non-nil pointer, got %T", s.target)
-	}
-	if source == nil {
-		target.Elem().SetZero()
-		return nil
-	}
-	var raw []byte
-	switch value := source.(type) {
-	case string:
-		raw = []byte(value)
-	case []byte:
-		raw = value
-	default:
-		return fmt.Errorf("JSON scan source must be string or []byte, got %T", source)
-	}
-	// Key validation must succeed before the decoded value reaches the row.
-	fresh := reflect.New(target.Elem().Type())
-	if err := jsonvalue.UnmarshalPresent(raw, fresh.Interface()); err != nil {
-		return err
-	}
-	if err := core.ValidateJSONKeyRepresentation(raw, fresh.Interface()); err != nil {
-		return err
-	}
-	target.Elem().Set(fresh.Elem())
-	return nil
+	return names
 }

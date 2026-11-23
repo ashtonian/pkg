@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -94,6 +95,14 @@ func NewQueryParamParser(schema *ResourceSchema, opts ...QueryParamOption) *Quer
 		schema: schema, lenient: cfg.lenient, fieldsOnly: cfg.fieldsOnly,
 		accepted: accepted, parser: NewFilterParser(schema, cfg.parser),
 	}
+}
+
+// At returns a copy of p whose relative-time tokens resolve against now,
+// as FilterParser.At.
+func (p *QueryParamParser) At(now time.Time) *QueryParamParser {
+	c := *p
+	c.parser = p.parser.At(now)
+	return &c
 }
 
 // Parse converts url.Values to a FilterAST.

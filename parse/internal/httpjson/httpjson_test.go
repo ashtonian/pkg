@@ -5,9 +5,6 @@ package httpjson
 import (
 	"bytes"
 	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,28 +22,4 @@ func TestEncode_WritesWhatAStreamingEncoderWould(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, streamed.Bytes(), body)
-}
-
-// The fallback body is the error body without details.
-func TestEncodeError_IsCodeAndMessage(t *testing.T) {
-	assert.Equal(t, "{\"code\":\"E2120\",\"message\":\"schema encoding failed\"}\n", string(EncodeError("E2120", "schema encoding failed")))
-}
-
-func TestSend_WritesTheBodyWithItsLength(t *testing.T) {
-	w := httptest.NewRecorder()
-	require.NoError(t, Send(w, http.StatusNotFound, []byte("{}\n")))
-	assert.Equal(t, http.StatusNotFound, w.Code)
-	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
-	assert.Equal(t, "3", w.Header().Get("Content-Length"))
-	assert.Equal(t, "{}\n", w.Body.String())
-}
-
-type refusingWriter struct{ *httptest.ResponseRecorder }
-
-func (*refusingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
-
-func TestSend_ReturnsTheWriteError(t *testing.T) {
-	w := &refusingWriter{httptest.NewRecorder()}
-	assert.ErrorIs(t, Send(w, http.StatusOK, []byte("{}\n")), io.ErrClosedPipe)
-	assert.Equal(t, http.StatusOK, w.Code)
 }

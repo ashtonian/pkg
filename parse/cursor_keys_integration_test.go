@@ -14,17 +14,17 @@ import (
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
-// N12: a column with a linguistic collation still walks in code-point order
+// A column with a linguistic collation still walks in code-point order —
 // the order the memory backend and filters use — page after page, under
 // either code-point collation (pg_c_utf8, the default, and "C" for
 // PostgreSQL 14–16), and a string range filter seeks in the same order.
 func TestKeysetWalk_LinguisticCollationWalksByCodePoint(t *testing.T) {
 	schema := &filter.ResourceSchema{Name: "probe", PrimaryKey: "id", Fields: map[string]*filter.FieldSchema{
-		"name": {ExternalName: "name", SQLExpr: "probe.name", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpGt}},
+		"name": {ExternalName: "name", Table: "probe", Column: "name", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpGt}},
 	}}
 	sorts := &filter.SortSchema{Fields: map[string]*filter.SortFieldSchema{
-		"name": {SQLExpr: "probe.name", Column: "name", DataType: core.FieldTypeString},
-		"id":   {SQLExpr: "probe.id", Column: "id", DataType: core.FieldTypeInt},
+		"name": {Table: "probe", Column: "name", DataType: core.FieldTypeString},
+		"id":   {Table: "probe", Column: "id", DataType: core.FieldTypeInt},
 	}}
 	for name, dialect := range map[string]filter.PostgresDialect{
 		"pg_c_utf8": {},

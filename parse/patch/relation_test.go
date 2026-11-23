@@ -72,7 +72,7 @@ func TestBuildPatchSQL_SplitsRelationsFromSetClause(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build sql: %v", err)
 	}
-	if !strings.Contains(result.SetClause, "id =") {
+	if !strings.Contains(result.SetClause, `"id" =`) {
 		t.Errorf("expected scalar set clause to include id, got %q", result.SetClause)
 	}
 	if strings.Contains(result.SetClause, "tags") {
@@ -223,7 +223,7 @@ func TestRenderRelationOp_Replace_Clear(t *testing.T) {
 	if len(stmts) != 1 {
 		t.Fatalf("clear should emit one DELETE, got %d stmts", len(stmts))
 	}
-	if !strings.HasPrefix(stmts[0].SQL, "DELETE FROM widget_tags") {
+	if !strings.HasPrefix(stmts[0].SQL, `DELETE FROM "widget_tags"`) {
 		t.Errorf("expected DELETE prefix, got %q", stmts[0].SQL)
 	}
 	if strings.Contains(stmts[0].SQL, "tag_id") {
@@ -250,14 +250,7 @@ func TestRenderRelationOp_RefusesWhatItCannotRender(t *testing.T) {
 			assert.Error(t, err, "%s on %s", name, d.Name())
 		}
 	}
-	_, err := patch.RenderRelationOp(patch.RelationPatchOp{Field: "tags", Schema: rel, Verb: patch.RelationVerbAdd, Values: []any{"t1"}}, unknownSQLDialect{}, []any{"w1"}, patch.RenderRelationOpOptions{})
-	assert.Error(t, err)
 }
-
-// unknownSQLDialect is a dialect relation statements have no form for.
-type unknownSQLDialect struct{ filter.SQLiteDialect }
-
-func (unknownSQLDialect) Name() string { return "unknown" }
 
 func TestRenderRelationOp_NoOwners(t *testing.T) {
 	rel := &core.RelationSchema{

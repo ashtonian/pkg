@@ -79,7 +79,7 @@ func TestRelationKeysTakeTheTargetKeysWire(t *testing.T) {
 
 	// The schema document says each key is quoted.
 	reg := parse.NewSchemaRegistry()
-	parse.RegisterResource(reg, posts)
+	require.NoError(t, parse.RegisterResource(reg, posts))
 	paths := reg.SchemaFor("posts").Patch.Paths
 	assert.Equal(t, "string", string(paths["/tags"].Wire))
 	assert.Empty(t, paths["/labels"].Wire)

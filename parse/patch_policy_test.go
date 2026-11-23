@@ -76,5 +76,5 @@ func TestPatch_RemoveCarriesNoValue(t *testing.T) {
 
 	plan, err := docs.BuildUpdate(filter.SQLiteDialect{}, parsed, parse.ByID("1"), parse.Scope{})
 	require.NoError(t, err)
-	assert.Contains(t, plan.Owner.SQL, "SET status = NULL")
+	assert.Contains(t, plan.Owner.SQL, `SET "status" = NULL`)
 }

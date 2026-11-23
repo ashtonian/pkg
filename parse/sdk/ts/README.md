@@ -65,18 +65,20 @@ console.log(page.items, page.page_info.total_count, page.page_info.end_cursor);
 
 `client.resource<T>(path, { schema? })` is a collection at `{baseURL}/{path}`. Its schema document is `{baseURL}/{schemaPrefix}/{name}/schema`, where `name` is the resource's registry name (Go: its table, the document's `resource`): `schema` when given, else the path's last segment. Relation targets are fetched by registry name too, and the schema cache is keyed by it, so `schemas()` followed by any handle's `schema()` sends nothing. A collection served under another name than its table, `/api/work-orders` over `work_orders`, is `client.resource("work-orders", { schema: "work_orders" })`. A schema document for another resource than the one requested is `SchemaResourceError`. An empty path throws `RangeError`.
 
-The client calls the routes a server built on the Go module serves; the [example server](../../examples/server/) serves every one, with `baseURL` set to its origin and `/api`:
+The client calls the routes a server built on the Go module serves; the [example server](../../examples/server/) serves every one, with `baseURL` set to its origin and `/api`. Every public method has a row:
 
 | Client call | Request | Served in Go by |
 |---|---|---|
-| `list(opts)` | `GET /{resource}?filter=&sort=&cursor=&page_size=&include_total=&include_deleted=&search=&include=&facets=&fields=` | `parsehttp.ParseList` (or `Resource.ParseList`), `Resource.BuildList`, `Resource.Page` |
+| `list(opts)` | `GET /{resource}?filter=&sort=&cursor=&page_size=&include_total=&include_deleted=&search=&include=&facets=&fields=` | `parsehttp.ParseList` (or `Resource.ParseList` over `parsehttp.Query`), `Resource.BuildList`, `Resource.Page` |
 | `list(opts, { method: "POST" })`, or a list URL past `maxURLLength` | `POST /{resource}` with `{"filter": {…}, "sort", "cursor", "page_size", "include_total", "include_deleted", "search", "include": […], "facets": […], "fields": […]}` as `application/json` ([HTTP contract](../../docs/http-errors.md#the-same-request-as-a-post-body)) | The same handler: `parsehttp.ParseList` reads either transport |
 | `listAll(opts)` | `list` repeated with `cursor = page_info.end_cursor` while `page_info.has_next_page`, each page on the transport `list` would take | The list route |
-| `patch(id, input)` | `PATCH /{resource}/{id}` with a JSON Merge Patch body | `Resource.ParseMergePatch`, `Resource.BuildUpdate(…, parse.ByID(id), …)` |
-| `patchMany(ids, input)` | `PATCH /{resource}?id[]=…&id[]=…` with a JSON Merge Patch body | `Resource.BuildUpdate(…, parse.ByIDs(ids…), …)`; a key that updated no row is an item of `failed` |
-| `facets(fields, opts)` | `OPTIONS /{resource}?facets=a,b&filter=` → `facets` | `Resource.ParseList`, `Resource.BuildList`, the plan's `Facets` statement |
-| `schema()` | `GET /{schemaPrefix}/{name}/schema` | `SchemaRegistry.SchemaHandler` |
-| `schemas()` | `GET /{schemaPrefix}/schemas` → `{ schemas: […] }` | `SchemaRegistry.SchemaListHandler` |
+| `patch(id, input)` | `PATCH /{resource}/{id}` with a JSON Merge Patch body (`application/json`) | `parsehttp.ParsePatch` (or `Resource.ParsePatchRequest`), `Resource.BuildUpdate(…, parse.ByID(id), …)` |
+| `patchMany(ids, input)` | `PATCH /{resource}?id[]=…&id[]=…` with a JSON Merge Patch body (`application/json`) | `parsehttp.Query`, `parsehttp.ParsePatch`, `Resource.BuildUpdate(…, parse.ByIDs(ids…), …)`; a key that updated no row is an item of `failed` |
+| `facets(fields, opts)` | `OPTIONS /{resource}?facets=a,b&filter=` → `facets` | `parsehttp.ParseFacets` (or `Resource.ParseFacets`), `Resource.BuildFacets`; `cursor`, `sort`, `page_size`, `include_total`, `include` or `fields` is E2067 |
+| `schema()` | `GET /{schemaPrefix}/{name}/schema` | `parsehttp.SchemaHandler` |
+| `schemas()` | `GET /{schemaPrefix}/schemas` → `{ schemas: […] }` | `parsehttp.SchemaListHandler` |
+| `validator()` | `schema()`'s request, once per handle | The schema route |
+| `resource(path, opts)` | Nothing: a handle whose calls send the requests above | — |
 
 Members a list leaves zero (an empty `sort`, `include`, `facets` or `fields`, `pageSize: 0`) are not sent, so the server applies its defaults. `fields` is the response field mask, the members each item carries; the schema document lists no maskable names, so `validateBeforeSend` leaves the mask to the server. `patch("")` and `patchMany([])` throw `RangeError` before sending: either would `PATCH` the collection itself. A request carries `Content-Type: application/json` only when it has a body.
 
@@ -113,6 +115,8 @@ const counts = await products.facets(["category"], { filter: { price: { $lt: 20 
 const page = await products.list({ filter: { price: { $lt: 20 } }, facets: ["category"] });
 // page.facets: the same counts beside every page of the list
 ```
+
+`facets` sends `OPTIONS`, the method of a CORS preflight too: the server's handler must receive an `OPTIONS` that is not a preflight (one without `Access-Control-Request-Method`), so a layer in front of the application that answers every `OPTIONS` itself breaks `facets`. A facets request has no body form, so `maxURLLength` does not apply to it; counts under a filter too large for a URL come from `list` over `POST` with `facets`.
 
 ## Large filters
 
@@ -153,17 +157,19 @@ v.fieldsByGroup();          // Map of sidebar group → fields, ordered
 v.includableFields();       // relation fields a list can `include`
 ```
 
+The document lists every name the server's filter accepts, the resource's key included whether or not it is tagged, and for each the operators the server takes on it: a field that declares one NULL test (`null`, `not_null`, `exists`) lists all three. `filterableFields()` and `operatorsFor()` read them as listed.
+
 The schema document carries its format version; the client reads version `SCHEMA_VERSION` and refuses any other with `SchemaVersionError`, so a document whose members changed meaning never validates a request. With `validateBeforeSend: true` the schema is fetched once per resource and every filter, sort, include, facet, search and patch is validated first, by `list` and `facets` alike; a search on a resource whose schema has no search enabled is E2067, as the server answers. A patch path is looked up as the server looks it up: its exact key, else the most specific `*` / `**` pattern that matches it. A filter's relation predicates (`$some`, `$none`, `$is`, `$is_not` on a field whose `relation.target` names another resource) validate against that resource's schema, which the client fetches the same way, two levels deep; a JSON array of objects' element filters validate against its `elements`, and a scalar array's element conditions (`{"$some": {"$gte": 5, "$lt": 10}}`, typed by `ElementCondition<E>`) against its `element`, as do its `$contains` members. `validateFilter` (with an optional `RelatedSchemas` lookup), `relatedTargets`, `validateSort` and `validatePatch` are also exported for direct use.
 
 Concurrent calls that need a resource's schema share one request, sent with the first call's headers. It runs under the client's `timeout`, not any one call's `signal`: a call whose signal aborts rejects with the signal's reason while the others keep waiting, and the request is cancelled once every waiting call has aborted. A call with no signal always waits for the result. A failed, cancelled or refused fetch is retried by the next call; only a schema the client reads is cached.
 
-Two Go-emitted corpora pin client to server: `testdata/filter_conformance.json` and `testdata/patch_conformance.json` record the Go parser's validity and error code for every input, and the client must give the same answer. Patch validation checks what the server checks per path — patchable, null only where `nullable`, the value's type, an integer within its Go kind (`number_kind`, exactly for kinds of 32 bits or fewer, and for every kind when the path's `wire` is `"string"`), the enum, the bounds (`min_length` / `max_length` in code points; `minimum` / `maximum`, exact decimal text compared exactly with an integer or decimal and at the kind's precision with a float), an array's element type and element counts (`min_items` / `max_items`) with each element's enum and bounds, a relation's list of keys and their count once repeats are removed (`max_relation_values`, E2119), and the operation count. A field or path whose schema `wire` is `"string"` (Go `json:",string"`) takes its value as a JSON string holding it (`"9007199254740993"`, never a bare number), which the client checks as the server reads it; a 64-bit integer is then compared exactly, so declare such fields `string` in generated types. Left to the server: timestamp and UUID spellings, 64-bit integer ranges of filter operands, values inside JSON documents, the `$contains` members of an array whose schema names no `element`, geo operand shapes in filters, nesting and cost bounds, and server-specific policy.
+Two Go-emitted corpora pin client to server: `testdata/filter_conformance.json` records the server's verdict and error code on filters, sort strings and list requests, and `testdata/patch_conformance.json` on merge patches, each with the schema documents the registry serves; the client validates every input against those documents and must give the same answer. A schema document without a filter, patch or sort section validates as one with no fields, as the server answers: each name is E2071, E2076 or E2079 (E2078 is the schema route's 404 for a resource the server does not register, read as an `ApiError`). Patch validation checks what the server checks per path — patchable, null only where `nullable`, the value's type, an integer within its Go kind (`number_kind`, exactly for kinds of 32 bits or fewer, and for every kind when the path's `wire` is `"string"`), the enum, the bounds (`min_length` / `max_length` in code points; `minimum` / `maximum`, exact decimal text compared exactly with an integer or decimal and at the kind's precision with a float), an array's element type and element counts (`min_items` / `max_items`) with each element's enum and bounds, a relation's list of keys and their count once repeats are removed (`max_relation_values`, E2119), and the operation count. A field or path whose schema `wire` is `"string"` (Go `json:",string"`) takes its value as a JSON string holding it (`"9007199254740993"`, never a bare number), which the client checks as the server reads it; a 64-bit integer is then compared exactly, so declare such fields `string` in generated types. Left to the server: timestamp and UUID spellings, 64-bit integer ranges of filter operands, values inside JSON documents, the `$contains` members of an array whose schema names no `element`, geo operand shapes in filters, nesting and cost bounds, and server-specific policy.
 
 ## Errors
 
 | Error | When | Fields |
 |---|---|---|
-| `ApiError` | Non-2xx response | `status` (the response's), `code`, `message`, `body` (`{code, message, details?, trace_id?, timestamp?, path?}`), `problem` (the RFC 9457 document, or `undefined`), `errors` (its field errors, or `[]`) |
+| `ApiError` | Non-2xx response | `status` (the response's), `code`, `message`, `body` (`{code, message, path?, index?, details?}`: `path` is the JSON Pointer of the patch member and `index` the JSON Patch operation a patch error is about), `problem` (the RFC 9457 document, or `undefined`), `errors` (its field errors, or `[]`) |
 | `ResponseError` (an `ApiError`) | A 2xx without the JSON body the call reads: a 204, an empty 200, a proxy's HTML 200 | `status`, `url`, `code` `""`, `message` naming the status, URL and reason |
 | `SchemaResourceError` | The schema endpoint answered another resource's document than the registry name requested | `requested`, `resource` |
 | `SchemaValidationError` | Client-side validation failed | `code` (the E-code the server would return), `field`, `detail`, optional `constraint` / `limit` |
@@ -207,9 +213,19 @@ Three Go-emitted fixtures keep the client on the server's contract; each fails i
 
 | Fixture | Consumed by | Regenerate |
 |---|---|---|
-| `testdata/filter_conformance.json` — filter inputs with the Go parser's verdict and E-code | `src/filter/conformance.test.ts` | `go test -tags=unit -run TestEmitFilterConformance -update ./parse/` |
+| `testdata/filter_conformance.json` — `{schemas, cases, sort, list}`: the schema documents of the corpus's resources, and filters, sort strings and list query strings with the server's verdict and E-code | `src/filter/conformance.test.ts` | `go test -tags=unit -run TestEmitFilterConformance -update ./parse/` |
 | `testdata/patch_conformance.json` — merge patches with the Go parser's verdict and E-code, and the schema document they are checked against | `src/patch/conformance.test.ts` | `go test -tags=unit -run TestEmitPatchConformance -update ./parse/` |
-| `testdata/sdk_wire.json` — a keyset walk serialized as `filter.Page`, and a registry schema document with its version | `src/client.test.ts` | `go test -tags=unit -run TestSDKWireFixture -update ./parse/` |
+| `testdata/sdk_wire.json` — requests parse's Go client built and the answers `parsehttp`'s handlers gave them: a keyset walk, a backward page, a total, a POST list, facets, patches, the schema routes and their 404, a 422 parse error | `src/client.test.ts`, which sends each request and must equal the recorded one | `go test -tags=unit -run TestSDKWireFixture -update ./parse/` |
+
+## Operations
+
+- *Deadlines*: every request runs under `timeout` (30 s by default), combined with the call's `AbortSignal`. The client does not retry; a caller that retries decides which failures are safe to repeat (a list is, a patch is not unless the server makes it so).
+- *Schema cache*: `resource.schema()` fetches a resource's document once per client and caches it by registry name; concurrent calls share one request, and a failed fetch is not cached. `schemas()` fetches every document and replaces the cached ones. A server whose schemas change is read afresh by a new client or a call to `schemas()`.
+- *Troubleshooting*: a `ResponseError` is a 2xx without the JSON the call reads, usually a proxy or a route that is not parse's. A `SchemaResourceError` means `schemaPrefix` or the resource's registry name points at another resource's document. A 414 from a proxy on a long filter means the list needs `maxURLLength` set, so it goes as a POST body.
+
+## Security
+
+Credentials go in `headers` (`Authorization`), sent with every request to `baseURL` and nowhere else. Filters, sorts and patch values are encoded as JSON and query parameters with `URLSearchParams`, so a value never changes a request's structure. `validateBeforeSend` checks a request against the server's schema before it leaves; the server validates it again whatever the client does, so client-side validation is a convenience, not a control. `ApiError.message` is the server's text: whether to show it to a user is the application's decision.
 
 ## Package Structure
 
