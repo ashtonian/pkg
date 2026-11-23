@@ -166,17 +166,19 @@ func (t *CacheTransport) validate() error {
 
 // WithStaleIfError lets the cache serve a stale response for up to d when
 // revalidation returns an inner transport error (including local admission
-// refusal) or 5xx, unless the response says must-revalidate or no-cache.
-// Caller cancellation and expired caller deadlines remain errors. A response's
-// own stale-if-error directive also grants permission.
+// refusal) or 5xx, unless the response says must-revalidate or no-cache, or
+// the request's no-cache, max-age or min-fresh refuses it. Caller cancellation
+// and expired caller deadlines remain errors. A response's own stale-if-error
+// directive also grants permission.
 func WithStaleIfError(d time.Duration) CacheOption {
 	return func(t *CacheTransport) { t.staleIfError = d }
 }
 
 // WithStaleWhileRevalidate lets the cache serve a stale response for up to d
 // while it revalidates in the background, unless the response says
-// must-revalidate or no-cache. A response's own stale-while-revalidate
-// directive also grants permission.
+// must-revalidate or no-cache, or the request's no-cache, max-age or min-fresh
+// refuses it; such a request validates before it is answered. A response's own
+// stale-while-revalidate directive also grants permission.
 func WithStaleWhileRevalidate(d time.Duration) CacheOption {
 	return func(t *CacheTransport) { t.staleWhileRevalidate = d }
 }
@@ -275,38 +277,42 @@ func (t *CacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return t.fetch(req, key, gen, "fwd=miss")
 	}
 
-	respCC := parseCacheControl(entry.Header)
-	f := computeFreshness(entry, respCC, time.Now())
-	if usableWithoutValidation(f, respCC, reqCC) {
+	policy := t.reusePolicy(entry, reqCC)
+	f := policy.freshness(time.Now())
+	if policy.allows(reuseDirect, f) {
 		t.hook.OnCacheHit(req, f.fresh())
 		return t.serve(req, entry, f, "hit"), nil
 	}
 	if reqCC.onlyIfCached {
 		return gatewayTimeout(req, "miss"), nil
 	}
-	if t.staleAllowed(f, respCC, reqCC, respCC.staleWhileRevalidate, t.staleWhileRevalidate) {
+	if policy.allows(reuseWhileRevalidating, f) {
 		t.hook.OnCacheHit(req, false)
 		t.revalidateInBackground(req, key, gen, entry)
 		return t.serve(req, entry, f, "hit; detail=stale-while-revalidate"), nil
 	}
-	return t.validateSync(req, key, gen, entry, f, respCC, reqCC)
+	return t.validateSync(req, key, gen, policy)
 }
 
-// staleAllowed reports whether a stale response may be served under a
-// stale-* permission: the larger of the origin's directive and the client's
-// option, never when the response or request forbids serving stale.
-func (t *CacheTransport) staleAllowed(f freshness, respCC, reqCC cacheDirectives, originWindow, clientWindow time.Duration) bool {
-	if respCC.mustRevalidate || respCC.noCache || reqCC.noCache {
-		return false
+// reusePolicy is the request's freshness decision for entry, under this
+// cache's configured stale windows.
+func (t *CacheTransport) reusePolicy(entry *CachedResponse, req cacheDirectives) reusePolicy {
+	return reusePolicy{
+		entry:                entry,
+		resp:                 parseCacheControl(entry.Header),
+		req:                  req,
+		staleWhileRevalidate: t.staleWhileRevalidate,
+		staleIfError:         t.staleIfError,
 	}
-	return f.staleness() <= max(originWindow, clientWindow) && max(originWindow, clientWindow) > 0
 }
 
 // validateSync refreshes a stored response the cache may not serve as-is:
 // a conditional request when it has validators, otherwise a plain one. A
-// transport error or 5xx falls back to the stored response when stale-if-error
-// permits, unless the caller's context has ended.
-func (t *CacheTransport) validateSync(req *http.Request, key string, gen uint64, entry *CachedResponse, f freshness, respCC, reqCC cacheDirectives) (*http.Response, error) {
+// transport error or 5xx falls back to the stored response when the policy
+// allows stale-if-error at the time of the failure, unless the caller's
+// context has ended.
+func (t *CacheTransport) validateSync(req *http.Request, key string, gen uint64, policy reusePolicy) (*http.Response, error) {
+	entry := policy.entry
 	requestTime := time.Now()
 	resp, err := t.base.RoundTrip(conditionalRequest(req.Clone(req.Context()), entry))
 	if ctxErr := req.Context().Err(); ctxErr != nil {
@@ -316,7 +322,7 @@ func (t *CacheTransport) validateSync(req *http.Request, key string, gen uint64,
 		return nil, ctxErr
 	}
 	if err != nil || resp.StatusCode >= 500 {
-		if t.staleAllowed(f, respCC, reqCC, respCC.staleIfError, t.staleIfError) {
+		if f := policy.freshness(time.Now()); policy.allows(reuseOnError, f) {
 			if resp != nil {
 				drainAndClose(resp)
 			}

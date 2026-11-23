@@ -91,7 +91,7 @@ pass through without being stored. Each primary key retains one matching
 | `Cache-Control: no-store` | Do not store; a revalidation replacement retires the older representation |
 | `no-cache` | Revalidate before reuse |
 | `must-revalidate` | Do not use stale fallback after expiry |
-| `max-age`, `min-fresh`, `max-stale` | Respect the request's freshness constraints |
+| `max-age`, `min-fresh`, `max-stale` | Request freshness requirements and permission, applied to hits and stale fallback alike ([precedence](#request-freshness-and-stale-permissions)) |
 | `only-if-cached` | Never contact the origin: serve an acceptable stored response, otherwise a synthetic 504 |
 | ETag / Last-Modified | Conditional revalidation; merge 304 metadata and recheck storage policy |
 | `Vary: *`, including a wildcard within a list | Refuse storage |
@@ -113,17 +113,40 @@ request it answers without forwarding. The 504's `Cache-Status` carries
 `fwd=miss` (nothing stored is acceptable), `fwd=bypass` (a request form
 storage never answers) or `fwd=method`.
 
-Stale permissions can come from RFC 5861 response directives or configured
-`WithStaleIfError` / `WithStaleWhileRevalidate`. They remain subject to
-`no-cache` and `must-revalidate`. Stale-if-error accepts inner transport
-errors, including open-circuit and local rate/concurrency refusals, or 5xx
-responses. Caller cancellation and expired caller deadlines remain errors;
-fallback does not cover failures while reading a response body.
-
 Invalidation applies within the request's cache partition and this transport's
 coordination state. It does not invalidate other identities' entries or
 related collection URLs. An in-flight fetch that crosses an invalidation in
 the same transport cannot publish its older representation back into the store.
+
+### Request freshness and stale permissions
+
+A stored response reaches the caller as a hit, as a stale-while-revalidate
+response or as a stale-if-error fallback. Each path applies the same decision
+for the request, evaluated when it would serve, in this order:
+
+1. `no-cache`, in the request or the response, allows no reuse until a
+   validation succeeds.
+2. The request's `max-age=N` (age at most N seconds) and `min-fresh=N` (at
+   least N seconds of freshness left, so never a stale response) are
+   requirements. No stale permission relaxes them: when the stored response
+   misses one, the request validates before it is answered, and an origin
+   failure returns that failure.
+3. A response past its lifetime needs a permission covering its staleness:
+   the request's `max-stale` on any path, otherwise the path's window, the
+   larger of the response's RFC 5861 `stale-while-revalidate` or
+   `stale-if-error` and the configured `WithStaleWhileRevalidate` or
+   `WithStaleIfError`. `must-revalidate` withdraws every permission.
+
+A response the origin returns while validating, a 304 or a new 200, answers
+the request whatever its remaining freshness. Stale-if-error measures age
+when the validation fails, so the time spent waiting on the origin counts
+against its window and against `max-age`. A request carrying both `min-fresh`
+and `max-stale` receives only fresh responses.
+
+Stale-if-error accepts inner transport errors, including open-circuit and
+local rate/concurrency refusals, or 5xx responses. Caller cancellation and
+expired caller deadlines remain errors; fallback does not cover failures while
+reading a response body.
 
 ## Background work and stores
 

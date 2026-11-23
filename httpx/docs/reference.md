@@ -98,8 +98,8 @@ regardless of option order. See [egress policy](egress.md).
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `WithCacheIdentityHeaders(names...)` | `...string` | none (`Authorization` and `Cookie` always partition) | Extra headers included in the cache key, such as `X-API-Key`; the application must configure all identity headers |
-| `WithStaleIfError(d)` | `time.Duration` | 0 (off) | Serve stale after an inner transport error (including local refusal) or 5xx; caller cancellation/deadlines remain errors |
-| `WithStaleWhileRevalidate(d)` | `time.Duration` | 0 (off) | Serve stale for up to `d` while revalidating in the background |
+| `WithStaleIfError(d)` | `time.Duration` | 0 (off) | Serve stale after an inner transport error (including local refusal) or 5xx, within the request's `max-age` / `min-fresh`; caller cancellation/deadlines remain errors |
+| `WithStaleWhileRevalidate(d)` | `time.Duration` | 0 (off) | Serve stale for up to `d` while revalidating in the background, within the request's `max-age` / `min-fresh` |
 | `WithMaxCacheBodyBytes(n)` | `int64` | `DefaultMaxCacheBodyBytes` (1 MiB) | Largest stored body; larger responses stream through unstored |
 | `WithMaxRetention(d)` | `time.Duration` | `DefaultMaxRetention` (24 h) | Longest an entry is kept, including entries kept only to revalidate |
 | `WithRevalidation(timeout, n)` | `time.Duration`, `int` | `DefaultRevalidateTimeout` (30 s), `DefaultMaxConcurrentRevalidates` (8) | Timeout and concurrency of background revalidations; `Close` stops them |
