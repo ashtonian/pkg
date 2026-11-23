@@ -160,6 +160,19 @@ func TestLoad_ARemainFieldsValuesSurviveTheMerge(t *testing.T) {
 	assert.Equal(t, "10.0.0.1", got.Plugins.Extra["addr"])
 }
 
+// A typed section a source sets carries the keys its sensitive remain field
+// collects into the merge one by one, as any remain field's.
+func TestLoad_ATypedSectionCarriesASensitiveRemainFieldsKeys(t *testing.T) {
+	type cfg struct {
+		Vault remainSecrets `koanf:"vault"`
+	}
+	got, err := Load[cfg](t.Context(),
+		WithDefaults(map[string]any{"vault": remainSecrets{Addr: "a", Paths: map[string]string{"prod_db": "s1"}}}),
+		WithOverrideProvider(confmap.Provider(map[string]any{"vault.kv": "s2"}, "."), nil))
+	require.NoError(t, err)
+	assert.Equal(t, remainSecrets{Addr: "a", Paths: map[string]string{"prod_db": "s1", "kv": "s2"}}, got.Vault)
+}
+
 // An origin provider may annotate a key a remain field collects.
 func TestProvenance_AnnotatesAKeyARemainFieldCollects(t *testing.T) {
 	data := map[string]any{"plugins": map[string]any{"foo": 1}, "typed": map[string]any{"x": map[string]any{"port": 2}}}

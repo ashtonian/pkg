@@ -431,7 +431,7 @@ func (w *comparer) container(n *schemaNode, f frame, sa, sb side) {
 	}
 	switch n.kind {
 	case nodeBranch:
-		for m, vals := range n.members(sa, sb, f.sensitive()) {
+		for m, vals := range n.members(sa, sb, n.remainWhole(f.sensitive())) {
 			mn, err := m.node(schemaOf)
 			if err != nil {
 				w.fail(err)

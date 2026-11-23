@@ -58,19 +58,26 @@ func (n *schemaNode) memberAt(s segment) (member, bool) {
 // (remainField.whole), otherwise any one key it collects.
 func (n *schemaNode) remainMember(sensitive bool) member {
 	m := member{kind: memberRemain, seg: remainSegment, branch: n}
-	if !n.remain.whole(sensitive) {
+	if !n.remainWhole(sensitive) {
 		m.kind = memberCollected
 	}
 	return m
 }
 
+// remainWhole reports whether n, a branch whose keys are sensitive or not,
+// has a remain field that is one value (remainField.whole) to a walk that
+// withholds sensitive values.
+func (n *schemaNode) remainWhole(sensitive bool) bool {
+	return n.remain != nil && n.remain.whole(sensitive)
+}
+
 // members yields each member of n, a branch, that a or b, two of its
 // values, holds, with its value on each side, in walk order: the fields as
-// declared, then the keys the remain field collects by name. sensitive
-// reports a branch whose keys are sensitive; a remain field that is then
-// one value (remainField.whole) is one member, there while it collects a
-// key on either side.
-func (n *schemaNode) members(a, b side, sensitive bool) iter.Seq2[member, [2]reflect.Value] {
+// declared, then the keys the remain field collects by name. With whole —
+// the remain field is one value, see remainWhole — the remain field is one
+// member instead, there while it collects a key on either side; a walk that
+// withholds nothing, as a merge, passes false.
+func (n *schemaNode) members(a, b side, whole bool) iter.Seq2[member, [2]reflect.Value] {
 	return func(yield func(member, [2]reflect.Value) bool) {
 		for i, f := range n.fields {
 			m := member{kind: memberField, seg: segment{kind: segField, name: f.key}, ord: ordSeg{n: i}, field: f}
@@ -78,16 +85,14 @@ func (n *schemaNode) members(a, b side, sensitive bool) iter.Seq2[member, [2]ref
 				return
 			}
 		}
-		r := n.remain
-		if r == nil {
+		if n.remain == nil {
 			return
 		}
 		ord := len(n.fields)
-		if m := n.remainMember(sensitive); m.kind == memberRemain {
+		if whole {
 			vals := [2]reflect.Value{n.collectedMap(a), n.collectedMap(b)}
 			if vals[0].IsValid() || vals[1].IsValid() {
-				m.ord = ordSeg{n: ord}
-				yield(m, vals)
+				yield(member{kind: memberRemain, seg: remainSegment, ord: ordSeg{n: ord}, branch: n}, vals)
 			}
 			return
 		}
