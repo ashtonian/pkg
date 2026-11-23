@@ -6,12 +6,31 @@ Complete programs that use [`config`](../../README.md) the way a service does, e
 |---|---|
 | [Kubernetes ConfigMap and Secret volumes](#kubernetes-configmap-and-secret-volumes) | The file watch on a ConfigMap volume; Secret keys through koanf's `k8smount` provider and its watch |
 | [Settings in a database](#settings-in-a-database) | A settings table read on every reload through `NewMapProvider`, tested on SQLite |
-| [Settings a service writes](#settings-a-service-writes) | An admin API that stores `CanonicalKey` rows, checks each write with the service's own load, serializes writers across replicas and reloads the table through `WithOverrideEntries`, tested on SQLite |
+| [Settings a service writes](#settings-a-service-writes) | An admin API that stores `CanonicalKey` rows, checks each write with the service's own load, serializes writers across replicas and reloads the table through `WithOverrideEntries`, tested on SQLite and PostgreSQL |
 | [AWS Secrets Manager](#aws-secrets-manager) | `secret` tags resolved through `SecretsFrom`, per environment |
 | [HashiCorp Vault](#hashicorp-vault) | A KV v2 secret as config keys, through koanf's Vault provider |
 | [A whole service](#a-whole-service) | Kong flags, validation, hot reload, appliers, admin endpoints and graceful shutdown |
 
-This is a module of its own, so the `config` module takes none of the SDKs and drivers it uses. Run it from this directory with `GOWORK=off go test ./...`, or `make cookbook-check` from the repository root; it builds against the working tree through `replace` directives.
+This is a module of its own, so the `config` module takes none of the SDKs and drivers it uses. It builds against the working tree through `replace` directives.
+
+## Build, run and test
+
+Run it from this directory with `GOWORK=off go test ./...`, or from the repository root:
+
+| Command | Runs |
+|---|---|
+| `make cookbook-check` | `go mod tidy -diff`, `go vet` and every recipe's race tests. The PostgreSQL legs skip unless `COOKBOOK_POSTGRES_DSN` is set |
+| `make lint-cookbook` | `go vet` on the declared Go floor, and staticcheck |
+| `make cookbook-integration` | The database tests: the settings-store recipe's, each on SQLite and on the PostgreSQL server `COOKBOOK_POSTGRES_DSN` names, and its fixture's own |
+| `eval "$(make -s cookbook-postgres-up)"` | Starts PostgreSQL 19 in Docker, the server CI's `cookbook-postgres` job provisions, and exports `COOKBOOK_POSTGRES_DSN`. `make cookbook-postgres-down` removes it |
+
+| Variable | Default | Description |
+|---|---|---|
+| `COOKBOOK_POSTGRES_DSN` | unset | A PostgreSQL URL. Each test gets a schema of its own, first on the search path and dropped when the test ends, so tests share any server, the one `make parse-postgres-up` starts among them. Unset, the PostgreSQL legs skip |
+| `COOKBOOK_REQUIRE_PG` | unset | `1` fails a PostgreSQL leg whose variable is unset instead of skipping it; CI's `cookbook-postgres` job sets it, so the job cannot pass without the server |
+| `COOKBOOK_PG_IMAGE`, `COOKBOOK_PG_NAME`, `COOKBOOK_PG_PORT` | `postgres:19`, `cookbook-postgres`, `55433` | Make variables: the image, container name and host port `cookbook-postgres-up` uses |
+
+A server that is set and unreachable fails the PostgreSQL legs rather than skipping them. The fixture is [`internal/pgtest`](internal/pgtest/pgtest.go), the twin of parse's `internal/dbtest`, which this module cannot import; a change to one's semantics belongs in both.
 
 ## Kubernetes ConfigMap and Secret volumes
 
@@ -112,7 +131,7 @@ When the service writes the table itself — an admin API, a settings page — s
 
 A write is checked by the load that will read it. The service's options come from one builder; a write builds the table it would leave and loads it with those options, the table read replaced by that one, so `limits.min` and `limits.max` move together, the file and the environment beneath the table are read as the next reload reads them, and a table the service would refuse is never committed. `DecodeEdits` over the live config is not that check: it misses a lower source that changed and a row deleted since the config loaded. When the settings fail to load without the write as well, the fault is beneath it — in the file, the environment or a row already stored — and the write is a 503, logged at `Error`. A refused write is a 422 whose body names the client's own keys, never a value, and its `reason`: `unknown` (a key names nothing the service reads), `repeated` (one key spelled two ways), `invalid` (the settings the write leaves do not load), `full` (the table would pass its cap), `enclosed` (a key lies inside a list or a scalar a stored row sets) or `overlap` (one write names a key and a key within it).
 
-Writes take turns across replicas: each updates one lock row as its first statement, which the database holds until the write ends, so each reads the table the one before it left. The transaction runs at `READ COMMITTED` whatever the server's default, the level at which a write that waited reads what the one before it committed; SQLite's driver ignores the level, since its transactions are serializable and the lock row's update takes its write lock. Configured caps bound the table in rows and in bytes, and values are read with `UseNumber`, so integers keep every digit. The pool, the request timeouts and caps, and the log level (`warn` by default, with one startup entry) are `BootConfig` fields. [`settingsstore/main.go`](settingsstore/main.go) has the `PUT /admin/settings` handler and the `main` that serves it; its test runs every path on SQLite, two replicas writing at once among them.
+Writes take turns across replicas: each updates one lock row as its first statement, which the database holds until the write ends, so each reads the table the one before it left. The transaction runs at `READ COMMITTED` whatever the server's default, the level at which a write that waited reads what the one before it committed; SQLite's driver ignores the level, since its transactions are serializable and the lock row's update takes its write lock. Configured caps bound the table in rows and in bytes, and values are read with `UseNumber`, so integers keep every digit. The pool, the request timeouts and caps, and the log level (`warn` by default, with one startup entry) are `BootConfig` fields. [`settingsstore/main.go`](settingsstore/main.go) has the `PUT /admin/settings` handler and the `main` that serves it; its tests run every path on SQLite and on PostgreSQL ([Build, run and test](#build-run-and-test)): two replicas writing at once among them, and on PostgreSQL a write that waits on the lock row and then reads what the write holding it committed, on a session whose default isolation is `SERIALIZABLE`.
 
 | Command | Does |
 |---|---|

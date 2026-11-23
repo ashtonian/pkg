@@ -94,6 +94,7 @@ jobs:
               "test": {"go": ["./..."]},
               "test-darwin": {"go": ["./process/...", "./state/...", "./onepassword/...", "./config/...", "./config/kongprovider/..."]},
               "parse-postgres": {"go": ["./parse/..."]},
+              "cookbook-postgres": {"paths": ["config/examples/cookbook/go.mod", "config/examples/cookbook/go.sum", "config/examples/cookbook/internal/pgtest/**", "config/examples/cookbook/settingsstore/**"], "go": ["./config"]},
               "parse-sdk": ["parse/sdk/**", "parse/testdata/**", "tools/check-parse-sdk-*"],
               "parse-benchmarks": {"go": ["./parse/filter"]},
               "minimum-go": {"go": ["./httpx/...", "./httpx/oauth2/...", "./httpx/codec/msgpack/...", "./httpx/codec/proto/...", "./httpx/compress/brotli/...", "./gitx/..."]},
@@ -295,6 +296,45 @@ jobs:
           # A missing DSN fails the fixture's tests here instead of skipping them.
           PARSE_REQUIRE_PG: '1'
         run: make test-parse-integration
+  # The settings-store recipe documents PostgreSQL's behaviour (the lock row
+  # under READ COMMITTED, ON CONFLICT, the octet_length size query); this runs
+  # its database tests on SQLite and PostgreSQL. It runs when the recipe, its
+  # fixture or the cookbook's dependencies change, or a change reaches config.
+  cookbook-postgres:
+    needs: scope
+    name: cookbook integration (SQLite, PostgreSQL 19)
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && contains(needs.scope.outputs.jobs, '"cookbook-postgres"')
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: arc-pkg
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:19
+        env:
+          POSTGRES_USER: cookbook
+          POSTGRES_PASSWORD: cookbook
+          POSTGRES_DB: cookbook
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U cookbook -d cookbook"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ashtonian/go-ci-actions@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
+        with:
+          go-version: stable
+          cache-dependency-path: "**/go.sum"
+      - name: Cookbook SQLite and PostgreSQL integration with race detection
+        env:
+          COOKBOOK_POSTGRES_DSN: postgres://cookbook:cookbook@localhost:5432/cookbook?sslmode=disable
+          # A missing DSN fails the PostgreSQL legs here instead of skipping them.
+          COOKBOOK_REQUIRE_PG: '1'
+        run: make cookbook-integration
   parse-sdk:
     needs: scope
     name: parse TypeScript SDK and corpora (node 22.13.0 and lts/*)
@@ -481,7 +521,7 @@ jobs:
 
   accepted:
     name: Preserve complete validation coverage
-    needs: [scope, test, test-darwin, parse-postgres, parse-sdk, minimum-go, modules, lint]
+    needs: [scope, test, test-darwin, parse-postgres, cookbook-postgres, parse-sdk, minimum-go, modules, lint]
     # The receipt names the commit this run checked; the merge push reads which
     # jobs passed from GitHub. A dispatched run on a bot's pull request branch
     # checks every job in full and records too.

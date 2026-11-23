@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,28 +23,84 @@ import (
 	"modernc.org/sqlite"
 
 	"github.com/ashtonian/pkg/config"
+	"github.com/ashtonian/pkg/config/examples/cookbook/internal/pgtest"
 )
 
-// replica opens the settings table in the SQLite database at path as one
-// replica of the service does, with a pool and Settings of its own. A
-// connection waits up to busy_timeout for another replica's write.
-func replica(t *testing.T, path string, maxRows int) (*Settings, *sql.DB) {
-	return replicaWith(t, path, TableLimits{Rows: maxRows, Bytes: 1 << 20}, slog.New(slog.DiscardHandler))
+// backend is a database the recipe runs on. Each test that reaches the
+// table runs once on each: SQLite always, PostgreSQL when pgtest has a
+// server, so the SQL the recipe documents for Postgres runs against one.
+type backend struct {
+	name string
+	// fresh is an empty database for the test, dropped when it ends.
+	fresh func(t *testing.T) database
+	// tables lists the tables of the database a connection is open on.
+	tables string
+}
+
+var (
+	sqliteBackend = backend{
+		name: "sqlite",
+		fresh: func(t *testing.T) database {
+			dir := t.TempDir()
+			// A connection waits up to busy_timeout for another replica's write.
+			return database{driver: "sqlite", dsn: filepath.Join(dir, "settings.db") + "?_pragma=busy_timeout(10000)", dir: dir}
+		},
+		tables: `SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`,
+	}
+	postgresBackend = backend{
+		name: "postgres",
+		fresh: func(t *testing.T) database {
+			return database{driver: pgtest.Driver, dsn: pgtest.DSN(t), dir: t.TempDir()}
+		},
+		tables: `SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() ORDER BY table_name`,
+	}
+	backends = []backend{sqliteBackend, postgresBackend}
+)
+
+// onEveryBackend runs test once on each backend, as a subtest named for it.
+func onEveryBackend(t *testing.T, test func(t *testing.T, b backend)) {
+	t.Helper()
+	for _, b := range backends {
+		t.Run(b.name, func(t *testing.T) { test(t, b) })
+	}
+}
+
+// database is one test's settings database. Every replica opens a pool of
+// its own on it, and reads config.yaml from dir, where it is absent unless
+// the test writes one: the table over defaults.
+type database struct {
+	driver, dsn, dir string
+}
+
+// open is a pool on d, closed when the test ends.
+func (d database) open(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open(d.driver, d.dsn)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func (d database) sources() Sources {
+	return appSources(filepath.Join(d.dir, "config.yaml"), slog.New(slog.DiscardHandler))
+}
+
+// replica opens the settings table in d as one replica of the service
+// does, with a pool and Settings of its own, the schema migrated.
+func replica(t *testing.T, d database, maxRows int) (*Settings, *sql.DB) {
+	return replicaWith(t, d, TableLimits{Rows: maxRows, Bytes: 1 << 20}, slog.New(slog.DiscardHandler))
 }
 
 // replicaWith is replica with limits and a logger of the test's.
-func replicaWith(t *testing.T, path string, limits TableLimits, logger *slog.Logger) (*Settings, *sql.DB) {
+func replicaWith(t *testing.T, d database, limits TableLimits, logger *slog.Logger) (*Settings, *sql.DB) {
 	t.Helper()
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(10000)")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-	require.NoError(t, migrate(t.Context(), db, time.Second))
-	file := filepath.Join(filepath.Dir(path), "config.yaml") // absent: the table over defaults
-	return NewSettings(db, appSources(file, slog.New(slog.DiscardHandler)), 10*time.Second, limits, logger), db
+	db := d.open(t)
+	require.NoError(t, migrate(t.Context(), db, 10*time.Second))
+	return NewSettings(db, d.sources(), 10*time.Second, limits, logger), db
 }
 
-func newReplica(t *testing.T, maxRows int) (*Settings, *sql.DB) {
-	return replica(t, filepath.Join(t.TempDir(), "settings.db"), maxRows)
+func newReplica(t *testing.T, b backend, maxRows int) (*Settings, *sql.DB) {
+	return replica(t, b.fresh(t), maxRows)
 }
 
 func write(t *testing.T, s *Settings, edits map[string]any) {
@@ -87,161 +144,171 @@ func refusal(t *testing.T, err error) *RefusedError {
 // an index load back as written. A write that load refuses stores nothing
 // and names only its own keys.
 func TestSettings_WriteIsCheckedByTheLoad(t *testing.T) {
-	s, db := newReplica(t, 100)
-	r, err := config.NewReloader[AppConfig](t.Context(), s.Options(), config.WithPollInterval(time.Hour))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = r.Stop(t.Context()) })
-	apply := func(edits map[string]any) {
-		t.Helper()
-		write(t, s, edits)
-		_, err := r.Reload(t.Context())
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		s, db := newReplica(t, b, 100)
+		r, err := config.NewReloader[AppConfig](t.Context(), s.Options(), config.WithPollInterval(time.Hour))
 		require.NoError(t, err)
-	}
+		t.Cleanup(func() { _ = r.Stop(t.Context()) })
+		apply := func(edits map[string]any) {
+			t.Helper()
+			write(t, s, edits)
+			_, err := r.Reload(t.Context())
+			require.NoError(t, err)
+		}
 
-	apply(map[string]any{"limits.min": 150, "limits.max": 200})
-	assert.Equal(t, Limits{Min: 150, Max: 200, Bytes: 1 << 20}, r.Config().Limits)
-	apply(map[string]any{
-		`upstreams["api.internal"]`: map[string]any{"url": "https://api.internal.example"},
-		"routes[0]":                 map[string]any{"path": "/v1", "upstream": "api.internal"},
-	})
-	apply(map[string]any{`upstreams["api.internal"].timeout`: "2s", "routes[1].path": "/v2", "routes[1].upstream": "api.internal"})
-	assert.Equal(t, map[string]Upstream{"api.internal": {URL: "https://api.internal.example", Timeout: 2 * time.Second}}, r.Config().Upstreams)
-	assert.Equal(t, []Route{{"/v1", "api.internal"}, {"/v2", "api.internal"}}, r.Config().Routes)
-	assert.Equal(t, `"2s"`, rowsOf(t, db)[`upstreams["api.internal"].timeout`])
-
-	stored := rowsOf(t, db)
-	for name, tc := range map[string]struct {
-		edits  map[string]any
-		reason string
-		keys   []string
-	}{
-		"a cross-field rule":                 {map[string]any{"limits.min": 300}, ReasonInvalid, []string{"limits.min"}},
-		"a route naming no upstream":         {map[string]any{"routes[0].upstream": "missing"}, ReasonInvalid, []string{"routes[0].upstream"}},
-		"deleting an upstream a route names": {map[string]any{`upstreams["api.internal"]`: nil}, ReasonInvalid, []string{`upstreams["api.internal"]`}},
-		"an index past the list's end":       {map[string]any{"routes[5].path": "/v5"}, ReasonInvalid, []string{"routes[5].path"}},
-		"an unknown key":                     {map[string]any{"limits.maxx": 250, "limits.max": 250}, ReasonUnknown, []string{"limits.maxx"}},
-		"an unknown key inside a value":      {map[string]any{"limits": map[string]any{"maxx": 250}}, ReasonUnknown, []string{"limits"}},
-		"one key spelled twice":              {map[string]any{"limits.max": 250, "LIMITS.Max": 260}, ReasonRepeated, []string{"limits.max"}},
-		"a key and its former name":          {map[string]any{"limits.max": 250, "limits.ceiling": 260}, ReasonRepeated, []string{"limits.max"}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, err := s.Write(t.Context(), tc.edits)
-			refused := refusal(t, err)
-			assert.Equal(t, tc.reason, refused.Reason)
-			assert.Equal(t, tc.keys, refused.Keys)
+		apply(map[string]any{"limits.min": 150, "limits.max": 200})
+		assert.Equal(t, Limits{Min: 150, Max: 200, Bytes: 1 << 20}, r.Config().Limits)
+		apply(map[string]any{
+			`upstreams["api.internal"]`: map[string]any{"url": "https://api.internal.example"},
+			"routes[0]":                 map[string]any{"path": "/v1", "upstream": "api.internal"},
 		})
-	}
-	assert.Equal(t, stored, rowsOf(t, db))
+		apply(map[string]any{`upstreams["api.internal"].timeout`: "2s", "routes[1].path": "/v2", "routes[1].upstream": "api.internal"})
+		assert.Equal(t, map[string]Upstream{"api.internal": {URL: "https://api.internal.example", Timeout: 2 * time.Second}}, r.Config().Upstreams)
+		assert.Equal(t, []Route{{"/v1", "api.internal"}, {"/v2", "api.internal"}}, r.Config().Routes)
+		assert.Equal(t, `"2s"`, rowsOf(t, db)[`upstreams["api.internal"].timeout`])
+
+		stored := rowsOf(t, db)
+		for name, tc := range map[string]struct {
+			edits  map[string]any
+			reason string
+			keys   []string
+		}{
+			"a cross-field rule":                 {map[string]any{"limits.min": 300}, ReasonInvalid, []string{"limits.min"}},
+			"a route naming no upstream":         {map[string]any{"routes[0].upstream": "missing"}, ReasonInvalid, []string{"routes[0].upstream"}},
+			"deleting an upstream a route names": {map[string]any{`upstreams["api.internal"]`: nil}, ReasonInvalid, []string{`upstreams["api.internal"]`}},
+			"an index past the list's end":       {map[string]any{"routes[5].path": "/v5"}, ReasonInvalid, []string{"routes[5].path"}},
+			"an unknown key":                     {map[string]any{"limits.maxx": 250, "limits.max": 250}, ReasonUnknown, []string{"limits.maxx"}},
+			"an unknown key inside a value":      {map[string]any{"limits": map[string]any{"maxx": 250}}, ReasonUnknown, []string{"limits"}},
+			"one key spelled twice":              {map[string]any{"limits.max": 250, "LIMITS.Max": 260}, ReasonRepeated, []string{"limits.max"}},
+			"a key and its former name":          {map[string]any{"limits.max": 250, "limits.ceiling": 260}, ReasonRepeated, []string{"limits.max"}},
+		} {
+			t.Run(name, func(t *testing.T) {
+				_, err := s.Write(t.Context(), tc.edits)
+				refused := refusal(t, err)
+				assert.Equal(t, tc.reason, refused.Reason)
+				assert.Equal(t, tc.keys, refused.Keys)
+			})
+		}
+		assert.Equal(t, stored, rowsOf(t, db))
+	})
 }
 
 // Keys are stored as CanonicalKey spells them, so every spelling of a key
 // writes one row: a former name, any letter case, and a row another writer
 // stored under another spelling.
 func TestSettings_KeysAreStoredCanonically(t *testing.T) {
-	s, db := newReplica(t, 100)
-	write(t, s, map[string]any{"LIMITS.Ceiling": 250})
-	assert.Equal(t, map[string]string{"limits.max": "250"}, rowsOf(t, db))
-	write(t, s, map[string]any{"Limits.MAX": 260, `UPSTREAMS["Api"].URL`: "https://api.example"})
-	assert.Equal(t, map[string]string{"limits.max": "260", `upstreams["Api"].url`: `"https://api.example"`}, rowsOf(t, db))
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		s, db := newReplica(t, b, 100)
+		write(t, s, map[string]any{"LIMITS.Ceiling": 250})
+		assert.Equal(t, map[string]string{"limits.max": "250"}, rowsOf(t, db))
+		write(t, s, map[string]any{"Limits.MAX": 260, `UPSTREAMS["Api"].URL`: "https://api.example"})
+		assert.Equal(t, map[string]string{"limits.max": "260", `upstreams["Api"].url`: `"https://api.example"`}, rowsOf(t, db))
 
-	_, err := db.Exec(`DELETE FROM settings WHERE key = 'limits.max'`)
-	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('LIMITS.MAX', '270')`)
-	require.NoError(t, err)
-	assert.Equal(t, 270, load(t, s).Limits.Max)
-	write(t, s, map[string]any{"limits.max": 280})
-	assert.Equal(t, map[string]string{"limits.max": "280", `upstreams["Api"].url`: `"https://api.example"`}, rowsOf(t, db))
+		_, err := db.Exec(`DELETE FROM settings WHERE key = 'limits.max'`)
+		require.NoError(t, err)
+		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('LIMITS.MAX', '270')`)
+		require.NoError(t, err)
+		assert.Equal(t, 270, load(t, s).Limits.Max)
+		write(t, s, map[string]any{"limits.max": 280})
+		assert.Equal(t, map[string]string{"limits.max": "280", `upstreams["Api"].url`: `"https://api.example"`}, rowsOf(t, db))
 
-	cfg := load(t, s)
-	assert.Equal(t, 280, cfg.Limits.Max)
-	assert.Equal(t, map[string]Upstream{"Api": {URL: "https://api.example", Timeout: time.Second}}, cfg.Upstreams)
+		cfg := load(t, s)
+		assert.Equal(t, 280, cfg.Limits.Max)
+		assert.Equal(t, map[string]Upstream{"Api": {URL: "https://api.example", Timeout: time.Second}}, cfg.Upstreams)
+	})
 }
 
 // A key's write replaces the rows stored beneath it, and a key set to null
 // deletes its row and theirs.
 func TestSettings_AWriteReplacesTheRowsBeneathIt(t *testing.T) {
-	s, db := newReplica(t, 100)
-	write(t, s, map[string]any{
-		`upstreams["a"]`:     map[string]any{"url": "https://a.example"},
-		"routes[0]":          map[string]any{"path": "/v1", "upstream": "a"},
-		"routes[1].path":     "/v2",
-		"routes[1].upstream": "a",
-		"limits.min":         5,
-		"limits.max":         300,
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		s, db := newReplica(t, b, 100)
+		write(t, s, map[string]any{
+			`upstreams["a"]`:     map[string]any{"url": "https://a.example"},
+			"routes[0]":          map[string]any{"path": "/v1", "upstream": "a"},
+			"routes[1].path":     "/v2",
+			"routes[1].upstream": "a",
+			"limits.min":         5,
+			"limits.max":         300,
+		})
+		write(t, s, map[string]any{`upstreams["a"].timeout`: "2s"})
+
+		write(t, s, map[string]any{`upstreams["a"]`: map[string]any{"url": "https://b.example"}})
+		assert.NotContains(t, rowsOf(t, db), `upstreams["a"].timeout`)
+		assert.Equal(t, map[string]Upstream{"a": {URL: "https://b.example", Timeout: time.Second}}, load(t, s).Upstreams)
+
+		write(t, s, map[string]any{"routes": []any{map[string]any{"path": "/only", "upstream": "a"}}})
+		assert.Equal(t, []Route{{"/only", "a"}}, load(t, s).Routes)
+
+		write(t, s, map[string]any{"limits.max": nil})
+		assert.Equal(t, Limits{Min: 5, Max: 100, Bytes: 1 << 20}, load(t, s).Limits, "the default again")
+		write(t, s, map[string]any{"routes": nil, `upstreams["a"]`: nil})
+		assert.Equal(t, map[string]string{"limits.min": "5"}, rowsOf(t, db))
+		assert.Empty(t, load(t, s).Upstreams)
 	})
-	write(t, s, map[string]any{`upstreams["a"].timeout`: "2s"})
-
-	write(t, s, map[string]any{`upstreams["a"]`: map[string]any{"url": "https://b.example"}})
-	assert.NotContains(t, rowsOf(t, db), `upstreams["a"].timeout`)
-	assert.Equal(t, map[string]Upstream{"a": {URL: "https://b.example", Timeout: time.Second}}, load(t, s).Upstreams)
-
-	write(t, s, map[string]any{"routes": []any{map[string]any{"path": "/only", "upstream": "a"}}})
-	assert.Equal(t, []Route{{"/only", "a"}}, load(t, s).Routes)
-
-	write(t, s, map[string]any{"limits.max": nil})
-	assert.Equal(t, Limits{Min: 5, Max: 100, Bytes: 1 << 20}, load(t, s).Limits, "the default again")
-	write(t, s, map[string]any{"routes": nil, `upstreams["a"]`: nil})
-	assert.Equal(t, map[string]string{"limits.min": "5"}, rowsOf(t, db))
-	assert.Empty(t, load(t, s).Upstreams)
 }
 
 // Writes from every replica take turns: two writes each valid alone but
 // not together never both commit, whichever replica makes them.
 func TestSettings_WritersOnEveryReplicaTakeTurns(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.db")
-	a, _ := replica(t, path, 100)
-	b, _ := replica(t, path, 100)
-	for round := range 20 {
-		start := make(chan struct{})
-		errs := make([]error, 2)
-		var wg sync.WaitGroup
-		for i, w := range []struct {
-			s     *Settings
-			edits map[string]any
-		}{{a, map[string]any{"limits.min": 90}}, {b, map[string]any{"limits.max": 50}}} {
-			wg.Go(func() {
-				<-start
-				_, errs[i] = w.s.Write(t.Context(), w.edits)
-			})
-		}
-		close(start)
-		wg.Wait()
-		refused := 0
-		for _, err := range errs {
-			if err != nil {
-				assert.Equal(t, ReasonInvalid, refusal(t, err).Reason, "round %d", round)
-				refused++
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		d := b.fresh(t)
+		one, _ := replica(t, d, 100)
+		two, _ := replica(t, d, 100)
+		for round := range 20 {
+			start := make(chan struct{})
+			errs := make([]error, 2)
+			var wg sync.WaitGroup
+			for i, w := range []struct {
+				s     *Settings
+				edits map[string]any
+			}{{one, map[string]any{"limits.min": 90}}, {two, map[string]any{"limits.max": 50}}} {
+				wg.Go(func() {
+					<-start
+					_, errs[i] = w.s.Write(t.Context(), w.edits)
+				})
 			}
+			close(start)
+			wg.Wait()
+			refused := 0
+			for _, err := range errs {
+				if err != nil {
+					assert.Equal(t, ReasonInvalid, refusal(t, err).Reason, "round %d", round)
+					refused++
+				}
+			}
+			require.Equal(t, 1, refused, "round %d: the second write is checked against the first", round)
+			load(t, one)
+			write(t, one, map[string]any{"limits.min": nil, "limits.max": nil})
 		}
-		require.Equal(t, 1, refused, "round %d: the second write is checked against the first", round)
-		load(t, a)
-		write(t, a, map[string]any{"limits.min": nil, "limits.max": nil})
-	}
+	})
 }
 
 // The table holds at most its row cap: a write that would grow it past the
 // cap is refused, one that replaces rows is not, and a table grown past
 // twice the cap by another writer fails the read rather than load unbounded.
 func TestSettings_RowCap(t *testing.T) {
-	s, db := newReplica(t, 3)
-	write(t, s, map[string]any{"limits.min": 2, "limits.max": 50, "limits.bytes": 10})
-	_, err := s.Write(t.Context(), map[string]any{`upstreams["a"]`: map[string]any{"url": "https://a.example"}})
-	refused := refusal(t, err)
-	assert.Equal(t, ReasonFull, refused.Reason)
-	assert.Equal(t, []string{`upstreams["a"]`}, refused.Keys)
-	write(t, s, map[string]any{"limits.max": 60})
-	write(t, s, map[string]any{"limits": map[string]any{"min": 2, "max": 60, "bytes": 10}})
-	assert.Len(t, rowsOf(t, db), 1)
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		s, db := newReplica(t, b, 3)
+		write(t, s, map[string]any{"limits.min": 2, "limits.max": 50, "limits.bytes": 10})
+		_, err := s.Write(t.Context(), map[string]any{`upstreams["a"]`: map[string]any{"url": "https://a.example"}})
+		refused := refusal(t, err)
+		assert.Equal(t, ReasonFull, refused.Reason)
+		assert.Equal(t, []string{`upstreams["a"]`}, refused.Keys)
+		write(t, s, map[string]any{"limits.max": 60})
+		write(t, s, map[string]any{"limits": map[string]any{"min": 2, "max": 60, "bytes": 10}})
+		assert.Len(t, rowsOf(t, db), 1)
 
-	for _, key := range []string{"limits.min", "limits.max", "limits.bytes", "routes[0].path", "routes[0].upstream", "routes[1].path"} {
-		_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ($1, '1')`, key)
-		require.NoError(t, err)
-	}
-	_, err = config.Load[AppConfig](t.Context(), s.Options()...)
-	require.ErrorIs(t, err, config.ErrSource)
-	assert.Contains(t, err.Error(), "more than 6 rows")
-	_, err = s.Write(t.Context(), map[string]any{"routes": nil})
-	assert.ErrorContains(t, err, "more than 6 rows")
+		for _, key := range []string{"limits.min", "limits.max", "limits.bytes", "routes[0].path", "routes[0].upstream", "routes[1].path"} {
+			_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ($1, '1')`, key)
+			require.NoError(t, err)
+		}
+		_, err = config.Load[AppConfig](t.Context(), s.Options()...)
+		require.ErrorIs(t, err, config.ErrSource)
+		assert.Contains(t, err.Error(), "more than 6 rows")
+		_, err = s.Write(t.Context(), map[string]any{"routes": nil})
+		assert.ErrorContains(t, err, "more than 6 rows")
+	})
 }
 
 func put(h http.Handler, body string) *httptest.ResponseRecorder {
@@ -255,76 +322,80 @@ func put(h http.Handler, body string) *httptest.ResponseRecorder {
 // that is not one JSON object, or exceeds the cap, is refused before the
 // store sees it. Integers keep every digit.
 func TestSettingsHandler(t *testing.T) {
-	s, db := newReplica(t, 100)
-	changed := 0
-	h := settingsHandler(s, func() { changed++ }, 64, slog.New(slog.DiscardHandler))
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		s, db := newReplica(t, b, 100)
+		changed := 0
+		h := settingsHandler(s, func() { changed++ }, 64, slog.New(slog.DiscardHandler))
 
-	rec := put(h, `{"limits.min": 150, "limits.max": 200}`)
-	assert.Equal(t, http.StatusNoContent, rec.Code)
-	assert.Equal(t, 1, changed)
+		rec := put(h, `{"limits.min": 150, "limits.max": 200}`)
+		assert.Equal(t, http.StatusNoContent, rec.Code)
+		assert.Equal(t, 1, changed)
 
-	rec = put(h, `{"limits.min": "FAKE_SECRET_VALUE"}`)
-	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
-	var refused RefusedError
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &refused))
-	assert.Equal(t, RefusedError{Reason: ReasonInvalid, Keys: []string{"limits.min"}}, refused)
-	assert.NotContains(t, rec.Body.String(), "FAKE_SECRET_VALUE")
-	assert.NotContains(t, rec.Body.String(), "limits.max")
-	assert.Equal(t, 1, changed)
+		rec = put(h, `{"limits.min": "FAKE_SECRET_VALUE"}`)
+		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+		var refused RefusedError
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &refused))
+		assert.Equal(t, RefusedError{Reason: ReasonInvalid, Keys: []string{"limits.min"}}, refused)
+		assert.NotContains(t, rec.Body.String(), "FAKE_SECRET_VALUE")
+		assert.NotContains(t, rec.Body.String(), "limits.max")
+		assert.Equal(t, 1, changed)
 
-	for body, status := range map[string]int{
-		`[1]`:                  http.StatusBadRequest,
-		`null`:                 http.StatusBadRequest,
-		`{"limits.max": 1} {}`: http.StatusBadRequest,
-		`{"limits.max": 1`:     http.StatusBadRequest,
-		`{"limits.max": ` + strings.Repeat(" ", 64) + `1}`: http.StatusRequestEntityTooLarge,
-	} {
-		assert.Equal(t, status, put(h, body).Code, body)
-	}
+		for body, status := range map[string]int{
+			`[1]`:                  http.StatusBadRequest,
+			`null`:                 http.StatusBadRequest,
+			`{"limits.max": 1} {}`: http.StatusBadRequest,
+			`{"limits.max": 1`:     http.StatusBadRequest,
+			`{"limits.max": ` + strings.Repeat(" ", 64) + `1}`: http.StatusRequestEntityTooLarge,
+		} {
+			assert.Equal(t, status, put(h, body).Code, body)
+		}
 
-	rec = put(h, `{"limits.bytes": 9007199254740993}`)
-	assert.Equal(t, http.StatusNoContent, rec.Code)
-	assert.Equal(t, "9007199254740993", rowsOf(t, db)["limits.bytes"])
-	assert.Equal(t, int64(9007199254740993), load(t, s).Limits.Bytes)
+		rec = put(h, `{"limits.bytes": 9007199254740993}`)
+		assert.Equal(t, http.StatusNoContent, rec.Code)
+		assert.Equal(t, "9007199254740993", rowsOf(t, db)["limits.bytes"])
+		assert.Equal(t, int64(9007199254740993), load(t, s).Limits.Bytes)
+	})
 }
 
 // A store that fails is a 503, logged at Error with its cause: a stored
 // table that no longer loads, which no write is at fault for, and a
 // database that is gone.
 func TestSettingsHandler_StoreFailures(t *testing.T) {
-	s, db := newReplica(t, 100)
-	var logs bytes.Buffer
-	level := new(slog.LevelVar)
-	level.Set(slog.LevelWarn)
-	h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: level})))
-	logged := func() []map[string]any {
-		var entries []map[string]any
-		for line := range strings.Lines(logs.String()) {
-			var entry map[string]any
-			require.NoError(t, json.Unmarshal([]byte(line), &entry))
-			entries = append(entries, entry)
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		s, db := newReplica(t, b, 100)
+		var logs bytes.Buffer
+		level := new(slog.LevelVar)
+		level.Set(slog.LevelWarn)
+		h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: level})))
+		logged := func() []map[string]any {
+			var entries []map[string]any
+			for line := range strings.Lines(logs.String()) {
+				var entry map[string]any
+				require.NoError(t, json.Unmarshal([]byte(line), &entry))
+				entries = append(entries, entry)
+			}
+			logs.Reset()
+			return entries
 		}
-		logs.Reset()
-		return entries
-	}
 
-	_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ('limits.min', '"lots"')`)
-	require.NoError(t, err)
-	rec := put(h, `{"limits.max": 300}`)
-	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-	entries := logged()
-	require.Len(t, entries, 1)
-	assert.Equal(t, "ERROR", entries[0]["level"])
-	assert.Equal(t, "writing settings", entries[0]["msg"])
-	assert.Contains(t, entries[0]["error"], "the settings fail to load without this write")
+		_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ('limits.min', '"lots"')`)
+		require.NoError(t, err)
+		rec := put(h, `{"limits.max": 300}`)
+		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		entries := logged()
+		require.Len(t, entries, 1)
+		assert.Equal(t, "ERROR", entries[0]["level"])
+		assert.Equal(t, "writing settings", entries[0]["msg"])
+		assert.Contains(t, entries[0]["error"], "the settings fail to load without this write")
 
-	require.NoError(t, db.Close())
-	rec = put(h, `{"limits.max": 300}`)
-	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-	entries = logged()
-	require.Len(t, entries, 1)
-	assert.Equal(t, "ERROR", entries[0]["level"])
-	assert.Contains(t, entries[0]["error"], "database is closed")
+		require.NoError(t, db.Close())
+		rec = put(h, `{"limits.max": 300}`)
+		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		entries = logged()
+		require.Len(t, entries, 1)
+		assert.Equal(t, "ERROR", entries[0]["level"])
+		assert.Contains(t, entries[0]["error"], "database is closed")
+	})
 }
 
 // The boot defaults load, and the startup entry is written whatever the
@@ -417,68 +488,67 @@ func TestSettings_WritesBeginAtReadCommitted(t *testing.T) {
 // When the settings fail to load without the write, the 503 says so and
 // names the sources beneath the table to check, not the table alone.
 func TestSettingsHandler_SettingsThatFailWithoutTheWrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.db")
-	s, _ := replica(t, path, 100)
-	file := filepath.Join(filepath.Dir(path), "config.yaml")
-	require.NoError(t, os.WriteFile(file, []byte("limits:\n  max: lots\n"), 0o600))
-	var logs bytes.Buffer
-	h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.NewJSONHandler(&logs, nil)))
-	rec := put(h, `{"limits.min": 2}`)
-	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-	var entry struct{ Level, Msg, Error string }
-	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
-	assert.Equal(t, "ERROR", entry.Level)
-	assert.Contains(t, entry.Error, "the settings fail to load without this write")
-	assert.Contains(t, entry.Error, file)
-	assert.Contains(t, entry.Error, "APP_")
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		d := b.fresh(t)
+		s, _ := replica(t, d, 100)
+		file := filepath.Join(d.dir, "config.yaml")
+		require.NoError(t, os.WriteFile(file, []byte("limits:\n  max: lots\n"), 0o600))
+		var logs bytes.Buffer
+		h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.NewJSONHandler(&logs, nil)))
+		rec := put(h, `{"limits.min": 2}`)
+		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		var entry struct{ Level, Msg, Error string }
+		require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+		assert.Equal(t, "ERROR", entry.Level)
+		assert.Contains(t, entry.Error, "the settings fail to load without this write")
+		assert.Contains(t, entry.Error, file)
+		assert.Contains(t, entry.Error, "APP_")
+	})
 }
 
 // A write that times out waiting for its turn, behind this replica's own
 // write or another replica's lock row, is contention: a 503 with
 // Retry-After, logged at Warn. Error is for failures.
 func TestSettingsHandler_ContentionIsA503ToRetry(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.db")
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(10000)")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-	require.NoError(t, migrate(t.Context(), db, time.Second))
-	s := NewSettings(db, appSources(filepath.Join(filepath.Dir(path), "config.yaml"), slog.New(slog.DiscardHandler)), 200*time.Millisecond, TableLimits{Rows: 100, Bytes: 1 << 20}, slog.New(slog.DiscardHandler))
-	var logs bytes.Buffer
-	h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.NewJSONHandler(&logs, nil)))
-	contended := func(t *testing.T) {
-		t.Helper()
-		logs.Reset()
-		rec := put(h, `{"limits.max": 300}`)
-		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-		assert.Equal(t, "1", rec.Header().Get("Retry-After"))
-		var entry struct{ Level, Msg string }
-		require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
-		assert.Equal(t, "WARN", entry.Level, entry.Msg)
-	}
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		d := b.fresh(t)
+		db := d.open(t)
+		require.NoError(t, migrate(t.Context(), db, 10*time.Second))
+		s := NewSettings(db, d.sources(), 200*time.Millisecond, TableLimits{Rows: 100, Bytes: 1 << 20}, slog.New(slog.DiscardHandler))
+		var logs bytes.Buffer
+		h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.NewJSONHandler(&logs, nil)))
+		contended := func(t *testing.T) {
+			t.Helper()
+			logs.Reset()
+			rec := put(h, `{"limits.max": 300}`)
+			assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+			assert.Equal(t, "1", rec.Header().Get("Retry-After"))
+			var entry struct{ Level, Msg string }
+			require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+			assert.Equal(t, "WARN", entry.Level, entry.Msg)
+		}
 
-	t.Run("behind this replica's write", func(t *testing.T) {
-		s.writing <- struct{}{}
-		defer func() { <-s.writing }()
-		contended(t)
-	})
-	t.Run("behind another replica's lock row", func(t *testing.T) {
-		other, _ := replica(t, path, 100)
-		tx, err := other.db.BeginTx(t.Context(), nil)
-		require.NoError(t, err)
-		defer func() { _ = tx.Rollback() }()
-		_, err = tx.Exec("UPDATE settings_lock SET writes = writes + 1 WHERE id = 1")
-		require.NoError(t, err)
-		contended(t)
+		t.Run("behind this replica's write", func(t *testing.T) {
+			s.writing <- struct{}{}
+			defer func() { <-s.writing }()
+			contended(t)
+		})
+		t.Run("behind another replica's lock row", func(t *testing.T) {
+			other, _ := replica(t, d, 100)
+			tx, err := other.db.BeginTx(t.Context(), nil)
+			require.NoError(t, err)
+			defer func() { _ = tx.Rollback() }()
+			_, err = tx.Exec("UPDATE settings_lock SET writes = writes + 1 WHERE id = 1")
+			require.NoError(t, err)
+			contended(t)
+		})
 	})
 }
 
-// sqliteTables are the tables of the SQLite database at path.
-func sqliteTables(t *testing.T, path string) []string {
+// tablesOf are the tables of the database db is open on.
+func tablesOf(t *testing.T, b backend, db *sql.DB) []string {
 	t.Helper()
-	db, err := sql.Open("sqlite", path)
-	require.NoError(t, err)
-	defer db.Close()
-	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
+	rows, err := db.Query(b.tables)
 	require.NoError(t, err)
 	defer rows.Close()
 	var names []string
@@ -495,30 +565,29 @@ func sqliteTables(t *testing.T, path string) []string {
 // naming the migrate step, and creates nothing. migrate applies the schema,
 // as often as it runs, and serving's check then passes.
 func TestRun_SchemaIsAnExplicitStep(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "settings.db")
-	environ := func() []string {
-		return []string{"SETTINGS_DATABASE_URL=" + path, "SETTINGS_CONFIG_FILE=" + filepath.Join(dir, "config.yaml")}
-	}
-	open := func(url string) (*sql.DB, error) { return sql.Open("sqlite", url) }
-	command := func(args ...string) error {
-		return run(t.Context(), args, environ, open, slog.New(slog.DiscardHandler), new(slog.LevelVar))
-	}
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		d := b.fresh(t)
+		environ := func() []string {
+			return []string{"SETTINGS_DATABASE_URL=" + d.dsn, "SETTINGS_CONFIG_FILE=" + filepath.Join(d.dir, "config.yaml")}
+		}
+		open := func(url string) (*sql.DB, error) { return sql.Open(d.driver, url) }
+		command := func(args ...string) error {
+			return run(t.Context(), args, environ, open, slog.New(slog.DiscardHandler), new(slog.LevelVar))
+		}
+		db := d.open(t)
 
-	err := command()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "settingsstore migrate")
-	assert.Empty(t, sqliteTables(t, path))
+		err := command()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "settingsstore migrate")
+		assert.Empty(t, tablesOf(t, b, db))
 
-	require.NoError(t, command("migrate"))
-	require.NoError(t, command("migrate"))
-	assert.Equal(t, []string{"settings", "settings_lock"}, sqliteTables(t, path))
-	db, err := open(path)
-	require.NoError(t, err)
-	defer db.Close()
-	assert.NoError(t, checkSchema(t.Context(), db, time.Second))
+		require.NoError(t, command("migrate"))
+		require.NoError(t, command("migrate"))
+		assert.Equal(t, []string{"settings", "settings_lock"}, tablesOf(t, b, db))
+		assert.NoError(t, checkSchema(t.Context(), db, 10*time.Second))
 
-	assert.ErrorContains(t, command("serve", "now"), "usage")
+		assert.ErrorContains(t, command("serve", "now"), "usage")
+	})
 }
 
 // A row whose key the schema no longer reads, its field removed by a
@@ -526,22 +595,24 @@ func TestRun_SchemaIsAnExplicitStep(t *testing.T) {
 // Only null may name such a key, only to delete such rows, and only where
 // one is stored: a spelling the schema refuses never deletes a row it reads.
 func TestSettings_ANullDeletesARowTheSchemaNoLongerReads(t *testing.T) {
-	s, db := newReplica(t, 100)
-	write(t, s, map[string]any{"limits.max": 200})
-	for key, value := range map[string]string{"legacy": "1", "legacy.part": "2"} {
-		_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ($1, $2)`, key, value)
-		require.NoError(t, err)
-	}
-	h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.DiscardHandler))
-	assert.Equal(t, http.StatusNoContent, put(h, `{"legacy": null}`).Code)
-	assert.Equal(t, map[string]string{"limits.max": "200"}, rowsOf(t, db))
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		s, db := newReplica(t, b, 100)
+		write(t, s, map[string]any{"limits.max": 200})
+		for key, value := range map[string]string{"legacy": "1", "legacy.part": "2"} {
+			_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ($1, $2)`, key, value)
+			require.NoError(t, err)
+		}
+		h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.DiscardHandler))
+		assert.Equal(t, http.StatusNoContent, put(h, `{"legacy": null}`).Code)
+		assert.Equal(t, map[string]string{"limits.max": "200"}, rowsOf(t, db))
 
-	for _, body := range []string{`{"legacy": 1}`, `{"legacy": null}`, `{"limits.maxx": null}`, `{"limits[\"max\"]": null}`} {
-		rec := put(h, body)
-		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code, body)
-		assert.Contains(t, rec.Body.String(), `"reason":"unknown"`, body)
-	}
-	assert.Equal(t, map[string]string{"limits.max": "200"}, rowsOf(t, db))
+		for _, body := range []string{`{"legacy": 1}`, `{"legacy": null}`, `{"limits.maxx": null}`, `{"limits[\"max\"]": null}`} {
+			rec := put(h, body)
+			assert.Equal(t, http.StatusUnprocessableEntity, rec.Code, body)
+			assert.Contains(t, rec.Body.String(), `"reason":"unknown"`, body)
+		}
+		assert.Equal(t, map[string]string{"limits.max": "200"}, rowsOf(t, db))
+	})
 }
 
 // What a removed field leaves in the table, a row or a part of a row's
@@ -549,32 +620,34 @@ func TestSettings_ANullDeletesARowTheSchemaNoLongerReads(t *testing.T) {
 // writes as though it were gone. What a write sets is not left out, so a key
 // the schema refuses inside a written value still refuses the write.
 func TestSettings_LoadsLeaveOutWhatTheSchemaNoLongerReads(t *testing.T) {
-	var logs bytes.Buffer
-	s, db := replicaWith(t, filepath.Join(t.TempDir(), "settings.db"), TableLimits{Rows: 100, Bytes: 1 << 20}, slog.New(slog.NewJSONHandler(&logs, nil)))
-	write(t, s, map[string]any{"limits.max": 200})
-	for key, value := range map[string]string{
-		"legacy":    "1",
-		"limits":    `{"min": 2, "old": 5}`,
-		"upstreams": `{"a": {"url": "https://a.example", "retries": 3}}`,
-	} {
-		_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ($1, $2)`, key, value)
-		require.NoError(t, err)
-	}
-	cfg := load(t, s)
-	assert.Equal(t, Limits{Min: 2, Max: 200, Bytes: 1 << 20}, cfg.Limits)
-	assert.Equal(t, map[string]Upstream{"a": {URL: "https://a.example", Timeout: time.Second}}, cfg.Upstreams)
-	var entry struct {
-		Level string
-		Keys  []string
-	}
-	require.NoError(t, json.NewDecoder(&logs).Decode(&entry))
-	assert.Equal(t, "WARN", entry.Level)
-	assert.Equal(t, []string{"legacy", "limits.old", `upstreams["a"].retries`}, entry.Keys)
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		var logs bytes.Buffer
+		s, db := replicaWith(t, b.fresh(t), TableLimits{Rows: 100, Bytes: 1 << 20}, slog.New(slog.NewJSONHandler(&logs, nil)))
+		write(t, s, map[string]any{"limits.max": 200})
+		for key, value := range map[string]string{
+			"legacy":    "1",
+			"limits":    `{"min": 2, "old": 5}`,
+			"upstreams": `{"a": {"url": "https://a.example", "retries": 3}}`,
+		} {
+			_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ($1, $2)`, key, value)
+			require.NoError(t, err)
+		}
+		cfg := load(t, s)
+		assert.Equal(t, Limits{Min: 2, Max: 200, Bytes: 1 << 20}, cfg.Limits)
+		assert.Equal(t, map[string]Upstream{"a": {URL: "https://a.example", Timeout: time.Second}}, cfg.Upstreams)
+		var entry struct {
+			Level string
+			Keys  []string
+		}
+		require.NoError(t, json.NewDecoder(&logs).Decode(&entry))
+		assert.Equal(t, "WARN", entry.Level)
+		assert.Equal(t, []string{"legacy", "limits.old", `upstreams["a"].retries`}, entry.Keys)
 
-	write(t, s, map[string]any{"limits.max": 300})
-	assert.Equal(t, 300, load(t, s).Limits.Max)
-	_, err := s.Write(t.Context(), map[string]any{"limits": map[string]any{"min": 3, "typo": 5}})
-	assert.Equal(t, ReasonUnknown, refusal(t, err).Reason)
+		write(t, s, map[string]any{"limits.max": 300})
+		assert.Equal(t, 300, load(t, s).Limits.Max)
+		_, err := s.Write(t.Context(), map[string]any{"limits": map[string]any{"min": 3, "typo": 5}})
+		assert.Equal(t, ReasonUnknown, refusal(t, err).Reason)
+	})
 }
 
 // A write of a key that a stored row above it sets takes effect: the key is
@@ -583,61 +656,65 @@ func TestSettings_LoadsLeaveOutWhatTheSchemaNoLongerReads(t *testing.T) {
 // nothing is deleted. A key beneath a stored list or scalar cannot be cut
 // out, and refuses the write.
 func TestSettings_AWriteTakesEffectBeneathAStoredRowAboveIt(t *testing.T) {
-	s, db := newReplica(t, 100)
-	write(t, s, map[string]any{"limits": map[string]any{"min": 2, "ceiling": 300}})
-	write(t, s, map[string]any{"limits.max": nil})
-	assert.Equal(t, Limits{Min: 2, Max: 100, Bytes: 1 << 20}, load(t, s).Limits, "deleted: the default again")
-	assert.Equal(t, map[string]string{"limits": `{"min":2}`}, rowsOf(t, db))
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		s, db := newReplica(t, b, 100)
+		write(t, s, map[string]any{"limits": map[string]any{"min": 2, "ceiling": 300}})
+		write(t, s, map[string]any{"limits.max": nil})
+		assert.Equal(t, Limits{Min: 2, Max: 100, Bytes: 1 << 20}, load(t, s).Limits, "deleted: the default again")
+		assert.Equal(t, map[string]string{"limits": `{"min":2}`}, rowsOf(t, db))
 
-	write(t, s, map[string]any{"limits": map[string]any{"max": 300}})
-	write(t, s, map[string]any{"limits.max": 250})
-	assert.Equal(t, 250, load(t, s).Limits.Max, "set")
-	assert.Equal(t, map[string]string{"limits.max": "250"}, rowsOf(t, db), "the row above, left setting nothing, deleted")
+		write(t, s, map[string]any{"limits": map[string]any{"max": 300}})
+		write(t, s, map[string]any{"limits.max": 250})
+		assert.Equal(t, 250, load(t, s).Limits.Max, "set")
+		assert.Equal(t, map[string]string{"limits.max": "250"}, rowsOf(t, db), "the row above, left setting nothing, deleted")
 
-	write(t, s, map[string]any{"upstreams": map[string]any{"a": map[string]any{"url": "https://a.example", "timeout": "3s"}}})
-	write(t, s, map[string]any{`upstreams["a"].timeout`: "2s"})
-	assert.Equal(t, map[string]Upstream{"a": {URL: "https://a.example", Timeout: 2 * time.Second}}, load(t, s).Upstreams)
-	_, err := s.Write(t.Context(), map[string]any{`upstreams["a"]`: map[string]any{"timeout": "4s"}})
-	assert.Equal(t, ReasonInvalid, refusal(t, err).Reason, "the entry replaced whole, its url with it")
-	assert.Equal(t, `{"a":{"url":"https://a.example"}}`, rowsOf(t, db)["upstreams"])
+		write(t, s, map[string]any{"upstreams": map[string]any{"a": map[string]any{"url": "https://a.example", "timeout": "3s"}}})
+		write(t, s, map[string]any{`upstreams["a"].timeout`: "2s"})
+		assert.Equal(t, map[string]Upstream{"a": {URL: "https://a.example", Timeout: 2 * time.Second}}, load(t, s).Upstreams)
+		_, err := s.Write(t.Context(), map[string]any{`upstreams["a"]`: map[string]any{"timeout": "4s"}})
+		assert.Equal(t, ReasonInvalid, refusal(t, err).Reason, "the entry replaced whole, its url with it")
+		assert.Equal(t, `{"a":{"url":"https://a.example"}}`, rowsOf(t, db)["upstreams"])
 
-	for name, row := range map[string]struct{ key, value, write string }{
-		"a list":   {"routes", `[{"path": "/a", "upstream": "a"}]`, "routes[0].path"},
-		"a scalar": {`upstreams["b"]`, `"https://b.example"`, `upstreams["b"].timeout`},
-	} {
-		_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ($1, $2)`, row.key, row.value)
-		require.NoError(t, err)
-		before := rowsOf(t, db)
-		_, err = s.Write(t.Context(), map[string]any{row.write: "/b"})
-		refused := refusal(t, err)
-		assert.Equal(t, ReasonEnclosed, refused.Reason, name)
-		assert.Equal(t, []string{row.write}, refused.Keys, name)
-		assert.Equal(t, before, rowsOf(t, db), name)
-		_, err = db.Exec(`DELETE FROM settings WHERE key = $1`, row.key)
-		require.NoError(t, err)
-	}
+		for name, row := range map[string]struct{ key, value, write string }{
+			"a list":   {"routes", `[{"path": "/a", "upstream": "a"}]`, "routes[0].path"},
+			"a scalar": {`upstreams["b"]`, `"https://b.example"`, `upstreams["b"].timeout`},
+		} {
+			_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ($1, $2)`, row.key, row.value)
+			require.NoError(t, err)
+			before := rowsOf(t, db)
+			_, err = s.Write(t.Context(), map[string]any{row.write: "/b"})
+			refused := refusal(t, err)
+			assert.Equal(t, ReasonEnclosed, refused.Reason, name)
+			assert.Equal(t, []string{row.write}, refused.Keys, name)
+			assert.Equal(t, before, rowsOf(t, db), name)
+			_, err = db.Exec(`DELETE FROM settings WHERE key = $1`, row.key)
+			require.NoError(t, err)
+		}
+	})
 }
 
 // A table over its row cap, the cap lowered beneath it, still loads, and
 // takes every write that leaves it no larger, deletes among them, so the
 // API can bring it back under the cap; a write that grows it is refused.
 func TestSettings_ATableOverItsRowCapRecovers(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.db")
-	wide, _ := replica(t, path, 10)
-	write(t, wide, map[string]any{"limits.min": 2, "limits.max": 50, "limits.bytes": 10, `upstreams["a"].url`: "https://a.example"})
-	var logs bytes.Buffer
-	narrow, db := replicaWith(t, path, TableLimits{Rows: 2, Bytes: 1 << 20}, slog.New(slog.NewJSONHandler(&logs, nil)))
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		d := b.fresh(t)
+		wide, _ := replica(t, d, 10)
+		write(t, wide, map[string]any{"limits.min": 2, "limits.max": 50, "limits.bytes": 10, `upstreams["a"].url`: "https://a.example"})
+		var logs bytes.Buffer
+		narrow, db := replicaWith(t, d, TableLimits{Rows: 2, Bytes: 1 << 20}, slog.New(slog.NewJSONHandler(&logs, nil)))
 
-	assert.Equal(t, 50, load(t, narrow).Limits.Max, "a reload, and a restart, load the table")
-	var entry struct{ Level, Msg string }
-	require.NoError(t, json.NewDecoder(&logs).Decode(&entry))
-	assert.Equal(t, "WARN", entry.Level)
-	assert.Equal(t, "settings table over its cap", entry.Msg)
-	write(t, narrow, map[string]any{"limits.max": 60})
-	_, err := narrow.Write(t.Context(), map[string]any{"routes[0].path": "/a", "routes[0].upstream": "a"})
-	assert.Equal(t, ReasonFull, refusal(t, err).Reason)
-	write(t, narrow, map[string]any{"limits": nil})
-	assert.Equal(t, map[string]string{`upstreams["a"].url`: `"https://a.example"`}, rowsOf(t, db))
+		assert.Equal(t, 50, load(t, narrow).Limits.Max, "a reload, and a restart, load the table")
+		var entry struct{ Level, Msg string }
+		require.NoError(t, json.NewDecoder(&logs).Decode(&entry))
+		assert.Equal(t, "WARN", entry.Level)
+		assert.Equal(t, "settings table over its cap", entry.Msg)
+		write(t, narrow, map[string]any{"limits.max": 60})
+		_, err := narrow.Write(t.Context(), map[string]any{"routes[0].path": "/a", "routes[0].upstream": "a"})
+		assert.Equal(t, ReasonFull, refusal(t, err).Reason)
+		write(t, narrow, map[string]any{"limits": nil})
+		assert.Equal(t, map[string]string{`upstreams["a"].url`: `"https://a.example"`}, rowsOf(t, db))
+	})
 }
 
 // The table holds at most its byte cap, each row's key and its value's JSON
@@ -646,54 +723,101 @@ func TestSettings_ATableOverItsRowCapRecovers(t *testing.T) {
 // and takes the writes that bring it back under, and a read fails past
 // twice the cap.
 func TestSettings_ByteCap(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.db")
-	s, db := replicaWith(t, path, TableLimits{Rows: 100, Bytes: 200}, slog.New(slog.DiscardHandler))
-	long := strings.Repeat("x", 100)
-	write(t, s, map[string]any{`upstreams["a"].url`: "https://a.example/" + long}) // 18 + 120 bytes
-	_, err := s.Write(t.Context(), map[string]any{`upstreams["b"].url`: "https://b.example/" + long})
-	assert.Equal(t, ReasonFull, refusal(t, err).Reason)
-	write(t, s, map[string]any{`upstreams["a"].url`: "https://a.example/"}) // 18 + 20 bytes
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		d := b.fresh(t)
+		s, db := replicaWith(t, d, TableLimits{Rows: 100, Bytes: 200}, slog.New(slog.DiscardHandler))
+		long := strings.Repeat("x", 100)
+		write(t, s, map[string]any{`upstreams["a"].url`: "https://a.example/" + long}) // 18 + 120 bytes
+		_, err := s.Write(t.Context(), map[string]any{`upstreams["b"].url`: "https://b.example/" + long})
+		assert.Equal(t, ReasonFull, refusal(t, err).Reason)
+		write(t, s, map[string]any{`upstreams["a"].url`: "https://a.example/"}) // 18 + 20 bytes
 
-	var logs bytes.Buffer
-	narrow, _ := replicaWith(t, path, TableLimits{Rows: 100, Bytes: 30}, slog.New(slog.NewJSONHandler(&logs, nil)))
-	assert.Equal(t, "https://a.example/", load(t, narrow).Upstreams["a"].URL, "over the cap, under twice it: loads")
-	var entry struct{ Level, Msg string }
-	require.NoError(t, json.NewDecoder(&logs).Decode(&entry))
-	assert.Equal(t, "WARN", entry.Level)
-	assert.Equal(t, "settings table over its cap", entry.Msg)
-	_, err = narrow.Write(t.Context(), map[string]any{"limits.max": 5})
-	assert.Equal(t, ReasonFull, refusal(t, err).Reason)
-	write(t, narrow, map[string]any{`upstreams["a"]`: nil})
-	assert.Empty(t, rowsOf(t, db))
+		var logs bytes.Buffer
+		narrow, _ := replicaWith(t, d, TableLimits{Rows: 100, Bytes: 30}, slog.New(slog.NewJSONHandler(&logs, nil)))
+		assert.Equal(t, "https://a.example/", load(t, narrow).Upstreams["a"].URL, "over the cap, under twice it: loads")
+		var entry struct{ Level, Msg string }
+		require.NoError(t, json.NewDecoder(&logs).Decode(&entry))
+		assert.Equal(t, "WARN", entry.Level)
+		assert.Equal(t, "settings table over its cap", entry.Msg)
+		_, err = narrow.Write(t.Context(), map[string]any{"limits.max": 5})
+		assert.Equal(t, ReasonFull, refusal(t, err).Reason)
+		write(t, narrow, map[string]any{`upstreams["a"]`: nil})
+		assert.Empty(t, rowsOf(t, db))
 
-	_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('routes', $1)`, `"`+long+`"`)
-	require.NoError(t, err)
-	_, err = config.Load[AppConfig](t.Context(), narrow.Options()...)
-	require.ErrorIs(t, err, config.ErrSource)
-	assert.Contains(t, err.Error(), "more than 60 bytes")
-	_, err = narrow.Write(t.Context(), map[string]any{"routes": nil})
-	assert.ErrorContains(t, err, "more than 60 bytes")
+		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('routes', $1)`, `"`+long+`"`)
+		require.NoError(t, err)
+		_, err = config.Load[AppConfig](t.Context(), narrow.Options()...)
+		require.ErrorIs(t, err, config.ErrSource)
+		assert.Contains(t, err.Error(), "more than 60 bytes")
+		_, err = narrow.Write(t.Context(), map[string]any{"routes": nil})
+		assert.ErrorContains(t, err, "more than 60 bytes")
+	})
 }
 
 // One write naming a key and a key within it, under any spellings, is
 // refused naming both: the load would merge the two, so the client sends
 // the parent with the child folded in.
 func TestSettings_AWriteNamingAKeyAndOneWithinIt(t *testing.T) {
-	s, db := newReplica(t, 100)
-	for name, tc := range map[string]struct {
-		edits map[string]any
-		keys  []string
-	}{
-		"a field and one within it": {map[string]any{"limits": map[string]any{"min": 2}, "limits.max": 300}, []string{"limits", "limits.max"}},
-		"a list and an element's":   {map[string]any{"routes": []any{}, "routes[0].path": "/b"}, []string{"routes", "routes[0].path"}},
-		"a deleted entry and its":   {map[string]any{`upstreams["a"]`: nil, `upstreams["a"].timeout`: "2s"}, []string{`upstreams["a"]`, `upstreams["a"].timeout`}},
-		"other spellings":           {map[string]any{"LIMITS": map[string]any{"min": 2}, "limits.ceiling": 300}, []string{"limits", "limits.max"}},
-		"three deep, one refusal":   {map[string]any{"routes": nil, "routes[0]": nil, "routes[0].path": "/b", "limits.min": 2}, []string{"routes", "routes[0]", "routes[0].path"}},
-	} {
-		_, err := s.Write(t.Context(), tc.edits)
-		refused := refusal(t, err)
-		assert.Equal(t, ReasonOverlap, refused.Reason, name)
-		assert.Equal(t, tc.keys, refused.Keys, name)
-	}
-	assert.Empty(t, rowsOf(t, db))
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		s, db := newReplica(t, b, 100)
+		for name, tc := range map[string]struct {
+			edits map[string]any
+			keys  []string
+		}{
+			"a field and one within it": {map[string]any{"limits": map[string]any{"min": 2}, "limits.max": 300}, []string{"limits", "limits.max"}},
+			"a list and an element's":   {map[string]any{"routes": []any{}, "routes[0].path": "/b"}, []string{"routes", "routes[0].path"}},
+			"a deleted entry and its":   {map[string]any{`upstreams["a"]`: nil, `upstreams["a"].timeout`: "2s"}, []string{`upstreams["a"]`, `upstreams["a"].timeout`}},
+			"other spellings":           {map[string]any{"LIMITS": map[string]any{"min": 2}, "limits.ceiling": 300}, []string{"limits", "limits.max"}},
+			"three deep, one refusal":   {map[string]any{"routes": nil, "routes[0]": nil, "routes[0].path": "/b", "limits.min": 2}, []string{"routes", "routes[0]", "routes[0].path"}},
+		} {
+			_, err := s.Write(t.Context(), tc.edits)
+			refused := refusal(t, err)
+			assert.Equal(t, ReasonOverlap, refused.Reason, name)
+			assert.Equal(t, tc.keys, refused.Keys, name)
+		}
+		assert.Empty(t, rowsOf(t, db))
+	})
+}
+
+// On PostgreSQL a write waits on the lock row another replica's write holds,
+// then reads what that write committed. It asks for READ COMMITTED, so it
+// does so even on a session whose default is SERIALIZABLE, where the
+// waiting update would fail to serialize instead.
+func TestSettings_AWriteWaitsOnTheLockRowAndReadsWhatCommitted(t *testing.T) {
+	d := postgresBackend.fresh(t)
+	_, db := replica(t, d, 100)
+	u, err := url.Parse(d.dsn)
+	require.NoError(t, err)
+	q := u.Query()
+	q.Set("default_transaction_isolation", "serializable")
+	u.RawQuery = q.Encode()
+	serializable := d
+	serializable.dsn = u.String()
+	second, _ := replica(t, serializable, 100)
+
+	// The first replica's write, under way: it holds the lock row and has
+	// stored a limits.max under which the second write's limits.min loads.
+	first, err := db.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	defer func() { _ = first.Rollback() }()
+	var pid int
+	require.NoError(t, first.QueryRow("SELECT pg_backend_pid()").Scan(&pid))
+	_, err = first.Exec("UPDATE settings_lock SET writes = writes + 1 WHERE id = 1")
+	require.NoError(t, err)
+	_, err = first.Exec(`INSERT INTO settings (key, value) VALUES ('limits.max', '300')`)
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := second.Write(t.Context(), map[string]any{"limits.min": 200})
+		done <- err
+	}()
+	assert.Eventually(t, func() bool {
+		var waiting int
+		err := db.QueryRow(`SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))`, pid).Scan(&waiting)
+		return err == nil && waiting == 1
+	}, 5*time.Second, 10*time.Millisecond, "the second write waits on the lock row the first holds")
+	require.NoError(t, first.Commit())
+	require.NoError(t, <-done, "read after the first committed, limits.max 300 lets limits.min 200 load")
+	assert.Equal(t, map[string]string{"limits.max": "300", "limits.min": "200"}, rowsOf(t, db))
 }

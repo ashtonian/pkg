@@ -43,7 +43,7 @@ scoped-over = $(if $(3),$(1) $(3),@echo "no covered packages in $(strip $(2))")
 UNTAGGED_MODULES := $(CORE_MODULES) $(CONFIG_MODULES)
 LINT_TAGS := unit,integration
 
-.PHONY: test test-native-unit test-native-integration native-release-check test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration parse-postgres-up parse-postgres-down test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check lint release-check gitx-release-check config-release-check kongprovider-release-check httpx-release-check cookbook-check tool-check release-please-check ci
+.PHONY: test test-native-unit test-native-integration native-release-check test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration parse-postgres-up parse-postgres-down test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check lint release-check gitx-release-check config-release-check kongprovider-release-check httpx-release-check cookbook-check cookbook-integration cookbook-postgres-up cookbook-postgres-down tool-check release-please-check ci
 
 ## test: every published module from the working tree (go.work), race detector on.
 ## -count=1 only where a test depends on state the test cache cannot see:
@@ -186,6 +186,38 @@ httpx-release-check:
 ## cookbook-check: build and test the cookbook against the working tree
 cookbook-check:
 	cd $(COOKBOOK) && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test $(RACE) -count=1 ./...
+
+## cookbook-integration: the cookbook's database tests, the settings-store
+## recipe's on SQLite and on the PostgreSQL server COOKBOOK_POSTGRES_DSN names.
+## Its PostgreSQL legs skip without the variable, unless COOKBOOK_REQUIRE_PG=1.
+cookbook-integration:
+	cd $(COOKBOOK) && GOWORK=off go test $(RACE) -count=1 ./internal/pgtest/... ./settingsstore/...
+
+# The cookbook's PostgreSQL server, as CI's cookbook-postgres job provisions it.
+COOKBOOK_PG_IMAGE ?= postgres:19
+COOKBOOK_PG_NAME ?= cookbook-postgres
+COOKBOOK_PG_PORT ?= 55433
+COOKBOOK_PG_READY_SECONDS ?= 60
+COOKBOOK_PG_DSN = postgres://cookbook:cookbook@127.0.0.1:$(COOKBOOK_PG_PORT)/cookbook?sslmode=disable
+
+## cookbook-postgres-up: start the cookbook's PostgreSQL server and print the
+## export that points its tests at it: eval "$(make -s cookbook-postgres-up)".
+cookbook-postgres-up:
+	@docker run -d --rm --name $(COOKBOOK_PG_NAME) \
+		-e POSTGRES_USER=cookbook -e POSTGRES_PASSWORD=cookbook -e POSTGRES_DB=cookbook \
+		-p 127.0.0.1:$(COOKBOOK_PG_PORT):5432 $(COOKBOOK_PG_IMAGE) >/dev/null
+	@i=0; until docker exec $(COOKBOOK_PG_NAME) pg_isready -q -h 127.0.0.1 -U cookbook -d cookbook; do \
+		i=$$((i + 1)); \
+		if [ $$i -ge $(COOKBOOK_PG_READY_SECONDS) ]; then \
+			echo "$(COOKBOOK_PG_NAME): not ready after $(COOKBOOK_PG_READY_SECONDS)s" >&2; exit 1; \
+		fi; \
+		sleep 1; \
+	done
+	@echo "export COOKBOOK_POSTGRES_DSN='$(COOKBOOK_PG_DSN)'"
+
+## cookbook-postgres-down: stop and remove the cookbook's PostgreSQL server.
+cookbook-postgres-down:
+	docker rm -f $(COOKBOOK_PG_NAME)
 
 ## parse-sdk-registry-check: bounded registry availability and integrity checks
 parse-sdk-registry-check:

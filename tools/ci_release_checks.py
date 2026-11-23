@@ -41,7 +41,7 @@ UNCHECKED = {"CONTRIBUTING.md", "README.md"}
 SDK_TOOLING = "tools/check-parse-sdk-"
 # Jobs that validate a change, as ci.yml names them. parse-benchmarks records
 # main's benchmarks and validates nothing, so acceptance does not require it.
-VALIDATION_JOBS = ("test", "test-darwin", "parse-postgres", "parse-sdk", "minimum-go", "modules", "lint")
+VALIDATION_JOBS = ("test", "test-darwin", "parse-postgres", "cookbook-postgres", "parse-sdk", "minimum-go", "modules", "lint")
 JOBS = VALIDATION_JOBS + ("parse-benchmarks",)
 
 
