@@ -341,11 +341,29 @@ type callerMethodCfg struct {
 	Value panickyValue `koanf:"value" validate:"validateFn"`
 }
 
-// A key check meets the same rule: its error is the declaration's.
+// A key check meets the same rule: its error is the declaration's, as it
+// is, and no key's or batch's.
 func TestDefaultValidator_KeyCheckRuleThatCannotApplyIsSchemaError(t *testing.T) {
-	var err error
-	require.NotPanics(t, func() { _, err = DecodeKey[applyDiveOnIntCfg](t.Context(), "count", 1) })
-	require.ErrorIs(t, err, ErrSchema)
+	for name, check := range map[string]func() error{
+		"DecodeKey": func() error { _, err := DecodeKey[applyDiveOnIntCfg](t.Context(), "count", 1); return err },
+		"CheckKey":  func() error { return CheckKey[applyDiveOnIntCfg](t.Context(), "count", 1) },
+		"DecodeEdits": func() error {
+			_, err := DecodeEdits[applyDiveOnIntCfg](t.Context(), nil, map[string]any{"count": 1})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var err error
+			require.NotPanics(t, func() { err = check() })
+			require.ErrorIs(t, err, ErrSchema)
+			assert.Contains(t, err.Error(), "can't dive on a non slice or map")
+			assert.NotErrorIs(t, err, ErrValidation)
+			var ke *KeyError
+			assert.NotErrorAs(t, err, &ke)
+			var ee *EditsError
+			assert.NotErrorAs(t, err, &ee)
+		})
+	}
 }
 
 // A panic raised by the caller's own code that the default validator calls

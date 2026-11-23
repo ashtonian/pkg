@@ -2,13 +2,9 @@ package config
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
-	"reflect"
 	"slices"
-
-	"github.com/ashtonian/pkg/config/internal/deepcopy"
 )
 
 // SourceOption configures one base or override provider.
@@ -16,7 +12,7 @@ type SourceOption func(*providerSource)
 
 // WithInvalidEntries withholds the source's invalid entries and reports
 // them, preserving lower-precedence values. report receives the sorted
-// rejected keys after each read, including an empty slice when none were
+// rejected keys on every load, including an empty slice when none were
 // rejected; nil discards the report. Its error fails the load with
 // ErrSource. Report errors omit values; their wrapped causes are intended
 // only for trusted diagnostics.
@@ -24,108 +20,54 @@ type SourceOption func(*providerSource)
 // An entry of a provider is a struct section's field, checked field by
 // field; a collection or self-decoding value is one entry. An entry of
 // [WithBaseEntries] or [WithOverrideEntries] is one stored key. Entries are
-// judged over the layers merged beneath the source, as Load decodes and
-// validates them: when the source's entries all apply together, all are
-// kept. Otherwise an entry is withheld when it fails both on its own and
-// with every entry of the source that passes on its own applied — so an
-// entry that needs another, a list element after the one before it or a
-// field its section requires, is kept with it. An entry that passes on its
-// own is kept: a rule it breaks only together with other entries is the
-// final configuration's to fail, and cross-field failures are never
-// resolved by choosing entries to discard. Judging costs one decode when
-// every entry applies, and at most one per entry and one more per entry
-// failing on its own when one does not.
+// judged against the final configuration: every source of the load, the
+// defaults included, merged in rank order, decoded and validated as Load
+// does before secrets and post-load hooks. The entries of every source
+// this option applies to are judged together, in rank order and by key
+// within a source, over the rest of what the sources set.
 //
-// Defaults must validate before any source is read, so a broken baseline
-// cannot be mistaken for bad stored entries. Unknown entries remain
-// available to the normal unknown-input handler, including declared unknown
-// children of a withheld entry. Read and parser errors and cancellation
-// still fail the load, with the cause the context ended with, and a load
-// whose context has ended reports nothing. A validate tag the default
-// validator cannot apply fails the load with ErrSchema, whichever entry
-// brings the validator to it: it is the declaration's fault, not the
-// entry's.
+// When the final configuration passes with every entry, all are kept.
+// Otherwise an entry that passes with the rest alone is always kept, so
+// entries each valid that break a rule together fail the load rather than
+// one being chosen for discarding. When some set of the others passes
+// beside those, the load goes on with the entries kept, and each one
+// withheld fails when added to them. When none does, every entry merges
+// but those a failure was attributed to, and the load fails as that
+// configuration does. Every entry withheld is in the report.
+//
+// A failure is attributed to the entries setting its key, a key holding it
+// or a key beneath it, from the highest-ranked source among them: an entry
+// a higher one sets over is not at fault. A rule naming a field beside its
+// own (ltefield, required_with) is attributed to the struct holding both;
+// a Validate method's error, a WithValidator validator's that names no
+// field and a rule naming another struct's field are attributed to none.
+// The entries a failure names are set aside until the rest pass; then
+// each entry set aside is retried, in order, until a pass keeps none more,
+// so an entry that needs another — a list element after the one before
+// it, a field its section requires — is kept with it whichever comes
+// first.
+//
+// Every source is read before any entry is judged: report runs only once
+// the last source is read, so a slow provider delays it, and a source
+// that fails to read fails the load with nothing reported.
+//
+// Judging merges the sources from the lowest this option applies to up
+// and decodes the result: once when every entry passes, and otherwise, for
+// n entries of which k fail with the rest alone, at most
+// 2 + n + k + k(k+1)/2 times. Each merge starts over from a copy of what
+// lies beneath those sources and copies the configuration tree once for
+// each source it merges and once more to decode.
+//
+// Unknown entries remain available to the unknown-input handler — the
+// load's, or this source's [WithUnknownEntries] report — including
+// declared unknown children of a withheld entry. Read and parser
+// errors and cancellation still fail the load, with the cause the context
+// ended with, and a load whose context has ended reports nothing. A
+// validate tag the default validator cannot apply fails the load with
+// ErrSchema, whichever entry brings the validator to it: it is the
+// declaration's fault, not the entry's.
 func WithInvalidEntries(report func(context.Context, []KeyError) error) SourceOption {
 	return func(s *providerSource) { s.withhold, s.rejected = true, report }
-}
-
-// withhold judges edits, the entries of one source in key order, over
-// below, the tree of the layers merged beneath it, as WithInvalidEntries
-// describes, and returns those it keeps; each withheld one is in rejected,
-// and the keys inside its value that no field reads in unknown. It does
-// not change below or the edits; err fails the load (see fatal).
-func (c *keyChecker) withhold(ctx context.Context, below map[string]any, edits []edit) (kept []edit, rejected []*KeyError, unknown []UnknownKey, err error) {
-	if len(edits) == 0 {
-		return nil, nil, nil, nil
-	}
-	failed := c.passes(ctx, below, edits)
-	if failed == nil {
-		return edits, nil, nil, nil
-	}
-	if err := fatal(ctx, failed); err != nil {
-		return nil, nil, nil, err
-	}
-	alone := make([]error, len(edits)) // nil: the edit passes on its own
-	for i := range edits {
-		alone[i] = c.passes(ctx, below, edits[i:i+1])
-		if err := fatal(ctx, alone[i]); err != nil {
-			return nil, nil, nil, err
-		}
-	}
-	for i, e := range edits {
-		if alone[i] == nil {
-			kept = append(kept, e)
-			continue
-		}
-		with := make([]edit, 0, len(edits))
-		for j := range edits {
-			if alone[j] == nil || j == i {
-				with = append(with, edits[j])
-			}
-		}
-		failed := c.passes(ctx, below, with)
-		if failed == nil {
-			kept = append(kept, e)
-			continue
-		}
-		if err := fatal(ctx, failed); err != nil {
-			return nil, nil, nil, err
-		}
-		rejected = append(rejected, &KeyError{Key: e.safe, Err: alone[i]})
-		unknown = append(unknown, e.unknown...)
-	}
-	return kept, rejected, unknown, nil
-}
-
-// fatal is why judging fails the load rather than an entry, given failed,
-// an entry's failure: the context ended, or a validate tag the validator
-// cannot apply (ErrSchema), which is the declaration's fault and no
-// entry's. It is nil when failed is the entry's own.
-func fatal(ctx context.Context, failed error) error {
-	if err := ended(ctx); err != nil {
-		return err
-	}
-	if errors.Is(failed, ErrSchema) {
-		return failed
-	}
-	return nil
-}
-
-// passes is nil when edits, set over below, decode and validate; keys no
-// field reads are the unknown-input handler's, not a failure. Otherwise it
-// is the first edit refused, the candidate's cause or why ctx ended.
-func (c *keyChecker) passes(ctx context.Context, below map[string]any, edits []edit) error {
-	if err := ended(ctx); err != nil {
-		return err
-	}
-	tree, unset := setEdits(func() map[string]any { return below }, edits)
-	if len(unset) > 0 {
-		return unset[0].Err
-	}
-	candidate := deepcopy.Value(reflect.ValueOf(below)).Interface().(map[string]any)
-	mergeTrees(tree, candidate)
-	_, _, err := c.decode(ctx, candidate)
-	return err
 }
 
 // sourceEntries is data, a provider's tree, as the entries WithInvalidEntries
@@ -173,78 +115,50 @@ func sourceEntries(schema *schemaNode, data map[string]any) (edits []edit, rest 
 	return edits, rest, append(refused, failed...)
 }
 
-func (l *loader) prepareProvider(ctx context.Context, name string, data map[string]any, p providerSource, label func(map[string]any) (labeler, error)) error {
+// prepareProvider is data, the tree of the provider p called name, as a
+// layer whose values label attributes. Under WithInvalidEntries the
+// provider is set entry by entry (see sourceEntries).
+func (l *loader) prepareProvider(name string, data map[string]any, p providerSource, label func(map[string]any) (labeler, error)) (*layer, error) {
 	w := keyWalk{schema: l.schema}
 	tree := w.tree(l.root, textKeyed(data))
 	if len(w.twice) > 0 || len(w.noText) > 0 || !p.withhold && len(w.notJSON) > 0 {
 		_, err := l.rewrite(name, data)
-		return err
+		return nil, err
 	}
 	for _, a := range w.aliased {
 		l.aliased = append(l.aliased, a+" in "+name)
 	}
 	sources, err := label(tree)
 	if err != nil {
-		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+		return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 	}
-	if p.withhold {
-		edits, rest, refused := sourceEntries(l.schema, textKeyed(data))
-		kept, rejected, unknown, err := l.checker.withhold(ctx, l.k.Raw(), edits)
-		if err != nil {
-			return err
-		}
-		l.unmergedUnknown = append(l.unmergedUnknown, unknown...)
-		tree, _ = setEdits(func() map[string]any { return nil }, kept) // a field holds no index to bound
-		mergeTrees(rest, tree)
-		if err := l.reportWithheld(ctx, name, p, slices.Concat(refused, rejected)); err != nil {
-			return err
-		}
+	y := &layer{name: name, label: sources, claimsUnknown: p.claimsUnknown, unknownReport: p.unknown}
+	if !p.withhold {
+		y.tree, y.unkeyed = tree, w.unkeyed
+		return y, nil
 	}
-	return l.mergeSource(name, tree, w.unkeyed, sources)
+	edits, rest, refused := sourceEntries(l.schema, textKeyed(data))
+	y.tree, y.byEntry, y.entries, y.refused = rest, true, edits, refused
+	y.withhold, y.report = true, p.rejected
+	return y, nil
 }
 
 // reportWithheld hands a WithInvalidEntries report the entries the source
 // called name withheld, sorted by key. A load whose context has ended
 // reports nothing: the report is the caller's code.
-func (l *loader) reportWithheld(ctx context.Context, name string, p providerSource, withheld []*KeyError) error {
-	if p.rejected == nil {
+func (l *loader) reportWithheld(ctx context.Context, name string, report func(context.Context, []KeyError) error, withheld []*KeyError) error {
+	if report == nil {
 		return nil
 	}
 	if err := ended(ctx); err != nil {
 		return err
 	}
-	report := make([]KeyError, len(withheld))
+	out := make([]KeyError, len(withheld))
 	for i, ke := range sortKeyErrors(withheld) {
-		report[i] = *ke
+		out[i] = *ke
 	}
-	if err := p.rejected(ctx, report); err != nil {
+	if err := report(ctx, out); err != nil {
 		return fmt.Errorf("reporting invalid entries in %s: %w: %w", name, ErrSource, err)
 	}
-	return nil
-}
-
-func (l *loader) prepareValidation(ctx context.Context, o *options) error {
-	if !slices.ContainsFunc(o.base, func(p providerSource) bool { return p.withhold }) &&
-		!slices.ContainsFunc(o.overrides, func(p providerSource) bool { return p.withhold }) {
-		return nil
-	}
-	c, err := newKeyChecker(l.root, o)
-	if err != nil {
-		return err
-	}
-	_, unknown, err := c.decode(ctx, c.defaultsTree())
-	if ctxErr := ended(ctx); ctxErr != nil && (err != nil || unknown != nil) {
-		return ctxErr
-	}
-	if errors.Is(err, ErrSchema) {
-		return err
-	}
-	if unknown != nil {
-		err = errors.Join(err, unknown)
-	}
-	if err != nil {
-		return fmt.Errorf("invalid baseline for provider entry validation: %w: %w", ErrValidation, err)
-	}
-	l.checker = c
 	return nil
 }

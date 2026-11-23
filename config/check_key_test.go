@@ -127,9 +127,10 @@ func TestWithInvalidEntriesFailureBoundaries(t *testing.T) {
 	called := false
 	p, err := NewMapProvider(func(context.Context) (map[string]any, error) { called = true; return map[string]any{"port": 9}, nil }, "")
 	require.NoError(t, err)
-	_, err = Load[keyConfig](t.Context(), WithDefaults(map[string]any{"port": 0}), WithBaseProvider(p, nil, WithInvalidEntries(nil)))
-	require.ErrorIs(t, err, ErrValidation)
-	assert.False(t, called, "invalid defaults fail before a source can be blamed")
+	got, err := Load[keyConfig](t.Context(), WithDefaults(map[string]any{"port": 0}), WithBaseProvider(p, nil, WithInvalidEntries(nil)))
+	require.NoError(t, err, "an entry repairing defaults that fail is kept")
+	assert.True(t, called)
+	assert.Equal(t, 9, got.Port)
 	failed := errors.New("read failed")
 	_, err = Load[keyConfig](t.Context(), WithBaseProvider(failingProvider{err: failed}, nil, WithInvalidEntries(nil)))
 	require.ErrorIs(t, err, ErrSource)
@@ -266,18 +267,29 @@ func TestDecodeKey_ListIndexBoundsAndDetachedDefaults(t *testing.T) {
 		assert.False(t, ke.Unknown)
 		assert.Equal(t, "pool[2].host", ke.Key)
 		require.ErrorIs(t, err, ErrValidation, "an index past the next element")
+		var problem keyProblem
+		require.ErrorAs(t, ke.Err, &problem, "refused as an index, not as a candidate that fails to decode")
 		_, err = DecodeKey[editConfig](t.Context(), "pool[-1].host", "z", WithDefaults(defaults))
 		require.ErrorIs(t, err, ErrKey)
 		_, err = DecodeKey[editConfig](t.Context(), "route.bits", 4, WithDefaults(defaults))
 		require.ErrorAs(t, err, &ke)
 		assert.Equal(t, KeyError{Key: "route.bits", Unknown: true}, KeyError{Key: ke.Key, Unknown: ke.Unknown}, "a value decoded from text has no key to set")
 
-		got, err := DecodeKey[editConfig](t.Context(), "pool[0].port", 7, WithDefaults(defaults))
+		opt := WithDefaults(defaults)
+		got, err := DecodeKey[editConfig](t.Context(), "pool[0].port", 7, opt)
 		require.NoError(t, err)
+		assert.Equal(t, []editServer{{"x", 7}}, got.Pool, "typed defaults: %v: the index edits that element of the defaults' list", typed)
+		want := *got
+		want.Pool = slices.Clone(got.Pool)
+		want.Addresses = maps.Clone(got.Addresses)
+		want.Extra = maps.Clone(got.Extra.(map[string]any))
 		got.Pool[0].Host = "changed"
 		got.Addresses["first"] = editServer{}
 		got.Extra.(map[string]any)["x"] = 99
 		assert.Equal(t, editDefaults(typed), defaults, "the candidate shares nothing with the caller's defaults")
+		again, err := DecodeKey[editConfig](t.Context(), "pool[0].port", 7, opt)
+		require.NoError(t, err)
+		assert.Equal(t, want, *again, "typed defaults: %v: the candidate shares nothing with the option's defaults", typed)
 	}
 	got, err := DecodeKey[editConfig](t.Context(), "pool[0].port", 3)
 	require.NoError(t, err)
@@ -397,6 +409,24 @@ func TestCanonicalKey(t *testing.T) {
 	}
 }
 
+// A key's spelling does not depend on validation: a validate tag the
+// default validator cannot read, on another field, leaves CanonicalKey as it
+// is.
+func TestCanonicalKey_IgnoresValidateTags(t *testing.T) {
+	type misspeltRule struct {
+		Port  int `koanf:"port" alias:"listen"`
+		Other int `koanf:"other" validate:"requird"`
+	}
+	_, err := Load[misspeltRule](t.Context())
+	require.ErrorIs(t, err, ErrSchema, "the tag is one the default validator refuses")
+	got, err := CanonicalKey[misspeltRule]("LISTEN")
+	require.NoError(t, err)
+	assert.Equal(t, "port", got)
+	got, err = CanonicalKey[misspeltRule]("other")
+	require.NoError(t, err)
+	assert.Equal(t, "other", got)
+}
+
 // undivable's validate tag parses but cannot apply to its field: the
 // validator meets it only as it validates a value.
 type undivable struct {
@@ -450,4 +480,62 @@ func TestKeyChecks_ValidatorDeclarationErrorsAreSchemaErrors(t *testing.T) {
 	assertSchema(t, err)
 	_, err = DecodeKey[interfaceHolder](t.Context(), "extra.broken", true, brokenInside)
 	assertSchema(t, err)
+}
+
+type limitedSection struct {
+	Port  int `koanf:"port"`
+	Limit int `koanf:"-"`
+}
+
+type limitedConfig struct {
+	Section limitedSection `koanf:"section"`
+}
+
+// Validate reads the unkeyed Limit, which only a typed section sets.
+func (c *limitedConfig) Validate() error {
+	if c.Section.Port > c.Section.Limit {
+		return fmt.Errorf("port %d is over the limit %d", c.Section.Port, c.Section.Limit)
+	}
+	return nil
+}
+
+// A candidate holds the koanf:"-" fields of the typed sections beneath its
+// edits as a load does, so a rule reading one judges it as Load would: the
+// defaults' typed section for CheckKey, DecodeKey, DecodeEdits over the
+// defaults and a WithInvalidEntries filter, the baseline's for DecodeEdits
+// over one, and an edit's own typed section replaces both.
+func TestCheckKey_CandidateKeepsUnkeyedFieldsAsALoadDoes(t *testing.T) {
+	defaults := WithDefaults(map[string]any{"section": limitedSection{Port: 1, Limit: 10}})
+	loaded, err := Load[limitedConfig](t.Context(), defaults)
+	require.NoError(t, err)
+	require.Equal(t, 10, loaded.Section.Limit)
+
+	require.NoError(t, CheckKey[limitedConfig](t.Context(), "section.port", 5, defaults))
+	require.ErrorIs(t, CheckKey[limitedConfig](t.Context(), "section.port", 11, defaults), ErrValidation)
+	got, err := DecodeKey[limitedConfig](t.Context(), "section.port", 5, defaults)
+	require.NoError(t, err)
+	assert.Equal(t, limitedSection{Port: 5, Limit: 10}, got.Section)
+	got, err = DecodeEdits[limitedConfig](t.Context(), nil, map[string]any{"section.port": 5}, defaults)
+	require.NoError(t, err)
+	assert.Equal(t, limitedSection{Port: 5, Limit: 10}, got.Section)
+
+	baseline := &limitedConfig{Section: limitedSection{Port: 1, Limit: 20}}
+	got, err = DecodeEdits(t.Context(), baseline, map[string]any{"section.port": 15}, defaults)
+	require.NoError(t, err)
+	assert.Equal(t, limitedSection{Port: 15, Limit: 20}, got.Section)
+
+	got, err = DecodeKey[limitedConfig](t.Context(), "section", limitedSection{Port: 3, Limit: 4}, defaults)
+	require.NoError(t, err)
+	assert.Equal(t, limitedSection{Port: 3, Limit: 4}, got.Section)
+	require.ErrorIs(t, CheckKey[limitedConfig](t.Context(), "section", limitedSection{Port: 5, Limit: 4}, defaults), ErrValidation)
+
+	var rejected []KeyError
+	filtered, err := Load[limitedConfig](t.Context(), defaults,
+		WithBaseProvider(mapSource{"section": map[string]any{"port": 5}}, nil, WithInvalidEntries(func(_ context.Context, entries []KeyError) error {
+			rejected = entries
+			return nil
+		})))
+	require.NoError(t, err)
+	assert.Empty(t, rejected)
+	assert.Equal(t, limitedSection{Port: 5, Limit: 10}, filtered.Section)
 }

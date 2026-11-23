@@ -160,13 +160,17 @@ another letter case (`MAIN.Port` → `primary.port`); a map entry quoted; an
 integer-keyed map's entry in decimal (`ports["080"]` → `ports["80"]`); and a
 key beneath an interface or remain field as a field wherever it can be one
 (`extra["x"]` → `extra.x`). It refuses what `CheckKey` refuses as unknown,
-with an `Unknown` `*KeyError`, and reads no value. A store that keys its rows
-by it holds one row per key, whatever spelling a client sent.
+with an `Unknown` `*KeyError`, and reads no value and no `validate` tag: a
+key's spelling does not depend on validation. A store that keys its rows by
+it holds one row per key, whatever spelling a client sent.
 
 `Key.Within(p)` reports whether a key is `p` or beneath it, so a store can
 find the rows a write of `p` replaces: `primary.port` and `primary` are
 within `primary`, `pool[10]` is not within `pool[1]`, and a wildcard in `p`
-stands for any map key or list index. Compare keys `CanonicalKey` spelled.
+stands for any map key, list index or field, the last because `CanonicalKey`
+spells a key beneath an interface or remain field as one: `extra.x` is
+within `extra[*]`. `Within` reads no schema, so a wildcard after a struct
+matches its fields too. Compare keys `CanonicalKey` spelled.
 
 ### Validating a batch of edits
 
@@ -190,7 +194,10 @@ beneath it. One batch can append several list elements (`pool[1]`,
 `pool[2]`, …), and a key beneath another sets what it names in the value the
 other set: `primary` set to `{"port": 6}` merges into the baseline's section
 and `primary.port` set to `7` then sets its port, while `primary` set to
-`Server{Port: 6}` replaces the section first. A batch is refused whole when
+`Server{Port: 6}` replaces the section first. A map set beneath merges into
+the value the other set as into the baseline's: `addresses` set to
+`{"a": {"host": "h", "port": 1}}` and `addresses["a"]` to `{"port": 2}` leave
+`a` at `{h 2}`. The entries of one source apply the same way. A batch is refused whole when
 any of its keys is. The error is one `*EditsError` whose `Refused` lists
 every refused key, in key order, whichever stage refused it; a `*KeyError`
 that is not `Unknown` says why in its message, naming keys only:
@@ -206,16 +213,21 @@ that is not `Unknown` says why in its message, naming keys only:
 
 When every key applies but the candidate does not decode or validate, the
 `*EditsError` names every edited key in `Keys` and keeps the decoder's or
-validator's cause in `Err` for trusted diagnostics. `errors.Is` reaches
-`ErrKey` when a key was refused and `ErrValidation` when the candidate
-failed; the message names keys and never a value. A baseline holding a value
+validator's cause in `Err` for trusted diagnostics. The error wraps every
+refused `*KeyError` and `Err`, so each keeps the category `DecodeKey` gives
+it: `errors.Is` reaches `ErrKey` when an unknown key was refused and
+`ErrValidation` when another refusal was made or the candidate failed, and
+`errors.As` reaches the first refused `*KeyError`. The message names keys
+and never a value. A baseline holding a value
 that does not marshal to text is an error of its own, neither, and a
 `validate` tag the default validator cannot apply is `ErrSchema` as it is,
 no batch's fault. On any
 failure no candidate is returned. The baseline is only read, and the
 candidate shares nothing with it or with the edits. The candidate is decoded
-afresh from the baseline's keys, so a field config does not decode
-(unexported, or `koanf:"-"`) is zero in it. `WithDefaults` applies only when
+afresh from the baseline's keys, so an unexported field is zero in it; an
+exported `koanf:"-"` field, which no key reaches, holds a copy of the
+baseline's, as a typed section's does in a load, unless an edit replaces
+what holds it. `WithDefaults` applies only when
 the baseline is `nil`; otherwise the options apply as they do to `CheckKey`.
 
 What `DecodeEdits` checks is the batch over the baseline, with Load's
@@ -245,33 +257,99 @@ config.WithBaseProvider(store, nil, config.WithInvalidEntries(
 This withholds the source's invalid entries, leaving their lower-precedence
 values intact. A provider's entries are its struct sections' fields, checked
 field by field; a collection or self-decoding value is one entry. An entry
-of `WithBaseEntries` or `WithOverrideEntries` is one stored key. Entries are
-judged over the layers merged beneath the source, as `Load` decodes and
-validates them:
+of `WithBaseEntries` or `WithOverrideEntries` is one stored key.
 
-- When all of the source's entries apply together, all are kept: one decode.
-- Otherwise an entry is withheld when it fails both on its own and with
-  every entry of the source that passes on its own applied. An entry that
-  needs another — `upstreams["a"].timeout` beside the
-  `upstreams["a"].url` its entry requires, `pool[1]` after `pool[0]`,
-  `min` moved with `max` — is kept with it, as is one that needs a lower
-  layer.
-- An entry that passes on its own is kept: a rule it breaks only together
-  with other entries is the final configuration's to fail. Independently
-  valid rows can conflict, and the loader does not choose rows to discard to
-  resolve the conflict.
+Entries are judged against the final configuration: every source of the
+load, the defaults included, merged in rank order and then decoded and
+validated as `Load` does before secrets and post-load hooks. The entries of
+every source using the option are judged together, ordered by source rank
+and then by key, over the rest of what the sources set. So a value a
+higher source repairs is no entry's fault, an entry a higher source sets
+over is kept whatever it holds, and a lower source's entry valid beside a
+higher source's is kept with it.
 
-Judging a source costs one decode when its entries all apply, and at most
-one per entry plus one per entry failing on its own when they do not. The
-callback receives sorted key/error pairs after every read, including an
-empty report; nil discards reports. Its error fails the load with
-`ErrSource`. Defaults must validate before any source is read. Unknown keys
-still reach the normal diagnostics, including declared unknown children of
-a withheld entry. A `validate` tag the default validator cannot apply
-fails the load with `ErrSchema`, whichever entry brings the validator to
-it. Read/parser errors and cancellation fail the load, with
-the cause the context ended with, and a load whose context has ended
-reports nothing. The option applies equally to `WithOverrideProvider`.
+- When the final configuration passes with every entry, all are kept.
+- An entry that passes with the rest alone is always kept. Independently
+  valid rows can conflict, and the loader does not choose rows to discard
+  to resolve the conflict: the load fails on it.
+- Otherwise each failure is attributed to the entries setting its key, a
+  key holding it or a key beneath it, from the highest-ranked source among
+  them. A rule naming a field beside its own (`ltefield`, `required_with`)
+  is attributed to the struct holding both; a `Validate` method's error, a
+  `WithValidator` validator's that names no field, and a rule naming a
+  field of another struct are attributed to none. The entries a failure
+  names are set aside until the rest pass. Then each entry set aside is
+  retried in order until a pass keeps none more, and kept when it passes
+  with the entries kept. An entry that needs another —
+  `upstreams["a"].timeout` beside the `upstreams["a"].url` its entry
+  requires, `pool[1]` after `pool[0]`, `a` valid only equal to `b` — is kept
+  with it, whichever comes first.
+- When no set of entries passes — a file that fails and that no entry
+  repairs, a required field nothing sets — every entry merges but those a
+  failure was attributed to, and the load fails as that configuration does.
+  Every entry withheld is in the report; none is dropped without one.
+
+A load reads every source before it judges any entry, so the callback runs
+only once the last source is read: a slow provider delays it, and a source
+that fails to read fails the load with nothing reported. The callback
+receives sorted key/error pairs on every load, including an empty report;
+nil discards reports. Its error fails the load with `ErrSource`.
+
+Judging merges the sources from the lowest that uses the option up and
+decodes the result: once when every entry passes, and otherwise, for n
+entries of which k fail with the rest alone, at most 2 + n + k + k(k+1)/2
+times — every entry, each entry alone, up to k while entries are set aside,
+the passing entries alone, and the retries, k(k+1)/2 only when each pass
+keeps one entry. Each merge starts from a copy of what lies beneath those
+sources and copies the configuration tree once for each source it merges
+and once more to decode.
+
+Unknown keys still reach the normal diagnostics, including declared unknown
+children of a withheld entry. A `validate` tag the default validator cannot
+apply fails the load with `ErrSchema`, whichever entry brings the validator
+to it. Read/parser errors and cancellation fail the load, with the cause
+the context ended with, and a load whose context has ended reports
+nothing. The option applies equally to `WithOverrideProvider`.
+
+### Unknown keys of one source
+
+A store that keeps rows for fields since removed would fail every load
+under the strict default. Claim the keys such a source sets that no field
+reads, without relaxing the check for every other source:
+
+```go
+config.WithOverrideEntries(readSettings, config.WithUnknownEntries(
+    func(ctx context.Context, unknown []config.UnknownKey) error {
+        logger.WarnContext(ctx, "stored settings no field reads", "keys", unknown)
+        return nil
+    },
+))
+```
+
+The keys go to the callback instead of `WithUnknownKeys` or the strict
+default: a nil return lets the load go on, an error fails it with
+`ErrValidation`, the error kept as its cause, and a nil callback accepts
+them silently. It is called at every load and reload that finds any, with
+the keys sorted and each one's likely misspelling, and never once the
+load's context has ended. `Snapshot.UnknownKeys` lists them beside the
+keys the load-wide handler accepts.
+
+A key is unknown exactly as for `WithUnknownKeys`: the decoder leaves it
+unused as it decodes the merged sources. A key beneath an interface, one a
+`koanf:",remain"` field collects, and the keys a self-decoding value or a
+decode hook reads are not unknown. An entry naming nothing config reads is,
+and under `WithInvalidEntries` on the same source so are the keys inside a
+withheld entry's value. A key the merge holds is the source's only when it
+set everything the merge keeps there: a value, when it is the
+highest-ranked source to set it; a section no field holds, when it set
+every key the merge keeps in it. A key another source or a default set any
+part of stays the load's, so the same key in a file still fails.
+
+Finding each key's source costs no decode. The load records which source
+set each key as the sources merge, one node for each key a source sets, and
+walks that record once per unknown key; a load that records provenance or
+finds shadowed inputs keeps that record already. The option applies to
+`WithBaseProvider`, `WithOverrideProvider` and both entry options.
 
 ### Stored entries
 
@@ -312,7 +390,7 @@ a whole list where the list beneath can change.
 
 | Entry | Load |
 |---|---|
-| Names nothing config reads, or does not parse; or a key inside its value that no field reads | an unknown key, for the unknown-input handler, with the field it most likely misspells |
+| Names nothing config reads, or does not parse; or a key inside its value that no field reads | an unknown key, for the unknown-input handler or the source's `WithUnknownEntries` callback, with the field it most likely misspells |
 | One value under two spellings (`port`, `PORT`; a field and its alias) | fails with a `*KeyError` matching `ErrValidation` |
 | An index past the next element of the list beneath | fails with a `*KeyError` matching `ErrValidation` |
 | A key beneath one set to a value that cannot hold it, or keys selecting both elements and fields of one value | fails with a `*KeyError` matching `ErrValidation` |
@@ -320,8 +398,8 @@ a whole list where the list beneath can change.
 
 Every refused entry is named, and every message names keys, cut short
 beneath a sensitive container, and never a value. Under
-`WithInvalidEntries` the failing entries, and every entry that does not
-decode or validate as that option judges it, are withheld and reported
+`WithInvalidEntries` the refused entries, and the entries the final
+configuration fails on as that option judges it, are withheld and reported
 instead. The
 [settings-store recipe](../examples/cookbook/README.md#settings-a-service-writes)
 canonicalizes a write's keys, checks the table it makes with the service's

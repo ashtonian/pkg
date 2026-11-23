@@ -120,37 +120,25 @@ func (b boundProvider) ReadBytes() ([]byte, error)    { return b.ReadBytesContex
 type fileDigests map[string][sha256.Size]byte
 
 // loader merges one load's sources into k. Each source's tree is read
-// whole, its struct keys rewritten into the fields' own spelling (keyWalk),
-// and then merged, so precedence holds whatever letter case a source used.
-// With provenance or shadowed-input reporting, origins records what set each
-// value as the trees merge, and inputs what each non-default source set.
+// whole and its struct keys rewritten into the fields' own spelling
+// (keyWalk), so precedence holds whatever letter case a source used. Every
+// source is read and prepared before any merges (see layers.go).
+// With provenance, shadowed-input reporting or a source under
+// WithUnknownEntries, origins records what set each value as the trees
+// merge; with shadowed-input reporting, inputs records what each
+// non-default source set.
 type loader struct {
-	checker *keyChecker
-	// unmergedUnknown is the unknown keys of input that never merged: an
-	// entry naming nothing config reads, or one beneath a withheld entry.
-	unmergedUnknown []UnknownKey
-	k               *koanf.Koanf
-	root            reflect.Type
-	schema          *schemaNode
-	sources         []string
-	aliased         []string    // keys sources set under an alias tag's name, by source
-	origins         *originNode // nil unless the load attributes values
-	provenance      bool        // origins holds all provenance reads, not only what shadow detection does
-	inputs          *inputs     // nil unless the load finds shadowed inputs
+	k          *koanf.Koanf
+	root       reflect.Type
+	schema     *schemaNode
+	sources    []string
+	aliased    []string    // keys sources set under an alias tag's name, by source
+	origins    *originNode // nil unless the load attributes values or a source claims its unknown keys
+	provenance bool        // origins holds all provenance reads, not only what shadow detection does
+	inputs     *inputs     // nil unless the load finds shadowed inputs
 	// unkeyed is the koanf:"-" fields of the typed sections the merge
 	// keeps, set on the decoded config (see unkeyed.go).
 	unkeyed unkeyedSections
-}
-
-// add merges data, the tree of the source called name, whose values label
-// attributes. A source that sets one field under two spellings fails.
-func (l *loader) add(name string, data map[string]any, label labeler) error {
-	w := keyWalk{schema: l.schema}
-	tree, err := l.walk(&w, name, data)
-	if err != nil {
-		return err
-	}
-	return l.mergeSource(name, tree, w.unkeyed, label)
 }
 
 // rewrite is data as it merges: maps keyed by anything but strings keyed
@@ -211,21 +199,22 @@ func (l *loader) mergeSource(name string, tree map[string]any, unkeyed []unkeyed
 	return nil
 }
 
-// addProvider reads a provider — a map, or bytes through parser — and adds
-// it. A read failure is ErrSource with the provider's error; bytes the parser
-// rejects are ErrSource with a *ParseError. When the load attributes values,
-// an OriginProvider's annotations name the source of each value; any other
-// provider is src's own.
-func (l *loader) addProvider(ctx context.Context, name string, p providerSource, src Source) error {
+// readProvider reads a provider — a map, or bytes through parser — or an
+// entry source, and prepares it. A read failure is ErrSource with the
+// provider's error; bytes the parser rejects are ErrSource with a
+// *ParseError. When the load attributes values, an OriginProvider's
+// annotations name the source of each value; any other provider is src's
+// own.
+func (l *loader) readProvider(ctx context.Context, name string, p providerSource, src Source) (*layer, error) {
 	if p.entries != nil {
-		return l.addEntries(ctx, name, p, src)
+		return l.readEntries(ctx, name, p, src)
 	}
-	if op, ok := p.provider.(OriginProvider); ok && p.parser == nil && l.origins != nil {
+	if op, ok := p.provider.(OriginProvider); ok && p.parser == nil && (l.provenance || l.inputs != nil) {
 		data, annotations, err := op.ReadWithOrigins(ctx)
 		if err != nil {
-			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+			return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 		}
-		return l.prepareProvider(ctx, name, data, p, func(tree map[string]any) (labeler, error) {
+		return l.prepareProvider(name, data, p, func(tree map[string]any) (labeler, error) {
 			return annotationLabeler(l.schema, tree, annotations, src)
 		})
 	}
@@ -234,28 +223,38 @@ func (l *loader) addProvider(ctx context.Context, name string, p providerSource,
 	if p.parser == nil {
 		m, err := pr.Read()
 		if err != nil {
-			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+			return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 		}
 		data = m
 	} else {
 		b, err := pr.ReadBytes()
 		if err != nil {
-			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+			return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 		}
 		if data, err = parse(name, p.parser, b); err != nil {
-			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+			return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 		}
 	}
-	return l.prepareProvider(ctx, name, data, p, func(map[string]any) (labeler, error) { return constant(src), nil })
+	return l.prepareProvider(name, data, p, func(map[string]any) (labeler, error) { return constant(src), nil })
 }
 
-// addFlat adds a map keyed by dot-path. It is unflattened from a deep copy
-// rather than through a koanf provider, whose copy keeps only exported
-// fields: add must see the values whole to turn those that marshal to text
-// into their text.
+// addFlat adds a map keyed by dot-path, as prepareFlat prepares it.
 func (l *loader) addFlat(name string, flat map[string]any, label labeler) error {
+	y, err := l.prepareFlat(name, flat, label)
+	if err != nil {
+		return err
+	}
+	_, err = l.mergeLayer(y, nil)
+	return err
+}
+
+// prepareFlat is prepare for a map keyed by dot-path. It is unflattened
+// from a deep copy rather than through a koanf provider, whose copy keeps
+// only exported fields: prepare must see the values whole to turn those
+// that marshal to text into their text.
+func (l *loader) prepareFlat(name string, flat map[string]any, label labeler) (*layer, error) {
 	copied := deepcopy.Value(reflect.ValueOf(flat)).Interface().(map[string]any)
-	return l.add(name, kmaps.Unflatten(copied, "."), label)
+	return l.prepare(name, kmaps.Unflatten(copied, "."), label)
 }
 
 // loaded is one load's outcome: the config, the config files it read and
@@ -318,7 +317,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	case o.provenance:
 		rec = newOriginRecorder(schema)
 		l.origins, l.provenance = rec.tree, true
-	case o.findsShadowed():
+	case o.findsShadowed(), o.claimsUnknown():
 		l.origins = newOriginRoot()
 	}
 	if o.findsShadowed() {
@@ -339,16 +338,17 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if err := live(); err != nil {
 		return none, err
 	}
-	if err := l.prepareValidation(ctx, o); err != nil {
-		return none, err
-	}
+	// Every source is read before any merges (see layers.go).
+	var layers []*layer
 	for i, src := range o.base {
 		if err := live(); err != nil {
 			return none, err
 		}
-		if err := l.addProvider(ctx, fmt.Sprintf("base provider %d", i), src, positionSource(SourceBase, i)); err != nil {
+		y, err := l.readProvider(ctx, fmt.Sprintf("base provider %d", i), src, positionSource(SourceBase, i))
+		if err != nil {
 			return none, err
 		}
+		layers = append(layers, y)
 	}
 	for _, f := range o.files {
 		if err := live(); err != nil {
@@ -366,9 +366,11 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		if err != nil {
 			return none, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileParse, err)
 		}
-		if err := l.add("config file "+f.path, data, constant(Source{Kind: SourceFile, Name: f.path})); err != nil {
+		y, err := l.prepare("config file "+f.path, data, constant(Source{Kind: SourceFile, Name: f.path}))
+		if err != nil {
 			return none, err
 		}
+		layers = append(layers, y)
 		files[f.path] = sha256.Sum256(raw)
 	}
 	if err := live(); err != nil {
@@ -383,17 +385,37 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 			return none, fmt.Errorf("loading env vars: %w: %w", ErrValidation, err)
 		}
 		unmatchedEnv = unmatched
-		if err := l.addFlat("env "+env.pattern(), values, envLabeler(env.pattern(), from)); err != nil {
+		y, err := l.prepareFlat("env "+env.pattern(), values, envLabeler(env.pattern(), from))
+		if err != nil {
 			return none, err
 		}
+		layers = append(layers, y)
 	}
 	for i, src := range o.overrides {
 		if err := live(); err != nil {
 			return none, err
 		}
-		if err := l.addProvider(ctx, fmt.Sprintf("override provider %d", i), src, positionSource(SourceOverride, i)); err != nil {
+		y, err := l.readProvider(ctx, fmt.Sprintf("override provider %d", i), src, positionSource(SourceOverride, i))
+		if err != nil {
 			return none, err
 		}
+		layers = append(layers, y)
+	}
+	if err := live(); err != nil {
+		return none, err
+	}
+	verdicts, err := l.judgeEntries(ctx, o, layers)
+	if err != nil {
+		return none, err
+	}
+	// The origins record the defaults only with provenance, so a source's
+	// claim on an unknown key looks for them here.
+	var defaults map[string]any
+	if o.claimsUnknown() {
+		defaults = l.k.Raw()
+	}
+	if err := l.mergeLayers(ctx, layers, verdicts); err != nil {
+		return none, err
 	}
 	o.log().DebugContext(ctx, "config sources loaded", "sources", l.sources)
 	if len(l.aliased) > 0 {
@@ -451,10 +473,16 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if err := live(); err != nil {
 		return none, err
 	}
-	unknown, err := o.unknownInput(ctx, root, schema, merged, md.Unused, env, unmatchedEnv, l.unmergedUnknown)
+	claimed, unused, additional := l.claimUnknown(merged, defaults, md.Unused, layers)
+	unknown, err := o.unknownInput(ctx, root, schema, merged, unused, env, unmatchedEnv, additional)
 	if err != nil {
 		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
 	}
+	accepted, err := reportUnknown(ctx, layers, claimed)
+	if err != nil {
+		return none, err
+	}
+	unknown = unknown.withKeys(root, accepted)
 
 	// stage runs one stage that may change the decoded config, recording
 	// what it changed when provenance is on.

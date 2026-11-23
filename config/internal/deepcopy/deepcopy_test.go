@@ -130,3 +130,32 @@ func TestValue_SharingAcrossPromotion(t *testing.T) {
 	assert.Equal(t, "b", got.Again[0])
 	assert.Equal(t, "a", hosts[0])
 }
+
+// A copy of an addressable value shares nothing with it, a scalar's or a
+// nil's included: setting the original leaves the copy as it was, and
+// setting the copy leaves the original.
+func TestValue_AddressableValuesAreDetached(t *testing.T) {
+	type section struct {
+		N    int
+		Name string
+		P    *int
+		M    map[string]int
+		F    func() int
+	}
+	var s section
+	v := reflect.ValueOf(&s).Elem()
+	copies := make([]reflect.Value, v.NumField())
+	for i := range copies {
+		copies[i] = Value(v.Field(i))
+	}
+	one := 1
+	s = section{N: 1, Name: "x", P: &one, M: map[string]int{"a": 1}, F: func() int { return 1 }}
+	for i, c := range copies {
+		assert.True(t, c.IsZero(), "field %s copied before the original changed", v.Type().Field(i).Name)
+		if c.CanSet() {
+			c.Set(reflect.Zero(c.Type()))
+		}
+	}
+	assert.Equal(t, 1, s.N)
+	assert.Equal(t, "x", s.Name)
+}

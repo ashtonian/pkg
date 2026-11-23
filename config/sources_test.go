@@ -967,3 +967,81 @@ func TestSources_NarrowingATypedDefaultMap(t *testing.T) {
 		assert.Equal(t, map[string]bool{"example.com": true}, load(t, "origins: null\n", "origins: {example.com: true}\n").Origins)
 	})
 }
+
+// A stored entry whose value is a typed section keeps the section's
+// koanf:"-" fields as a provider's does, under a higher file's key too.
+func TestSources_EntryTypedSectionKeepsItsUnkeyedFields(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "section: {host: f}\n")
+	stored := WithBaseEntries(func(context.Context) (map[string]any, error) {
+		return map[string]any{"section": unkeyedOf("e"), `by_name["c"]`: unkeyedOf("e")}, nil
+	})
+	got, err := Load[unkeyedConfig](t.Context(), stored, WithFile(file))
+	require.NoError(t, err)
+	assertUnkeyedKept(t, unkeyedOf("e"), got.Section, "f")
+	assertUnkeyedKept(t, unkeyedOf("e"), got.ByName["c"], "e")
+}
+
+// startsOnRead is an empty provider that runs start as it is read.
+type startsOnRead func()
+
+func (s startsOnRead) Read() (map[string]any, error) { s(); return map[string]any{}, nil }
+func (startsOnRead) ReadBytes() ([]byte, error)      { return nil, errors.New("startsOnRead: use Read") }
+
+// A typed section's koanf:"-" fields are copied as its source is read: a
+// provider whose data changes once its read returns changes nothing in the
+// config, and the load does not race with the change.
+func TestSources_UnkeyedFieldsAreCopiedAsTheSourceIsRead(t *testing.T) {
+	shared := &unkeyedSection{Host: "h", Hook: "hook h", Target: &unkeyedTarget{Name: "target h"}}
+	stop, started, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	mutate := startsOnRead(func() {
+		go func() {
+			defer close(done)
+			for i := 0; ; i++ {
+				shared.Hook = fmt.Sprint("hook ", i)
+				shared.Target.Name = fmt.Sprint("target ", i)
+				if i == 0 {
+					close(started)
+				}
+				select {
+				case <-stop:
+					return
+				default:
+				}
+			}
+		}()
+		<-started
+	})
+	got, err := Load[unkeyedConfig](t.Context(), WithBaseProvider(mapSource{"ptr": shared}, nil), WithBaseProvider(mutate, nil))
+	close(stop)
+	<-done
+	require.NoError(t, err)
+	require.NotNil(t, got.Ptr)
+	assert.Equal(t, "hook h", got.Ptr.Hook)
+	require.NotNil(t, got.Ptr.Target)
+	assert.Equal(t, "target h", got.Ptr.Target.Name)
+	assert.NotSame(t, shared.Target, got.Ptr.Target)
+}
+
+// A load reads every source before it merges any, so a WithInvalidEntries
+// report runs once the last source is read.
+func TestSources_EverySourceIsReadBeforeAnyMerges(t *testing.T) {
+	var events []string
+	reading := func(name string, data map[string]any) func(context.Context) (map[string]any, error) {
+		return func(context.Context) (map[string]any, error) {
+			events = append(events, "read "+name)
+			return data, nil
+		}
+	}
+	above, err := NewMapProvider(reading("override", map[string]any{"name": "above"}), "")
+	require.NoError(t, err)
+	got, err := Load[cancelJudgedCfg](t.Context(),
+		WithBaseEntries(reading("base", map[string]any{"port": 0, "name": "below"}), WithInvalidEntries(func(context.Context, []KeyError) error {
+			events = append(events, "report base")
+			return nil
+		})),
+		WithOverrideProvider(above, nil))
+	require.NoError(t, err)
+	assert.Equal(t, cancelJudgedCfg{Port: 5, Name: "above"}, *got)
+	assert.Equal(t, []string{"read base", "read override", "report base"}, events)
+}

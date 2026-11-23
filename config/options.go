@@ -65,6 +65,13 @@ func (o *options) findsShadowed() bool {
 	return o.provenance || o.inputDigests != nil || o.shadowedInputs != nil
 }
 
+// claimsUnknown reports a load with a source under WithUnknownEntries,
+// which needs the origins of the keys merged to find each one's source.
+func (o *options) claimsUnknown() bool {
+	claims := func(p providerSource) bool { return p.claimsUnknown }
+	return slices.ContainsFunc(o.base, claims) || slices.ContainsFunc(o.overrides, claims)
+}
+
 type fileSource struct {
 	path     string
 	required bool
@@ -76,9 +83,13 @@ type fileSource struct {
 type providerSource struct {
 	withhold bool
 	rejected func(context.Context, []KeyError) error
-	provider koanf.Provider
-	parser   koanf.Parser
-	entries  func(context.Context) (map[string]any, error)
+	// claimsUnknown is set by WithUnknownEntries, whose report receives the
+	// keys the source sets that no field reads.
+	claimsUnknown bool
+	unknown       func(context.Context, []UnknownKey) error
+	provider      koanf.Provider
+	parser        koanf.Parser
+	entries       func(context.Context) (map[string]any, error)
 }
 
 // postLoadHook is a [WithPostLoad] callback with its config type erased, so
@@ -363,7 +374,9 @@ func WithDecodeHook(hook mapstructure.DecodeHookFunc) Option {
 // interface, and keys a koanf:",remain" field collects are accepted. A
 // section no field holds is one key (legacy, not legacy.old). The merged tree
 // does not record which source set a key, so keys are named, not their
-// sources; values are never reported.
+// sources; values are never reported. Keys a source under
+// [WithUnknownEntries] claims go to that source's report, and handle sees
+// only the rest.
 func WithUnknownKeys(handle func(ctx context.Context, unknown *UnknownKeysError) error) Option {
 	return func(o *options) {
 		o.unknownKeys = handle

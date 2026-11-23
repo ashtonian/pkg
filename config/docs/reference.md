@@ -25,7 +25,7 @@ Every error wraps one category sentinel together with its cause, so `errors.Is` 
 | `ErrReloadInProgress` | A manual reload found another running. Not a failure. |
 | `ErrReloaderStopped` | A reload was requested after `Stop`. |
 | `ErrReloaderRunning` | `Run` was called while another `Run` of the same reloader runs. |
-| `ErrSchema`, `ErrKey` | Invalid schema/default declarations, or a malformed/unknown key. `KeyError` distinguishes unknown keys from invalid values in `CheckKey`, `DecodeKey` and `CanonicalKey`; `EditsError` is a batch `DecodeEdits` refuses: its `Refused` keys match `ErrKey`, a candidate that does not decode or validate matches `ErrValidation`. |
+| `ErrSchema`, `ErrKey` | Invalid schema/default declarations, or a malformed/unknown key. `KeyError` distinguishes unknown keys from invalid values in `CheckKey`, `DecodeKey` and `CanonicalKey`; `EditsError` is a batch `DecodeEdits` refuses: it wraps each refused `*KeyError`, which keeps its own category (an unknown key `ErrKey`, any other refusal `ErrValidation`, as `DecodeKey` gives it), and `Err`, the cause of a candidate that does not decode or validate (`ErrValidation`). |
 
 `Diagnose(err)` turns any of them into a `Problem{Kind, Message}` — a bounded category for a metric label or a status endpoint.
 
@@ -43,7 +43,7 @@ schema. Schema errors support `errors.Is(err, config.ErrSchema)`; malformed keys
 | `RedactedMapChecked(cfg)` | `(map[string]string, error)` with text values keyed by path | Returns nil on structural errors and misspelt tag keys, including reached dynamic types |
 | `Usage[T](prefixes...)` | `([]UsageEntry, error)` with safe printable metadata | Reports the schema errors a load reports; keeps raw struct tags only in the non-JSON Field member |
 | `ParseKey(text)` | `(Key, error)` | Reports malformed keys with ErrKey |
-| `CanonicalKey[T](key, opts...)` | `(string, error)`: the key as this package prints it, aliases, case and map-key quoting resolved | An Unknown `*KeyError` (ErrKey) for a key that does not parse, is not concrete or names nothing T reads |
+| `CanonicalKey[T](key)` | `(string, error)`: the key as this package prints it, aliases, case and map-key quoting resolved | An Unknown `*KeyError` (ErrKey) for a key that does not parse, is not concrete or names nothing T reads; `ErrSchema` for a declaration a load refuses, its `validate` tags aside |
 | `Key.Within(p)` | `bool`: the key is `p` or beneath it | — |
 | `Tree(cfg)`, `TreeFunc(cfg, leaf)` | `(map[string]any, error)` with raw or policy-transformed values | Returns no partial tree on schema/scalar/text-marshaling errors |
 | `RedactedTreeChecked(cfg)` | `(map[string]any, error)` with nested redacted values | Returns nil on structural errors and misspelt tag keys; no partial tree |
@@ -134,7 +134,8 @@ Provider source options:
 
 | Option | Default | Description |
 |---|---|---|
-| `WithInvalidEntries(report)` | fail on invalid entries | Withhold entries invalid on their own and with the source's other valid entries, judged over the layers beneath; retain lower sources; report sorted keys/errors after each read. Unknown keys remain reportable. |
+| `WithInvalidEntries(report)` | fail on invalid entries | Withhold the entries the final configuration fails on, judged against every source together with every other source's entries under the option; keep entries valid with the rest alone; retain lower sources; report sorted keys/errors on every load, once every source is read. Unknown keys remain reportable. |
+| `WithUnknownEntries(report)` | the load's handler; unknown keys fail | Send the keys this source sets that no field reads to report instead of `WithUnknownKeys`: nil goes on, an error fails with `ErrValidation`, a nil report accepts them. A key is the source's when it set everything the merge keeps there. |
 
 `Defaulter`, `CheckKey`, `DecodeKey`, `CanonicalKey`, `DecodeEdits` and the
 entry options are described in

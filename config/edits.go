@@ -37,6 +37,9 @@ type edit struct {
 	safe    string       // path as diagnostics may show it
 	aliased []string     // each field the key names by a former name, as a load reports it
 	unknown []UnknownKey // keys inside value that no field reads, found as it is rewritten
+	// unkeyed is the koanf:"-" fields of the typed sections value sets,
+	// found as it is rewritten (see unkeyed.go).
+	unkeyed []unkeyedFields
 }
 
 // resolveKey parses key and spells it canonically (see resolveSchemaPath).
@@ -355,7 +358,7 @@ func (e *edit) rewrite(schema *schemaNode) error {
 			value = dynamicInput(value, e.path, w.failText)
 		}
 	}
-	e.value, e.unknown = value, w.unknown
+	e.value, e.unknown, e.unkeyed = value, w.unknown, w.unkeyed
 	switch {
 	case len(w.twice) > 0:
 		return refuse("keys spelled two ways set one field: %s", strings.Join(w.twice, ", "))
@@ -367,30 +370,58 @@ func (e *edit) rewrite(schema *schemaNode) error {
 	return nil
 }
 
+// editsUnkeyed is the koanf:"-" fields of the typed sections edits set.
+func editsUnkeyed(edits []edit) []unkeyedFields {
+	var out []unkeyedFields
+	for _, e := range edits {
+		out = append(out, e.unkeyed...)
+	}
+	return out
+}
+
 // setEdits is the source tree that sets edits, prepared and in order, over
 // below, the tree beneath them: nested maps along their keys, and a listEdit
 // at each index. It reads below only for the length of a list an edit
 // indexes, calls it at most once and changes neither below nor the edits. An
 // edit whose index it refuses is left out, in refused.
 func setEdits(below func() map[string]any, edits []edit) (tree map[string]any, refused []*KeyError) {
-	var root map[string]any
-	beneath := func() any {
-		if root == nil {
-			root = below()
+	t := newEditTree(below)
+	for i := range edits {
+		if err := t.set(&edits[i]); err != nil {
+			refused = append(refused, &KeyError{Key: edits[i].safe, Err: err})
+		}
+	}
+	return t.tree, refused
+}
+
+// editTree is the source tree setEdits builds, one edit at a time, so a
+// caller learns which edit each refusal is.
+type editTree struct {
+	tree    map[string]any
+	beneath func() any
+}
+
+func newEditTree(below func() map[string]any) *editTree {
+	var (
+		root map[string]any
+		read bool
+	)
+	return &editTree{tree: map[string]any{}, beneath: func() any {
+		if !read {
+			root, read = below(), true
 		}
 		return root
+	}}
+}
+
+// set sets e in the tree, which a refused edit leaves as it was.
+func (t *editTree) set(e *edit) error {
+	out, err := e.set(t.tree, t.beneath, 0)
+	if err != nil {
+		return err
 	}
-	tree = map[string]any{}
-	for i := range edits {
-		e := &edits[i]
-		out, err := e.set(tree, beneath, 0)
-		if err != nil {
-			refused = append(refused, &KeyError{Key: e.safe, Err: err})
-			continue
-		}
-		tree = out.(map[string]any)
-	}
-	return tree, refused
+	t.tree = out.(map[string]any)
+	return nil
 }
 
 // set returns tree, the edit tree at e.path[:i], with e set beneath it.
@@ -400,7 +431,7 @@ func setEdits(below func() map[string]any, edits []edit) (tree map[string]any, r
 // the tree below holds at e.path[:i]. On failure tree is as it was.
 func (e *edit) set(tree any, beneath func() any, i int) (any, error) {
 	if i == len(e.path) {
-		return copyInput(e.value), nil
+		return within(tree, copyInput(e.value)), nil
 	}
 	s := e.path[i]
 	if s.kind == segIndex {
@@ -431,6 +462,31 @@ func (e *edit) set(tree any, beneath func() any, i int) (any, error) {
 		return wholeMap(m), nil
 	}
 	return m, nil
+}
+
+// within is value set where the edit tree holds tree, what an earlier edit
+// of a key holding this one set: a map[string]any merges into a map there
+// key by key, at every depth, as it merges into what a source beneath holds;
+// any other value, a typed one included, replaces it. A map an earlier edit
+// set whole stays whole.
+func within(tree, value any) any {
+	in, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	var into map[string]any
+	switch t := tree.(type) {
+	case map[string]any:
+		into = t
+	case wholeMap:
+		into = t
+	default:
+		return value
+	}
+	for k, v := range in {
+		into[k] = within(into[k], v)
+	}
+	return tree
 }
 
 // setElement is set at an index: a listEdit over the list below, or, where

@@ -124,7 +124,7 @@ func (w *keyWalk) section(t reflect.Type, v reflect.Value, path keyPath) any {
 	}
 	v = derefValue(v)
 	if len(n.unkeyed) > 0 {
-		w.unkeyed = append(w.unkeyed, unkeyedFields{path: path, section: v, fields: n.unkeyed})
+		w.unkeyed = append(w.unkeyed, recordUnkeyed(path, v, n.unkeyed))
 	}
 	out := make(map[string]any, len(n.fields))
 	if n.remain != nil {

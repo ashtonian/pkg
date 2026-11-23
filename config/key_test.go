@@ -65,8 +65,28 @@ func TestKey_Within(t *testing.T) {
 		{"extra.x", `extra["x"]`, true},
 		{"pool[1].host", "pool[*]", true},
 		{`addresses["a"]`, "addresses[*]", true},
-		{"primary.port", "primary[*]", false},
+		{"primary.port", "primary[*]", true},
+		{"pool[*].host", "pool[1]", false},
 	} {
 		assert.Equal(t, tc.within, key(tc.k).Within(key(tc.p)), "%s within %s", tc.k, tc.p)
+	}
+}
+
+// A wildcard stands for an entry of a map beneath an interface field as
+// CanonicalKey spells it, a field.
+func TestKey_WithinMatchesCanonicalKeysBeneathAWildcard(t *testing.T) {
+	for _, tc := range []struct{ key, pattern string }{
+		{`extra["x"]`, "extra[*]"},
+		{`extra["x"].y`, "extra[*].y"},
+		{`addresses["a"].port`, "addresses[*].port"},
+		{"pool[2].host", "pool[*].host"},
+	} {
+		canonical, err := CanonicalKey[editConfig](tc.key)
+		require.NoError(t, err)
+		k, err := ParseKey(canonical)
+		require.NoError(t, err)
+		p, err := ParseKey(tc.pattern)
+		require.NoError(t, err)
+		assert.True(t, k.Within(p), "%s (%s) within %s", tc.key, canonical, tc.pattern)
 	}
 }
