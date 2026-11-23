@@ -222,3 +222,66 @@ func TestBuildFacetQuery_RelationFacets_OwnKeyEach(t *testing.T) {
 	checkBuckets(t, got["tags"], map[string]int64{"red": 2})
 	checkBuckets(t, got["labels"], map[string]int64{"one": 1, "two": 1, "three": 1})
 }
+
+// A relation to a key of several columns facets each target by its key's
+// text (core.KeyText), which the statement writes per row on PostgreSQL as
+// on SQLite.
+func TestBuildFacetQuery_RelationFacet_TargetKeyOfSeveralColumns(t *testing.T) {
+	schema := &filter.ResourceSchema{
+		Name: "tags", PrimaryKey: []string{"id"},
+		SystemFields: map[string]*filter.FieldSchema{
+			"id": {ExternalName: "id", Table: "tags", Column: "id", DataType: core.FieldTypeString},
+		},
+		Fields: map[string]*filter.FieldSchema{
+			"stock": {
+				ExternalName: "stock", DataType: core.FieldTypeArray, Facetable: true,
+				FacetSchema: &filter.FacetSchema{Type: filter.FacetTerms, Limit: 10},
+				Relation: &core.RelationSchema{
+					JoinTable: "stock_tags", SourceColumns: []string{"tag_id"}, TargetColumns: []string{"warehouse_id", "sku"},
+					OwnerKey: []string{"id"},
+				},
+			},
+		},
+	}
+	build := func(d filter.Dialect) (filter.FacetQuery, error) {
+		return filter.BuildFacetQuery(schema, d, "1=1", nil, []filter.FacetRequest{{Field: "stock"}},
+			filter.WithFacetRelationScope(filter.RelationScope{}))
+	}
+	for _, tt := range []struct {
+		name    string
+		dialect filter.Dialect
+		want    string
+	}{
+		{"postgres", filter.PostgresDialect{}, `array_to_json(ARRAY[`},
+		{"sqlite", filter.SQLiteDialect{}, `json_array(`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			q, err := build(tt.dialect)
+			require.NoError(t, err)
+			assert.Contains(t, q.SQL, tt.want)
+			assert.Contains(t, q.SQL, `GROUP BY "j"."warehouse_id", "j"."sku"`)
+		})
+	}
+
+	db := setupFacetDB(t)
+	for _, stmt := range []string{
+		`CREATE TABLE tags (id TEXT PRIMARY KEY)`,
+		`CREATE TABLE stock_tags (tag_id TEXT NOT NULL, warehouse_id INTEGER NOT NULL, sku TEXT NOT NULL)`,
+		`INSERT INTO tags VALUES ('red'), ('blue')`,
+		// Each column alone ties: only the whole key tells (1,a) from
+		// (1,b) and (2,a).
+		`INSERT INTO stock_tags VALUES ('red', 1, 'a'), ('blue', 1, 'a'), ('red', 1, 'b'), ('blue', 2, 'a')`,
+	} {
+		_, err := db.Exec(stmt)
+		require.NoError(t, err, stmt)
+	}
+	q, err := build(filter.SQLiteDialect{})
+	require.NoError(t, err)
+	rows, err := db.Query(q.SQL, q.Args...)
+	require.NoError(t, err, q.SQL)
+	defer func() { require.NoError(t, rows.Close()) }()
+	results, err := filter.ScanFacetUnion(rows)
+	require.NoError(t, err)
+	assert.Equal(t, []filter.FacetBucket{{Key: `["1","a"]`, Count: 2}, {Key: `["1","b"]`, Count: 1}, {Key: `["2","a"]`, Count: 1}},
+		indexFacets(results)["stock"])
+}

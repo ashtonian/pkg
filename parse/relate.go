@@ -438,11 +438,11 @@ func (r *Resource[T]) relationSchema(name string, rel Relation) (*core.RelationS
 
 	switch rel.kind {
 	case core.HasMany:
-		local := rel.references
+		local, held := rel.references, "references"
 		if len(local) == 0 {
-			local = slices.Clone(r.pk)
+			local, held = slices.Clone(r.pk), r.table+"'s key"
 		}
-		if err := pairColumns("foreign key", rel.foreignKey, "references", local); err != nil {
+		if err := pairColumns("foreign key", rel.foreignKey, held, local); err != nil {
 			return nil, fail("%v", err)
 		}
 		for _, c := range local {
@@ -460,11 +460,11 @@ func (r *Resource[T]) relationSchema(name string, rel Relation) (*core.RelationS
 			OwnerKey: local, TenantColumn: targetTenant, DeletedColumn: t.DeletedColumnName(), Policy: rel.policy,
 		}, nil
 	case core.BelongsTo:
-		remote := rel.references
+		remote, held := rel.references, "references"
 		if len(remote) == 0 {
-			remote = slices.Clone(targetKey)
+			remote, held = slices.Clone(targetKey), t.Table()+"'s key"
 		}
-		if err := pairColumns("foreign key", rel.foreignKey, "references", remote); err != nil {
+		if err := pairColumns("foreign key", rel.foreignKey, held, remote); err != nil {
 			return nil, fail("%v", err)
 		}
 		for _, c := range rel.foreignKey {
@@ -521,8 +521,8 @@ func pairColumns(what string, columns []string, key string, keyColumns []string)
 		}
 	}
 	if len(columns) != len(keyColumns) {
-		return fmt.Errorf("%s (%s) has %d columns, and %s (%s) has %d; they pair by position",
-			what, strings.Join(columns, ", "), len(columns), key, strings.Join(keyColumns, ", "), len(keyColumns))
+		return fmt.Errorf("%s (%s) pairs by position with %s (%s), so it names as many columns",
+			what, strings.Join(columns, ", "), key, strings.Join(keyColumns, ", "))
 	}
 	return nil
 }
