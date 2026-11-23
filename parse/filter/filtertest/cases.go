@@ -38,6 +38,16 @@ func Cases() []Case {
 		{Name: "like escaped backslash", Filter: `{"name":{"$like":"back\\\\%"}}`, Want: ids("h")},
 		{Name: "like glob metacharacters are literal", Filter: `{"name":{"$like":"*"}}`, Want: ids("")},
 		{Name: "like trailing escape rejected", Filter: `{"name":{"$like":"abc\\"}}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
+		// U+0000 ends a SQLite pattern and PostgreSQL refuses it in text and
+		// jsonb, so every backend refuses it at parse.
+		{Name: "NUL in a value rejected", Filter: `{"name":"Alpha\u0000"}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
+		{Name: "NUL in a like pattern rejected", Filter: `{"name":{"$like":"Alpha\u0000zzz"}}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
+		{Name: "NUL in an ilike pattern rejected", Filter: `{"name":{"$ilike":"alpha\u0000zzz"}}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
+		{Name: "NUL in a contains substring rejected", Filter: `{"name":{"$contains":"lph\u0000"}}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
+		{Name: "NUL in a set member rejected", Filter: `{"name":{"$in":["Alpha","beta\u0000"]}}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
+		{Name: "NUL in a document member rejected", Filter: `{"doc":{"$contains":{"env":"pro\u0000d"}}}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
+		{Name: "NUL in a document key rejected", Filter: `{"doc":{"$contains":{"e\u0000nv":"prod"}}}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
+		{Name: "NUL in an array element rejected", Filter: `{"tags":{"$contains":["x\u0000"]}}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
 		{Name: "ilike folds case", Filter: `{"name":{"$ilike":"alpha%"}}`, Want: ids("ae")},
 		{Name: "ilike with escape", Filter: `{"name":{"$ilike":"%GAMMA\\%"}}`, Want: ids("c")},
 		{Name: "ilike prefix", Filter: `{"name":{"$ilike":"B%"}}`, Want: ids("bh")},
