@@ -265,7 +265,7 @@ func (s *Settings) read(ctx context.Context) (map[string]any, error) {
 // the service's options, and fits the caps or is no larger than before,
 // the write is refused with a *RefusedError and nothing changes.
 func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, error) {
-	writes, unread, err := canonical(edits)
+	writes, unread, err := canonical[AppConfig](edits)
 	if err != nil || len(writes) == 0 && len(unread) == 0 {
 		return nil, err
 	}
@@ -306,12 +306,12 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	if missing := unstored(unread, stored.values); len(missing) > 0 {
+	if missing := unstored[AppConfig](unread, stored.values); len(missing) > 0 {
 		return nil, &RefusedError{Reason: ReasonUnknown, Keys: missing}
 	}
 	keys := append(slices.Collect(maps.Keys(writes)), unread...)
 	slices.Sort(keys)
-	c, err := apply(stored.values, writes, unread)
+	c, err := apply[AppConfig](stored.values, writes, unread)
 	if err != nil {
 		return nil, err
 	}
@@ -451,8 +451,8 @@ func fixed(table map[string]any) Entries {
 
 // schemaKey is key parsed as CanonicalKey spells it, or false when the
 // schema reads nothing at key.
-func schemaKey(key string) (config.Key, bool) {
-	c, err := config.CanonicalKey[AppConfig](key)
+func schemaKey[T any](key string) (config.Key, bool) {
+	c, err := config.CanonicalKey[T](key)
 	if err != nil {
 		return nil, false
 	}
@@ -462,13 +462,13 @@ func schemaKey(key string) (config.Key, bool) {
 
 // childKey is the key the schema reads the entry name of a value stored at
 // at as: a field, or failing that a map key.
-func childKey(at config.Key, name string) (config.Key, bool) {
+func childKey[T any](at config.Key, name string) (config.Key, bool) {
 	for _, kind := range []config.SegmentKind{config.SegmentField, config.SegmentKey} {
 		text, parses := childText(at, kind, name)
 		if !parses {
 			continue
 		}
-		if k, ok := schemaKey(text); ok {
+		if k, ok := schemaKey[T](text); ok {
 			return k, true
 		}
 	}
@@ -489,11 +489,11 @@ func childText(at config.Key, kind config.SegmentKind, name string) (string, boo
 // release that removed its field left. Any other key naming nothing the
 // service reads, one key spelled two ways, or a key and a key within it
 // refuses the write.
-func canonical(edits map[string]any) (writes map[string]any, unread []string, err error) {
+func canonical[T any](edits map[string]any) (writes map[string]any, unread []string, err error) {
 	writes = make(map[string]any, len(edits))
 	var unknown, repeated []string
 	for key, value := range edits {
-		c, err := config.CanonicalKey[AppConfig](key)
+		c, err := config.CanonicalKey[T](key)
 		if errors.Is(err, config.ErrKey) {
 			if value == nil {
 				unread = append(unread, key)
@@ -568,8 +568,8 @@ func fieldsAsMapKeys(k config.Key) config.Key {
 // unreadAt reports whether a stored key the schema does not read is at or
 // beneath unread, a key written null that the schema does not read either.
 // A row the schema reads is never deleted through a spelling it refuses.
-func unreadAt(stored, unread string) bool {
-	if _, err := config.CanonicalKey[AppConfig](stored); err == nil {
+func unreadAt[T any](stored, unread string) bool {
+	if _, err := config.CanonicalKey[T](stored); err == nil {
 		return false
 	}
 	if stored == unread {
@@ -585,12 +585,12 @@ func unreadAt(stored, unread string) bool {
 
 // unstored is the keys of unread with no row stored at or beneath them for
 // a null write to delete: keys naming nothing at all.
-func unstored(unread []string, stored map[string]any) []string {
+func unstored[T any](unread []string, stored map[string]any) []string {
 	var missing []string
 	for _, u := range unread {
 		found := false
 		for key := range stored {
-			if unreadAt(key, u) {
+			if unreadAt[T](key, u) {
 				found = true
 				break
 			}
@@ -609,14 +609,15 @@ type change struct {
 	rewritten map[string]any // stored rows above a key written, that key cut out of their values
 }
 
-// apply is the change writes and unread make to stored. A stored row within
+// apply is the change writes and unread make to stored, keys compared as
+// the schema T spells them. A stored row within
 // a key written is deleted, unless the write sets that key again, as is one
 // the schema does not read at or beneath a key of unread. A stored row
 // above a key written has that key cut out of its value, so the write takes
 // effect beneath it, and is deleted when left setting nothing. A key beneath
 // a list or a scalar a stored row sets cannot be cut out, and refuses the
 // write.
-func apply(stored, writes map[string]any, unread []string) (change, error) {
+func apply[T any](stored, writes map[string]any, unread []string) (change, error) {
 	keys := slices.Sorted(maps.Keys(writes))
 	written := make([]config.Key, 0, len(keys))
 	for _, key := range keys {
@@ -629,14 +630,14 @@ func apply(stored, writes map[string]any, unread []string) (change, error) {
 	var errs []error
 	for key, value := range stored {
 		switch {
-		case slices.ContainsFunc(unread, func(u string) bool { return unreadAt(key, u) }):
+		case slices.ContainsFunc(unread, func(u string) bool { return unreadAt[T](key, u) }):
 			c.deleted = append(c.deleted, key)
-		case covered(key, written):
+		case covered[T](key, written):
 			if writes[key] == nil { // not set again under this spelling, where the upsert replaces it
 				c.deleted = append(c.deleted, key)
 			}
 		default:
-			value, changed, refused := cutBeneath(key, value, written)
+			value, changed, refused := cutBeneath[T](key, value, written)
 			if refused != nil {
 				enclosed = append(enclosed, refused.Keys...)
 				errs = append(errs, refused.Err)
@@ -668,8 +669,8 @@ func apply(stored, writes map[string]any, unread []string) (change, error) {
 // cutBeneath is value, stored at key, with each key of written beneath key
 // cut out of it, and whether that changed it. A key it cannot cut out
 // refuses the write.
-func cutBeneath(key string, value any, written []config.Key) (any, bool, *RefusedError) {
-	at, ok := schemaKey(key)
+func cutBeneath[T any](key string, value any, written []config.Key) (any, bool, *RefusedError) {
+	at, ok := schemaKey[T](key)
 	if !ok {
 		return value, false, nil // loads leave the row out
 	}
@@ -679,7 +680,7 @@ func cutBeneath(key string, value any, written []config.Key) (any, bool, *Refuse
 		if len(w) <= len(at) || !w.Within(at) {
 			continue
 		}
-		cut, c, err := cutAt(at, value, w)
+		cut, c, err := cutAt[T](at, value, w)
 		if err != nil {
 			if refused == nil {
 				refused = &RefusedError{Reason: ReasonEnclosed}
@@ -697,7 +698,7 @@ func cutBeneath(key string, value any, written []config.Key) (any, bool, *Refuse
 // key beneath at, under any spelling the schema reads as target, and whether
 // it held anything there. A list or a scalar on the way to target cannot be
 // cut into.
-func cutAt(at config.Key, value any, target config.Key) (any, bool, error) {
+func cutAt[T any](at config.Key, value any, target config.Key) (any, bool, error) {
 	if value == nil {
 		return nil, false, nil
 	}
@@ -713,7 +714,7 @@ func cutAt(at config.Key, value any, target config.Key) (any, bool, error) {
 	out := maps.Clone(object)
 	changed := false
 	for name, child := range object {
-		k, ok := childKey(at, name)
+		k, ok := childKey[T](at, name)
 		if !ok || len(k) != len(next) || !k.Within(next) {
 			continue
 		}
@@ -722,7 +723,7 @@ func cutAt(at config.Key, value any, target config.Key) (any, bool, error) {
 			changed = true
 			continue
 		}
-		cut, c, err := cutAt(k, child, target)
+		cut, c, err := cutAt[T](k, child, target)
 		if err != nil {
 			return nil, false, err
 		}
@@ -736,8 +737,8 @@ func cutAt(at config.Key, value any, target config.Key) (any, bool, error) {
 
 // covered reports whether a stored key is within one of written. A row
 // some other writer stored under another spelling compares canonically.
-func covered(key string, written []config.Key) bool {
-	if c, err := config.CanonicalKey[AppConfig](key); err == nil {
+func covered[T any](key string, written []config.Key) bool {
+	if c, err := config.CanonicalKey[T](key); err == nil {
 		key = c
 	}
 	k, err := config.ParseKey(key)

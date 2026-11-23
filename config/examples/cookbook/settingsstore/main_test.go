@@ -821,3 +821,49 @@ func TestSettings_AWriteWaitsOnTheLockRowAndReadsWhatCommitted(t *testing.T) {
 	require.NoError(t, <-done, "read after the first committed, limits.max 300 lets limits.min 200 load")
 	assert.Equal(t, map[string]string{"limits.max": "300", "limits.min": "200"}, rowsOf(t, db))
 }
+
+// cutSchema holds the fields beneath which config spells keys no field
+// describes: a map of interfaces, an interface, and a ",remain" field.
+type cutSchema struct {
+	Labels map[string]any `koanf:"labels"`
+	Plugin any            `koanf:"plugin"`
+	Tuning struct {
+		Workers int            `koanf:"workers"`
+		Extra   map[string]any `koanf:",remain"`
+	} `koanf:"tuning"`
+}
+
+// A key beneath an interface or one a ",remain" field collects, written as
+// CanonicalKey spells it, is cut out of the stored row above it, under the
+// spelling the row's value holds it by: a name holding a dot among them.
+func TestApply_CutsBeneathInterfacesAndRemainFields(t *testing.T) {
+	stored := map[string]any{
+		"labels": map[string]any{"team": map[string]any{"owner": "a", "pager": "b"}},
+		"plugin": map[string]any{"name": "x", "opts": map[string]any{"depth": json.Number("2"), "a.b": true}},
+		"tuning": map[string]any{"workers": json.Number("4"), "cache_size": json.Number("10")},
+	}
+	for name, tc := range map[string]struct {
+		key       string
+		value     any
+		rewritten map[string]any
+	}{
+		"beneath a map of interfaces": {`labels["team"]["owner"]`, nil, map[string]any{
+			"labels": map[string]any{"team": map[string]any{"pager": "b"}}}},
+		"beneath an interface": {`plugin["opts"].depth`, nil, map[string]any{
+			"plugin": map[string]any{"name": "x", "opts": map[string]any{"a.b": true}}}},
+		"a dotted name beneath an interface": {`plugin.opts["a.b"]`, nil, map[string]any{
+			"plugin": map[string]any{"name": "x", "opts": map[string]any{"depth": json.Number("2")}}}},
+		"collected by a remain field, set": {`tuning["cache_size"]`, 20, map[string]any{
+			"tuning": map[string]any{"workers": json.Number("4")}}},
+	} {
+		key, err := config.CanonicalKey[cutSchema](tc.key)
+		require.NoError(t, err, name)
+		c, err := apply[cutSchema](stored, map[string]any{key: tc.value}, nil)
+		require.NoError(t, err, name)
+		assert.Equal(t, tc.rewritten, c.rewritten, name)
+		if tc.value != nil {
+			assert.Equal(t, tc.value, c.table[key], name)
+		}
+	}
+	assert.Equal(t, map[string]any{"owner": "a", "pager": "b"}, stored["labels"].(map[string]any)["team"], "stored is not changed")
+}

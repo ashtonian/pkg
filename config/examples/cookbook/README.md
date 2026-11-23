@@ -202,7 +202,7 @@ func appSources(file string, logger *slog.Logger) Sources {
 // the service's options, and fits the caps or is no larger than before,
 // the write is refused with a *RefusedError and nothing changes.
 func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, error) {
-	writes, unread, err := canonical(edits)
+	writes, unread, err := canonical[AppConfig](edits)
 	if err != nil || len(writes) == 0 && len(unread) == 0 {
 		return nil, err
 	}
@@ -243,12 +243,12 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	if missing := unstored(unread, stored.values); len(missing) > 0 {
+	if missing := unstored[AppConfig](unread, stored.values); len(missing) > 0 {
 		return nil, &RefusedError{Reason: ReasonUnknown, Keys: missing}
 	}
 	keys := append(slices.Collect(maps.Keys(writes)), unread...)
 	slices.Sort(keys)
-	c, err := apply(stored.values, writes, unread)
+	c, err := apply[AppConfig](stored.values, writes, unread)
 	if err != nil {
 		return nil, err
 	}
