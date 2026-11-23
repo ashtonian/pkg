@@ -58,6 +58,7 @@ func ResolveMemberships(ctx context.Context, f *ParsedFilter, lookup MembershipL
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	cfg.related = cfg.related.at(time.Now().UTC())
 	if cfg.scope.row.column != "" {
 		return nil, errors.New("filter: ResolveMemberships reads one tenant's rows; resolve each tenant's with RelationScope.Tenant instead of RowTenant")
 	}

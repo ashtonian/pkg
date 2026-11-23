@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
@@ -31,6 +32,10 @@ type ListRequest struct {
 	facets         []string
 	include        []string
 	fields         []string
+	// now is the instant the request was parsed at: its filter's
+	// relative-time tokens resolved against it, and BuildList resolves its
+	// policy's, the related tables' policies' and its includes' against it.
+	now time.Time
 	// schema is the filter schema of the resource that parsed the request.
 	schema *filter.ResourceSchema
 }
@@ -133,7 +138,7 @@ func (r *Resource[T]) ParseListInput(in ListInput) (*ListRequest, error) {
 	req := &ListRequest{
 		cursor: in.Cursor, pageSize: r.pageSize,
 		includeTotal: in.IncludeTotal, includeDeleted: in.IncludeDeleted,
-		schema: r.filterSchema,
+		now: r.cfg.Now(), schema: r.filterSchema,
 	}
 	switch {
 	case in.PageSize < 0:
@@ -149,7 +154,7 @@ func (r *Resource[T]) ParseListInput(in ListInput) (*ListRequest, error) {
 	}
 
 	var err error
-	if req.filter, err = r.parseListFilter(in.Filter, in.FieldFilters); err != nil {
+	if req.filter, err = r.parseListFilter(in.Filter, in.FieldFilters, req.now); err != nil {
 		return nil, err
 	}
 	if in.Sort != "" {
@@ -251,13 +256,13 @@ func (r *Resource[T]) listInput(q url.Values) (ListInput, error) {
 
 // parseListFilter is the JSON filter ANDed with the field filters, strictly:
 // a field filter naming no field is E2071.
-func (r *Resource[T]) parseListFilter(doc string, fields map[string][]string) (*filter.ParsedFilter, error) {
-	fp := filter.NewFilterParser(r.filterSchema, r.cfg)
+func (r *Resource[T]) parseListFilter(doc string, fields map[string][]string, now time.Time) (*filter.ParsedFilter, error) {
+	fp := filter.NewFilterParser(r.filterSchema, r.cfg).At(now)
 	jsonAST, err := fp.Parse(doc)
 	if err != nil {
 		return nil, err
 	}
-	flatAST, err := filter.NewQueryParamParser(r.filterSchema, filter.QueryParamFieldsOnly(), filter.QueryParamConfig(r.cfg)).Parse(fields)
+	flatAST, err := filter.NewQueryParamParser(r.filterSchema, filter.QueryParamFieldsOnly(), filter.QueryParamConfig(r.cfg)).At(now).Parse(fields)
 	if err != nil {
 		return nil, err
 	}
@@ -427,7 +432,7 @@ func (p *ListPlan) Dialect() filter.Dialect { return p.dialect }
 // compile as d's expressions; a dialect one refuses is an error.
 func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*ListPlan, error) {
 	if req == nil {
-		req = &ListRequest{pageSize: r.pageSize, schema: r.filterSchema}
+		req = &ListRequest{pageSize: r.pageSize, now: r.cfg.Now(), schema: r.filterSchema}
 	}
 	if req.schema != r.filterSchema {
 		return nil, fmt.Errorf("parse: %s: list request: %w", r.table, ErrForeign)
@@ -454,7 +459,7 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		return nil, err
 	}
 
-	relations := filter.RelationScope{Tenant: tenant, Related: s.Related}
+	relations := filter.RelationScope{Tenant: tenant, Related: s.Related, Now: req.now}
 	if rowTenant {
 		relations.RowTenant = r.tenant
 	}
@@ -462,6 +467,7 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		filter.ListLimit(req.pageSize),
 		filter.ListMaxLimit(r.maxPageSize),
 		filter.ListPolicy(policy),
+		filter.ListNow(req.now),
 		filter.ListCursor(req.cursor),
 		filter.ListSearch(req.search),
 		filter.ListWithCount(req.includeTotal),

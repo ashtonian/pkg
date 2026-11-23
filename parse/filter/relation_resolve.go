@@ -14,14 +14,14 @@ type ResolveOption func(*resolveConfig)
 
 type resolveConfig struct {
 	scope   relationScope
-	related map[string]*PolicyConstraints
+	related relatedPolicies
 }
 
 // ResolveRelationScope scopes the relations ResolveMemberships resolves
 // (RelationScope). A lookup reads one tenant's rows, so a RowTenant is
 // refused: resolve each tenant's rows with its Tenant.
 func ResolveRelationScope(s RelationScope) ResolveOption {
-	return func(c *resolveConfig) { c.scope, c.related = s.tenancy(), s.Related }
+	return func(c *resolveConfig) { c.scope, c.related = s.tenancy(), s.policies() }
 }
 
 func hasRelation(n *FilterNode) bool {
@@ -97,15 +97,9 @@ func (r *memberResolver) relationLookup(ctx context.Context, n *FilterNode) (*Lo
 			nested = n.Children[0]
 		}
 		if rel.Policy {
-			pc, ok := r.cfg.related[rel.RelatedTable()]
-			if !ok {
-				return nil, false, fmt.Errorf("relation %s on %s: %w", f.ExternalName, rel.RelatedTable(), ErrRelatedPolicyRequired)
+			if nested, err = r.cfg.related.on(f, nested); err != nil {
+				return nil, false, err
 			}
-			ast, policyErr := ApplyPolicyConstraints(f.Related, &FilterAST{Root: nested}, pc)
-			if policyErr != nil {
-				return nil, false, fmt.Errorf("relation %s: %w", f.ExternalName, policyErr)
-			}
-			nested = ast.Root
 		}
 		nested, err = r.resolve(ctx, nested) // the target's own relations, depth 2
 		if err != nil {

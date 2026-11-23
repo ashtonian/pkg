@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -27,14 +28,14 @@ type BuildFacetQueryOption func(*facetConfig)
 
 type facetConfig struct {
 	scope   relationScope
-	related map[string]*PolicyConstraints
+	related relatedPolicies
 	from    string
 }
 
 // WithFacetRelationScope scopes the relation facets' related rows
 // (RelationScope). A RowTenant is a column of the schema's table.
 func WithFacetRelationScope(s RelationScope) BuildFacetQueryOption {
-	return func(c *facetConfig) { c.scope, c.related = s.tenancy(), s.Related }
+	return func(c *facetConfig) { c.scope, c.related = s.tenancy(), s.policies() }
 }
 
 // WithFacetFrom reads the facets' base rows FROM from instead of the
@@ -90,6 +91,7 @@ func BuildFacetQuery(
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	cfg.related = cfg.related.at(time.Now().UTC())
 	return buildFacetQuery(schema, dialect, filterWhere, filterArgs, facets, cfg)
 }
 

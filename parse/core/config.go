@@ -44,6 +44,15 @@ type ParserConfig struct {
 	Clock             func() time.Time // Relative-time anchor (`now-7d`). Nil = time.Now().UTC.
 }
 
+// Now is the anchor relative-time tokens resolve against: Clock, or the
+// wall clock in UTC when Clock is nil. A nil config reads the wall clock.
+func (c *ParserConfig) Now() time.Time {
+	if c == nil || c.Clock == nil {
+		return time.Now().UTC()
+	}
+	return c.Clock()
+}
+
 // GetCodec returns the configured codec, falling back to the package
 // default (StdlibJSON) when none is configured.
 func (c *ParserConfig) GetCodec() Codec {

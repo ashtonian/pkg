@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -69,7 +70,7 @@ type IncludeQueryOption func(*includeQueryConfig)
 
 type includeQueryConfig struct {
 	scope   relationScope
-	related map[string]*PolicyConstraints
+	related relatedPolicies
 	// owner is the owner's schema, whose table the read joins when the
 	// relation follows the owner row's tenant (WithIncludeOwner).
 	owner       *ResourceSchema
@@ -82,7 +83,7 @@ type includeQueryConfig struct {
 // ResolveInclude refuses a RowTenant: resolve each tenant's owners with
 // its Tenant.
 func WithIncludeRelationScope(s RelationScope) IncludeQueryOption {
-	return func(c *includeQueryConfig) { c.scope, c.related = s.tenancy(), s.Related }
+	return func(c *includeQueryConfig) { c.scope, c.related = s.tenancy(), s.policies() }
 }
 
 // WithIncludeOwner names the owner's schema, whose table a RowTenant reads
@@ -206,6 +207,7 @@ func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQuer
 	for _, opt := range opts {
 		opt(cfg)
 	}
+	cfg.related = cfg.related.at(time.Now().UTC())
 	if err := cfg.scope.check(); err != nil {
 		return nil, err
 	}
@@ -227,7 +229,7 @@ func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQuer
 // table's tenant (bindTenant), and for a declared relation its live,
 // tenant- or policy-scoped related rows — the join table itself for a
 // has-many, the target for a many-to-many. Policy values bind through s.
-func relatedScope(field *FieldSchema, dialect Dialect, scope relationScope, related map[string]*PolicyConstraints, s *buildState, bindTenant func(any) string, join, target string) (string, error) {
+func relatedScope(field *FieldSchema, dialect Dialect, scope relationScope, related relatedPolicies, s *buildState, bindTenant func(any) string, join, target string) (string, error) {
 	rel := field.Relation
 	exprs, err := targetExprs(field, dialect)
 	if err != nil {
@@ -288,7 +290,7 @@ func targetScope(field *FieldSchema, dialect Dialect, scope relationScope, bindT
 
 // policyScope is a policy-scoped relation's target policy on alias, ""
 // for any other relation.
-func policyScope(field *FieldSchema, exprs columnExprs, dialect Dialect, scope relationScope, related map[string]*PolicyConstraints, s *buildState, alias string, others ...string) (string, error) {
+func policyScope(field *FieldSchema, exprs columnExprs, dialect Dialect, scope relationScope, related relatedPolicies, s *buildState, alias string, others ...string) (string, error) {
 	rel := field.Relation
 	if !rel.Policy {
 		return "", nil
@@ -296,15 +298,11 @@ func policyScope(field *FieldSchema, exprs columnExprs, dialect Dialect, scope r
 	if field.Related == nil {
 		return "", fmt.Errorf("policy-scoped relation has no target schema")
 	}
-	pc, ok := related[rel.RelatedTable()]
-	if !ok {
-		return "", fmt.Errorf("relation on %s: %w", rel.RelatedTable(), ErrRelatedPolicyRequired)
-	}
-	ast, err := ApplyPolicyConstraints(field.Related, nil, pc)
-	if err != nil || ast == nil || ast.Root == nil {
+	root, err := related.on(field, nil)
+	if err != nil || root == nil {
 		return "", err
 	}
-	root, err := rebaseNode(ast.Root, field.Related.Name, alias, exprs, map[*FieldSchema]*FieldSchema{})
+	root, err = rebaseNode(root, field.Related.Name, alias, exprs, map[*FieldSchema]*FieldSchema{})
 	if err != nil {
 		return "", err
 	}
@@ -335,7 +333,8 @@ func VisibleRelated(field *FieldSchema, dialect Dialect, alias string, tenant an
 	if err != nil {
 		return "", err
 	}
-	pc, err := policyScope(field, exprs, dialect, scope, related, &buildState{bind: bind}, alias)
+	policies := relatedPolicies{byTable: related, now: time.Now().UTC()}
+	pc, err := policyScope(field, exprs, dialect, scope, policies, &buildState{bind: bind}, alias)
 	if err != nil {
 		return "", err
 	}

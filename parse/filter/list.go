@@ -107,12 +107,13 @@ type listConfig struct {
 	limit       int
 	maxLimit    int
 	policy      *PolicyConstraints
+	now         time.Time
 	withCount   bool
 	facetFields []string
 	searchQuery string
 	startParam  int
 	scope       relationScope
-	related     map[string]*PolicyConstraints
+	related     relatedPolicies
 }
 
 // ListFilter sets the JSON filter string.
@@ -155,6 +156,14 @@ func ListPolicy(pc *PolicyConstraints) ListOption {
 	return func(c *listConfig) { c.policy = pc }
 }
 
+// ListNow resolves the relative-time tokens of the filter JSON, the policy
+// and the related tables' policies against now: the instant the request
+// was parsed at, so they agree with its filter. Without it, Build reads the
+// parser clock once. A RelationScope.Now holds for the related policies.
+func ListNow(now time.Time) ListOption {
+	return func(c *listConfig) { c.now = now }
+}
+
 // ListWithCount enables COUNT(*) query generation.
 func ListWithCount(enable bool) ListOption {
 	return func(c *listConfig) { c.withCount = enable }
@@ -175,7 +184,7 @@ func ListSearch(query string) ListOption {
 // ListRelationScope scopes the relations the filter, count and facets
 // reach (RelationScope).
 func ListRelationScope(s RelationScope) ListOption {
-	return func(c *listConfig) { c.scope, c.related = s.tenancy(), s.Related }
+	return func(c *listConfig) { c.scope, c.related = s.tenancy(), s.policies() }
 }
 
 // ListStartParam sets the starting parameter index offset. Use this when the
@@ -221,20 +230,21 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 		cfg.limit = cfg.maxLimit
 	}
 
+	now := cfg.now
+	if now.IsZero() {
+		now = lq.filterConfig.Now()
+	}
+	related := cfg.related.at(now)
 	ast := cfg.filterAST
 	if ast == nil && cfg.filterJSON != "" {
-		parsed, err := NewFilterParser(lq.filterSchema, lq.filterConfig).Parse(cfg.filterJSON)
+		parsed, err := NewFilterParser(lq.filterSchema, lq.filterConfig).At(now).Parse(cfg.filterJSON)
 		if err != nil {
 			return nil, err
 		}
 		ast = parsed
 	}
 	if cfg.policy != nil && !cfg.policy.IsEmpty() {
-		var clock func() time.Time
-		if lq.filterConfig != nil {
-			clock = lq.filterConfig.Clock
-		}
-		merged, err := applyPolicyConstraints(lq.filterSchema, ast, cfg.policy, clock)
+		merged, err := applyPolicyConstraints(lq.filterSchema, ast, cfg.policy, now)
 		if err != nil {
 			return nil, err
 		}
@@ -247,7 +257,7 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 		return nil, err
 	}
 	search := columnExprs(exprs).search(lq.searchSchema)
-	builder := &SQLBuilder{schema: lq.filterSchema, dialect: lq.dialect, startParam: cfg.startParam, scope: cfg.scope.over(lq.dialect, lq.filterSchema), related: cfg.related}
+	builder := &SQLBuilder{schema: lq.filterSchema, dialect: lq.dialect, startParam: cfg.startParam, scope: cfg.scope.over(lq.dialect, lq.filterSchema), related: related}
 	filterSQL, err := builder.build(ast, exprs)
 	if err != nil {
 		return nil, err
@@ -366,7 +376,7 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 		for i, f := range cfg.facetFields {
 			reqs[i] = FacetRequest{Field: f}
 		}
-		fq, err := buildFacetQuery(lq.filterSchema, lq.dialect, popWhere, popArgs, reqs, facetConfig{scope: cfg.scope, related: cfg.related})
+		fq, err := buildFacetQuery(lq.filterSchema, lq.dialect, popWhere, popArgs, reqs, facetConfig{scope: cfg.scope, related: related})
 		if err != nil {
 			return nil, err
 		}

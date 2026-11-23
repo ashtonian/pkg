@@ -84,19 +84,12 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 		nested = node.Children[0]
 	}
 	if rel.Policy {
-		pc, ok := b.related[rel.RelatedTable()]
-		if !ok {
-			return "", fmt.Errorf("relation %s on %s: %w", node.Field.ExternalName, rel.RelatedTable(), ErrRelatedPolicyRequired)
+		if nested, err = b.related.on(node.Field, nested); err != nil {
+			return "", err
 		}
-		ast, err := ApplyPolicyConstraints(target, &FilterAST{Root: nested}, pc)
-		if err != nil {
-			return "", fmt.Errorf("relation %s: %w", node.Field.ExternalName, err)
-		}
-		nested = ast.Root
 	}
 	if nested != nil {
 		if related != target.Name {
-			var err error
 			if nested, err = rebaseNode(nested, target.Name, related, exprs, map[*FieldSchema]*FieldSchema{}); err != nil {
 				return "", fmt.Errorf("relation %s: %w", node.Field.ExternalName, err)
 			}
