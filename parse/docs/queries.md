@@ -32,18 +32,31 @@ Values normalize before any SQL is built: integers exactly (range-checked agains
 
 `filter_ops` (and `core.GeneratorOptions.DefaultFilterOps`) may name only the operators `OperatorsFor(type, relation)` returns; anything else fails schema generation:
 
+<!-- BEGIN rendered operators: edit the code, then go test -tags=unit -run TestDocTables -update -->
+
 | Type | Operators | Default when `filter_ops` is omitted |
 |---|---|---|
-| string | eq ne gt gte lt lte in nin like ilike contains null exists | eq ne contains like ilike in nin |
-| int, float, decimal | eq ne gt gte lt lte in nin null exists | eq ne gt gte lt lte in nin |
-| timestamp | eq ne gt gte lt lte in nin null exists | eq ne gt gte lt lte |
-| uuid | eq ne in nin null exists | eq ne in nin |
-| bool | eq ne in nin null exists | eq ne |
-| json | eq ne contains has_key null exists | eq ne contains has_key exists null |
-| object | eq ne contains has_key null exists | none |
-| array | contains some none null exists | contains some none null |
-| geo | near within intersects null exists | near within |
+| string | eq ne gt gte lt lte in nin like ilike contains null not_null exists | eq ne contains like ilike in nin |
+| int | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte in nin |
+| float | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte in nin |
+| decimal | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte in nin |
+| bool | eq ne in nin null not_null exists | eq ne |
+| timestamp | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte |
+| date | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte |
+| time | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte |
+| interval | eq ne in nin null not_null exists | eq ne in nin |
+| inet | eq ne in nin null not_null exists | eq ne in nin |
+| cidr | eq ne in nin null not_null exists | eq ne in nin |
+| macaddr | eq ne in nin null not_null exists | eq ne in nin |
+| uuid | eq ne in nin null not_null exists | eq ne in nin |
+| json | eq ne contains has_key null not_null exists | eq ne contains has_key exists null |
+| array | contains some none null not_null exists | contains some none null |
+| object | eq ne contains has_key null not_null exists | none |
+| any | null not_null exists | none |
+| geo | near within intersects null not_null exists | near within |
 | relation | the target ID type's operators, without contains | eq ne in nin null not_null |
+
+<!-- END rendered operators -->
 
 The operator contract is shared where supported. Backend differences and relation limits are explicit below:
 

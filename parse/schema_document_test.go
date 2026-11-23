@@ -78,7 +78,7 @@ func TestSchemaDocument_MatchesItsGoldenSnapshot(t *testing.T) {
 	got, err := json.MarshalIndent(schemaDocument(t), "", "  ")
 	require.NoError(t, err)
 	got = append(got, '\n')
-	if *updateConformance {
+	if *updateRendered {
 		require.NoError(t, os.WriteFile(schemaDocumentPath, got, 0o644))
 		return
 	}

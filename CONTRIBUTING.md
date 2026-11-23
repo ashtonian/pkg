@@ -59,8 +59,8 @@ superseded run leaves no change unvalidated. The scope lists the workspace's pac
   below); the modules job runs only when one is selected.
 
 `go-ignore` lists what no workspace Go code reads: `CONTRIBUTING.md`, the root `README.md`,
-changelogs, the Markdown guides in `config/docs`, `gowalker/docs`, `httpx/docs` and
-`parse/docs`, the SDK, the release-please manifest and configuration, the release and SDK
+changelogs, the Markdown guides in `config/docs`, `gowalker/docs` and `httpx/docs` (parse's
+are read by parse's tests, which render their tables from the code), the SDK, the release-please manifest and configuration, the release and SDK
 scripts, and the modules outside the workspace (the cookbook, the Gin example, httpx's
 benchmarks, the archive, documentation and release tooling), whose own checks read them. A module manifest
 (`go.mod`, `go.sum`), `go.work`, `go.work.sum` or any other file no package owns reaches

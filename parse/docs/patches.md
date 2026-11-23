@@ -81,12 +81,31 @@ Integral decimal/exponent values remain exact through the supported integer rang
 
 Default operations per type. `remove` follows nullability: it is dropped for non-nullable fields (and rejected in `patch_ops` on them) and added for nullable scalars such as `*bool` or `*uuid.UUID`. `GeneratorOptions.DefaultPatchOps` replaces a type's defaults as given:
 
+<!-- BEGIN rendered patch-operations: edit the code, then go test -tags=unit -run TestDocTables -update -->
+
 | Type | Default operations |
 |---|---|
-| string, int, float, decimal, bool, timestamp, date, uuid | replace (+ remove when the Go type is a pointer) |
-| json, object | replace add remove |
+| string | replace |
+| int | replace |
+| float | replace |
+| decimal | replace |
+| bool | replace |
+| timestamp | replace |
+| date | replace |
+| time | replace |
+| interval | replace |
+| inet | replace |
+| cidr | replace |
+| macaddr | replace |
+| uuid | replace |
+| json | replace add remove |
 | array | replace add remove array_append |
+| object | replace add remove |
+| any | none |
+| geo | none |
 | relation | replace add remove (junction rows) |
+
+<!-- END rendered patch-operations -->
 
 `array_append` is an extension operation: it appends one element to an array, initializing a missing or null array. A Go fixed-size array (`[2]int`) cannot grow, so it is not given `array_append` and declaring it in `patch_ops` fails schema generation. A null appended element is valid only when the element type is nullable: `[]*int` can contain null, `[]int` cannot. Nullable pointer elements are also preserved during whole-array replacement.
 

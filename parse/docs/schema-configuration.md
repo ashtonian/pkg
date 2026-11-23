@@ -73,8 +73,10 @@ encoding/json ignores the option on a type that marshals itself (`json.Marshaler
 
 The limits follow one rule, which filters and patches read alike through `(*ParserConfig).Effective`: zero selects the default for `MaxDepth`, `MaxCost`, `MaxConditions` and `MaxArraySize`, so a hand-built `&core.ParserConfig{MaxDepth: 10}` keeps the other defaults and no value forbids nesting altogether (the smallest depth is 1); zero or less is unlimited for `MaxInputSize` and `MaxPatchCopyBytes`; zero derives `MaxListBodySize`. A negative `MaxDepth`, `MaxCost`, `MaxConditions`, `MaxArraySize` or `MaxListBodySize` is refused by `(*ParserConfig).Validate`, which `NewResource` calls, naming the option: `parse: devices: parser options: WithMaxDepth(-1): a limit is never negative`. A parser built directly (`filter.NewFilterParser`, `patch.NewParser`) with a negative limit refuses every request it bounds.
 
+<!-- BEGIN rendered parser-options: edit the code, then go test -tags=unit -run TestDocTables -update -->
+
 | Option | Type | Default | Description |
-|--------|------|---------|-------------|
+|---|---|---|---|
 | `WithMaxDepth(n)` | int | `5` | Filter boolean nesting, JSON filter document nesting, patch JSON Pointer segments and merge patch nesting, one bound for both. `0` is the default; negative is refused; the smallest depth is `1` |
 | `WithMaxCost(n)` | int | `50` | `0` is the default; negative is refused. Estimated filter cost: about 1 per indexed condition, 10 per unindexed one, more for documents, relations, unanchored patterns and `$or`; a `$in` / `$nin` set costs one condition whatever its size |
 | `WithMaxInputSize(n)` | int | `65536` | Filter / patch body bytes; `0` or less is unlimited, for filters and patches alike. A filter is bounded by it in a query string and in a POST list body alike |
@@ -85,6 +87,8 @@ The limits follow one rule, which filters and patches read alike through `(*Pars
 | `WithCodec(c)` | `Codec` | `StdlibJSON` (numbers decode as `json.Number`, trailing data rejected) | Decodes request bodies and undeclared documents in typed apply; declared JSON storage uses fresh Go JSON decoding. Cursors use Parse's internal bounded MessagePack envelope |
 | `WithClock(fn)` | `func() time.Time` | `time.Now().UTC` | Anchor for relative-time tokens (`now-7d`) |
 | `WithGeneratorOptions(o...)` | `...GeneratorOption` | none | Schema generation options a `Resource` generates its schemas with; each use adds to the earlier ones, a later option overriding one it conflicts with |
+
+<!-- END rendered parser-options -->
 
 `GeneratorOption`s configure a `SchemaGenerator` (`NewSchemaGenerator`, `parse.NewSchemaRegistry`, or `WithGeneratorOptions`):
 

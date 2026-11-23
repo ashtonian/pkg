@@ -222,7 +222,7 @@ func buildPatchCorpus(t *testing.T) []byte {
 
 func TestEmitPatchConformance(t *testing.T) {
 	got := buildPatchCorpus(t)
-	if *updateConformance {
+	if *updateRendered {
 		require.NoError(t, os.WriteFile(patchConformancePath, got, 0o644))
 		return
 	}

@@ -105,8 +105,10 @@ The TypeScript SDK also reads RFC 9457 problem documents (`application/problem+j
 
 All known codes describe permanent failures and are listed below; retry and catalog classification belong to the consumer. A `*core.ParseError` answers its code's status itself (`ErrorHTTPStatus()`), so a handler writes `parsehttp.Body` with the status below and needs no table of its own.
 
+<!-- BEGIN rendered error-codes: edit the code, then go test -tags=unit -run TestDocTables -update -->
+
 | Code | HTTP | Meaning |
-|------|------|---------|
+|---|---|---|
 | E2061 | 422 | Filter cost exceeds `MaxCost` |
 | E2062 | 422 | `$in` / `$nin` value is not an array |
 | E2063 | 422 | Filter or patch body exceeds `MaxInputSize`, or a POST list body exceeds `MaxListBodySize` |
@@ -143,6 +145,8 @@ All known codes describe permanent failures and are listed below; retry and cata
 | E2118 | 422 | Relation patch value is not a set of keys: an `add` or `remove` naming none, or a null key (a value that is not a list, or a key of the wrong type, is E2077) |
 | E2119 | 422 | Relation patch exceeds its maximum: more keys in one relation operation than `PatchSchema.MaxRelationValues`; `Details` holds `count` and `limit` |
 | E2120 | 500 | A schema discovery handler could not encode its document |
+
+<!-- END rendered error-codes -->
 
 `parse.ParseError` and `core.ParseError` name the same type. `ErrorCode()` and `ErrorHTTPStatus()` support structural error introspection without a framework dependency; `errors.Is(err, filter.ECodeUnknownField)` holds through wrapping, and the original cause remains reachable.
 

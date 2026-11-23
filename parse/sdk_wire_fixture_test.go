@@ -93,7 +93,7 @@ type sdkWire struct {
 
 func TestSDKWireFixture(t *testing.T) {
 	got := buildSDKWire(t)
-	if *updateConformance {
+	if *updateRendered {
 		require.NoError(t, os.WriteFile(sdkWireFixturePath, got, 0o644))
 		return
 	}

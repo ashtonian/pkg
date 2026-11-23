@@ -45,7 +45,7 @@ import (
 	"github.com/ashtonian/pkg/parse/filter"
 )
 
-var updateConformance = flag.Bool("update", false, "regenerate the Go-authoritative conformance corpus")
+var updateRendered = flag.Bool("update", false, "rewrite what is rendered from the code: the conformance corpora, the SDK fixtures and the guides' tables")
 
 const conformanceCorpusPath = "testdata/filter_conformance.json"
 
@@ -699,7 +699,7 @@ func buildFilterCorpus(t *testing.T) []byte {
 // as float64 and miss a change in their low digits. -update writes it.
 func TestEmitFilterConformance(t *testing.T) {
 	got := buildFilterCorpus(t)
-	if *updateConformance {
+	if *updateRendered {
 		require.NoError(t, os.WriteFile(conformanceCorpusPath, got, 0o644))
 		return
 	}
