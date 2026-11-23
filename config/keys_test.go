@@ -381,7 +381,7 @@ func TestUnknownKeys_NamesParseBackToTheirPlace(t *testing.T) {
 		Named  map[string]entry `koanf:"named"`
 		Items  []entry          `koanf:"items"`
 	}
-	names := []string{"a.b", "a[0]", "a]b", `a"b`, `a\b`, "a*b", "a\tb", "a b", "größe", "", "prot", "port.x", "port[0]", "port]"}
+	names := []string{"a.b", "a[0]", "a]b", `a"b`, `a\b`, "a*b", "a\tb", "a b", "größe", "", "prot", "port.x", "port[0]", "port]", "$", "$x"}
 	for _, at := range []struct {
 		where, key string
 		source     func(entry map[string]any) mapSource
@@ -418,6 +418,38 @@ func TestUnknownKeys_NamesParseBackToTheirPlace(t *testing.T) {
 			})
 		}
 	}
+}
+
+// $ is the root's name in every message, never a field's key: ParseKey and
+// CanonicalKey refuse it, a struct may not key a field by it, and a source
+// key spelled so is named as a map key, ["$"], apart from the root.
+func TestKey_DollarNamesTheRootAndNoField(t *testing.T) {
+	type dollarField struct {
+		Dollar int `koanf:"$"`
+	}
+	type cfg struct {
+		Server struct {
+			Port int `koanf:"port"`
+		} `koanf:"server"`
+	}
+	for _, key := range []string{"$", "server.$", "$.port"} {
+		_, err := ParseKey(key)
+		assert.ErrorIs(t, err, ErrKey, key)
+		_, err = CanonicalKey[cfg](key)
+		assert.ErrorIs(t, err, ErrKey, key)
+	}
+	_, err := Load[dollarField](t.Context())
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Contains(t, err.Error(), `field Dollar has key "$", which no key can spell: $ names the root`)
+
+	_, err = Load[cfg](t.Context(), WithBaseProvider(mapSource{"$": 1, "server": map[string]any{"$": 2}}, nil), WithSkipValidation())
+	var unknown *UnknownKeysError
+	require.ErrorAs(t, err, &unknown)
+	var keys []string
+	for _, k := range unknown.Keys {
+		keys = append(keys, k.Key)
+	}
+	assert.ElementsMatch(t, []string{`["$"]`, `server["$"]`}, keys)
 }
 
 // A name the source tree holds in two readings, a field's key and the key

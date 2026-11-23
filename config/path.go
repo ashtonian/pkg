@@ -128,8 +128,8 @@ func parseKeyPath(s string) (keyPath, error) {
 				end = len(rest)
 			}
 			name := rest[:end]
-			if !validFieldKey(name) {
-				return nil, fmt.Errorf("%w %q: %q is not a field key", ErrKey, s, name)
+			if problem := fieldKeyProblem(name); problem != "" {
+				return nil, fmt.Errorf("%w %q: %q is not a field key: %s", ErrKey, s, name, problem)
 			}
 			p = append(p, segment{kind: segField, name: name})
 			rest = rest[end:]
@@ -181,17 +181,26 @@ func parseSelector(s string) (segment, int, error) {
 	return segment{kind: segIndex, index: i}, end + 1, nil
 }
 
-// validFieldKey reports whether name can be a struct field's key segment: it
-// must not be empty or hold a character the grammar uses for structure.
-func validFieldKey(name string) bool {
-	if name == "" {
-		return false
+// validFieldKey reports whether name can be a struct field's key segment.
+func validFieldKey(name string) bool { return fieldKeyProblem(name) == "" }
+
+// fieldKeyProblem is why name cannot be a struct field's key segment, or ""
+// when it can: it is empty, is $, the name every message gives the root,
+// or holds a character the grammar uses for structure.
+func fieldKeyProblem(name string) string {
+	switch name {
+	case "":
+		return "it is empty"
+	case "$":
+		return "$ names the root"
 	}
 	for _, r := range name {
 		switch {
-		case r == '.', r == '[', r == ']', r == '\\', r == '*', r == '"', unicode.IsControl(r):
-			return false
+		case r == '.', r == '[', r == ']', r == '\\', r == '*', r == '"':
+			return fmt.Sprintf("it holds %q, which keys use for structure", r)
+		case unicode.IsControl(r):
+			return "it holds a control character"
 		}
 	}
-	return true
+	return ""
 }

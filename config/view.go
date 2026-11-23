@@ -38,8 +38,8 @@ func configField(sf reflect.StructField) (gowalker.FieldRule, error) {
 		}
 		return gowalker.FieldRule{Inline: isBranch(derefType(sf.Type)), Skip: !isBranch(derefType(sf.Type))}, nil
 	}
-	if !validFieldKey(key) {
-		return gowalker.FieldRule{}, fmt.Errorf("%w: field %s has key %q, which holds a character keys use for structure", ErrSchema, sf.Name, key)
+	if problem := fieldKeyProblem(key); problem != "" {
+		return gowalker.FieldRule{}, fmt.Errorf("%w: field %s has key %q, which no key can spell: %s", ErrSchema, sf.Name, key, problem)
 	}
 	for i, a := range aliases {
 		if !validFieldKey(a) || strings.EqualFold(a, key) {
