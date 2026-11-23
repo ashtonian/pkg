@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -10,11 +11,15 @@ import (
 
 // KeyError distinguishes an unknown key (Unknown, ErrKey) from a known key
 // that cannot be set as written or holds an invalid value (ErrValidation).
-// A key holding [*] where one naming a single value is required is Unknown
-// too, and its message says it is not concrete.
+// Two refusals of what is no key naming one value are Unknown too, and
+// their messages say which they are: a key holding [*] where one naming a
+// single value is required (key vault[*] is not concrete), and text that
+// does not parse as a key (key "pool[x]" does not parse: …).
 // Key is the key as diagnostics may show it: cut short where the keys of a
 // sensitive map, list or interface, or those a sensitive remain field
-// collects, begin, and redacted (see RedactText) when it does not parse.
+// collects, begin; for text that does not parse, the text redacted (see
+// RedactText), which the message quotes, saying why only when redacting
+// left it as it was.
 // Error, and Err's own text, name keys as Key does and never a value; a
 // reason that would name what Key withholds is not shown. Err keeps a
 // decoder's or validator's cause for trusted diagnostics, and the errors
@@ -26,17 +31,29 @@ type KeyError struct {
 	Err     error  `json:"-"`
 	// suggestion is the key an unknown one most likely misspells.
 	suggestion string
-	// pattern marks a key refused for holding [*] (see notConcrete).
-	pattern bool
+	// form is what Key is when it is no key naming one value.
+	form keyForm
 	// reason is what Error says of Key beyond its category, set where the
-	// KeyError is made: what a pattern is, or why a known key cannot be
-	// set as written.
+	// KeyError is made: why Key is no key naming one value, or why a known
+	// key cannot be set as written.
 	reason string
 }
 
+// keyForm is the shape of a refused key's text: a key naming one value,
+// whether or not config reads it, or text naming no one value.
+type keyForm uint8
+
+const (
+	formConcrete keyForm = iota // a key naming one value
+	formPattern                 // a key holding [*] (see notConcrete)
+	formUnparsed                // text that does not parse as a key (see unparsedKeyError)
+)
+
 func (e *KeyError) Error() string {
 	switch {
-	case e.pattern:
+	case e.form == formUnparsed:
+		return fmt.Sprintf("config: key %q %s", e.Key, e.reason)
+	case e.form == formPattern:
 		return fmt.Sprintf("config: key %s %s", e.Key, e.reason)
 	case e.Unknown:
 		return fmt.Sprintf("config: unknown key %s", e.Key)
@@ -50,6 +67,12 @@ func (e *KeyError) Unwrap() error { return e.Err }
 
 func (e *KeyError) Is(target error) bool {
 	return target == ErrKey && e.Unknown || target == ErrValidation && !e.Unknown
+}
+
+// namesNothing reports whether e is an unknown key: one naming one value,
+// though not one config reads.
+func (e *KeyError) namesNothing() bool {
+	return e.Unknown && e.form == formConcrete
 }
 
 // A *KeyError is made only here: newKeyError for a key that parses,
@@ -76,9 +99,9 @@ func newKeyError(schema *schemaNode, key keyPath, unknown bool, cause error) *Ke
 	ke.Err = problem
 	switch {
 	case f.pattern && shown.isPattern():
-		ke.pattern, ke.reason = true, "is not concrete"
+		ke.form, ke.reason = formPattern, "is not concrete"
 	case f.pattern:
-		ke.pattern, ke.reason = true, "holds [*] within its sensitive contents, so it is not concrete"
+		ke.form, ke.reason = formPattern, "holds [*] within its sensitive contents, so it is not concrete"
 	case f.sentinel == ErrValidation:
 		ke.reason = problem.reason
 	}
@@ -93,15 +116,20 @@ func newKeyError(schema *schemaNode, key keyPath, unknown bool, cause error) *Ke
 // begin.
 const withheldReason = "the reason names sensitive contents, which are not shown"
 
-// unparsedKeyError is the *KeyError for key, which does not parse (err):
-// Key is key redacted. When redacting changed it, Err drops err's reason,
-// which quotes the key.
+// unparsedKeyError is the *KeyError for key, which does not parse (err, a
+// *keySyntaxError): Key is key redacted. Its reason quotes parts of key, so
+// when redacting changed key, the message and Err drop it.
 func unparsedKeyError(key string, err error) *KeyError {
 	shown := RedactText(key)
-	if shown != key {
-		err = &keyProblem{sentinel: ErrKey, key: shown, reason: "it does not parse, and the reason quotes it, so it is not shown"}
+	ke := &KeyError{Key: shown, Unknown: true, Err: err, form: formUnparsed, reason: "does not parse"}
+	var syntax *keySyntaxError
+	switch {
+	case shown != key:
+		ke.Err = &keyProblem{sentinel: ErrKey, key: strconv.Quote(shown), reason: "it does not parse, and the reason quotes it, so it is not shown"}
+	case errors.As(err, &syntax):
+		ke.reason += ": " + syntax.reason
 	}
-	return &KeyError{Key: shown, Unknown: true, Err: err}
+	return ke
 }
 
 // unknownKeyError is the *KeyError for u, a key inside a value that no

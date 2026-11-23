@@ -249,18 +249,18 @@ func TestWithInvalidEntries_ProviderFieldsJudgedInContext(t *testing.T) {
 // with the key it most likely misspells, as is a key inside an entry's
 // value; a key under a former name loads and warns.
 func TestEntries_UnknownAndAliasedKeys(t *testing.T) {
-	entries := map[string]any{"primary.prot": 1, "pool[x]": 2, "MAIN.port": 6, "bogus": map[string]any{"a": 1}, `addresses["a"]`: map[string]any{"hots": "h"}}
+	entries := map[string]any{"primary.prot": 1, "MAIN.port": 6, "bogus": map[string]any{"a": 1}, `addresses["a"]`: map[string]any{"hots": "h"}}
 	_, err := Load[editConfig](t.Context(), WithBaseEntries(readEntries(entries)))
 	var unknown *UnknownKeysError
 	require.ErrorAs(t, err, &unknown)
-	assert.Equal(t, []UnknownKey{{Key: `addresses["a"].hots`, Suggestion: `addresses["a"].host`}, {Key: "bogus"}, {Key: "pool[x]"}, {Key: "primary.prot", Suggestion: "primary.port"}}, unknown.Keys)
+	assert.Equal(t, []UnknownKey{{Key: `addresses["a"].hots`, Suggestion: `addresses["a"].host`}, {Key: "bogus"}, {Key: "primary.prot", Suggestion: "primary.port"}}, unknown.Keys)
 
 	var logs bytes.Buffer
 	snap, err := LoadSnapshot[editConfig](t.Context(), WithBaseEntries(readEntries(entries)), WithAllowUnknownKeys(),
 		WithLogger(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))))
 	require.NoError(t, err)
 	assert.Equal(t, 6, snap.Config.Primary.Port)
-	assert.Len(t, snap.UnknownKeys.Keys, 4)
+	assert.Len(t, snap.UnknownKeys.Keys, 3)
 	assert.Contains(t, logs.String(), "MAIN (now primary) in base provider 0")
 }
 

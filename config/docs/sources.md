@@ -120,7 +120,11 @@ and validates it with the same hooks, tag validator and `Validate` method as
 its typed values. A rejected key returns `*KeyError`: `Unknown` and `ErrKey`
 distinguish an unknown key — the key itself, or a key inside its value that
 no field reads, such as `primary.bogus` in `primary` set to `{"bogus": 1}`;
-a known key with an invalid value matches `ErrValidation`. Schema/setup
+a known key with an invalid value matches `ErrValidation`. A key that does
+not parse, or holds `[*]`, names no one value: it is `Unknown` and matches
+`ErrKey` too, and its message says which (`key "pool[x]" does not parse:
+selector [x] is neither an index, a quoted map key nor [*]`,
+`key extra[*] is not concrete`). Schema/setup
 errors and cancellation return directly, among them a `validate` tag the
 default validator cannot apply to its field (`dive` on an `int`), which is
 `ErrSchema` with no `*KeyError`. No partial config is returned on
@@ -128,7 +132,9 @@ failure. Error messages contain the key, not the value; wrapped causes are
 for trusted diagnostics. A key within a sensitive map, list, interface or
 remain field is named only as far as its enclosing field, in `Key`, the
 message and `Err`'s own text alike, and a reason that would name what lies
-inside is not shown; a key that does not parse is redacted (`RedactText`).
+inside is not shown; a key that does not parse is redacted (`RedactText`),
+and its message quotes it, saying why it does not parse only when redacting
+left it as it was.
 
 These calls honor `WithDefaults`, `WithDecodeHook`, `WithValidator` and
 `WithSkipValidation`. They read no provider, file or environment and run no
@@ -216,6 +222,7 @@ that is not `Unknown` says why in its message, naming keys only:
 | Edits | Refused key |
 |---|---|
 | A key naming nothing config reads | the key, `Unknown` |
+| Text that does not parse as a key: `pool[x]` | the text, redacted (`RedactText`), `Unknown`; its message quotes it and says why (`key "pool[x]" does not parse: selector [x] is neither an index, a quoted map key nor [*]`) |
 | A key holding `[*]`, which names no one value | the key, `Unknown`; its message says it is not concrete (`key extra[*] is not concrete`) |
 | A key inside a value that no field reads: `primary` set to `{"bogus": 1}` | `primary.bogus`, `Unknown` |
 | One value under two spellings: `port` and `PORT`, or a field and its alias | the key, once |
@@ -424,7 +431,8 @@ a whole list where the list beneath can change.
 
 | Entry | Load |
 |---|---|
-| Names nothing config reads, or does not parse; or a key inside its value that no field reads | an unknown key, for the unknown-input handler or the source's `WithUnknownEntries` callback, with the field it most likely misspells |
+| Names nothing config reads; or a key inside its value that no field reads | an unknown key, for the unknown-input handler or the source's `WithUnknownEntries` callback, with the field it most likely misspells |
+| Does not parse as a key (`pool[x]`) | fails with a `*KeyError` matching `ErrKey`, quoting the text redacted (`RedactText`): `key "pool[x]" does not parse: selector [x] is neither an index, a quoted map key nor [*]` |
 | Holds `[*]`, which names no one value | fails with a `*KeyError` matching `ErrKey`: `key extra[*] is not concrete` |
 | One value under two spellings (`port`, `PORT`; a field and its alias) | fails with a `*KeyError` matching `ErrValidation` |
 | An index past the next element of the list beneath | fails with a `*KeyError` matching `ErrValidation` |
@@ -432,7 +440,9 @@ a whole list where the list beneath can change.
 | A value its field's `format` or `sep` tag cannot read | fails with a `*KeyError` matching `ErrValidation` |
 
 Every refused entry is named, and every message names keys, cut short
-beneath a sensitive container, and never a value. Under
+beneath a sensitive container, and never a value. An entry that does not
+parse or holds `[*]` is no unknown key, so neither `WithAllowUnknownKeys`
+nor the source's `WithUnknownEntries` callback can accept it. Under
 `WithInvalidEntries` the refused entries, and the entries the final
 configuration fails on as that option judges it, are withheld and reported
 instead. The
