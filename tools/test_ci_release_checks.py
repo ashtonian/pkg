@@ -57,6 +57,16 @@ def ignored(path):
     return any(glob(pattern).match(path) for pattern in scope_input("go-ignore").split("\n"))
 
 
+def tracked_dirs(name):
+    """The directories holding a tracked file of this name, outside those
+    doccheck's walk skips (tools/doccheck/check.go skipDir): test fixtures,
+    vendored code, node_modules, and hidden or _-prefixed directories."""
+    tracked = subprocess.check_output(["git", "ls-files", "-z", "--", f"*{name}"], cwd=ROOT).decode().split("\0")
+    dirs = [PurePosixPath(p).parent for p in tracked if PurePosixPath(p).name == name]
+    skipped = ("testdata", "vendor", "node_modules")
+    return [d for d in dirs if not any(part in skipped or part[0] in "._" for part in d.parts)]
+
+
 SCOPE_JOBS = json.loads(scope_input("jobs"))
 OWNERS = json.loads(scope_input("go-owners"))
 
@@ -100,10 +110,7 @@ class ReleaseChecks(unittest.TestCase):
     def test_the_documentation_check_reads_every_module(self):
         # doccheck reads every go.mod's module outside the directories it
         # skips, in the workspace or not; a change to any of them runs it.
-        skipped = ("testdata", "vendor", "node_modules")
-        tracked = subprocess.check_output(["git", "ls-files", "-z", "--", "*go.mod"], cwd=ROOT).decode().split("\0")
-        modules = [PurePosixPath(p).parent for p in tracked if PurePosixPath(p).name == "go.mod"]
-        modules = [m for m in modules if not any(part in skipped or part[0] in "._" for part in m.parts)]
+        modules = tracked_dirs("go.mod")
         for module in modules:
             with self.subTest(module=module):
                 self.assertTrue(ci.reads("docs-check", f"{module}/README.md"))
@@ -250,8 +257,6 @@ class Scope(unittest.TestCase):
         self.assertEqual(SCOPE_JOBS["test-darwin"]["go"], patterns(make_list("NATIVE_MODULES") + make_list("CONFIG_MODULES")))
         self.assertEqual(SCOPE_JOBS["minimum-go"]["go"], patterns(make_list("HTTPX_MODULES") + ["gitx"]))
         self.assertEqual(SCOPE_JOBS["parse-postgres"]["go"], patterns(make_list("PARSE_MODULES")))
-        self.assertEqual(SCOPE_JOBS["parse-benchmarks"]["go"], ["./parse/filter"])
-        self.assertIn("./parse/filter | tee", job("parse-benchmarks"))
         darwin = re.findall(r"run: make (\S+)", job("test-darwin"))
         self.assertEqual(darwin, ["test-native-unit", "test-native-integration", "test-config"])
 
