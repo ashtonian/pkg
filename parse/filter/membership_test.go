@@ -40,15 +40,56 @@ func TestMembership_CompilesToAnInSubquery(t *testing.T) {
 	for name, tc := range map[string]struct {
 		d     Dialect
 		where string
+		args  []any
 	}{
-		"postgres": {PostgresDialect{}, `"docs"."parent_id" IN (SELECT "authz"."node_closure"."descendant_id" FROM "authz"."node_closure" WHERE ("authz"."node_closure"."root_id" IN ($1, $2) AND ("authz"."node_closure"."user_id" = $3 OR "authz"."node_closure"."ended_at" IS NULL)))`},
-		"sqlite":   {SQLiteDialect{}, `"docs"."parent_id" IN (SELECT "authz"."node_closure"."descendant_id" FROM "authz"."node_closure" WHERE ("authz"."node_closure"."root_id" IN (?1, ?2) AND ("authz"."node_closure"."user_id" = ?3 OR "authz"."node_closure"."ended_at" IS NULL)))`},
+		"postgres": {PostgresDialect{}, `"docs"."parent_id" IN (SELECT "authz"."node_closure"."descendant_id" FROM "authz"."node_closure" WHERE ("authz"."node_closure"."root_id" = ANY($1) AND ("authz"."node_closure"."user_id" = $2 OR "authz"."node_closure"."ended_at" IS NULL)))`, []any{[]string{"r1", "r2"}, "u1"}},
+		"sqlite":   {SQLiteDialect{}, `"docs"."parent_id" IN (SELECT "authz"."node_closure"."descendant_id" FROM "authz"."node_closure" WHERE ("authz"."node_closure"."root_id" IN (SELECT value AS v FROM json_each(?1)) AND ("authz"."node_closure"."user_id" = ?2 OR "authz"."node_closure"."ended_at" IS NULL)))`, []any{`["r1","r2"]`, "u1"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			res, err := NewSQLBuilder(memberSchema(), tc.d).Build(memberAST(t, "parent_id", l, false))
 			require.NoError(t, err)
 			assert.Equal(t, tc.where, res.Where)
-			assert.Equal(t, []any{"r1", "r2", "u1"}, res.Args)
+			assert.Equal(t, tc.args, res.Args)
+		})
+	}
+}
+
+// A WhereIn list binds as one parameter, as `$in` does, so the statement's
+// text and parameter count are those of a one-value list however long it
+// is: 70,000 values are past PostgreSQL's 65,535 bind parameters.
+func TestMembership_InListBindsOneSet(t *testing.T) {
+	ids := make([]any, 70_000)
+	for i := range ids {
+		ids[i] = int64(i)
+	}
+	for name, d := range map[string]Dialect{"postgres": PostgresDialect{}, "sqlite": SQLiteDialect{}} {
+		t.Run(name, func(t *testing.T) {
+			one, err := NewSQLBuilder(memberSchema(), d).Build(memberAST(t, "parent_id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", int64(0))}, false))
+			require.NoError(t, err)
+			res, err := NewSQLBuilder(memberSchema(), d).Build(memberAST(t, "parent_id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", ids...)}, false))
+			require.NoError(t, err)
+			assert.Equal(t, one.Where, res.Where)
+			assert.Equal(t, 1, res.ParamCount)
+		})
+	}
+	res, err := NewSQLBuilder(memberSchema(), PostgresDialect{}).Build(memberAST(t, "parent_id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", 1, int32(2), uint8(3))}, false))
+	require.NoError(t, err)
+	assert.Equal(t, []any{[]int64{1, 2, 3}}, res.Args, "integers of any Go kind are one integer set")
+}
+
+// A WhereIn list is one set of one scalar type; the lookup is the server's,
+// so a list it cannot bind is a plain error, never a request's.
+func TestMembership_InListOfOneScalarType(t *testing.T) {
+	for name, vs := range map[string][]any{
+		"mixed types":  {"a", int64(1)},
+		"a document":   {map[string]any{"a": 1}},
+		"a byte slice": {[]byte("a")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewSQLBuilder(memberSchema(), PostgresDialect{}).Build(memberAST(t, "parent_id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", vs...)}, false))
+			require.ErrorIs(t, err, ErrPolicyInvalid)
+			_, isParseError := errors.AsType[*core.ParseError](err)
+			assert.False(t, isParseError)
 		})
 	}
 }

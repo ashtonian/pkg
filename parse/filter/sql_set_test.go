@@ -119,9 +119,9 @@ func TestSetRendering(t *testing.T) {
 		{"pg path string set by containment", PostgresDialect{}, &FilterNode{Field: colorField, Op: OpIn, Value: []any{"red", "blue"}},
 			`"items"."attrs" @> ANY($1::jsonb[])`, []any{[]string{`{"color":"red"}`, `{"color":"blue"}`}}},
 		{"pg path set beyond the containment bound", PostgresDialect{ContainmentMaxValues: 1}, &FilterNode{Field: colorField, Op: OpIn, Value: []any{"red", "blue"}},
-			`(CASE WHEN jsonb_typeof("items"."attrs" #> '{color}') = 'string' THEN ("items"."attrs" #>> '{color}') END) IN (SELECT unnest($1::text[]) AS v)`, []any{[]string{"red", "blue"}}},
+			`(CASE WHEN jsonb_typeof("items"."attrs" -> 'color') = 'string' THEN ("items"."attrs" ->> 'color') END) IN (SELECT unnest($1::text[]) AS v)`, []any{[]string{"red", "blue"}}},
 		{"pg path set without containment", noContainment, &FilterNode{Field: colorField, Op: OpNin, Value: []any{"red"}},
-			`(CASE WHEN jsonb_typeof("items"."attrs" #> '{color}') = 'string' THEN ("items"."attrs" #>> '{color}') END) NOT IN (SELECT unnest($1::text[]) AS v)`, []any{[]string{"red"}}},
+			`(CASE WHEN jsonb_typeof("items"."attrs" -> 'color') = 'string' THEN ("items"."attrs" ->> 'color') END) NOT IN (SELECT unnest($1::text[]) AS v)`, []any{[]string{"red"}}},
 		{"pg path decimal set", PostgresDialect{}, &FilterNode{Field: decimalPath, Op: OpIn, Value: []any{"9.5", "100"}},
 			FieldExpr(PostgresDialect{}, decimalPath) + " IN (SELECT unnest($1::text[])::numeric AS v)", []any{[]string{"9.5", "100"}}},
 		{"pg path bool set", noContainment, &FilterNode{Field: boolPath, Op: OpIn, Value: []any{true}},
@@ -149,7 +149,7 @@ func TestContainmentOnlyWhereSelectionIsTwoValued(t *testing.T) {
 	typed := FieldExpr(PostgresDialect{}, colorField) + " = $1"
 	nested := &FieldSchema{ExternalName: "attrs.dims.w", DataType: core.FieldTypeFloat,
 		Path: &JSONPath{Table: "items", Column: "attrs", Segments: []string{"dims", "w"}, Storage: StorageJSONB}}
-	indexed := &FieldSchema{ExternalName: "attrs.list.0", DataType: core.FieldTypeString,
+	numbered := &FieldSchema{ExternalName: "attrs.list.0", DataType: core.FieldTypeString,
 		Path: &JSONPath{Table: "items", Column: "attrs", Segments: []string{"list", "0"}, Storage: StorageJSONB}}
 	decimalPath := &FieldSchema{ExternalName: "attrs.price", DataType: core.FieldTypeDecimal,
 		Path: &JSONPath{Table: "items", Column: "attrs", Segments: []string{"price"}, Storage: StorageJSONB}}
@@ -168,7 +168,7 @@ func TestContainmentOnlyWhereSelectionIsTwoValued(t *testing.T) {
 			"NOT ((" + typed + " OR " + FieldExpr(PostgresDialect{}, colorField) + " = $2))", []any{"red", "blue"}},
 		{"double negation selects again", notNode(notNode(eq(colorField, "red"))), `NOT (NOT ("items"."attrs" @> $1::jsonb))`, []any{`{"color":"red"}`}},
 		{"NULL equality stays typed", eq(colorField, nil), FieldExpr(PostgresDialect{}, colorField) + " = $1", []any{nil}},
-		{"an index segment stays typed", eq(indexed, "x"), FieldExpr(PostgresDialect{}, indexed) + " = $1", []any{"x"}},
+		{"a numeric member is an object key", eq(numbered, "x"), `"items"."attrs" @> $1::jsonb`, []any{`{"list":{"0":"x"}}`}},
 		{"decimals stay typed", eq(decimalPath, "9.5"), FieldExpr(PostgresDialect{}, decimalPath) + " = $1::numeric", []any{"9.5"}},
 	}
 	for _, tt := range tests {

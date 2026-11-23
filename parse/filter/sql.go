@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
@@ -111,6 +112,10 @@ type Dialect interface {
 	// setRows binds a set's members as one parameter and reads them back
 	// as rows of one column, v, of the type FieldExpr reads field as.
 	setRows(field *FieldSchema, members []any, bind func(any) string) (string, error)
+	// memberSet tests expr, a value of field's type, for membership in
+	// members (in) or absence from them, the set bound as one parameter:
+	// `$in` / `$nin` and a lookup's WhereIn render through it.
+	memberSet(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error)
 
 	// numberKey renders an int, float or decimal field's value as its
 	// terms facet key: the canonical decimal text (core.DecimalText)
@@ -320,7 +325,7 @@ type SQLBuilderOption func(*sqlBuilderConfig)
 type sqlBuilderConfig struct {
 	startParam int
 	scope      relationScope
-	related    map[string]*PolicyConstraints
+	related    relatedPolicies
 }
 
 // RelationScope is how a statement reaches related rows: which tenant's
@@ -348,11 +353,22 @@ type RelationScope struct {
 	// predicate on one without its table's policy is
 	// ErrRelatedPolicyRequired.
 	Related map[string]*PolicyConstraints
+	// Now is the instant Related's relative-time tokens (`now-30d`)
+	// resolve against: the request's, so its page, count, facets and
+	// includes admit the same related rows. Zero is one reading per
+	// statement: the list's own instant (ListNow), the wall clock
+	// elsewhere.
+	Now time.Time
 }
 
 // tenancy is s's hold on tenant-scoped relations.
 func (s RelationScope) tenancy() relationScope {
 	return relationScope{tenant: s.Tenant, unscoped: s.Unscoped, row: rowTenant{column: s.RowTenant}}
+}
+
+// policies is s's policy for policy-scoped relations.
+func (s RelationScope) policies() relatedPolicies {
+	return relatedPolicies{byTable: s.Related, now: s.Now}
 }
 
 // relationScope is how a builder scopes tenant-scoped junctions: bound to a
@@ -467,7 +483,7 @@ func WithStartParam(n int) SQLBuilderOption {
 // WithRelationScope scopes the relations the filter reaches
 // (RelationScope).
 func WithRelationScope(s RelationScope) SQLBuilderOption {
-	return func(c *sqlBuilderConfig) { c.scope, c.related = s.tenancy(), s.Related }
+	return func(c *sqlBuilderConfig) { c.scope, c.related = s.tenancy(), s.policies() }
 }
 
 // SQLBuilder generates parameterized SQL from a filter AST using a dialect.
@@ -476,7 +492,7 @@ type SQLBuilder struct {
 	dialect    Dialect
 	startParam int
 	scope      relationScope
-	related    map[string]*PolicyConstraints
+	related    relatedPolicies
 	// depth and visible are a relation predicate's nesting and the table
 	// names its enclosing queries already use (buildRelated).
 	depth   int
@@ -563,6 +579,7 @@ func (b *SQLBuilder) build(ast *FilterAST, exprs columnExprs) (*SQLResult, error
 	}
 	root := *b
 	root.exprs = exprs
+	root.related = b.related.at(time.Now().UTC())
 
 	s := &buildState{paramIndex: b.startParam, args: make([]any, 0, 8)}
 

@@ -42,6 +42,13 @@ func TestMembershipMatrix_SQLite(t *testing.T) {
 	})
 }
 
+// WhereIn lists of integers, UUIDs and text on SQLite, each one set.
+func TestLookupSets_SQLite(t *testing.T) {
+	runLookupSets(t, sqliteMatrix(t), map[core.FieldType]string{
+		core.FieldTypeString: "TEXT", core.FieldTypeUUID: "TEXT", core.FieldTypeInt: "INTEGER",
+	})
+}
+
 // Policy trees on SQLite, each listed page by page.
 func TestPolicyMatrix_SQLite(t *testing.T) {
 	runPolicyMatrix(t, sqliteMatrix(t), map[core.FieldType]string{

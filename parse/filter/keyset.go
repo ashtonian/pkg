@@ -501,6 +501,9 @@ func ValidateCursor(token *PageToken, keys []CursorKey) error {
 				v, err = core.NormalizeScalar(k.DataType, k.NumberKind, v)
 			}
 		}
+		if s, ok := v.(string); ok && err == nil {
+			err = core.CheckNUL(s)
+		}
 		if err != nil {
 			return &core.ParseError{
 				Kind:    core.ParseErrorKindSchema,

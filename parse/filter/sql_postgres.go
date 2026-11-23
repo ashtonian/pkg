@@ -137,7 +137,7 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 	}
 	if op == OpIn || op == OpNin {
 		return membership(op, value, func(members []any, in bool) (string, error) {
-			return d.membership(field, expr, members, in, bind)
+			return d.memberSet(field, expr, members, in, bind)
 		})
 	}
 	if isOrdering(op) && orderedAsText(field) {
@@ -162,7 +162,7 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 // that type (setRows): a hash serves it in every plan, where under a
 // generic plan `= ANY` probes a parameter's array member by member for each
 // row.
-func (d PostgresDialect) membership(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error) {
+func (d PostgresDialect) memberSet(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error) {
 	if field.Path != nil {
 		set, err := d.setRows(field, members, bind)
 		if err != nil {
@@ -231,12 +231,12 @@ func (d PostgresDialect) setRows(field *FieldSchema, members []any, bind func(an
 // `doc @> fragment`, the fragment's array holding the listed elements: it is
 // False where the member has no element of its type, where `$contains` is
 // Unknown. Decimals keep the typed comparison (a decimal member may be held
-// as a string), as does a path through a segment `#>` would read as an
-// array index, and an array's element: containment of a scalar holds for an
-// element that is an array holding it.
+// as a string), as does an array's element: containment of a scalar holds
+// for an element that is an array holding it. A fragment's members are
+// object keys, as the typed comparison's are (pgMember).
 func (d PostgresDialect) TwoValuedCondition(field *FieldSchema, op FilterOperator, value any, bind func(any) string) (string, bool, error) {
 	p := field.Path
-	if p == nil || p.element || p.Storage != StorageJSONB || slices.ContainsFunc(p.Segments, isArrayIndex) {
+	if p == nil || p.element || p.Storage != StorageJSONB {
 		return "", false, nil
 	}
 	if field.DataType == core.FieldTypeArray {
@@ -292,12 +292,6 @@ func containable(t core.FieldType) bool {
 		return true
 	}
 	return false
-}
-
-// isArrayIndex reports a path segment `#>` reads as an array subscript.
-func isArrayIndex(seg string) bool {
-	_, err := strconv.Atoi(seg)
-	return err == nil
 }
 
 // containmentFragment is the JSON document holding value at segs, objects
@@ -691,7 +685,7 @@ func (d PostgresDialect) elementRows(f *FieldSchema, alias string) string {
 	var array string
 	switch {
 	case f.Path != nil:
-		array = pgPathDocument(d, f.Path) + " #> " + pgPathLiteral(f.Path.Segments)
+		array = pgMember(pgPathDocument(d, f.Path), f.Path.Segments)
 	case f.DataType == core.FieldTypeArray:
 		return "unnest(" + f.sql(d) + ") AS " + alias + "(v)"
 	default:
@@ -722,11 +716,10 @@ func (PostgresDialect) scalarElement(f *FieldSchema, alias string) *FieldSchema 
 // holds exactly when the member is an array with an equal element; the
 // document's NULL test keeps a NULL document False rather than Unknown, so
 // `$some` stays two-valued under any negation. Decimals keep the element
-// table (a decimal element may be held as a string), as does a path through
-// a segment `#>` would read as an array index.
+// table (a decimal element may be held as a string).
 func (d PostgresDialect) containsElement(f *FieldSchema, cond *FilterNode, bind func(any) string) (string, bool, error) {
 	p := f.Path
-	if p == nil || p.Storage != StorageJSONB || !containable(f.Elem) || slices.ContainsFunc(p.Segments, isArrayIndex) ||
+	if p == nil || p.Storage != StorageJSONB || !containable(f.Elem) ||
 		cond == nil || cond.Field == nil || !isElement(cond.Field) {
 		return "", false, nil
 	}
@@ -784,8 +777,9 @@ func (d PostgresDialect) numberKey(f *FieldSchema) string {
 }
 
 // PathExpr renders p's typed value for PostgreSQL. The document is read as
-// jsonb; jsonb_typeof selects the member's JSON kind before any cast, so a
-// wrong-typed member is NULL rather than a cast error. An element path
+// jsonb and the member one object key at a time (pgMember); jsonb_typeof
+// selects the member's JSON kind before any cast, so a wrong-typed member is
+// NULL rather than a cast error. An element path
 // reads its row's element, jsonb_array_elements' v.
 func (d PostgresDialect) PathExpr(p *JSONPath, t core.FieldType) string {
 	if p.element {
@@ -793,8 +787,7 @@ func (d PostgresDialect) PathExpr(p *JSONPath, t core.FieldType) string {
 		return pgTypedMember(t, "jsonb_typeof("+v+")", "("+v+" #>> '{}')")
 	}
 	doc := pgPathDocument(d, p)
-	path := pgPathLiteral(p.Segments)
-	return pgTypedMember(t, "jsonb_typeof("+doc+" #> "+path+")", "("+doc+" #>> "+path+")")
+	return pgTypedMember(t, "jsonb_typeof("+pgMember(doc, p.Segments)+")", "("+pgMemberText(doc, p.Segments)+")")
 }
 
 func (PostgresDialect) textKey(expr string) string { return expr + "::text" }

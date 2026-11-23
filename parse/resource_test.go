@@ -30,9 +30,15 @@ type widget struct {
 	Tags      []string   `json:"tags"       db:"-"          parse:"filter,include" relation:"widget_tags,widget_id,tag_id,id,tenant_id" indexed:"true"`
 }
 
+// atOneInstant pins a resource's clock: a list request holds the instant
+// it was parsed at, so two parses of one request are equal only at one.
+func atOneInstant() parse.ResourceOption {
+	return parse.ParserOptions(core.WithClock(func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }))
+}
+
 func widgets(t *testing.T) *parse.Resource[widget] {
 	t.Helper()
-	r, err := parse.NewResource[widget]("widgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"), parse.PageSize(2, 3))
+	r, err := parse.NewResource[widget]("widgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"), parse.PageSize(2, 3), atOneInstant())
 	require.NoError(t, err)
 	return r
 }

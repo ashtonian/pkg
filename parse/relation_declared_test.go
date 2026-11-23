@@ -155,6 +155,11 @@ func TestDeclaredRelations_Refuse(t *testing.T) {
 		{"$some on a belongs-to", `{"type":{"$some":{}}}`, filter.ECodeInvalidOperator.String()},
 		{"a non-object target filter", `{"commands":{"$some":"c1"}}`, filter.ECodeInvalidJSON.String()},
 		{"three levels deep", `{"commands":{"$some":{"device":{"$is":{"commands":{"$some":{}}}}}}}`, filter.ECodeDepthExceeded.String()},
+		{"a key equality three levels deep", `{"commands":{"$some":{"device":{"$is":{"commands":"c1"}}}}}`, filter.ECodeDepthExceeded.String()},
+		{"a key set three levels deep", `{"commands":{"$some":{"device":{"$is":{"commands":{"$in":["c1"]}}}}}}`, filter.ECodeDepthExceeded.String()},
+		{"a key inequality three levels deep", `{"commands":{"$some":{"device":{"$is":{"commands":{"$ne":"c1"}}}}}}`, filter.ECodeDepthExceeded.String()},
+		{"a key exclusion three levels deep", `{"commands":{"$some":{"device":{"$is":{"commands":{"$nin":["c1"]}}}}}}`, filter.ECodeDepthExceeded.String()},
+		{"a key NULL test three levels deep", `{"commands":{"$some":{"device":{"$is":{"commands":{"$null":true}}}}}}`, filter.ECodeDepthExceeded.String()},
 		{"nine relation predicates", `{"$and":[` + strings.Repeat(`{"commands":{"$some":{}}},`, 8) + `{"commands":{"$some":{}}}]}`, filter.ECodeMaxConditions.String()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -164,6 +169,9 @@ func TestDeclaredRelations_Refuse(t *testing.T) {
 			assert.Equal(t, tc.code, pe.Code, pe.Message)
 		})
 	}
+
+	_, err := r.devices.ParseList(url.Values{filter.ParamFilter: {`{"commands":{"$some":{"device":"d1"}}}`}})
+	require.NoError(t, err, "a key comparison two levels deep")
 
 	req, err := r.devices.ParseList(url.Values{filter.ParamFilter: {`{"type":{"$is":{}}}`}})
 	require.NoError(t, err)

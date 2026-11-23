@@ -33,6 +33,14 @@ func TestMembershipMatrix_PostgreSQL(t *testing.T) {
 	})
 }
 
+// WhereIn lists on PostgreSQL 18's BIGINT, UUID and TEXT columns, each one
+// array parameter, one past the protocol's 65,535 bind parameters.
+func TestLookupSets_PostgreSQL(t *testing.T) {
+	runLookupSets(t, postgresMatrix(dbtest.Postgres(t)), map[core.FieldType]string{
+		core.FieldTypeString: "TEXT", core.FieldTypeUUID: "UUID", core.FieldTypeInt: "BIGINT",
+	})
+}
+
 // Policy trees on PostgreSQL 18, each listed page by page.
 func TestPolicyMatrix_PostgreSQL(t *testing.T) {
 	runPolicyMatrix(t, postgresMatrix(dbtest.Postgres(t)), map[core.FieldType]string{

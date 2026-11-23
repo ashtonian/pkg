@@ -72,12 +72,13 @@ func (r *Resource[T]) ParseRequestFilter(q url.Values, opts ...filter.QueryParam
 	if err := listParamsOnce(q); err != nil {
 		return nil, err
 	}
-	fp := filter.NewFilterParser(r.filterSchema, r.cfg)
+	now := r.cfg.Now()
+	fp := filter.NewFilterParser(r.filterSchema, r.cfg).At(now)
 	jsonAST, err := fp.Parse(q.Get(filter.ParamFilter))
 	if err != nil {
 		return nil, err
 	}
-	flatAST, err := filter.NewQueryParamParser(r.filterSchema, append(slices.Clone(opts), filter.QueryParamConfig(r.cfg))...).Parse(q)
+	flatAST, err := filter.NewQueryParamParser(r.filterSchema, append(slices.Clone(opts), filter.QueryParamConfig(r.cfg))...).At(now).Parse(q)
 	if err != nil {
 		return nil, err
 	}

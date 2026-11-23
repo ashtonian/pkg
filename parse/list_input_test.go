@@ -29,11 +29,11 @@ func listResources(t *testing.T) map[string]listEntryPoints {
 		ID   string `db:"id"   parse:"filter,sort"`
 		Name string `db:"name" parse:"filter"`
 	}
-	bare, err := parse.NewResource[widget]("widgets")
+	bare, err := parse.NewResource[widget]("widgets", atOneInstant())
 	require.NoError(t, err)
-	plain, err := parse.NewResource[unsearchable]("plains")
+	plain, err := parse.NewResource[unsearchable]("plains", atOneInstant())
 	require.NoError(t, err)
-	accepting, err := parse.NewResource[widget]("widgets", parse.AcceptParams("_", "view"))
+	accepting, err := parse.NewResource[widget]("widgets", parse.AcceptParams("_", "view"), atOneInstant())
 	require.NoError(t, err)
 	return map[string]listEntryPoints{"widgets": widgets(t), "bare": bare, "unsearchable": plain, "accepting": accepting}
 }

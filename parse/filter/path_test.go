@@ -200,7 +200,7 @@ func TestPaths_WithPathsIsARequestView(t *testing.T) {
 	require.NoError(t, err)
 	res, err := filter.NewSQLBuilder(view, filter.PostgresDialect{}).Build(ast)
 	require.NoError(t, err)
-	assert.Equal(t, `(CASE WHEN jsonb_typeof(("path_items"."attrs")::jsonb #> '{tier}') = 'string' THEN (("path_items"."attrs")::jsonb #>> '{tier}') END) = $1`, res.Where)
+	assert.Equal(t, `(CASE WHEN jsonb_typeof(("path_items"."attrs")::jsonb -> 'tier') = 'string' THEN (("path_items"."attrs")::jsonb ->> 'tier') END) = $1`, res.Where)
 	assert.Equal(t, []any{"gold"}, res.Args)
 
 	for name, d := range map[string]filter.PathDecl{
@@ -240,7 +240,7 @@ func TestPaths_SortKeys(t *testing.T) {
 
 	sr, err := filter.ParseSort(s, "-attrs.size")
 	require.NoError(t, err)
-	assert.Equal(t, `ORDER BY (CASE WHEN jsonb_typeof("path_records"."attrs" #> '{size}') = 'number' THEN ("path_records"."attrs" #>> '{size}')::numeric END) DESC NULLS FIRST`, sr.ToSQL(filter.PostgresDialect{}))
+	assert.Equal(t, `ORDER BY (CASE WHEN jsonb_typeof("path_records"."attrs" -> 'size') = 'number' THEN ("path_records"."attrs" ->> 'size')::numeric END) DESC NULLS FIRST`, sr.ToSQL(filter.PostgresDialect{}))
 }
 
 func TestPaths_SortWithPaths(t *testing.T) {
@@ -305,5 +305,5 @@ func TestPaths_Facets(t *testing.T) {
 
 	q, err := filter.BuildFacetQuery(view, filter.PostgresDialect{}, "1=1", nil, []filter.FacetRequest{{Field: "attrs.tier"}})
 	require.NoError(t, err)
-	assert.Contains(t, q.SQL, `(CASE WHEN jsonb_typeof("path_records"."attrs" #> '{tier}') = 'string' THEN ("path_records"."attrs" #>> '{tier}') END) AS`)
+	assert.Contains(t, q.SQL, `(CASE WHEN jsonb_typeof("path_records"."attrs" -> 'tier') = 'string' THEN ("path_records"."attrs" ->> 'tier') END) AS`)
 }

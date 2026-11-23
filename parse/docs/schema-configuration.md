@@ -85,7 +85,7 @@ The limits follow one rule, which filters and patches read alike through `(*Pars
 | `WithMaxArraySize(n)` | int | `100` | `$in` / `$nin` members, array `$contains` elements, values in a JSON filter document. `0` is the default; negative is refused. A set or an array `$contains` list binds as one parameter whatever its size, so this alone bounds it; raise it with `WithMaxInputSize` for endpoints filtering by large sets |
 | `WithMaxPatchCopyBytes(n)` | int64 | `1048576` | Bytes a patch's `copy` operations may add during typed apply; `0` or less is unlimited |
 | `WithCodec(c)` | `Codec` | `StdlibJSON` (numbers decode as `json.Number`, trailing data rejected) | Decodes request bodies and undeclared documents in typed apply; declared JSON storage uses fresh Go JSON decoding. Cursors use Parse's internal bounded MessagePack envelope |
-| `WithClock(fn)` | `func() time.Time` | `time.Now().UTC` | Anchor for relative-time tokens (`now-7d`) |
+| `WithClock(fn)` | `func() time.Time` | `time.Now().UTC` | Anchor for relative-time tokens (`now-7d`), read once per request ([values](queries.md#type-capabilities)) |
 | `WithGeneratorOptions(o...)` | `...GeneratorOption` | none | Schema generation options a `Resource` generates its schemas with; each use adds to the earlier ones, a later option overriding one it conflicts with |
 
 <!-- END rendered parser-options -->

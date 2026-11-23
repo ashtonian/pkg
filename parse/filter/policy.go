@@ -107,22 +107,22 @@ func (pc *PolicyConstraints) IsEmpty() bool {
 // Constraint values are normalized as request values are,
 // since dialects and the memory backend read canonical values only; request
 // limits do not apply, as policy lists (allowed IDs) are trusted and may be
-// long. Relative-time tokens resolve against the wall clock. A policy that
-// does not compile is an error wrapping ErrPolicyInvalid.
+// long. Relative-time tokens resolve against one reading of the wall clock.
+// A policy that does not compile is an error wrapping ErrPolicyInvalid.
 func ApplyPolicyConstraints(schema *ResourceSchema, userAST *FilterAST, pc *PolicyConstraints) (*FilterAST, error) {
-	return applyPolicyConstraints(schema, userAST, pc, nil)
+	return applyPolicyConstraints(schema, userAST, pc, time.Now().UTC())
 }
 
-// applyPolicyConstraints is ApplyPolicyConstraints with the relative-time
-// clock; nil is the wall clock.
-func applyPolicyConstraints(schema *ResourceSchema, userAST *FilterAST, pc *PolicyConstraints, clock func() time.Time) (*FilterAST, error) {
+// applyPolicyConstraints is ApplyPolicyConstraints with every relative-time
+// token resolved against now.
+func applyPolicyConstraints(schema *ResourceSchema, userAST *FilterAST, pc *PolicyConstraints, now time.Time) (*FilterAST, error) {
 	if pc == nil || pc.IsEmpty() {
 		return userAST, nil
 	}
 	if schema == nil {
 		return nil, fmt.Errorf("%w: no schema to apply it to", ErrPolicyInvalid)
 	}
-	norm := NewFilterParser(schema, &core.ParserConfig{MaxDepth: math.MaxInt, MaxArraySize: math.MaxInt, Clock: clock})
+	norm := NewFilterParser(schema, &core.ParserConfig{MaxDepth: math.MaxInt, MaxArraySize: math.MaxInt}).At(now)
 	policyNode, err := constraintsToNode(norm, schema, pc)
 	if err != nil {
 		return nil, err
