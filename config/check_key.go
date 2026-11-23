@@ -189,7 +189,7 @@ func DecodeEdits[T any](ctx context.Context, baseline *T, edits map[string]any, 
 }
 
 // EditsError is a batch of edits DecodeEdits refuses. Refused holds every
-// key it refused, sorted by key: each an Unknown *KeyError (ErrKey) or one
+// key it refused, in key order (pool[2] before pool[10]): each an Unknown *KeyError (ErrKey) or one
 // whose message says why the key cannot be set (ErrValidation), as
 // DecodeKey refuses the key alone. When every key applies but the
 // configuration the batch makes does not decode or validate, Keys are the

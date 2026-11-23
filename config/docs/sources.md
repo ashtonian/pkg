@@ -204,7 +204,8 @@ the value the other set as into the baseline's: `addresses` set to
 `{"a": {"host": "h", "port": 1}}` and `addresses["a"]` to `{"port": 2}` leave
 `a` at `{h 2}`. The entries of one source apply the same way. A batch is refused whole when
 any of its keys is. The error is one `*EditsError` whose `Refused` lists
-every refused key, in key order, whichever stage refused it; a `*KeyError`
+every refused key, in key order (an index by its number: `pool[2]` before
+`pool[10]`), whichever stage refused it; a `*KeyError`
 that is not `Unknown` says why in its message, naming keys only:
 
 | Edits | Refused key |

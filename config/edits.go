@@ -288,8 +288,35 @@ func comparePaths(a, b keyPath) int {
 	return cmp.Compare(len(a), len(b))
 }
 
+// sortKeyErrors orders errs by key, in place, as comparePaths orders keys:
+// pool[2] before pool[10]. A key that does not parse — a malformed key as
+// written, the root's $ — follows every key that does, by its text.
 func sortKeyErrors(errs []*KeyError) []*KeyError {
-	slices.SortStableFunc(errs, func(a, b *KeyError) int { return strings.Compare(a.Key, b.Key) })
+	type sortable struct {
+		err    *KeyError
+		path   keyPath
+		parsed bool
+	}
+	items := make([]sortable, len(errs))
+	for i, e := range errs {
+		p, err := parseKeyPath(e.Key)
+		items[i] = sortable{err: e, path: p, parsed: err == nil}
+	}
+	slices.SortStableFunc(items, func(a, b sortable) int {
+		switch {
+		case a.parsed && b.parsed:
+			return comparePaths(a.path, b.path)
+		case a.parsed != b.parsed:
+			if a.parsed {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.err.Key, b.err.Key)
+	})
+	for i, it := range items {
+		errs[i] = it.err
+	}
 	return errs
 }
 
