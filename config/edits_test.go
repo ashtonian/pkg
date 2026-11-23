@@ -439,3 +439,17 @@ func TestDecodeEdits_CandidateSharesNothingSettableWithTheBaseline(t *testing.T)
 	got.Sec.Hook.X = []int{42}
 	assert.Equal(t, []int{1}, base.Sec.Hook.X)
 }
+
+// An empty batch over a configuration already invalid is refused, saying
+// no key was edited.
+func TestDecodeEdits_AnEmptyBatchOverAnInvalidBaseline(t *testing.T) {
+	type cfg struct {
+		Port int `koanf:"port" validate:"max=10"`
+	}
+	_, err := DecodeEdits(t.Context(), &cfg{Port: 50}, nil)
+	require.ErrorIs(t, err, ErrValidation)
+	var ee *EditsError
+	require.ErrorAs(t, err, &ee)
+	assert.Empty(t, ee.Keys)
+	assert.Equal(t, "config: edits refused: the configuration is invalid with no key edited", err.Error())
+}

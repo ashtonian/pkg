@@ -193,8 +193,9 @@ func DecodeEdits[T any](ctx context.Context, baseline *T, edits map[string]any, 
 // whose message says why the key cannot be set (ErrValidation), as
 // DecodeKey refuses the key alone. When every key applies but the
 // configuration the batch makes does not decode or validate, Keys are the
-// batch's keys as diagnostics may show them, sorted, and Err is the
-// decoder's or validator's cause (ErrValidation), for trusted diagnostics.
+// batch's keys as diagnostics may show them, sorted — none for an empty
+// batch over a configuration already invalid — and Err is the decoder's or
+// validator's cause (ErrValidation), for trusted diagnostics.
 // The error wraps each refused *KeyError and Err, so errors.Is matches the
 // category of each and errors.As reaches the first refused key. Error names
 // keys and never a value. A validate tag the default validator cannot apply
@@ -223,7 +224,11 @@ func (e *EditsError) Error() string {
 		} else {
 			b.WriteString(": ")
 		}
-		b.WriteString("the configuration of keys " + strings.Join(e.Keys, ", ") + " is invalid")
+		if len(e.Keys) == 0 {
+			b.WriteString("the configuration is invalid with no key edited")
+		} else {
+			b.WriteString("the configuration of keys " + strings.Join(e.Keys, ", ") + " is invalid")
+		}
 	}
 	return b.String()
 }
