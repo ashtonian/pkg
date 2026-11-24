@@ -26,16 +26,11 @@ elif [[ $registry == false ]]; then
     pnpm --dir "$sdk" pack --pack-destination "$scratch" > /dev/null
     package="$scratch/ashtonian-parse-$expected_version.tgz"
 fi
-mkdir "$scratch/consumer"
-cd "$scratch/consumer"
-cat > package.json <<'JSON'
-{"private":true,"type":"module"}
-JSON
-# A fresh store and metadata cache make the registry serve every byte. A release age of
-# zero admits the version this check exists to install, however recently it was published.
-pnpm add --ignore-scripts --store-dir "$scratch/pnpm-store" --config.cache-dir="$scratch/pnpm-cache" \
-    --registry=https://registry.npmjs.org/ --config.fetch-timeout=30000 --config.fetch-retries=1 \
-    --config.minimum-release-age=0 "$package"
+# A fresh project, store and metadata cache. A registry version npm has not shown pnpm yet
+# is retried for up to PARSE_SDK_REGISTRY_RETRY_SECONDS, and npm's version document must
+# name the bytes pnpm locked.
+consumer=$(node "$repo_root/tools/check-parse-sdk-registry.mjs" install "$scratch" "$package")
+cd "$consumer"
 cat > tsconfig.json <<'JSON'
 {
   "compilerOptions": {
@@ -80,18 +75,6 @@ const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 assert.equal(pkg.name, '@ashtonian/parse');
 assert.equal(pkg.version, process.argv[2]);
 assert.equal(Object.keys(pkg.dependencies ?? {}).length, 0);
-if (process.argv[3] === 'true') {
-  // pnpm verified the download against the integrity it locked. The public registry's
-  // own metadata must name those bytes, whatever registry configuration served them.
-  const version = pkg.version.replaceAll('.', '\\.');
-  const locked = fs.readFileSync('pnpm-lock.yaml', 'utf8').match(new RegExp(
-    `^  '@ashtonian/parse@${version}':\\n    resolution: \\{integrity: (sha512-[A-Za-z0-9+/]+={0,2})\\}$`, 'm'));
-  assert.ok(locked, 'registry package integrity in pnpm-lock.yaml');
-  const url = `https://registry.npmjs.org/${encodeURIComponent(pkg.name)}/${pkg.version}`;
-  const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-  assert.ok(response.ok, `registry returned HTTP ${response.status} for ${url}`);
-  assert.equal((await response.json()).dist?.integrity, locked[1], 'installed bytes differ from the public registry');
-}
 for (const entry of fs.readdirSync(root, { recursive: true })) {
   assert.ok(!entry.endsWith('.test.ts'), `test source in package: ${entry}`);
 }

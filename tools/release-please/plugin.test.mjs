@@ -85,6 +85,48 @@ test('a raised type warns once a run, however many paths the merge reaches', asy
   assert.match(warnings[0], /counts as feat/);
 });
 
+// parse/client was split out of parse: what changed it before the split
+// shipped in parse's releases.
+test('a release path lists nothing from before it joined the config', async () => {
+  const history = {
+    mergeOf: new Map([['b0', 'm0'], ['b2', 'm2']]),
+    messageOf: new Map([['m0', 'feat(parse)!: wire (#1)'], ['m2', 'feat(parse/client)!: its own module (#3)']]),
+    positionOf: new Map([['m0', 0], ['c1', 1], ['m2', 2]]),
+    startOf: new Map([['parse', 'm0'], ['parse/client', 'm2']]),
+  };
+  const built = new FirstParentPlugin(github, 'main', { parse: {}, 'parse/client': {} }, history, quiet);
+  const old = [['m0', 'feat(parse)!: wire (#1)'], ['b0', 'feat(parse)!: wire\n\nBREAKING CHANGE: the old wire.'], ['c1', 'fix(parse/client): direct push']];
+  const split = [['m2', 'feat(parse/client)!: its own module (#3)'], ['b2', 'feat(parse/client)!: split\n\nBREAKING CHANGE: a module now.']];
+  const newer = [['n1', 'fix(parse/client): after the history read']];
+  const raw = list => list.map(([sha, message]) => ({ sha, message, files: [] }));
+  await built.preconfigure({}, { parse: raw(old), 'parse/client': raw([...newer, ...split, ...old]) }, {});
+
+  const client = built.processCommits(parsed([...newer, ...split, ...old]));
+  const parse = built.processCommits(parsed(old));
+
+  assert.deepEqual(client.map(c => c.sha), ['n1', 'm2']);
+  assert.deepEqual(client.find(c => c.sha === 'm2').notes.map(n => n.text), ['a module now.']);
+  assert.deepEqual(parse.map(c => c.sha), ['m0', 'c1'], 'a path from its start keeps everything since');
+});
+
+test('paths sharing a parse keep what the earliest start keeps, and a path with no start keeps all', async () => {
+  const history = {
+    mergeOf: new Map(),
+    messageOf: new Map(),
+    positionOf: new Map([['c0', 0], ['c1', 1]]),
+    startOf: new Map([['a', 'c0'], ['a/b', 'c1']]),
+  };
+  const commits = [['c1', 'fix(a): second'], ['c0', 'fix(a): first']];
+  const raw = commits.map(([sha, message]) => ({ sha, message, files: [] }));
+  const shared = new FirstParentPlugin(github, 'main', { a: {}, 'a/b': {} }, history, quiet);
+  await shared.preconfigure({}, { a: raw, 'a/b': raw }, {});
+  const unknown = new FirstParentPlugin(github, 'main', { c: {} }, history, quiet);
+  await unknown.preconfigure({}, { c: raw }, {});
+
+  assert.deepEqual(shared.processCommits(parsed(commits)).map(c => c.sha), ['c1', 'c0']);
+  assert.deepEqual(unknown.processCommits(parsed(commits)).map(c => c.sha), ['c1', 'c0']);
+});
+
 // release-please keeps a header's trailing space when a body follows; the
 // subject parsed alone loses it.
 test('a merge subject with trailing space and a trailer finds its entry', () => {

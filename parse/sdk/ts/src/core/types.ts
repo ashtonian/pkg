@@ -52,6 +52,40 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * What a request method sends besides its method and path, and what it reads
+ * back. `B` is the body's type and `R` the response's, both the caller's: no
+ * schema checks either.
+ */
+export interface SendOptions<B = unknown, R = unknown> {
+  /** Query parameters, appended to the URL as `URLSearchParams` writes them. */
+  query?: URLSearchParams | Record<string, string>;
+  /** The JSON body, sent as `application/json` through the encoder of every
+   *  payload the client sends, so a non-finite number is a
+   *  `NonFiniteNumberError` before anything is sent. Unset, the request has
+   *  no body and no `Content-Type`. */
+  body?: B;
+  /** What a 2xx answer carries. `"json"`, the default: a JSON body, read as
+   *  `R`; a 2xx without one (a 204, an empty 200) is a `ResponseError`, as
+   *  for the resource methods. `"none"`: nothing the call reads; any 2xx
+   *  resolves `undefined`, its body discarded. `"none"` is open only to an
+   *  `R` that `undefined` is (`void`, `undefined`), since that is what the
+   *  call resolves. */
+  response?: undefined extends R ? "json" | "none" : "json";
+}
+
+/** {@link SendOptions} for a resource handle's request: the row it names and a path below it. */
+export interface ResourceSendOptions<K extends ResourceKey = KeyValue, B = unknown, R = unknown> extends SendOptions<B, R> {
+  /** The row: a path segment per key value below the collection, in key
+   *  order, each escaped on its own, as `patch` sends it. Unset, the request
+   *  is the collection's. */
+  key?: K;
+  /** A path below the collection, or below the row `key` names: one or more
+   *  segments, sent as given, so escape a dynamic one with
+   *  `encodeURIComponent`. Slashes at either end are ignored. */
+  path?: string;
+}
+
 /** Options for one list request. */
 export interface ListRequestOptions extends RequestOptions {
   /** The list's transport: `"GET"` sends its parameters in the query

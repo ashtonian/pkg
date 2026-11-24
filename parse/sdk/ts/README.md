@@ -1,6 +1,6 @@
 # @ashtonian/parse
 
-TypeScript client for APIs built on the Go `parse` package: type-safe filter and sort builders, schema discovery, client-side validation for the shared schema contract, cursor pagination, facets, and JSON Merge Patch updates. Its request and response shapes are the server's wire format, verified against fixtures the Go package emits.
+TypeScript client for APIs built on the Go `parse` package: type-safe filter and sort builders, schema discovery, client-side validation for the shared schema contract, cursor pagination, facets, and JSON Merge Patch updates, plus one typed request method for the routes a server serves beside parse's (create, get, delete). Its request and response shapes are the server's wire format, verified against fixtures the Go package emits. A generated SDK keeps its types and a thin binding and takes the rest from here: [generated SDKs](docs/generated-sdks.md).
 
 Zero runtime dependencies. Runs wherever `fetch` and `AbortSignal.any` exist: Node.js 22.13 or later (the `engines` floor, which CI tests exactly), current browsers, Deno and edge runtimes. The package is an ES module; its exports' `default` condition also serves `require`, which loads ES modules on every Node.js the `engines` floor admits.
 
@@ -55,7 +55,7 @@ console.log(page.items, page.page_info.total_count, page.page_info.end_cursor);
 |--------|------|---------|-------------|
 | `baseURL` | string | — (required) | API origin and prefix (`https://api.example.com/api`); a resource's path and its schema are below it. A trailing slash is ignored |
 | `headers` | `Record<string, string>` | none | Headers sent with every request (e.g. `Authorization`). Names are case-insensitive: a request's own `headers` replace them, and a `content-type` replaces the default rather than joining it |
-| `fetch` | `typeof fetch` | `globalThis.fetch` | Fetch implementation |
+| `fetch` | `typeof fetch` | `globalThis.fetch` | Fetch implementation every request goes through: the place for an authentication or retry wrapper ([generated SDKs](docs/generated-sdks.md#authentication-and-retry)) |
 | `schemaPrefix` | string | none: schemas beside the collections | Path below `baseURL` of the schema endpoints, for a server that serves them elsewhere: `{schemaPrefix}/{name}/schema`, `{schemaPrefix}/schemas`. Slashes at either end are ignored |
 | `validateBeforeSend` | boolean | `false` | Validate filters, sorts, includes, facets, search and patches against the server schema before sending |
 | `timeout` | positive integer (ms), at most 2^32 - 1 | `30000` | Per-request deadline, combined with any caller `AbortSignal`. `createClient` throws `RangeError` for any other value, `0` included |
@@ -65,7 +65,7 @@ console.log(page.items, page.page_info.total_count, page.page_info.end_cursor);
 
 `client.resource<T>(path, { schema? })` is a collection at `{baseURL}/{path}`. Its schema document is `{baseURL}/{schemaPrefix}/{name}/schema`, where `name` is the resource's registry name (Go: its table, the document's `resource`): `schema` when given, else the path's last segment. Relation targets are fetched by registry name too, and the schema cache is keyed by it, so `schemas()` followed by any handle's `schema()` sends nothing. A collection served under another name than its table, `/api/work-orders` over `work_orders`, is `client.resource("work-orders", { schema: "work_orders" })`. A schema document for another resource than the one requested is `SchemaResourceError`. An empty path throws `RangeError`.
 
-The client calls the routes a server built on the Go module serves; the [example server](../../examples/server/) serves every one, with `baseURL` set to its origin and `/api`. Every public method has a row:
+The client calls the routes a server built on the Go module serves; the [example server](../../examples/server/) serves every one, with `baseURL` set to its origin and `/api`. `request` alone sends to routes parse does not define, the server's own beside parse's ([other routes](#other-routes)). Every public method has a row:
 
 | Client call | Request | Served in Go by |
 |---|---|---|
@@ -79,6 +79,8 @@ The client calls the routes a server built on the Go module serves; the [example
 | `schemas()` | `GET /{schemaPrefix}/schemas` → `{ schemas: […] }` | `parsehttp.SchemaListHandler` |
 | `validator()` | `schema()`'s request, once per handle | The schema route |
 | `resource(path, opts)` | Nothing: a handle whose calls send the requests above | — |
+| `request(method, path, opts)` on the client | `{method} /{path}?{query}`, below `baseURL`, with `opts.body` as `application/json` when set | The server's own handler: parse serves no create, get or delete |
+| `request(method, { key, path, query, body })` on a handle | `{method} /{resource}/{value}/…/{path}?{query}`: the collection, or the row `key` names with a path segment per key value as `patch` sends it, then `path` below either | The server's own handler |
 
 A handle's methods close over the handle, and the client's over the client, so none reads its receiver (each is declared `this: void`, which typescript-eslint's `unbound-method` accepts). A method destructured from its handle (`const { list, patch } = products`) or passed to a query library, iterator consumer or retry wrapper sends the requests and gives the answers and errors a call through the handle does, with `validateBeforeSend` on or off, sharing the handle's schema fetch. `listAll` sends nothing until its first page is asked for.
 
@@ -163,7 +165,40 @@ The input type, `PatchInput<T>` (shared by `patch` and `patchMany`), takes any s
 
 `patchMany` names each row by one `id[]` value, which has no form for a key of several columns: a tuple throws `RangeError`, as does, with `validateBeforeSend`, any `patchMany` on a resource whose schema `key` has several columns, and the handle's type takes no tuple. Patch such rows one by one with `patch`.
 
-JSON has no `NaN`, `Infinity` or `-Infinity`, and `JSON.stringify` writes each as `null`, which a merge patch reads as removing the member: `{ score: NaN }` would clear a nullable score exactly as `{ score: null }` does, and inside a JSON document the server cannot tell it from an intended deletion. The client encodes every JSON payload it sends (a patch body, a list's or a facet request's filter, a POST list body) through one encoder that refuses such a number with `NonFiniteNumberError` before anything is sent, whether or not `validateBeforeSend` is set and before any schema fetch, as Go's `encoding/json` refuses one. Its `pointer` is the member's JSON Pointer within the payload (`/prefs/readings/2`), its `payload` which payload (`"patch"`, `"filter"` or `"list body"`), its `value` the number. Explicit `null`, finite numbers and every other JSON value are sent as `JSON.stringify` writes them. A caller that used `NaN` to clear a field sends `null` instead.
+JSON has no `NaN`, `Infinity` or `-Infinity`, and `JSON.stringify` writes each as `null`, which a merge patch reads as removing the member: `{ score: NaN }` would clear a nullable score exactly as `{ score: null }` does, and inside a JSON document the server cannot tell it from an intended deletion. The client encodes every JSON payload it sends (a patch body, a list's or a facet request's filter, a POST list body, a `request` body) through one encoder that refuses such a number with `NonFiniteNumberError` before anything is sent, whether or not `validateBeforeSend` is set and before any schema fetch, as Go's `encoding/json` refuses one. Its `pointer` is the member's JSON Pointer within the payload (`/prefs/readings/2`), its `payload` which payload (`"patch"`, `"filter"`, `"list body"` or `"request body"`), its `value` the number. Explicit `null`, finite numbers and every other JSON value are sent as `JSON.stringify` writes them. A caller that used `NaN` to clear a field sends `null` instead.
+
+## Other routes
+
+parse's operations are lists, facets, patches and schemas. A server serves its other routes beside them (create, get, replace, delete, an action on a row), and `request` sends to them with the client's own transport: its base URL, headers, timeout and `fetch`, the payload encoder, and the error decoding of the resource methods. It is how a generated SDK binds those routes without a second HTTP client.
+
+```typescript
+interface NewProduct {
+  name: string;
+  price: number;
+}
+
+// POST /api/products
+const created = await products.request<Product, NewProduct>("POST", { body: { name: "Lamp", price: 30 } });
+// GET /api/products/prod-123?expand=labels
+const one = await products.request<Product>("GET", { key: "prod-123", query: { expand: "labels" } });
+// POST /api/products/prod-123/archive, answered 204
+await products.request<undefined>("POST", { key: "prod-123", path: "archive", response: "none" });
+// DELETE /api/stock/w1/a%2Fb, answered 204
+await stock.request<undefined>("DELETE", { key: ["w1", "a/b"], response: "none" });
+// Any path below baseURL
+const status = await client.request<{ status: string }>("GET", "status");
+```
+
+`client.request(method, path, opts?, reqOpts?)` sends to `path` below `baseURL`, slashes at either end ignored. A handle's `request(method, opts?, reqOpts?)` sends to its collection, or to the row `opts.key` names: a path segment per key value, in key order, written, escaped and refused as `patch` does it (a key of no value, or a value spelt `""`, `"."` or `".."`, is `RangeError` before sending), with `opts.path` below either. A `path` is sent as given, so escape a dynamic segment of it with `encodeURIComponent`; query parameters go in `opts.query`, a `URLSearchParams` or a record of strings. `opts.body` is the JSON body, sent as `application/json`; unset, the request has no body and no `Content-Type` (`null` is a body). `reqOpts` carries the call's `headers` and `signal`, as for every method, and the method is sent as given.
+
+`R` is the response type and `B` the body's, both stated by the caller and checked by nothing at run time. A request never reads the schema, so `validateBeforeSend` changes nothing it sends; a handle's key type `K` still holds a key's arity at compile time. What a call resolves follows `opts.response`:
+
+| `response` | 2xx with a JSON body | 204, empty or non-JSON 2xx | Non-2xx |
+|---|---|---|---|
+| `"json"` (default) | The body, as `R` | `ResponseError`, as `list` and `patch` read it | `ApiError`, as the resource methods read it: parse's error body, an RFC 9457 problem, or the status |
+| `"none"` | `undefined`; the body is discarded | `undefined` | The same `ApiError` |
+
+`"none"` compiles only for an `R` that `undefined` is (`undefined`, `void`, or the default `unknown`), so a call that resolves nothing is typed so; a route answered 204 takes `"none"`. A body holding `NaN` or an infinity is `NonFiniteNumberError` (`payload` `"request body"`) before anything is sent. Like every method, `request` does not read its receiver: a binding may destructure it.
 
 ## Schema Discovery & Validation
 
@@ -190,8 +225,8 @@ Two Go-emitted corpora pin client to server: `testdata/filter_conformance.json` 
 | Error | When | Fields |
 |---|---|---|
 | `ApiError` | Non-2xx response | `status` (the response's), `code`, `message`, `body` (`{code, message, path?, index?, details?}`: `path` is the JSON Pointer of the patch member and `index` the JSON Patch operation a patch error is about), `problem` (the RFC 9457 document, or `undefined`), `errors` (its field errors, or `[]`) |
-| `ResponseError` (an `ApiError`) | A 2xx without the JSON body the call reads: a 204, an empty 200, a proxy's HTML 200 | `status`, `url`, `code` `""`, `message` naming the status, URL and reason |
-| `NonFiniteNumberError` (a `RangeError`) | A payload holds `NaN`, `Infinity` or `-Infinity`, which JSON cannot carry; nothing was sent | `payload` (`"patch"`, `"filter"`, `"list body"`), `pointer` (the member's JSON Pointer within it, `""` for the payload itself), `value` |
+| `ResponseError` (an `ApiError`) | A 2xx without the JSON body the call reads: a 204, an empty 200, a proxy's HTML 200 (a `request` with `response: "none"` reads none) | `status`, `url`, `code` `""`, `message` naming the status, URL and reason |
+| `NonFiniteNumberError` (a `RangeError`) | A payload holds `NaN`, `Infinity` or `-Infinity`, which JSON cannot carry; nothing was sent | `payload` (`"patch"`, `"filter"`, `"list body"`, `"request body"`), `pointer` (the member's JSON Pointer within it, `""` for the payload itself), `value` |
 | `SchemaResourceError` | The schema endpoint answered another resource's document than the registry name requested | `requested`, `resource` |
 | `SchemaValidationError` | Client-side validation failed | `code` (the E-code the server would return), `field`, `detail`, optional `constraint` / `limit` |
 | `SchemaValidationErrors` | Multiple merge-patch members or values failed | `errors` (ordered individual failures); inherited `code`, `field`, `detail` and constraint metadata identify the first |
@@ -228,7 +263,7 @@ pnpm run build        # emits dist/
 
 Development requires Node.js 22.13 or later and pnpm 12 at the version `packageManager` pins; CI installs that version. `pnpm-workspace.yaml` sets `pmOnFail: ignore`, so another local pnpm runs as itself instead of switching: pinning would make pnpm write a second YAML document into `pnpm-lock.yaml`, which GitHub's dependency graph, its SBOM export and Dependabot alerts do not read. CI runs `make test-parse-sdk`, the registry checks and the packed consumer on Node.js 22.13.0, exactly the `engines` floor, and on the newest LTS; that job fails when the floor leg's version and `engines.node` differ, so raise both together. `make test-parse-sdk`, which CI and the release workflow run, starts with the repository's pnpm contract, `tools/check-pnpm.mjs`, which `make release-please-check` runs for `tools/release-please` too. It fails when the pnpm on `PATH` is not the pinned release (`npm install --global pnpm@X.Y.Z` installs it into the active Node.js), when the repository's pnpm projects pin different releases, when `pmOnFail: ignore` is missing, or when `pnpm-lock.yaml` has YAML document markers. pnpm keeps a leading `packageManagerDependencies` document once written, so delete it by hand (from the first `---` line through the second). Builds use TypeScript 7 through `@typescript/native`; typed ESLint uses the supported TypeScript 6 API through the `typescript` alias, Microsoft's `@typescript/typescript6` package, whose compiler command is `tsc6`. These are development dependencies; the published client has no runtime dependencies. The tarball includes compiled output and original library source for declaration-map navigation; test sources stay out. JavaScript maps include their source text.
 
-From the repository root, `make parse-sdk-release-check` installs the built tarball in a fresh consumer and verifies both TypeScript compilers, runtime subpath imports and packaged sourcemaps. To verify an existing public release, run `bash tools/check-parse-sdk-release.sh --registry X.Y.Z`; it requires the SDK's development dependencies and installs that exact version from the public npm registry with a fresh pnpm store and cache, then checks that the integrity pnpm locked matches the registry's own metadata. `PARSE_SDK_DIR` selects an alternate SDK source directory, including its compiler dependencies. See [the release procedure](../../../CONTRIBUTING.md#parse-sdk-publication) for publication and authentication setup.
+From the repository root, `make parse-sdk-release-check` installs the built tarball in a fresh consumer and verifies both TypeScript compilers, runtime subpath imports and packaged sourcemaps. To verify an existing public release, run `bash tools/check-parse-sdk-release.sh --registry X.Y.Z`; it requires the SDK's development dependencies and installs that exact version from the public npm registry with a fresh pnpm store and cache, retrying for up to `PARSE_SDK_REGISTRY_RETRY_SECONDS` (300) while the registry does not show the version yet, then checks that the integrity pnpm locked matches the registry's own version document. Its consumer program exercises this SDK's API, so an older release is checked with its tag's own script. `PARSE_SDK_DIR` selects an alternate SDK source directory, including its compiler dependencies. See [the release procedure](../../../CONTRIBUTING.md#parse-sdk-publication) for publication and authentication setup.
 
 Three Go-emitted fixtures keep the client on the server's contract; each fails its Go test when stale:
 
@@ -236,25 +271,26 @@ Three Go-emitted fixtures keep the client on the server's contract; each fails i
 |---|---|---|
 | `testdata/filter_conformance.json` — `{schemas, cases, sort, list}`: the schema documents of the corpus's resources, and filters, sort strings and list query strings with the server's verdict and E-code | `src/filter/conformance.test.ts` | `go test -tags=unit -run TestEmitFilterConformance -update ./parse/` |
 | `testdata/patch_conformance.json` — merge patches with the Go parser's verdict and E-code, and the schema document they are checked against | `src/patch/conformance.test.ts` | `go test -tags=unit -run TestEmitPatchConformance -update ./parse/` |
-| `testdata/sdk_wire.json` — requests parse's Go client built and the answers `parsehttp`'s handlers gave them: a keyset walk, a backward page, a total, a list that matches nothing (`items` `[]`), a POST list, facets, patches (one of a row keyed by two columns, `/wire_stock/w1/a%2Fb`, routed by `parsehttp.ItemPattern` and read by `parsehttp.ItemKey`), the schema routes and their 404, a 422 parse error | `src/client.test.ts`, which sends each request and must equal the recorded one | `go test -tags=unit -run TestSDKWireFixture -update ./parse/` |
+| `testdata/sdk_wire.json` — requests as parse's Go client builds them (`parse/client`'s tests hold each one equal) and the answers `parsehttp`'s handlers gave them: a keyset walk, a backward page, a total, a list that matches nothing (`items` `[]`), a POST list, facets, patches (one of a row keyed by two columns, `/wire_stock/w1/a%2Fb`, routed by `parsehttp.ItemPattern` and read by `parsehttp.ItemKey`), the schema routes and their 404, a 422 parse error | `src/client.test.ts`, which sends each request and must equal the recorded one; it also sends the composite-key patch, a list, the 422 and the schema 404 through `request`, which holds its key segments, body and answers to the same records (parse serves no create, get or delete, so none is recorded) | `go test -tags=unit -run TestSDKWireFixture -update ./parse/` |
 
 ## Operations
 
-- *Deadlines*: every request runs under `timeout` (30 s by default), combined with the call's `AbortSignal`. The client does not retry; a caller that retries decides which failures are safe to repeat (a list is, a patch is not unless the server makes it so).
+- *Deadlines*: every request runs under `timeout` (30 s by default), combined with the call's `AbortSignal`. The client does not retry; a caller that retries decides which failures are safe to repeat (a list is, a patch is not unless the server makes it so, and a `request` as its method and route are), in a wrapper passed as `fetch`.
+- *Connections*: a `request` with `response: "none"` cancels the body of a 2xx it does not read, so the connection is released at once rather than when the response is collected.
 - *Encoding*: a JSON payload without `null` is written by `JSON.stringify` alone. One holding `null` (a removal, a NULL filter) may hide a non-finite number, so it is written again with a replacer that checks every number, several times `JSON.stringify`'s cost on that payload: microseconds for a patch, tens of microseconds for a 1000-element document.
 - *Schema cache*: `resource.schema()` fetches a resource's document once per client and caches it by registry name; concurrent calls share one request, and a failed fetch is not cached. `schemas()` fetches every document and replaces the cached ones. A server whose schemas change is read afresh by a new client or a call to `schemas()`.
-- *Troubleshooting*: a `ResponseError` is a 2xx without the JSON the call reads, usually a proxy or a route that is not parse's. A `SchemaResourceError` means `schemaPrefix` or the resource's registry name points at another resource's document. A 414 from a proxy on a long filter means the list needs `maxURLLength` set, so it goes as a POST body. A `NonFiniteNumberError` names the member that holds `NaN` or an infinity (`err.pointer`): find the arithmetic that produced it, and send `null` where a removal is meant.
+- *Troubleshooting*: a `ResponseError` is a 2xx without the JSON the call reads, usually a proxy or a route that is not parse's. A `SchemaResourceError` means `schemaPrefix` or the resource's registry name points at another resource's document. A 414 from a proxy on a long filter means the list needs `maxURLLength` set, so it goes as a POST body. A `NonFiniteNumberError` names the member that holds `NaN` or an infinity (`err.pointer`): find the arithmetic that produced it, and send `null` where a removal is meant. A `ResponseError` with status 204 from `request` means the route answers no body: pass `response: "none"` and type the call `request<undefined>`. A `request` that reaches the wrong URL: compare `ResponseError.url` or the 404's route with the binding's `path` and `key`; a dynamic segment of `path` needs `encodeURIComponent`, which the `key` segments already have.
 
 ## Security
 
-Credentials go in `headers` (`Authorization`), sent with every request to `baseURL` and nowhere else. Filters, sorts and patch values are encoded as JSON and query parameters with `URLSearchParams`, so a value never changes a request's structure, and a number JSON cannot carry is refused rather than sent as `null`, so it never changes a request's meaning. `validateBeforeSend` checks a request against the server's schema before it leaves; the server validates it again whatever the client does, so client-side validation is a convenience, not a control. `ApiError.message` is the server's text: whether to show it to a user is the application's decision.
+Credentials go in `headers` (`Authorization`), sent with every request to `baseURL` and nowhere else. Filters, sorts, patch values and `request` bodies and queries are encoded as JSON and query parameters with `URLSearchParams`, and each key value is escaped into its own path segment, so a value never changes a request's structure; a number JSON cannot carry is refused rather than sent as `null`, so it never changes a request's meaning. A `request` path is sent as given: a binding that builds one from caller text escapes it. `validateBeforeSend` checks a request against the server's schema before it leaves; the server validates it again whatever the client does, so client-side validation is a convenience, not a control. `ApiError.message` is the server's text: whether to show it to a user is the application's decision.
 
 ## Package Structure
 
 | Import | Contents |
 |---|---|
 | `@ashtonian/parse` | `createClient`, `SchemaValidator`, `SCHEMA_VERSION`, builders and combinators, validators, all types |
-| `@ashtonian/parse/core` | `ApiError`, `ResponseError`, `NonFiniteNumberError`, `SchemaResourceError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError`, `ConstraintName`, `ConstraintFailure`, `ErrorBody`, `Payload`, `Problem`, `FieldError`, `FieldType`, `KeyValue`, `ResourceKey` |
+| `@ashtonian/parse/core` | `ApiError`, `ResponseError`, `NonFiniteNumberError`, `SchemaResourceError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError`, `ConstraintName`, `ConstraintFailure`, `ErrorBody`, `Payload`, `Problem`, `FieldError`, `FieldType`, `KeyValue`, `ResourceKey`, `RequestOptions`, `ListRequestOptions`, `SendOptions`, `ResourceSendOptions` |
 | `@ashtonian/parse/filter` | `filter`, `and`, `or`, `not`, `sort`, `validateFilter`, `validateSort`, list / facet / schema types |
 | `@ashtonian/parse/patch` | `validatePatch`, patch schema and result types, `PatchInput`, `MergeDocument`, `MergeValue` |
 
@@ -262,7 +298,7 @@ Credentials go in `headers` (`Authorization`), sent with every request to `baseU
 
 | File | Responsibility |
 |---|---|
-| `src/client.ts` | `createClient` — requests, schema cache, pagination, patch, facets |
+| `src/client.ts` | `createClient` — requests, schema cache, pagination, patch, facets, and `request` for the server's other routes |
 | `src/validate.ts` | `SchemaValidator` — validation + schema introspection per resource |
 | `src/filter/builder.ts` | `FilterBuilder` (immutable field conjunctions), `and` / `or` / `not`, `SortBuilder` |
 | `src/filter/validate.ts` | `validateFilter` / `validateSort`, mirroring the Go parser |
@@ -274,10 +310,12 @@ Credentials go in `headers` (`Authorization`), sent with every request to `baseU
 | `src/core/errors.ts` | `ApiError`, `ResponseError`, `NonFiniteNumberError`, `SchemaResourceError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError` |
 | `src/core/json.ts` | `encodeJSON`, the one encoder of every JSON payload the client sends, refusing non-finite numbers; RFC 6901 pointer tokens |
 | `src/core/problem.ts` | RFC 9457 `Problem` and `FieldError`: recognition and normalization |
-| `src/core/types.ts` | Shared types: `ErrorBody`, `FieldType`, `KeyValue`, `ResourceKey`, `RequestOptions` |
+| `src/core/types.ts` | Shared types: `ErrorBody`, `FieldType`, `KeyValue`, `ResourceKey`, `RequestOptions`, `ListRequestOptions`, `SendOptions` and `ResourceSendOptions` (a `request`'s query, body and response) |
+| `docs/generated-sdks.md` | What a generated SDK keeps and what it takes from this package |
 
 ## References
 
 - [Go package](../../README.md)
 - [HTTP and error contract](../../docs/http-errors.md)
 - [Integration responsibilities and numeric limits](../../docs/integrations.md#typescript-client)
+- [Generated SDKs: what they keep and what they take from this package](docs/generated-sdks.md)

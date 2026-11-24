@@ -75,8 +75,8 @@ export class SchemaVersionError extends Error {
   }
 }
 
-/** A JSON payload the client sends: a patch body, a list's or a facet request's filter, a POST list body. */
-export type Payload = "patch" | "filter" | "list body";
+/** A JSON payload the client sends: a patch body, a list's or a facet request's filter, a POST list body, a request method's body. */
+export type Payload = "patch" | "filter" | "list body" | "request body";
 
 /**
  * A number in a request payload that JSON cannot carry: NaN, Infinity or

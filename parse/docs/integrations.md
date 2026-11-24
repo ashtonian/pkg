@@ -15,6 +15,7 @@ The core translates requests into validated values and plans. It does not select
 | A non-SQL store | Parsed filters plus your evaluator; typed patch application where supported |
 | A generated API | Generate tags/schemas once, then call the same public parser APIs |
 | A UI that builds filters dynamically | Schema registry plus the TypeScript validator/client |
+| A generated client SDK | Its types and a thin binding over the TypeScript SDK or `parse/client` ([generated SDKs](../sdk/ts/docs/generated-sdks.md)) |
 
 ## pgx
 
@@ -46,7 +47,7 @@ Changing dialect selects SQL generation, not identical capabilities. Read [backe
 
 ## TypeScript client
 
-The [TypeScript SDK](../sdk/ts/README.md) provides `createClient`, `filter`, schema discovery, client-side validation, cursor pagination, facets, and Merge Patch requests. See its README for package setup, every client option, endpoints, and complete examples.
+The [TypeScript SDK](../sdk/ts/README.md) provides `createClient`, `filter`, schema discovery, client-side validation, cursor pagination, facets, Merge Patch requests, and a typed request method for a server's other routes. See its README for package setup, every client option, endpoints, and complete examples.
 
 ```typescript
 import { createClient, filter } from "@ashtonian/parse";
@@ -74,9 +75,11 @@ The client needs a server that implements the [HTTP contract](http-errors.md). I
 
 `patch(key, input)` takes a row's key: one value, or for a key of several columns a tuple of a value per column in key order, the handle typed `resource<Stock, [string, string]>("stock")` so a key of another arity does not compile. It sends `PATCH /stock/w1/a%2Fb`, the wire form `parsehttp.ItemKey` reads. `patchMany`'s `id[]` holds one value per row, so it addresses only a key of one column.
 
+parse serves lists, facets, patches and schemas, not create, get or delete. A server's other routes are reached with `request`, through the client's transport, payload encoder and error decoding: `client.request(method, path, opts)` sends to any path below `baseURL`, a handle's `request(method, { key, path, query, body })` to its collection or to a row's path, a segment per key value as `patch` writes it. The caller states the response and body types, and `response: "none"` reads a 204 as `undefined` ([other routes](../sdk/ts/README.md#other-routes)). A generated TypeScript SDK keeps its types and a binding per operation and takes the client, the resource methods, `request`, the errors, iteration and validation from the package: [generated SDKs](../sdk/ts/docs/generated-sdks.md). A generated Go SDK's split is in `parse/client`'s README, [For generated SDKs](../client/README.md#for-generated-sdks).
+
 ## Go client
 
-[`parse/client`](../client/README.md) builds requests from Go with only the standard library. A catalog of typed fields per resource, usually generated, fixes each field's name and operand type, so a misspelt field or a wrongly typed value does not compile:
+[`parse/client`](../client/README.md) builds requests from Go and decodes their answers. It is a module of its own (`go get github.com/ashtonian/pkg/parse/client@latest`) that requires nothing beyond the standard library, so a Go SDK built on it carries no server code. A catalog of typed fields per resource, usually generated, fixes each field's name and operand type, so a misspelt field or a wrongly typed value does not compile:
 
 ```go
 var Products = struct {
@@ -93,6 +96,8 @@ q, err := client.ListParams{
 ```
 
 Patches are a struct of `client.Nullable` members with the `omitzero` option (a merge patch), or a `[]client.Operation` (a JSON Patch, which also adds and removes relation members). The client sends only what the grammar can express and leaves every other check to the server; its tests hold it to the same filter and patch corpora as the TypeScript SDK.
+
+The answers decode into the client's types, generic over the row type: `client.Page[Product]` for a list, `client.FacetsAnswer` for its facets, `client.PatchAnswer[Product]` for a patch of one row or a batch, `client.Schema` for the schema document. A refused request reads with `client.DecodeError(status, body)`, an `*client.Error` matched with `errors.As` whose code is an `errors.Is` target (`client.CodeUnknownField`). The client's tests decode every answer this package's handlers recorded (`testdata/sdk_wire.json`) and encode it back unchanged. The client README's [For generated SDKs](../client/README.md#for-generated-sdks) says what a generator emits per resource.
 
 ## Custom schemas and SQL expressions
 

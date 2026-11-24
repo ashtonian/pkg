@@ -13,7 +13,8 @@
       "component": "parse",
       "initial-version": "0.1.0",
       "exclude-paths": [
-        "parse/examples/server"
+        "parse/examples/server",
+        "parse/client"
       ],
       "extra-files": [
         {
@@ -22,6 +23,10 @@
           "jsonpath": "$.version"
         }
       ]
+    },
+    "parse/client": {
+      "component": "parse/client",
+      "initial-version": "0.1.0"
     },
     "config": {
       "component": "config",

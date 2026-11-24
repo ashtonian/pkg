@@ -26,9 +26,12 @@ export function fetchBranchHead(repoDir, remote, branch) {
 // readHistory returns mergeOf, each commit a merge on ref's first-parent chain
 // brought in mapped to that merge; messageOf, those merges' messages;
 // branchCommits, the message and changed files of each such commit that is
-// not itself a merge; and revertedWithin, the commits a revert on the same
-// merge's branch undid, the reverts included.
-export function readHistory(repoDir, ref) {
+// not itself a merge; revertedWithin, the commits a revert on the same
+// merge's branch undid, the reverts included; positionOf, each chain commit's
+// place on the chain, oldest 0; and, given the release-please config's path,
+// startOf: each release path mapped to the first chain commit whose config
+// names it.
+export function readHistory(repoDir, ref, { configFile } = {}) {
   const git = gitIn(repoDir);
   // A shallow clone maps nothing and would list every branch commit again.
   if (git('rev-parse', '--is-shallow-repository').trim() === 'true') {
@@ -50,11 +53,13 @@ export function readHistory(repoDir, ref) {
   for (let sha = git('rev-parse', '--verify', `${ref}^{commit}`).trim(); sha; sha = parents.get(sha)[0]) {
     chain.push(sha);
   }
+  chain.reverse();
   const onChain = new Set(chain);
+  const positionOf = new Map(chain.map((sha, position) => [sha, position]));
   const mergeOf = new Map();
   // Oldest first: an older chain commit reaches only chain commits and ones
   // already mapped, so each walk claims exactly what its merge brought in.
-  for (const merge of chain.reverse()) {
+  for (const merge of chain) {
     const pending = parents.get(merge).slice(1);
     while (pending.length > 0) {
       const sha = pending.pop();
@@ -80,7 +85,46 @@ export function readHistory(repoDir, ref) {
   }
   const brought = new Map([...mergeOf.keys()].map(sha => [sha, messages.get(sha)]));
   const revertedWithin = revertsWithin(brought, sha => mergeOf.get(sha));
-  return { mergeOf, messageOf, branchCommits, revertedWithin };
+  const startOf = configFile === undefined ? new Map() : releasePathStarts(repoDir, chain, configFile);
+  return { mergeOf, messageOf, branchCommits, revertedWithin, positionOf, startOf };
+}
+
+// releasePathStarts maps each package of the release-please config to the
+// first commit of chain (oldest first) whose config names it: where it became
+// a release path. Two cat-file processes read every chain commit's config
+// blob and then each distinct version once.
+function releasePathStarts(repoDir, chain, configFile) {
+  const catFile = (args, input) => execFileSync('git', ['-C', repoDir, 'cat-file', ...args], { input, maxBuffer: 256 << 20 });
+  const isObject = line => /^[0-9a-f]+$/.test(line);
+  const blobs = catFile(['--batch-check=%(objectname)'], chain.map(sha => `${sha}:${configFile}\n`).join(''))
+    .toString('utf8').split('\n').slice(0, chain.length);
+  const versions = [...new Set(blobs.filter(isObject))];
+  const out = catFile(['--batch'], versions.map(oid => `${oid}\n`).join(''));
+  const textOf = new Map();
+  let at = 0;
+  for (const oid of versions) {
+    // Each object is "<oid> <type> <size>\n<content>\n".
+    const eol = out.indexOf(0x0a, at);
+    const size = Number(out.toString('utf8', at, eol).split(' ')[2]);
+    textOf.set(oid, out.toString('utf8', eol + 1, eol + 1 + size));
+    at = eol + 1 + size + 1;
+  }
+  const startOf = new Map();
+  let previous;
+  for (const [position, oid] of blobs.entries()) {
+    if (!isObject(oid) || oid === previous) continue;
+    previous = oid;
+    let config;
+    try {
+      config = JSON.parse(textOf.get(oid));
+    } catch (error) {
+      throw new Error(`reading ${configFile} at ${chain[position]}: ${error.message}`);
+    }
+    for (const path of Object.keys(config.packages ?? {})) {
+      if (!startOf.has(path)) startOf.set(path, chain[position]);
+    }
+  }
+  return startOf;
 }
 
 // revertsWithin returns the commits of messageOf (sha to message) that a

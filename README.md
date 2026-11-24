@@ -11,7 +11,8 @@ its own dependencies, version, changelog and releases.
 | [onepassword](onepassword/README.md) | `github.com/ashtonian/pkg/onepassword` | Complete bounded read-only native vault observations and exact selected-ID batches. |
 | [state](state/README.md) | `github.com/ashtonian/pkg/state` | Durable bounded controller documents, canonical JSON identities and local lifetime locks. |
 | [gitx](gitx/README.md) | `github.com/ashtonian/pkg/gitx` | Git-side plumbing for a repository's own checks: tracked-file listing, a conflict-marker check and a markdown merge driver that keeps both sides' insertions. |
-| [parse](parse/README.md) | `github.com/ashtonian/pkg/parse` | Struct tags to validated HTTP filters, sorts, keyset pages and patches, compiled to PostgreSQL/SQLite plans; Go and TypeScript client builders. |
+| [parse](parse/README.md) | `github.com/ashtonian/pkg/parse` | Struct tags to validated HTTP filters, sorts, keyset pages and patches, compiled to PostgreSQL/SQLite plans; the TypeScript SDK. |
+| [parse client](parse/client/README.md) | `github.com/ashtonian/pkg/parse/client` | The Go client of a parse server, standard library only: typed request builders and the answers' types (pages, patch answers, coded errors, schema documents). |
 | [config](config/README.md) | `github.com/ashtonian/pkg/config` | Typed, layered configuration with validation, hot reload and redaction. |
 | [httpx](httpx/README.md) | `github.com/ashtonian/pkg/httpx` | HTTP standards and resilience: retries, circuit breaking, caching, compression and request budgets for `net/http`. |
 | [Kong provider](config/kongprovider/README.md) | `github.com/ashtonian/pkg/config/kongprovider` | CLI flags as config overrides, with help derived from the config struct. |
@@ -32,9 +33,10 @@ go get github.com/ashtonian/pkg/process@latest
 go get github.com/ashtonian/pkg/state@latest
 go get github.com/ashtonian/pkg/onepassword@latest
 go get github.com/ashtonian/pkg/parse@latest
+go get github.com/ashtonian/pkg/parse/client@latest
 ```
 
-Process, state, onepassword, parse, gowalker, jsonvalue, config and its Kong provider require **Go 1.27 or later**; gitx and httpx
+Process, state, onepassword, parse and its client, gowalker, jsonvalue, config and its Kong provider require **Go 1.27 or later**; gitx and httpx
 require **Go 1.26 or later**. Install only the modules you need. Add the Kong provider for Kong CLI integration;
 add httpx's MessagePack, protobuf or Brotli module only for that wire format.
 
@@ -58,6 +60,7 @@ or the [standard-client example](httpx/README.md#quick-start).
 
 - [Parse quick start](parse/README.md): request parsing, SQL compilation, scopes and pages.
 - [Parse TypeScript SDK](parse/sdk/ts/README.md): schema discovery, validation and request builders.
+- [Parse Go client](parse/client/README.md): typed request builders, decoded answers and what a generated SDK emits.
 
 - [Gowalker quick start](gowalker/README.md): when to use it, picking a tag naming convention, reading your first tags.
 - [Gowalker recipes](gowalker/docs/usage.md): per-type metadata, `json`/`koanf` naming, nested sections, inherited tags, errors.

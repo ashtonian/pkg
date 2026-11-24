@@ -1,0 +1,972 @@
+{
+  "filters": {
+    "and_explicit": {
+      "$and": [
+        {
+          "status": {
+            "$eq": "active"
+          }
+        },
+        {
+          "count": {
+            "$gt": 5
+          }
+        }
+      ]
+    },
+    "any_null": {
+      "blob": {
+        "$null": true
+      }
+    },
+    "array_contains_scalar": {
+      "tags": {
+        "$contains": [
+          "a"
+        ]
+      }
+    },
+    "array_none_not": {
+      "tags": {
+        "$none": {
+          "$not": {
+            "$in": [
+              "a",
+              "b"
+            ]
+          }
+        }
+      }
+    },
+    "array_path_contains": {
+      "meta.labels": {
+        "$contains": [
+          "a",
+          "b"
+        ]
+      }
+    },
+    "array_path_null": {
+      "meta.sizes": {
+        "$null": true
+      }
+    },
+    "array_some_and": {
+      "meta.sizes": {
+        "$some": {
+          "$and": [
+            {
+              "$gte": 1
+            },
+            {
+              "$lt": 5
+            }
+          ]
+        }
+      }
+    },
+    "array_some_any": {
+      "meta.labels": {
+        "$some": {}
+      }
+    },
+    "array_some_eq": {
+      "tags": {
+        "$some": {
+          "$eq": "a"
+        }
+      }
+    },
+    "array_some_or": {
+      "meta.labels": {
+        "$some": {
+          "$or": [
+            {
+              "$like": "a%"
+            },
+            {
+              "$eq": "b"
+            }
+          ]
+        }
+      }
+    },
+    "cidr_eq": {
+      "subnet": {
+        "$eq": "192.0.2.0/24"
+      }
+    },
+    "contains": {
+      "name": {
+        "$contains": "sensor"
+      }
+    },
+    "date_gt": {
+      "day": {
+        "$gt": "2026-01-01"
+      }
+    },
+    "elements_none": {
+      "lines": {
+        "$none": {
+          "sku": {
+            "$eq": "a"
+          }
+        }
+      }
+    },
+    "elements_some": {
+      "lines": {
+        "$some": {
+          "$and": [
+            {
+              "sku": {
+                "$eq": "a"
+              }
+            },
+            {
+              "qty": {
+                "$gt": 2
+              }
+            }
+          ]
+        }
+      }
+    },
+    "empty": {},
+    "eq_bool": {
+      "active": {
+        "$eq": true
+      }
+    },
+    "eq_decimal_beyond_float64": {
+      "price": {
+        "$eq": "0.10000000000000001"
+      }
+    },
+    "eq_decimal_number": {
+      "price": {
+        "$eq": "10.5"
+      }
+    },
+    "eq_decimal_string": {
+      "price": {
+        "$eq": "10.50"
+      }
+    },
+    "eq_number": {
+      "count": {
+        "$eq": 5
+      }
+    },
+    "eq_string": {
+      "status": {
+        "$eq": "active"
+      }
+    },
+    "err_any_operator": {
+      "blob": {
+        "$eq": "eA=="
+      }
+    },
+    "err_array_element_null_test": {
+      "tags": {
+        "$some": {
+          "$null": true
+        }
+      }
+    },
+    "err_cidr_host_bits": {
+      "subnet": {
+        "$eq": "192.0.2.1/24"
+      }
+    },
+    "err_date_operator": {
+      "day": {
+        "$gte": "2026-01-01"
+      }
+    },
+    "err_date_spelling": {
+      "day": {
+        "$eq": "01/02/2026"
+      }
+    },
+    "err_decimal_beyond_digits": {
+      "price": {
+        "$eq": "1e1000"
+      }
+    },
+    "err_decimal_exponent_beyond_int32": {
+      "price": {
+        "$eq": "0e2147483648"
+      }
+    },
+    "err_decimal_hexadecimal": {
+      "price": {
+        "$eq": "0x10"
+      }
+    },
+    "err_decimal_in_member": {
+      "price": {
+        "$in": [
+          "1",
+          "one"
+        ]
+      }
+    },
+    "err_decimal_leading_plus": {
+      "price": {
+        "$eq": "+1"
+      }
+    },
+    "err_decimal_leading_point": {
+      "price": {
+        "$eq": ".5"
+      }
+    },
+    "err_decimal_leading_zero": {
+      "price": {
+        "$eq": "007"
+      }
+    },
+    "err_decimal_word": {
+      "price": {
+        "$eq": "ten"
+      }
+    },
+    "err_geo_intersects_two_points": {
+      "spot": {
+        "$intersects": {
+          "points": [
+            {
+              "lat": 0,
+              "lon": 0
+            },
+            {
+              "lat": 1,
+              "lon": 1
+            }
+          ]
+        }
+      }
+    },
+    "err_interval_spelling": {
+      "span": {
+        "$eq": "1 day"
+      }
+    },
+    "err_invalid_enum": {
+      "status": {
+        "$eq": "bogus"
+      }
+    },
+    "err_json_integer_beyond_int64": {
+      "meta": {
+        "$eq": {
+          "n": 18446744073709551615
+        }
+      }
+    },
+    "err_like_trailing_escape": {
+      "name": {
+        "$like": "abc\\"
+      }
+    },
+    "err_macaddr_spelling": {
+      "mac": {
+        "$ne": "08:00:2b"
+      }
+    },
+    "err_nin_enum": {
+      "status": {
+        "$nin": [
+          "bogus"
+        ]
+      }
+    },
+    "err_object_operator": {
+      "dims": {
+        "$contains": {
+          "w": 2,
+          "h": 0
+        }
+      }
+    },
+    "err_relation_target_enum": {
+      "parts": {
+        "$some": {
+          "state": {
+            "$eq": "new"
+          }
+        }
+      }
+    },
+    "err_time_spelling": {
+      "at": {
+        "$eq": "half past nine"
+      }
+    },
+    "err_uuid_spelling": {
+      "key": {
+        "$eq": "not-a-uuid"
+      }
+    },
+    "exists_true": {
+      "name": {
+        "$not_null": true
+      }
+    },
+    "float_gt": {
+      "score": {
+        "$gt": 0.5
+      }
+    },
+    "geo_intersects_polygon": {
+      "spot": {
+        "$intersects": {
+          "points": [
+            {
+              "lat": 0,
+              "lon": 0
+            },
+            {
+              "lat": 1,
+              "lon": 1
+            },
+            {
+              "lat": 0,
+              "lon": 1
+            }
+          ]
+        }
+      }
+    },
+    "geo_near": {
+      "spot": {
+        "$near": {
+          "lat": 40.7128,
+          "lon": -74.006,
+          "distance": "1500m"
+        }
+      }
+    },
+    "geo_within_box": {
+      "spot": {
+        "$within": {
+          "top_left": {
+            "lat": 40.8,
+            "lon": -74.1
+          },
+          "bottom_right": {
+            "lat": 40.65,
+            "lon": -73.7
+          }
+        }
+      }
+    },
+    "gt_decimal_exponent": {
+      "price": {
+        "$gt": "1.5E-3"
+      }
+    },
+    "gt_number": {
+      "count": {
+        "$gt": 5
+      }
+    },
+    "gte_number": {
+      "count": {
+        "$gte": 5
+      }
+    },
+    "ilike": {
+      "name": {
+        "$ilike": "DEV%"
+      }
+    },
+    "in_array": {
+      "status": {
+        "$in": [
+          "active",
+          "offline"
+        ]
+      }
+    },
+    "in_decimal": {
+      "price": {
+        "$in": [
+          "9.5",
+          "2",
+          "-0"
+        ]
+      }
+    },
+    "inet_eq": {
+      "addr": {
+        "$eq": "192.0.2.1"
+      }
+    },
+    "interval_in": {
+      "span": {
+        "$in": [
+          "P1D",
+          "PT2H30M"
+        ]
+      }
+    },
+    "json_contains": {
+      "meta": {
+        "$contains": {
+          "env": "prod"
+        }
+      }
+    },
+    "json_decimal": {
+      "meta": {
+        "$eq": {
+          "n": 0.1
+        }
+      }
+    },
+    "json_eq_document": {
+      "meta": {
+        "$eq": {
+          "env": "prod"
+        }
+      }
+    },
+    "json_eq_dollar_keyed_document": {
+      "meta": {
+        "$eq": {
+          "$env": "prod"
+        }
+      }
+    },
+    "json_eq_mixed_keyed_document": {
+      "meta": {
+        "$eq": {
+          "$env": "prod",
+          "region": "eu"
+        }
+      }
+    },
+    "json_has_key": {
+      "meta": {
+        "$has_key": "env"
+      }
+    },
+    "like": {
+      "name": {
+        "$like": "dev%"
+      }
+    },
+    "lt_number": {
+      "count": {
+        "$lt": 5
+      }
+    },
+    "lte_number": {
+      "count": {
+        "$lte": 5
+      }
+    },
+    "macaddr_ne": {
+      "mac": {
+        "$ne": "08:00:2b:01:02:03"
+      }
+    },
+    "ne_number": {
+      "count": {
+        "$ne": 5
+      }
+    },
+    "nested_and_or": {
+      "$and": [
+        {
+          "active": {
+            "$eq": true
+          }
+        },
+        {
+          "$or": [
+            {
+              "status": {
+                "$eq": "active"
+              }
+            },
+            {
+              "status": {
+                "$eq": "offline"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "nin_array": {
+      "status": {
+        "$nin": [
+          "error"
+        ]
+      }
+    },
+    "not_explicit": {
+      "$not": {
+        "status": {
+          "$eq": "error"
+        }
+      }
+    },
+    "not_null_false": {
+      "name": {
+        "$null": true
+      }
+    },
+    "not_null_true": {
+      "name": {
+        "$not_null": true
+      }
+    },
+    "null_false": {
+      "name": {
+        "$not_null": true
+      }
+    },
+    "null_test_capability_exists": {
+      "note": {
+        "$not_null": true
+      }
+    },
+    "null_test_capability_not_null": {
+      "note": {
+        "$not_null": true
+      }
+    },
+    "null_test_capability_null": {
+      "note": {
+        "$not_null": true
+      }
+    },
+    "null_true": {
+      "name": {
+        "$null": true
+      }
+    },
+    "object_eq_document": {
+      "dims": {
+        "$eq": {
+          "w": 2,
+          "h": 3
+        }
+      }
+    },
+    "object_has_key": {
+      "dims": {
+        "$has_key": "w"
+      }
+    },
+    "or_explicit": {
+      "$or": [
+        {
+          "status": {
+            "$eq": "active"
+          }
+        },
+        {
+          "status": {
+            "$eq": "offline"
+          }
+        }
+      ]
+    },
+    "path_eq": {
+      "meta.region": {
+        "$eq": "eu"
+      }
+    },
+    "path_like": {
+      "meta.region": {
+        "$like": "eu-%"
+      }
+    },
+    "quoted_eq_bool": {
+      "live": {
+        "$eq": "true"
+      }
+    },
+    "quoted_eq_int64_max": {
+      "serial": {
+        "$eq": "9223372036854775807"
+      }
+    },
+    "quoted_eq_int64_min": {
+      "serial": {
+        "$eq": "-9223372036854775808"
+      }
+    },
+    "quoted_float": {
+      "ratio": {
+        "$lt": "0.5"
+      }
+    },
+    "quoted_gt_past_2_53": {
+      "serial": {
+        "$gt": "9007199254740992"
+      }
+    },
+    "quoted_in": {
+      "serial": {
+        "$in": [
+          "1",
+          "9007199254740993"
+        ]
+      }
+    },
+    "quoted_uint64_max": {
+      "big": {
+        "$eq": "18446744073709551615"
+      }
+    },
+    "reference_is": {
+      "owner": {
+        "$is": {
+          "name": {
+            "$eq": "acme"
+          }
+        }
+      }
+    },
+    "reference_is_not": {
+      "owner": {
+        "$is_not": {
+          "name": {
+            "$like": "ac%"
+          }
+        }
+      }
+    },
+    "reference_key_shorthand": {
+      "owner": {
+        "$eq": "o1"
+      }
+    },
+    "relation_key_list": {
+      "parts": {
+        "$in": [
+          "p1",
+          "p2"
+        ]
+      }
+    },
+    "relation_key_shorthand": {
+      "parts": {
+        "$eq": "p1"
+      }
+    },
+    "relation_none_any": {
+      "parts": {
+        "$none": {}
+      }
+    },
+    "relation_some": {
+      "parts": {
+        "$some": {
+          "state": {
+            "$eq": "worn"
+          }
+        }
+      }
+    },
+    "time_gte": {
+      "at": {
+        "$gte": "09:30:00"
+      }
+    },
+    "time_token_relative": {
+      "created": {
+        "$gt": "now-1w"
+      }
+    },
+    "uuid_in": {
+      "key": {
+        "$in": [
+          "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+        ]
+      }
+    }
+  },
+  "geo_filters": {
+    "intersects_box": {
+      "location": {
+        "$intersects": {
+          "top_left": {
+            "lat": 40.8,
+            "lon": -74.1
+          },
+          "bottom_right": {
+            "lat": 40.65,
+            "lon": -73.7
+          }
+        }
+      }
+    },
+    "near": {
+      "location": {
+        "$near": {
+          "lat": 40.7128,
+          "lon": -74.006,
+          "distance": "1500.5m"
+        }
+      }
+    },
+    "within_box": {
+      "location": {
+        "$within": {
+          "top_left": {
+            "lat": 40.8,
+            "lon": -74.1
+          },
+          "bottom_right": {
+            "lat": 40.65,
+            "lon": -73.7
+          }
+        }
+      }
+    },
+    "within_polygon": {
+      "location": {
+        "$within": {
+          "points": [
+            {
+              "lat": 0,
+              "lon": 0
+            },
+            {
+              "lat": 1,
+              "lon": 1
+            },
+            {
+              "lat": 0,
+              "lon": 1
+            }
+          ]
+        }
+      }
+    }
+  },
+  "list": {
+    "query": {
+      "cursor": [
+        "abc"
+      ],
+      "facets": [
+        "name"
+      ],
+      "fields": [
+        "id,name"
+      ],
+      "filter": [
+        "{\"$and\":[{\"name\":{\"$eq\":\"beta\"}},{\"rank\":{\"$gte\":1}}]}"
+      ],
+      "include": [
+        "tags"
+      ],
+      "include_deleted": [
+        "true"
+      ],
+      "include_total": [
+        "true"
+      ],
+      "page_size": [
+        "3"
+      ],
+      "search": [
+        "b"
+      ],
+      "sort": [
+        "-rank,name"
+      ]
+    },
+    "body": {
+      "filter": {
+        "$and": [
+          {
+            "name": {
+              "$eq": "beta"
+            }
+          },
+          {
+            "rank": {
+              "$gte": 1
+            }
+          }
+        ]
+      },
+      "sort": "-rank,name",
+      "cursor": "abc",
+      "page_size": 3,
+      "include_total": true,
+      "include_deleted": true,
+      "search": "b",
+      "facets": [
+        "name"
+      ],
+      "include": [
+        "tags"
+      ],
+      "fields": [
+        "id",
+        "name"
+      ]
+    }
+  },
+  "operations": {
+    "add": [
+      {
+        "op": "add",
+        "path": "/name",
+        "value": "pump"
+      }
+    ],
+    "append": [
+      {
+        "op": "array_append",
+        "path": "/scores",
+        "value": 3
+      }
+    ],
+    "array append": [
+      {
+        "op": "array_append",
+        "path": "/scores",
+        "value": 4
+      }
+    ],
+    "copy": [
+      {
+        "op": "copy",
+        "path": "/note",
+        "from": "/name"
+      }
+    ],
+    "move": [
+      {
+        "op": "move",
+        "path": "/name",
+        "from": "/note"
+      }
+    ],
+    "relation add": [
+      {
+        "op": "add",
+        "path": "/tags",
+        "value": [
+          "t1"
+        ]
+      }
+    ],
+    "relation remove": [
+      {
+        "op": "remove",
+        "path": "/tags",
+        "value": [
+          "t1"
+        ]
+      }
+    ],
+    "relation replace": [
+      {
+        "op": "replace",
+        "path": "/tags",
+        "value": [
+          "t1"
+        ]
+      }
+    ],
+    "remove": [
+      {
+        "op": "remove",
+        "path": "/note"
+      }
+    ],
+    "replace": [
+      {
+        "op": "replace",
+        "path": "/name",
+        "value": "pump"
+      }
+    ],
+    "test": [
+      {
+        "op": "test",
+        "path": "/name",
+        "value": "pump"
+      }
+    ]
+  },
+  "json_patch": [
+    {
+      "op": "replace",
+      "path": "/name",
+      "value": "pump"
+    },
+    {
+      "op": "remove",
+      "path": "/note"
+    },
+    {
+      "op": "replace",
+      "path": "/scores",
+      "value": [
+        1,
+        2
+      ]
+    },
+    {
+      "op": "add",
+      "path": "/tags",
+      "value": [
+        "t1",
+        "t2"
+      ]
+    },
+    {
+      "op": "remove",
+      "path": "/tags",
+      "value": [
+        "t3"
+      ]
+    },
+    {
+      "op": "replace",
+      "path": "/tags",
+      "value": [
+        "t4"
+      ]
+    }
+  ],
+  "quoted_relation": {
+    "json_patch": [
+      {
+        "op": "add",
+        "path": "/tags",
+        "value": [
+          "5",
+          "9007199254740993"
+        ]
+      },
+      {
+        "op": "remove",
+        "path": "/tags",
+        "value": [
+          "6"
+        ]
+      }
+    ],
+    "merge_patch": {
+      "tags": [
+        "5"
+      ]
+    }
+  }
+}

@@ -1,7 +1,9 @@
 // Package client builds requests in parse's grammar from Go: filters, sort
 // orders, list parameters, a row's item path (ItemPath), merge-patch members
-// and JSON Patch operations. It imports only the standard library, so an SDK
-// built on it depends on no server code.
+// and JSON Patch operations. It decodes the answers: a list's Page, a
+// FacetsAnswer, a PatchAnswer, a refused request's Error with its Code, and
+// the Schema document. The module requires nothing beyond the standard
+// library, so an SDK built on it depends on no server code.
 //
 // A catalog of typed fields per resource, usually generated, names the
 // fields and fixes their operand types, so a misspelt field or an operand of
@@ -24,4 +26,15 @@
 // an Or of nothing, Not of the empty filter, an array element's condition
 // outside its array, and an operand with no spelling (a non-finite number, a
 // distance that is not positive, a relative time finer than a second).
+//
+// The routes are the server application's: a list is a GET or POST of the
+// collection's path, its facets an OPTIONS of it, a patch a PATCH of the
+// item's path (the collection's, a slash and ItemPath). A refused request's
+// body reads with DecodeError:
+//
+//	var page client.Page[Device]
+//	if resp.StatusCode != http.StatusOK {
+//		return client.DecodeError(resp.StatusCode, body)
+//	}
+//	err := json.Unmarshal(body, &page)
 package client

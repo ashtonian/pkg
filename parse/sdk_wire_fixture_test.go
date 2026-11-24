@@ -2,13 +2,13 @@
 
 package parse_test
 
-// The wire fixture the SDKs are held to: requests built by the Go client
-// (parse/client) and the answers parse's handlers gave them, recorded by
-// serving a resource over SQLite with parsehttp and parsesql. The TypeScript
-// client tests (sdk/ts/src/client.test.ts) replay each exchange: the request
-// they build must equal the recorded one, and they decode the recorded
-// answer, so the TypeScript SDK, the Go client and the handlers agree on
-// every byte.
+// The wire fixture the SDKs are held to: the requests a client sends and
+// the answers parse's handlers gave them, recorded by serving a resource
+// over SQLite with parsehttp and parsesql. The Go client's tests
+// (parse/client, a module of its own) and the TypeScript client's
+// (sdk/ts/src/client.test.ts) replay each exchange: the request they build
+// must equal the recorded one, and they decode the recorded answer, so both
+// SDKs and the handlers agree on every byte.
 //
 // Regenerate after an intentional wire change:
 //
@@ -25,12 +25,12 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/client"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/parsehttp"
@@ -294,13 +294,18 @@ func record(t *testing.T, h http.Handler, req wireRequest) wireCall {
 	}}
 }
 
-// listGET is the GET a Go client sends for p.
-func listGET(t *testing.T, p client.ListParams) wireRequest {
-	t.Helper()
-	q, err := p.Values()
-	require.NoError(t, err)
+// listGET is the GET of the list q's parameters ask for.
+func listGET(q url.Values) wireRequest {
 	return wireRequest{Method: http.MethodGet, Path: "/wire_items", Query: q}
 }
+
+// The filters the recorded lists send, as the clients encode them: every
+// condition in operator form.
+const (
+	wireNotEcho = `{"name":{"$ne":"echo"}}`
+	wireNoRow   = `{"id":{"$eq":"zz"}}`
+	wireUnknown = `{"nope":{"$eq":1}}`
+)
 
 // pageOf decodes the page of a list call.
 func pageOf(t *testing.T, c wireCall) filter.Page[wireItem] {
@@ -314,7 +319,6 @@ func pageOf(t *testing.T, c wireCall) filter.Page[wireItem] {
 func buildSDKWire(t *testing.T) []byte {
 	t.Helper()
 	h := wireServer(t, wireDB(t))
-	name := client.NewSortableText("name")
 	wire := sdkWire{
 		Params: map[string]string{
 			"ParamFilter": filter.ParamFilter, "ParamSort": filter.ParamSort, "ParamCursor": filter.ParamCursor,
@@ -327,35 +331,44 @@ func buildSDKWire(t *testing.T) []byte {
 		Exchanges: map[string]wireCall{},
 	}
 
-	walk := client.ListParams{Sort: client.Sort{name.Asc()}, PageSize: wire.PageSize, Include: []string{"tags"}, Facets: []string{"name"}}
-	for n := 0; ; n++ {
+	pageSize := strconv.Itoa(wire.PageSize)
+	walk := url.Values{
+		filter.ParamSort: {wire.Sort}, filter.ParamPageSize: {pageSize},
+		filter.ParamInclude: {"tags"}, filter.ParamFacets: {"name"},
+	}
+	from := func(cursor filter.Cursor) url.Values {
+		q := maps.Clone(walk)
+		q.Set(filter.ParamCursor, string(cursor))
+		return q
+	}
+	for q, n := walk, 0; ; n++ {
 		require.Less(t, n, 10, "walk did not terminate")
-		call := record(t, h, listGET(t, walk))
+		call := record(t, h, listGET(q))
 		wire.List = append(wire.List, call)
 		page := pageOf(t, call)
 		if !page.PageInfo.HasNextPage {
 			break
 		}
-		walk.Cursor = string(page.PageInfo.EndCursor)
+		q = from(page.PageInfo.EndCursor)
 	}
 	require.Len(t, wire.List, 3)
 
 	// The page before the walk's second: its start cursor seeks backwards.
-	back := walk
-	back.Cursor = string(pageOf(t, wire.List[1]).PageInfo.StartCursor)
-	wire.Exchanges["list_backward"] = record(t, h, listGET(t, back))
+	wire.Exchanges["list_backward"] = record(t, h, listGET(from(pageOf(t, wire.List[1]).PageInfo.StartCursor)))
 
-	filtered := client.ListParams{Filter: name.Ne("echo"), Sort: client.Sort{name.Desc()}, PageSize: 2, IncludeTotal: true}
-	wire.Exchanges["list_total"] = record(t, h, listGET(t, filtered))
-	body, err := filtered.Body()
-	require.NoError(t, err)
+	filtered := url.Values{
+		filter.ParamFilter: {wireNotEcho}, filter.ParamSort: {"-name"},
+		filter.ParamPageSize: {pageSize}, filter.ParamIncludeTotal: {"true"},
+	}
+	wire.Exchanges["list_total"] = record(t, h, listGET(filtered))
+	body := json.RawMessage(`{"filter":` + wireNotEcho + `,"sort":"-name","page_size":` + pageSize + `,"include_total":true}`)
 	wire.Exchanges["list_post"] = record(t, h, wireRequest{Method: http.MethodPost, Path: "/wire_items", ContentType: "application/json", Body: body})
 
 	// The same list under a field mask: each item has the masked members
 	// only, and the page info is the unmasked list's.
-	masked := filtered
-	masked.Fields = []string{"name"}
-	wire.Exchanges["list_masked"] = record(t, h, listGET(t, masked))
+	masked := maps.Clone(filtered)
+	masked.Set(filter.ParamFields, "name")
+	wire.Exchanges["list_masked"] = record(t, h, listGET(masked))
 	var maskedPage struct{ Items []map[string]any }
 	require.NoError(t, json.Unmarshal(wire.Exchanges["list_masked"].Response.Body, &maskedPage))
 	require.NotEmpty(t, maskedPage.Items)
@@ -364,14 +377,17 @@ func buildSDKWire(t *testing.T) []byte {
 	}
 
 	// A list that matches nothing: items [], with its total and facets.
-	none := client.ListParams{Filter: client.NewField[string]("id").Eq("zz"), IncludeTotal: true, Include: []string{"tags"}, Facets: []string{"name"}}
-	wire.Exchanges["list_empty"] = record(t, h, listGET(t, none))
+	none := url.Values{
+		filter.ParamFilter: {wireNoRow}, filter.ParamIncludeTotal: {"true"},
+		filter.ParamInclude: {"tags"}, filter.ParamFacets: {"name"},
+	}
+	wire.Exchanges["list_empty"] = record(t, h, listGET(none))
 	require.Contains(t, string(wire.Exchanges["list_empty"].Response.Body), `"items":[]`)
 
-	facets := listGET(t, client.ListParams{Filter: name.Ne("echo"), Facets: []string{"name"}})
+	facets := listGET(url.Values{filter.ParamFilter: {wireNotEcho}, filter.ParamFacets: {"name"}})
 	facets.Method = http.MethodOptions
 	wire.Exchanges["facets"] = record(t, h, facets)
-	wire.Exchanges["error"] = record(t, h, listGET(t, client.ListParams{Filter: client.NewField[int]("nope").Eq(1)}))
+	wire.Exchanges["error"] = record(t, h, listGET(url.Values{filter.ParamFilter: {wireUnknown}}))
 	wire.Exchanges["schema"] = record(t, h, wireRequest{Method: http.MethodGet, Path: "/wire_items/schema"})
 	wire.Exchanges["schemas"] = record(t, h, wireRequest{Method: http.MethodGet, Path: "/schemas"})
 	wire.Exchanges["schema_not_found"] = record(t, h, wireRequest{Method: http.MethodGet, Path: "/gadgets/schema"})
@@ -384,8 +400,7 @@ func buildSDKWire(t *testing.T) []byte {
 	})
 	// The row keyed (w1, a/b): a segment per key column, each escaped on
 	// its own, so the SKU's slash stays in its segment.
-	item, err := client.ItemPath("w1", "a/b")
-	require.NoError(t, err)
+	item := url.PathEscape("w1") + "/" + url.PathEscape("a/b")
 	wire.Exchanges["patch_composite_key"] = record(t, h, wireRequest{
 		Method: http.MethodPatch, Path: "/wire_stock/" + item, ContentType: "application/json", Body: json.RawMessage(`{"qty":3}`),
 	})

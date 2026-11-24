@@ -37,9 +37,6 @@ go test -tags=integration -count=1 -timeout=15m "$module/..."
 go list -deps -f '{{with .Module}}{{.Path}}{{end}}' "$module/..." | sort -u |
     awk '/^github\.com\/ashtonian\// && !/^github\.com\/ashtonian\/pkg(\/|$)/ {print "dependency outside this repository: " $0 > "/dev/stderr"; bad=1} END {exit bad}'
 go list -m -f '{{if .Replace}}unexpected replacement{{end}}' all | awk 'NF {exit 1}'
-# Generated Go SDKs must import the request builder without server dependencies.
-go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' "$module/client" |
-    awk -v client="$module/client" 'NF && $0 != client {print "unexpected client dependency: " $0 > "/dev/stderr"; bad=1} END {exit bad}'
 
 downloaded=$(go list -m -f '{{.Dir}}' "$module")
 awk '/^```go$/{code=1;next} /^```$/{if(code)exit} code{print}' "$downloaded/README.md" > main.go

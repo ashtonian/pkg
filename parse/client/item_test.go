@@ -6,11 +6,9 @@ import (
 	"errors"
 	"math"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 type sku string
@@ -51,12 +49,14 @@ func TestItemPath(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := ItemPath(tt.key...)
 			if tt.err != "" {
-				require.ErrorIs(t, err, ErrKeyValue)
-				assert.ErrorContains(t, err, tt.err)
+				checkErrorIs(t, err, ErrKeyValue)
+				if err == nil || !strings.Contains(err.Error(), tt.err) {
+					t.Errorf("got error %v, want one containing %q", err, tt.err)
+				}
 				return
 			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
+			must(t, err)
+			check(t, tt.want, got)
 		})
 	}
 }

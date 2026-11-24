@@ -1,5 +1,8 @@
 {
   "parse": {
     "reverse": true
+  },
+  "parse/client": {
+    "reverse": true
   }
 }

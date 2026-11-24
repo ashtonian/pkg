@@ -85,7 +85,8 @@ jobs:
       cancel-in-progress: false
     # npm's trusted publisher supports GitHub-hosted runners only.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Above the build plus both registry steps' own limits, so those report first.
+    timeout-minutes: 35
     permissions:
       contents: read
       id-token: write
@@ -151,7 +152,7 @@ jobs:
       - name: Check whether this exact package is already published
         id: registry
         run: |
-          node tooling/tools/check-parse-sdk-registry.mjs artifacts/pack.json >> "$GITHUB_OUTPUT"
+          node tooling/tools/check-parse-sdk-registry.mjs needs-publish artifacts/pack.json >> "$GITHUB_OUTPUT"
       - name: Publish with npm trusted publishing
         if: steps.registry.outputs.publish == 'true' && (github.event_name == 'push' || inputs.publish)
         run: |
@@ -161,10 +162,14 @@ jobs:
             exit 1
           fi
           pnpm publish "$GITHUB_WORKSPACE/artifacts/ashtonian-parse-${RELEASE_TAG#parse/v}.tgz" --access public --provenance --registry=https://registry.npmjs.org/
+      # Ready means the consumer's own pnpm install, from a fresh store and cache, finds
+      # the retained package (up to PARSE_SDK_REGISTRY_WAIT_SECONDS, 900); the consumer
+      # then retries a CDN copy that lags it (PARSE_SDK_REGISTRY_RETRY_SECONDS, 300).
       - name: Wait for the exact package to become installable
         if: steps.registry.outputs.publish == 'false' || github.event_name == 'push' || inputs.publish
         timeout-minutes: 16
-        run: node tooling/tools/check-parse-sdk-registry.mjs artifacts/pack.json --wait
+        run: node tooling/tools/check-parse-sdk-registry.mjs wait artifacts/pack.json
       - name: Verify a fresh public-registry consumer
         if: steps.registry.outputs.publish == 'false' || github.event_name == 'push' || inputs.publish
+        timeout-minutes: 10
         run: bash tooling/tools/check-parse-sdk-release.sh --registry "${RELEASE_TAG#parse/v}"

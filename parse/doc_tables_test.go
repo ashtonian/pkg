@@ -60,6 +60,9 @@ func TestDocTables(t *testing.T) {
 		{file: "docs/patches.md", name: "patch-operations", header: []string{"Type", "Default operations"}, rows: patchOperationRows},
 		{file: "docs/schema-configuration.md", name: "parser-options", header: []string{"Option", "Type", "Default", "Description"}, rows: parserOptionRows},
 		{file: "docs/http-errors.md", name: "error-codes", header: []string{"Code", "HTTP", "Meaning"}, rows: errorCodeRows},
+		{file: "docs/grammar-mapping.md", name: "mapping-operators", header: []string{"Operator", "Flat parameter", "PostgREST", "django-filter", "ent"}, rows: mappingOperatorRows},
+		{file: "docs/grammar-mapping.md", name: "mapping-list-parameters", header: []string{"Parameter", "PostgREST", "django-filter and DRF", "ent"}, rows: mappingListParameterRows},
+		{file: "docs/grammar-mapping.md", name: "mapping-patch-operations", header: []string{"Operation", "parse", "PostgREST", "DRF", "ent"}, rows: mappingPatchOperationRows},
 	}
 	for _, table := range tables {
 		t.Run(table.name, func(t *testing.T) {
@@ -227,14 +230,101 @@ func errorCodeRows(_ *testing.T, kept keptRows) [][]string {
 	return rows
 }
 
-// fieldTypes are core's FieldType constants in declaration order, read from
-// its source: core lists them nowhere else.
+// mappingOperatorRows is a row per operator of the filter grammar: its flat
+// parameter, and its counterparts in prose.
+func mappingOperatorRows(t *testing.T, kept keptRows) [][]string {
+	var rows [][]string
+	for _, op := range grammarOperators(t) {
+		key := "`$" + string(op) + "`"
+		rows = append(rows, []string{key, flatParameter(op), kept.cell(key, 2), kept.cell(key, 3), kept.cell(key, 4)})
+	}
+	return rows
+}
+
+// grammarOperators are the operators the filter grammar reads, in the order
+// its vocabulary is documented: those a field may declare (Operators), then
+// those only the grammar names, the relation predicates and logical
+// operators. The latter are filter's FilterOperator constants ParseOperator
+// reads, so an operator added to the grammar is a row of the table.
+func grammarOperators(t *testing.T) []filter.FilterOperator {
+	ops := filter.Operators()
+	declared := declaredConstants(t, "filter", func(_ string, typ ast.Expr) bool {
+		ident, ok := typ.(*ast.Ident)
+		return ok && ident.Name == "FilterOperator"
+	})
+	for _, op := range ops {
+		require.Contains(t, declared, string(op), "operator %s has no FilterOperator constant", op)
+	}
+	for _, name := range declared {
+		op, ok := filter.ParseOperator("$" + name)
+		if ok && !slices.Contains(ops, op) {
+			ops = append(ops, op)
+		}
+	}
+	return ops
+}
+
+// flatParameter is the query parameter that filters a field f with op. A
+// bare field name is equality; any other operator with a flat form is the
+// name followed by "_" and the operator's name, the suffix FlatParamFields
+// strips to find the field.
+func flatParameter(op filter.FilterOperator) string {
+	if op == filter.OpEq {
+		return "`f`"
+	}
+	param := "f_" + string(op)
+	if slices.Contains(filter.FlatParamFields(param), "f") {
+		return "`" + param + "`"
+	}
+	return "—"
+}
+
+// mappingListParameterRows is a row per list request parameter
+// (filter.Param*), with its counterparts in prose.
+func mappingListParameterRows(t *testing.T, kept keptRows) [][]string {
+	var rows [][]string
+	for _, name := range declaredConstants(t, "filter", func(name string, _ ast.Expr) bool { return strings.HasPrefix(name, "Param") }) {
+		require.True(t, filter.IsListParam(name), "filter.Param* %q is no list parameter", name)
+		key := "`" + name + "`"
+		rows = append(rows, []string{key, kept.cell(key, 1), kept.cell(key, 2), kept.cell(key, 3)})
+	}
+	return rows
+}
+
+// mappingPatchOperationRows is a row per patch operation, with what it does
+// in parse and its counterparts in prose.
+func mappingPatchOperationRows(_ *testing.T, kept keptRows) [][]string {
+	var rows [][]string
+	for _, op := range patch.Ops() {
+		key := "`" + string(op) + "`"
+		rows = append(rows, []string{key, kept.cell(key, 1), kept.cell(key, 2), kept.cell(key, 3), kept.cell(key, 4)})
+	}
+	return rows
+}
+
+// fieldTypes are core's FieldType constants in declaration order: core lists
+// them nowhere else.
 func fieldTypes(t *testing.T) []core.FieldType {
+	var types []core.FieldType
+	for _, s := range declaredConstants(t, "core", func(_ string, typ ast.Expr) bool {
+		ident, ok := typ.(*ast.Ident)
+		return ok && ident.Name == "FieldType"
+	}) {
+		types = append(types, core.FieldType(s))
+	}
+	return types
+}
+
+// declaredConstants are the values of the string constants the package in
+// dir declares, in declaration order, whose name and declared type keep
+// selects (the type is nil for an untyped constant). They are read from the
+// package's source.
+func declaredConstants(t *testing.T, dir string, keep func(name string, typ ast.Expr) bool) []string {
 	t.Helper()
-	files, err := filepath.Glob(filepath.Join("core", "*.go"))
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	require.NoError(t, err)
 	fset := token.NewFileSet()
-	var types []core.FieldType
+	var values []string
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
 			continue
@@ -248,20 +338,21 @@ func fieldTypes(t *testing.T) []core.FieldType {
 			}
 			for _, spec := range gen.Specs {
 				vs := spec.(*ast.ValueSpec)
-				if typ, ok := vs.Type.(*ast.Ident); !ok || typ.Name != "FieldType" {
-					continue
-				}
-				for _, value := range vs.Values {
-					lit := value.(*ast.BasicLit)
+				for i, ident := range vs.Names {
+					if i >= len(vs.Values) || !keep(ident.Name, vs.Type) {
+						continue
+					}
+					lit, ok := vs.Values[i].(*ast.BasicLit)
+					require.True(t, ok && lit.Kind == token.STRING, "%s: constant %s is no string literal", name, ident.Name)
 					s, err := strconv.Unquote(lit.Value)
 					require.NoError(t, err)
-					types = append(types, core.FieldType(s))
+					values = append(values, s)
 				}
 			}
 		}
 	}
-	require.NotEmpty(t, types)
-	return types
+	require.NotEmpty(t, values, "no constant of %s matches", dir)
+	return values
 }
 
 // words is a list of operators as the tables write it, "none" for none.

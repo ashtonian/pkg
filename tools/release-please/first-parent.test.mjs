@@ -446,6 +446,33 @@ test("readHistory pairs a revert with what it undid on the same merge's branch",
   assert.equal(revertedWithin.has(revertOfMain), false);
 });
 
+test('readHistory finds where each release path joined the config, at the merge that added it', t => {
+  const { work, git, commitFile, merge } = scratchRepo(t);
+  const before = commitFile('a', 'chore: root');
+  const config = packages => JSON.stringify({ packages: Object.fromEntries(packages.map(p => [p, {}])) });
+  const scaffold = commitFile('release-please-config.json', config(['parse']));
+  const other = commitFile('b', 'fix(parse): unrelated');
+  git('switch', '-q', '-c', 'split');
+  const onBranch = commitFile('release-please-config.json', config(['parse', 'parse/client']));
+  git('switch', '-q', 'main');
+  const split = merge('split', 'feat(parse/client)!: its own module (#9)');
+  commitFile('release-please-config.json', config(['parse/client']));
+
+  const { startOf, positionOf } = readHistory(work, 'HEAD', { configFile: 'release-please-config.json' });
+
+  assert.deepEqual(Object.fromEntries(startOf), { parse: scaffold, 'parse/client': split }, 'a path dropped later keeps its start');
+  assert.equal(positionOf.has(onBranch), false, 'only chain commits have a place');
+  assert.deepEqual([before, scaffold, other, split].map(sha => positionOf.get(sha)), [0, 1, 2, 3]);
+  assert.equal(readHistory(work, 'HEAD').startOf.size, 0, 'no config path, no starts');
+});
+
+test('readHistory refuses a release-please config that is not JSON, naming the commit', t => {
+  const { work, commitFile } = scratchRepo(t);
+  const broken = commitFile('release-please-config.json', '{ "packages": ');
+
+  assert.throws(() => readHistory(work, 'HEAD', { configFile: 'release-please-config.json' }), new RegExp(`release-please-config.json at ${broken}`));
+});
+
 test('readHistory refuses a shallow clone, which would map nothing', t => {
   const { dir, work, gitAt, commitFile } = scratchRepo(t);
   commitFile('a', 'chore: root');
