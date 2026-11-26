@@ -81,11 +81,11 @@ func TestParsePatchRequest_TheBodyIsBoundedByTheInputSize(t *testing.T) {
 	for _, size := range []int{0, -1} {
 		unlimited := limitedDocs(t, core.WithMaxInputSize(size))
 		_, err := unlimited.ParsePatchRequest(parse.MediaTypeMergePatch, strings.NewReader(body(1<<20)))
-		assert.NoError(t, err, "input size %d reads a body of 1 MiB", size)
+		require.NoError(t, err, "input size %d reads a body of 1 MiB", size)
 		r := &countingReader{r: strings.NewReader(body(4 << 20))}
 		_, err = unlimited.ParsePatchRequest(parse.MediaTypeMergePatch, r)
 		require.ErrorIs(t, err, patch.ECodeInputTooLarge, "input size %d", size)
-		assert.ErrorContains(t, err, "patch body exceeds maximum 1048576 bytes")
+		require.ErrorContains(t, err, "patch body exceeds maximum 1048576 bytes")
 		assert.Equal(t, 1<<20+1, r.n, "input size %d reads one byte past 1 MiB and no further", size)
 	}
 }

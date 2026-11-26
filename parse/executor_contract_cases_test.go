@@ -68,8 +68,6 @@ type execDoc struct {
 	Counts map[string]int `json:"counts" db:"counts"`
 }
 
-var execDocs = parse.MustResource[execDoc]("exec_docs")
-
 // execPanicked is what an execPanicDoc panics with.
 const execPanicked = "execPanicDoc: a document that panics as it decodes"
 
@@ -280,6 +278,7 @@ func runExecutorContract(t *testing.T, open func(*testing.T) *sql.DB, d filter.D
 	// fails to scan comes after the database applied the statement, so only
 	// the transaction the executor settles after scanning can undo it.
 	t.Run("a row that fails to scan writes nothing", func(t *testing.T) {
+		execDocs := parse.MustResource[execDoc]("exec_docs")
 		db := setup(t)
 		document := "TEXT"
 		if isPostgres(d) {
@@ -289,7 +288,7 @@ func runExecutorContract(t *testing.T, open func(*testing.T) *sql.DB, d filter.D
 			`CREATE TABLE exec_docs (id TEXT PRIMARY KEY, name TEXT NOT NULL, counts ` + document + `)`,
 			`INSERT INTO exec_docs VALUES ('d1', 'one', '{"x":"not a number"}')`,
 		} {
-			_, err := db.Exec(stmt)
+			_, err := db.ExecContext(t.Context(), stmt)
 			require.NoError(t, err, stmt)
 		}
 		p, err := execDocs.ParseMergePatch([]byte(`{"name":"renamed"}`))
@@ -302,7 +301,7 @@ func runExecutorContract(t *testing.T, open func(*testing.T) *sql.DB, d filter.D
 			require.ErrorAs(t, err, &failed, "in the caller's transaction: %v", inTx)
 			assert.Equal(t, "owner", failed.Statement, "in the caller's transaction: %v", inTx)
 			var name string
-			require.NoError(t, db.QueryRow(`SELECT name FROM exec_docs WHERE id = 'd1'`).Scan(&name))
+			require.NoError(t, db.QueryRowContext(t.Context(), `SELECT name FROM exec_docs WHERE id = 'd1'`).Scan(&name))
 			assert.Equal(t, "one", name, "in the caller's transaction: %v", inTx)
 		}
 		require.NoError(t, onExecutor(t, db, d, true, func(tx parsesql.DB) error {
@@ -368,12 +367,13 @@ func runExecutorContract(t *testing.T, open func(*testing.T) *sql.DB, d filter.D
 					var tags []string
 					rows, qerr := tx.QueryContext(t.Context(), `SELECT tag_id FROM exec_tags WHERE item_id = 'e1' ORDER BY tag_id`)
 					require.NoError(t, qerr)
+					defer func() { require.NoError(t, rows.Close()) }()
 					for rows.Next() {
 						var tag string
 						require.NoError(t, rows.Scan(&tag))
 						tags = append(tags, tag)
 					}
-					require.NoError(t, rows.Close())
+					require.NoError(t, rows.Err())
 					check(t, err, name, tags)
 					return nil
 				}, func(tx parsepgx.DB) error {

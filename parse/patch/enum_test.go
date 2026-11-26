@@ -37,7 +37,7 @@ func TestEnum_FilterAndPatchAgree(t *testing.T) {
 			assert.NoError(t, patchErr, "patch %q", value)
 			continue
 		}
-		assert.Error(t, filterErr, "filter %q", value)
+		require.Error(t, filterErr, "filter %q", value)
 		requireCode(t, patchErr, patch.ECodePatchValueInvalid.String())
 	}
 }

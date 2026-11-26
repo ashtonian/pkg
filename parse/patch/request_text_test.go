@@ -3,7 +3,6 @@
 package patch_test
 
 import (
-	"errors"
 	"reflect"
 	"testing"
 
@@ -33,7 +32,7 @@ func TestParse_RefusesInvalidText(t *testing.T) {
 	refused := func(t *testing.T, err error, code string) {
 		t.Helper()
 		requireCode(t, err, code)
-		assert.True(t, errors.Is(err, core.ErrInvalidText), "%v does not wrap ErrInvalidText", err)
+		assert.ErrorIs(t, err, core.ErrInvalidText)
 	}
 	for _, bad := range []struct{ name, text string }{{"U+0000", "\x00"}, {"invalid UTF-8", "\xff"}} {
 		t.Run(bad.name, func(t *testing.T) {
@@ -78,7 +77,7 @@ func TestParse_RefusesInvalidText(t *testing.T) {
 		} {
 			_, err := patch.NewParser(requestTextSchema(), nil).Parse([]byte(body))
 			require.Error(t, err, body)
-			assert.True(t, errors.Is(err, core.ErrInvalidText), body)
+			require.ErrorIs(t, err, core.ErrInvalidText, body)
 		}
 		_, err := patch.ParseMergePatch([]byte(`{"doc":{"k":"v\u0000"}}`), requestTextSchema(), nil)
 		refused(t, err, "E2077")

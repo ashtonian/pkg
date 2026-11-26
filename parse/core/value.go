@@ -49,10 +49,12 @@ func CheckValueText(v any) error {
 		return checkElementsText(x)
 	case map[string]any:
 		for k, e := range x {
-			if err := CheckText(k); err != nil {
+			err := CheckText(k)
+			if err != nil {
 				return fmt.Errorf("member name %q: %w", k, err)
 			}
-			if err := CheckValueText(e); err != nil {
+			err = CheckValueText(e)
+			if err != nil {
 				return fmt.Errorf("%s: %w", k, err)
 			}
 		}
@@ -62,7 +64,8 @@ func CheckValueText(v any) error {
 
 func checkElementsText(elements []any) error {
 	for i, e := range elements {
-		if err := CheckValueText(e); err != nil {
+		err := CheckValueText(e)
+		if err != nil {
 			return fmt.Errorf("[%d]: %w", i, err)
 		}
 	}

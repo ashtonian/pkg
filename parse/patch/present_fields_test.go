@@ -33,7 +33,8 @@ func TestApplier_PresentsOmittedTopLevelFields(t *testing.T) {
 	parser := patch.NewParser(schema, nil)
 	seed := func() presentRow {
 		prev := "p"
-		return presentRow{Alias: "a", Prev: &prev}
+		row := presentRow{Alias: "a", Prev: &prev}
+		return row
 	}
 	for _, tc := range []struct {
 		name string

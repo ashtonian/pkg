@@ -77,12 +77,13 @@ func ParseSort(schema *SortSchema, sortParam string) (*SortResult, error) {
 		}
 		named := slices.ContainsFunc(fields, func(f SortField) bool { return f.Name == name })
 		if named {
-			return nil, &core.ParseError{
+			twice := &core.ParseError{
 				Kind:    core.ParseErrorKindSort,
 				Code:    ECodeSortFieldNotAllowed.String(),
 				Message: fmt.Sprintf("sort field '%s' is named more than once", name),
 				Details: map[string]any{core.DetailField: name},
 			}
+			return nil, twice
 		}
 		fields = append(fields, SortField{Name: name, Schema: fieldSchema, Direction: dir})
 	}

@@ -162,7 +162,8 @@ func ApplyPatchPolicyConstraints(patch *ParsedPatch, pc *PatchPolicyConstraints,
 			return err
 		}
 		for _, w := range op.writes() {
-			if err := j.checkElementWrite(op, w, i); err != nil {
+			err := j.checkElementWrite(op, w, i)
+			if err != nil {
 				return err
 			}
 			if err := j.checkValues(w, i); err != nil {
@@ -282,12 +283,14 @@ func (j policyJudge) checkValues(w write, index int) error {
 		return nil
 	case writeElements:
 		items, _ := w.value.([]any)
-		if err := j.judgeElements(w.path, items, w.schema, index); err != nil {
+		err := j.judgeElements(w.path, items, w.schema, index)
+		if err != nil {
 			return err
 		}
 		// A new element's own path is the append token.
 		for _, item := range items {
-			if err := j.checkWhole(w.path+"/-", item, nil, index); err != nil {
+			err = j.checkWhole(w.path+"/-", item, nil, index)
+			if err != nil {
 				return err
 			}
 		}
@@ -298,7 +301,8 @@ func (j policyJudge) checkValues(w write, index int) error {
 
 // checkWhole judges value written whole at path, and every path below it.
 func (j policyJudge) checkWhole(path string, value any, schema *PathSchema, index int) error {
-	if err := j.judge(path, value, schema, index); err != nil {
+	err := j.judge(path, value, schema, index)
+	if err != nil {
 		return err
 	}
 	if len(j.pc.patterns) == 0 {
@@ -307,7 +311,8 @@ func (j policyJudge) checkWhole(path string, value any, schema *PathSchema, inde
 	checked := map[string]bool{}
 	for _, member := range presentPaths(path, value) {
 		checked[member.path] = true
-		if err := j.judge(member.path, member.value, nil, index); err != nil {
+		err = j.judge(member.path, member.value, nil, index)
+		if err != nil {
 			return err
 		}
 	}
@@ -318,7 +323,8 @@ func (j policyJudge) checkWhole(path string, value any, schema *PathSchema, inde
 				continue
 			}
 			checked[absent] = true
-			if err := j.judge(absent, nil, nil, index); err != nil {
+			err = j.judge(absent, nil, nil, index)
+			if err != nil {
 				return err
 			}
 		}
@@ -355,7 +361,8 @@ func (j policyJudge) judgeElements(path string, items []any, schema *PathSchema,
 		return nil
 	}
 	for _, item := range items {
-		if err := vc.check(path, item, isDecimal(schema), index); err != nil {
+		err := vc.check(path, item, isDecimal(schema), index)
+		if err != nil {
 			return err
 		}
 	}
@@ -377,16 +384,18 @@ func (j policyJudge) checkElementWrite(op *PatchOperation, w write, index int) e
 			continue
 		}
 		if n < len(tokens)-1 || w.kind == writeCopy || w.kind == writeMerge {
-			return &core.ParseError{
+			refused := &core.ParseError{
 				Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
 				Message: fmt.Sprintf("path '%s' is inside an element of '%s', whose value constraint judges each element whole; write the element with add or replace (index %d)", w.path, array, index),
 				Path:    w.path, Index: new(index),
 			}
+			return refused
 		}
 		if w.kind == writeClear && (op.Op == PatchOpRemove || op.Op == PatchOpMove) {
 			continue // the element is removed, not written
 		}
-		if err := j.judgeElements(array, []any{w.value}, schema, index); err != nil {
+		err := j.judgeElements(array, []any{w.value}, schema, index)
+		if err != nil {
 			return err
 		}
 	}

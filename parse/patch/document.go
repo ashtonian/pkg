@@ -33,7 +33,8 @@ const maxDocumentDepth = 10000
 // JSON encoding. A value JSON cannot hold (NaN, a channel, a map holding
 // itself) is an error.
 func documentValue(v any) (any, error) {
-	if doc, ok := copyDocument(v, 0); ok {
+	doc, ok := copyDocument(v, 0)
+	if ok {
 		return doc, nil
 	}
 	return documentOf(v)
@@ -151,7 +152,8 @@ func asDocument(value any) any {
 		}
 		return doc
 	}
-	if items, ok := core.AnySlice(value); ok {
+	items, ok := core.AnySlice(value)
+	if ok {
 		return items
 	}
 	return value

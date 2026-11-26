@@ -67,7 +67,8 @@ func (p *FilterParser) normalizeValue(field *FieldSchema, op FilterOperator, val
 	if err != nil {
 		return nil, err
 	}
-	if err := core.CheckValueText(v); err != nil {
+	err = core.CheckValueText(v)
+	if err != nil {
 		return nil, valueMismatch(field, err)
 	}
 	return v, nil

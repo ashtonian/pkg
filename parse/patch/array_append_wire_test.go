@@ -98,7 +98,8 @@ func TestParser_ArrayAppend_ValidatorFires(t *testing.T) {
 			func(v any) error {
 				s, ok := v.(string)
 				if !ok || !strings.HasPrefix(s, "tenants/") {
-					return &core.ParseError{Code: "E2087", Message: "must start with tenants/"}
+					refused := &core.ParseError{Code: "E2087", Message: "must start with tenants/"}
+					return refused
 				}
 				return nil
 			},

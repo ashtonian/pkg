@@ -15,14 +15,16 @@ import (
 
 func sortSchemaAB() *filter.SortSchema {
 	field := func(name string) *filter.SortFieldSchema {
-		return &filter.SortFieldSchema{Table: "items", Column: name, DataType: core.FieldTypeInt}
+		f := &filter.SortFieldSchema{Table: "items", Column: name, DataType: core.FieldTypeInt}
+		return f
 	}
-	return &filter.SortSchema{
+	schema := &filter.SortSchema{
 		Fields:       map[string]*filter.SortFieldSchema{"a": field("a"), "b": field("b"), "c": field("c")},
 		DefaultField: "b",
 		DefaultDir:   filter.SortDesc,
 		MaxFields:    2,
 	}
+	return schema
 }
 
 func sortNames(r *filter.SortResult) []string {

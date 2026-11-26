@@ -17,7 +17,8 @@ import (
 // policy would hold two keys for one path, one silently deciding.
 func TestSchemaAndPolicy_RefuseAKeyWithoutItsSlash(t *testing.T) {
 	ps := func() *patch.PathSchema {
-		return &patch.PathSchema{AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"}
+		schema := &patch.PathSchema{AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"}
+		return schema
 	}
 	for _, key := range []string{"name", "attrs/*", "**"} {
 		_, err := patch.NewPatchSchema("items", map[string]*patch.PathSchema{key: ps()})

@@ -41,7 +41,8 @@ func TestPolicy_JudgesTypedValuesByTheirDocument(t *testing.T) {
 		return mustPolicy(t, patch.ConstrainValues(path, patch.ValueConstraint{DeniedValues: []any{"admin"}}))
 	}
 	op := func(path string, value any) []patch.RawPatchOp {
-		return []patch.RawPatchOp{{Op: "replace", Path: path, Value: value, HasValue: true}}
+		ops := []patch.RawPatchOp{{Op: "replace", Path: path, Value: value, HasValue: true}}
+		return ops
 	}
 	for _, tc := range []struct {
 		name   string

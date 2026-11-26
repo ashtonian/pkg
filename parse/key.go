@@ -93,7 +93,8 @@ func (kc keyColumns) requested(key Key) (Key, error) {
 		return nil, err
 	}
 	for i, v := range out {
-		if err := core.CheckValueText(v); err != nil {
+		err = core.CheckValueText(v)
+		if err != nil {
 			if len(kc.names) == 1 {
 				return nil, fmt.Errorf("%w: %w", ErrKeyInvalid, err)
 			}

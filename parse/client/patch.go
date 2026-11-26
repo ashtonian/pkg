@@ -132,9 +132,11 @@ type Operation struct {
 func valued(op, path string, value any) Operation {
 	raw, err := json.Marshal(value)
 	if err != nil {
-		return Operation{op: op, path: path, err: fmt.Errorf("%w: %s %s: %w", ErrOperand, op, path, err)}
+		refused := Operation{op: op, path: path, err: fmt.Errorf("%w: %s %s: %w", ErrOperand, op, path, err)}
+		return refused
 	}
-	return Operation{op: op, path: path, value: raw}
+	operation := Operation{op: op, path: path, value: raw}
+	return operation
 }
 
 // Add adds value at path.

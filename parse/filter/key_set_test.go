@@ -280,7 +280,7 @@ func TestKeyConstraint_RefusesAComputedColumnOfSeveral(t *testing.T) {
 	} {
 		_, err := apply(c)
 		require.ErrorIs(t, err, filter.ErrPolicyInvalid)
-		assert.ErrorContains(t, err, "sku is a computed column")
+		require.ErrorContains(t, err, "sku is a computed column")
 	}
 
 	ast, err := apply(&filter.PolicyConstraint{Fields: []string{"sku"}, Operator: filter.OpIn, Value: []core.Key{{"a"}}})

@@ -484,13 +484,14 @@ func TestBuildFacetQuery_RelationFacet_NumbersTieByValue(t *testing.T) {
 		require.NoError(t, err, stmt)
 	}
 	related := func(table, column string, t core.FieldType) *filter.FieldSchema {
-		return &filter.FieldSchema{
+		field := &filter.FieldSchema{
 			ExternalName: column, DataType: t, Facetable: true,
 			Relation: &core.RelationSchema{
 				JoinTable: table, SourceColumns: []string{"item_id"}, TargetColumns: []string{column}, OwnerKey: []string{"id"},
 				SourceTypes: textKey(), TargetTypes: []core.TypeInfo{{Type: t}},
 			},
 		}
+		return field
 	}
 	schema := &filter.ResourceSchema{
 		Name: "items", PrimaryKey: []string{"id"},
@@ -513,6 +514,7 @@ func TestBuildFacetQuery_RelationFacet_NumbersTieByValue(t *testing.T) {
 	defer func() { require.NoError(t, rows.Close()) }()
 	results, err := filter.ScanFacetUnion(rows)
 	require.NoError(t, err)
+	require.NoError(t, rows.Err())
 
 	want := map[string][]filter.FacetBucket{
 		"rank_id": {{Key: "1", Count: 2}, {Key: "2", Count: 1}},
@@ -569,6 +571,7 @@ func TestBuildFacetQuery_RelationFacet_KeysByCodePoint(t *testing.T) {
 	defer func() { require.NoError(t, rows.Close()) }()
 	results, err := filter.ScanFacetUnion(rows)
 	require.NoError(t, err)
+	require.NoError(t, rows.Err())
 	assert.Equal(t, []filter.FacetBucket{{Key: "red", Count: 2}, {Key: "Red", Count: 1}}, indexFacets(results)["tags"], q.SQL)
 }
 
