@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"database/sql/driver"
 	"fmt"
 	"math"
 	"reflect"
@@ -35,8 +34,8 @@ func FacetKeys(v any, f *FieldSchema) ([]string, error) {
 		}
 		return []string{key}, nil
 	}
-	v, ok := deref(v)
-	if !ok {
+	v = core.Deref(v)
+	if v == nil {
 		return nil, nil
 	}
 	items, ok := core.AnySlice(v)
@@ -118,16 +117,12 @@ func memberFacetKey(v any, t core.FieldType) (string, bool, error) {
 // valueFacetKey is a column value's key as a field of type t holds it;
 // kind is its Go numeric kind (reflect.Float32 keys at float32 precision).
 func valueFacetKey(v any, t core.FieldType, kind reflect.Kind) (string, bool, error) {
-	v, ok, err := storedValue(v)
-	if err != nil || !ok {
+	v, null, err := core.StoredValue(v)
+	if err != nil || null {
 		return "", false, err
 	}
 	rv := reflect.ValueOf(v)
 	switch t {
-	case core.FieldTypeString:
-		if rv.Kind() == reflect.String {
-			return rv.String(), true, nil
-		}
 	case core.FieldTypeBool:
 		if rv.Kind() == reflect.Bool {
 			return strconv.FormatBool(rv.Bool()), true, nil
@@ -151,7 +146,7 @@ func valueFacetKey(v any, t core.FieldType, kind reflect.Kind) (string, bool, er
 		if s, ok := textOf(v); ok {
 			return strings.ToLower(s), true, nil
 		}
-	case core.FieldTypeTime, core.FieldTypeMACAddr:
+	case core.FieldTypeString, core.FieldTypeTime, core.FieldTypeMACAddr:
 		canonical, err := core.NormalizeScalar(t, kind, v)
 		if err != nil {
 			return "", false, err
@@ -181,47 +176,6 @@ func numberFacetKey(v any, kind reflect.Kind) (string, bool, error) {
 		return "", false, err
 	}
 	return text, true, nil
-}
-
-// deref follows pointers to the value they hold; ok is false for nil.
-func deref(v any) (any, bool) {
-	for {
-		rv := reflect.ValueOf(v)
-		if !rv.IsValid() {
-			return nil, false
-		}
-		if rv.Kind() != reflect.Pointer && rv.Kind() != reflect.Interface {
-			return v, true
-		}
-		if rv.IsNil() {
-			return nil, false
-		}
-		v = rv.Elem().Interface()
-	}
-}
-
-// storedValue dereferences a scalar and reads a driver.Valuer (sql.Null*, a
-// UUID) as the value the database holds; ok is false for NULL.
-func storedValue(v any) (any, bool, error) {
-	v, ok := deref(v)
-	if !ok {
-		return nil, false, nil
-	}
-	switch v.(type) {
-	case time.Time, core.Date, core.Decimal:
-		return v, true, nil
-	}
-	if dv, ok := v.(driver.Valuer); ok {
-		x, err := dv.Value()
-		if err != nil {
-			return nil, false, err
-		}
-		if x == nil {
-			return nil, false, nil
-		}
-		return x, true, nil
-	}
-	return v, true, nil
 }
 
 // textOf is a string, or a value's text form.

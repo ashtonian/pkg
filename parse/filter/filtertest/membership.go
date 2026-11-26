@@ -2,10 +2,12 @@ package filtertest
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"slices"
 	"testing"
 
+	googleuuid "github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
 	"github.com/ashtonian/pkg/parse/core"
@@ -112,6 +114,25 @@ func MembershipCases() []MembershipCase {
 	}
 	price := decimal.RequireFromString
 	allMarks := &filter.Lookup{Table: "count_marks", Project: "value"}
+	// A lookup's values as a caller holds them after a scan: pointers,
+	// interface pointers (Rows.Scan into *any), database Valuers and UUID
+	// types. Untyped, each takes the type of the value it stands for; typed,
+	// the declared one; both select what the typed list of plain values does.
+	scanned := func(v any) *any { return &v }
+	texts := func() []any {
+		return []any{new("b"), scanned("e"), sql.NullString{String: "b", Valid: true}, scanned(new("e"))}
+	}
+	refs := func() []any {
+		return []any{ref(1), scanned(*ref(2)), googleuuid.UUID(*ref(5)), scanned(new(googleuuid.UUID(*ref(5))))}
+	}
+	granted := func(where *filter.LookupCond) *filter.Lookup {
+		lookup := &filter.Lookup{Table: "ref_grants", Project: "ref_id", Where: where}
+		return lookup
+	}
+	typed := func(c *filter.LookupCond, t core.FieldType) *filter.LookupCond {
+		c.Types = []core.TypeInfo{{Type: t}}
+		return c
+	}
 	return []MembershipCase{
 		{Name: "closure under one root", Constraints: member("id", closure(filter.WhereEq("root_id", "a")), false), Want: ids("abc")},
 		{Name: "closure under several roots", Constraints: member("id", closure(filter.WhereIn("root_id", "b", "e")), false), Want: ids("bef")},
@@ -128,6 +149,11 @@ func MembershipCases() []MembershipCase {
 		{Name: "decimal equality by value", Constraints: member("id", priced(filter.WhereEq("price", price("1.5"))), false), Want: ids("a")},
 		{Name: "decimal equality beyond float64", Constraints: member("id", priced(filter.WhereEq("price", price("12345678901234567890.5"))), false), Want: ids("b")},
 		{Name: "decimal set by value", Constraints: member("id", priced(filter.WhereIn("price", price("1.5"), price("12345678901234567890.5"), price("3"))), false), Want: ids("ab")},
+		{Name: "scanned text values, untyped", Constraints: member("id", closure(filter.WhereIn("root_id", texts()...)), false), Want: ids("bef")},
+		{Name: "scanned text values, typed", Constraints: member("id", closure(typed(filter.WhereIn("root_id", texts()...), core.FieldTypeString)), false), Want: ids("bef")},
+		{Name: "a scanned text value, untyped equality", Constraints: member("id", closure(filter.WhereEq("root_id", sql.NullString{String: "e", Valid: true})), false), Want: ids("ef")},
+		{Name: "scanned uuid values, untyped", Constraints: member("ref", granted(filter.WhereIn("ref_id", refs()...)), false), Want: ids("abe")},
+		{Name: "scanned uuid values, typed", Constraints: member("ref", granted(typed(filter.WhereIn("ref_id", refs()...), core.FieldTypeUUID)), false), Want: ids("abe")},
 		{Name: "OR with a field constraint", Constraints: &filter.PolicyConstraints{Or: []*filter.PolicyConstraints{
 			{Constraints: []*filter.PolicyConstraint{{Field: "name", Operator: filter.OpEq, Value: "beta"}}},
 			member("id", closure(filter.WhereEq("root_id", "c")), false),

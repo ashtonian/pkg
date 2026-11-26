@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"database/sql/driver"
 	"encoding"
 	"errors"
 	"fmt"
@@ -150,26 +149,20 @@ func KeyValue(k CursorKey, raw any) (any, error) {
 }
 
 // CursorValue reduces a row value to the canonical form a token carries and
-// SQL binds: nil, string, bool, int64, uint64 or float64. Pointers are
-// dereferenced (nil → NULL), decimals (core.IsDecimalType) become their
-// canonical text, driver.Valuer values are resolved, times become RFC 3339
-// UTC strings (the form SQLite stores), and text-marshalling types such as
-// uuid.UUID become their text. Anything else cannot resume a page and is an
-// error, never an omitted cursor.
+// SQL binds: nil, string, bool, int64, uint64 or float64. The value is read
+// as the database holds it first (core.StoredValue: pointers followed, a
+// driver.Valuer read, NULL as nil); then decimals (core.IsDecimalType)
+// become their canonical text, times RFC 3339 UTC strings (the form SQLite
+// stores), and text-marshalling types such as uuid.UUID their text.
+// Anything else cannot resume a page and is an error, never an omitted
+// cursor.
 func CursorValue(v any) (any, error) {
-	for {
-		rv := reflect.ValueOf(v)
-		if !rv.IsValid() {
-			return nil, nil
-		}
-		if rv.Kind() == reflect.Pointer {
-			if rv.IsNil() {
-				return nil, nil
-			}
-			v = rv.Elem().Interface()
-			continue
-		}
-		break
+	v, null, err := core.StoredValue(v)
+	if err != nil {
+		return nil, fmt.Errorf("cursor: %w", err)
+	}
+	if null {
+		return nil, nil
 	}
 	switch t := v.(type) {
 	case string, bool, int64:
@@ -180,8 +173,6 @@ func CursorValue(v any) (any, error) {
 		return nil, errors.New("cursor: byte-slice keys are not supported")
 	case core.Decimal:
 		return cursorDecimalValue(t)
-	case driver.Valuer:
-		return cursorDriverValue(t)
 	case encoding.TextMarshaler:
 		return cursorTextValue(t)
 	}
@@ -212,27 +203,15 @@ func CursorValue(v any) (any, error) {
 		// Sort schema generation also accepts pointer-receiver scalar
 		// codecs. A value extracted from a row need not be addressable;
 		// give the codec a copy instead of losing its pointer methods.
-		pt := reflect.PointerTo(rv.Type())
-		if pt.Implements(valuerType) || pt.Implements(textMarshalerType) {
+		if reflect.PointerTo(rv.Type()).Implements(textMarshalerType) {
 			pv := reflect.New(rv.Type())
 			pv.Elem().Set(rv)
-			switch p := pv.Interface().(type) {
-			case driver.Valuer:
-				return cursorDriverValue(p)
-			case encoding.TextMarshaler:
+			if p, ok := pv.Interface().(encoding.TextMarshaler); ok {
 				return cursorTextValue(p)
 			}
 		}
 	}
 	return nil, fmt.Errorf("cursor: unsupported key type %s", gowalker.TypeText(reflect.TypeOf(v)))
-}
-
-func cursorDriverValue(v driver.Valuer) (any, error) {
-	dv, err := v.Value()
-	if err != nil {
-		return nil, fmt.Errorf("cursor: resolving %s: %w", gowalker.TypeText(reflect.TypeOf(v)), err)
-	}
-	return CursorValue(dv)
 }
 
 func cursorDecimalValue(v any) (any, error) {

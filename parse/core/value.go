@@ -95,7 +95,7 @@ func checkElementsText(elements []any) error {
 // normalizes as its kind's value does. A nil value is an error; callers decide separately whether a
 // field admits null.
 func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
-	v = deref(v)
+	v = Deref(v)
 	if v == nil {
 		switch dt {
 		case FieldTypeString, FieldTypeUUID, FieldTypeInt, FieldTypeFloat, FieldTypeDecimal, FieldTypeBool, FieldTypeTimestamp, FieldTypeDate,
@@ -295,18 +295,4 @@ func boolean(v any) (bool, bool) {
 		return rv.Bool(), true
 	}
 	return false, false
-}
-
-func deref(v any) any {
-	rv := reflect.ValueOf(v)
-	if !rv.IsValid() {
-		return nil
-	}
-	for rv.Kind() == reflect.Pointer {
-		if rv.IsNil() {
-			return nil
-		}
-		rv = rv.Elem()
-	}
-	return rv.Interface()
 }

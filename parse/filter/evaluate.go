@@ -117,7 +117,7 @@ func (r ColumnRow) Value(f *FieldSchema) (any, bool, error) {
 // drivers' Valuers, decimals, times and text-marshalling types such as UUIDs
 // compare as SQL compares them — then normalized to f's type.
 func ColumnValue(f *FieldSchema, v any) (any, bool, error) {
-	v = derefValue(v)
+	v = core.Deref(v)
 	if v == nil || isNilReference(v) {
 		return nil, false, nil
 	}

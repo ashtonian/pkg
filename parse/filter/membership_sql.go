@@ -97,7 +97,11 @@ func (b *SQLBuilder) lookupCondSQL(s *buildState, c *LookupCond, lookupTable str
 	}
 	switch c.Op {
 	case LookupOpEq:
-		if c.Types == nil && !core.IsKeyType(core.TypeOf(reflect.TypeOf(derefValue(c.Value))).Type) {
+		stored, err := lookupStored(c.Column, c.Value)
+		if err != nil {
+			return "", err
+		}
+		if c.Types == nil && !core.IsKeyType(core.TypeOf(reflect.TypeOf(stored)).Type) {
 			// A value of no scalar type binds as the driver encodes it.
 			return q(c.Column) + " = " + bind(c.Value), nil
 		}
@@ -212,11 +216,25 @@ func lookupKeys(c *LookupCond) ([]core.TypeInfo, []core.Key, error) {
 // expr, typed by its Types, or else by its values' Go type (core.TypeOf),
 // one scalar type for all of them, and each value in that type's canonical
 // form, so the dialect binds the list as one parameter whatever its length.
+// Either way a value is read as the database holds it first
+// (lookupStored), so a scanned pointer or a driver.Valuer is typed and
+// compared as the value it stands for.
 func lookupSet(c *LookupCond, expr string) (*FieldSchema, []any, error) {
+	stored := make([]any, len(c.Values))
+	for i, v := range c.Values {
+		s, err := lookupStored(c.Column, v)
+		if err != nil {
+			return nil, nil, err
+		}
+		if s == nil {
+			return nil, nil, invalidLookup(fmt.Sprintf("lookup column %q lists NULL; use WhereNull", c.Column))
+		}
+		stored[i] = s
+	}
 	if c.Types != nil {
 		t := c.Types[0]
-		members := make([]any, len(c.Values))
-		for i, v := range c.Values {
+		members := make([]any, len(stored))
+		for i, v := range stored {
 			m, err := core.NormalizeScalar(t.Type, t.NumberKind, projectedValue(v))
 			if err != nil {
 				return nil, nil, invalidLookup(fmt.Sprintf("lookup column %q: %v", c.Column, err))
@@ -226,8 +244,8 @@ func lookupSet(c *LookupCond, expr string) (*FieldSchema, []any, error) {
 		return keyField(c.Column, expr, t), members, nil
 	}
 	var typ core.FieldType
-	members := make([]any, len(c.Values))
-	for i, v := range c.Values {
+	members := make([]any, len(stored))
+	for i, v := range stored {
 		info := core.TypeOf(reflect.TypeOf(v))
 		if !core.IsKeyType(info.Type) {
 			return nil, nil, invalidLookup(fmt.Sprintf("lookup column %q lists a %s, no scalar value", c.Column, gowalker.TypeText(reflect.TypeOf(v))))
@@ -254,10 +272,9 @@ func lookupColumn(name, expr string, typ core.FieldType) *FieldSchema {
 	return field
 }
 
-// isLookupDecimal reports a lookup value whose Go type is a decimal
-// (core.TypeOf): the column it is compared with is read as a decimal and
-// compared by value, so a stored "1.50" equals 1.5.
-func isLookupDecimal(v any) bool {
-	v = derefValue(v)
-	return v != nil && core.TypeOf(reflect.TypeOf(v)).Type == core.FieldTypeDecimal
+// isLookupDecimal reports a stored lookup value (lookupStored) whose Go
+// type is a decimal (core.TypeOf): the column it is compared with is read
+// as a decimal and compared by value, so a stored "1.50" equals 1.5.
+func isLookupDecimal(stored any) bool {
+	return stored != nil && core.TypeOf(reflect.TypeOf(stored)).Type == core.FieldTypeDecimal
 }

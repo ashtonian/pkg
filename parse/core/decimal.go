@@ -64,7 +64,7 @@ const MaxDecimalDigits = 1000
 // NaN, infinities, a leading "+" or "." and anything with more than
 // MaxDecimalDigits digits in plain notation are errors.
 func DecimalText(v any) (string, error) {
-	v = deref(v)
+	v = Deref(v)
 	switch d := v.(type) {
 	case string:
 		return parseDecimal(d)

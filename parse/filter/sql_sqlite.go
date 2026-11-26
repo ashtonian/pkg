@@ -422,8 +422,8 @@ func (d SQLiteDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
 // own text in the value's offset, which neither compares nor keys as the
 // instant.
 func timestampText(value any) (any, error) {
-	v, ok, err := storedValue(value)
-	if err != nil || !ok {
+	v, null, err := core.StoredValue(value)
+	if err != nil || null {
 		return nil, err
 	}
 	return core.NormalizeScalar(core.FieldTypeTimestamp, reflect.Invalid, v)
@@ -434,8 +434,8 @@ func timestampText(value any) (any, error) {
 // offset, and an element reads as a timestamp only in UTC (PathExpr). A
 // nil list, or a value that is no list, is unchanged.
 func timestampTexts(value any) (any, error) {
-	list, ok := deref(value)
-	if !ok {
+	list := core.Deref(value)
+	if list == nil {
 		return value, nil
 	}
 	if rv := reflect.ValueOf(list); rv.Kind() == reflect.Slice && rv.IsNil() {

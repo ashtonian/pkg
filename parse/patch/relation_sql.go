@@ -1,7 +1,6 @@
 package patch
 
 import (
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -202,38 +201,33 @@ func relationKeys(keys []core.Key, columns []string, types []core.TypeInfo) ([]c
 	return out, nil
 }
 
-// driverScalar is k as the database binds it: a driver.Valuer's value,
-// else k; null is no value.
+// driverScalar is k as the database binds it (core.StoredValue); null is
+// no value.
 func driverScalar(k any) (any, error) {
-	valuer, ok := k.(driver.Valuer)
-	if ok {
-		v, err := valuer.Value()
-		if err != nil {
-			return nil, err
-		}
-		k = v
+	v, null, err := core.StoredValue(k)
+	if err != nil {
+		return nil, err
 	}
-	if k == nil {
-		return nil, errors.New("null is not a key")
+	if null {
+		return nil, errNullKey
 	}
-	return k, nil
+	return v, nil
 }
 
-// tenantScalar is a tenant value as a JSON record binds it: a database
-// scalar (a driver.Valuer's value, an integer as int64 or uint64, a float
-// as float64, a string, a boolean).
+var errNullKey = errors.New("null is not a key")
+
+// tenantScalar is a tenant value as a JSON record binds it: the value the
+// database holds (core.StoredValue) as a JSON scalar, an integer as int64
+// or uint64, a float as float64, a string or a boolean, whatever named
+// type holds it, and a value parse types by its Go type (a UUID, a time, a
+// decimal, a network value) as encoding/json writes it: its text.
 func tenantScalar(k any) (any, error) {
-	if valuer, ok := k.(driver.Valuer); ok {
-		v, err := valuer.Value()
-		if err != nil {
-			return nil, err
-		}
-		k = v
+	k, err := driverScalar(k)
+	if err != nil {
+		return nil, err
 	}
 	rv := reflect.ValueOf(k)
 	switch rv.Kind() {
-	case reflect.Invalid:
-		return nil, errors.New("null is not a key")
 	case reflect.String:
 		return rv.String(), nil
 	case reflect.Bool:
@@ -244,6 +238,9 @@ func tenantScalar(k any) (any, error) {
 		return rv.Uint(), nil
 	case reflect.Float32, reflect.Float64:
 		return rv.Float(), nil
+	}
+	if core.IsKeyType(core.TypeOf(rv.Type()).Type) {
+		return k, nil
 	}
 	return nil, fmt.Errorf("%s is not a key: keys are strings, numbers or booleans", gowalker.TypeText(reflect.TypeOf(k)))
 }
