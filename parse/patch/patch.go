@@ -2,6 +2,7 @@ package patch
 
 import (
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -566,6 +567,33 @@ func normalizeCompositeKeys(columns []RelationKey, v any, codec core.Codec) (any
 	return keys, nil
 }
 
+// holdsJSONNull reports whether a document's member or element of type t
+// holds null as encoding/json writes it: a pointer, slice, map or interface,
+// whose nil is null, or a type whose own JSON methods write its zero value as
+// null, as decimal.NullDecimal and uuid.NullUUID do. A type encoding/json
+// writes as its fields, such as sql.NullString, holds no null there, whether
+// or not its column holds NULL (core.IsNullableType): the application's own
+// write of the document stores {"String":"","Valid":false}. A MarshalJSON
+// that panics on the zero value holds no null either.
+func holdsJSONNull(t reflect.Type) (holds bool) {
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Interface:
+		return true
+	}
+	if !core.MarshalsJSON(t) {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			holds = false
+		}
+	}()
+	// Through a pointer, as encoding/json reaches a member or an element:
+	// its pointer-receiver methods count too.
+	data, err := json.Marshal(reflect.New(t).Interface())
+	return err == nil && string(data) == "null"
+}
+
 // columnType is the Go type a column of field type t holds a value of:
 // t's pointers stripped, and a nullable wrapper's value (core.NullWrapperOf),
 // which the column holds while the wrapper is Valid. nil for nil.
@@ -583,7 +611,8 @@ func columnType(t reflect.Type) reflect.Type {
 	return t
 }
 
-// normalizeTyped normalizes v for the Go type t: scalars, decimals included,
+// normalizeTyped normalizes v for the Go type t: null where t holds it inside
+// a document (holdsJSONNull), scalars, decimals included,
 // via core.NormalizeScalar, slices and arrays element by element, another
 // type that is a database value (driver.Valuer) by decoding into it, and
 // remaining composite kinds by decoding and re-encoding their canonical
@@ -591,7 +620,7 @@ func columnType(t reflect.Type) reflect.Type {
 func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
 	v = normalizeNilPointer(v)
 	if v == nil {
-		if core.IsNullableType(t) {
+		if holdsJSONNull(t) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("null is not valid for %s", gowalker.TypeText(t))

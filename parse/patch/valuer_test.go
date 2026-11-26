@@ -5,9 +5,11 @@ package patch_test
 import (
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -138,5 +140,52 @@ func TestPatch_ATestReadsAWrapperColumnsValue(t *testing.T) {
 			want.Score = rescored
 			assert.Equal(t, want, got)
 		})
+	}
+}
+
+// annotated holds documents of nullable wrappers: notes of sql.NullString,
+// which encoding/json writes as its fields even when NULL, and rates of
+// decimal.NullDecimal, whose own JSON writes NULL as null.
+type annotated struct {
+	ID    string                `json:"id"    db:"id"`
+	Notes []sql.NullString      `json:"notes" db:"notes" parse:"patch" patch_ops:"replace,array_append"`
+	Rates []decimal.NullDecimal `json:"rates" db:"rates" parse:"patch"`
+}
+
+// Inside a document, null is what encoding/json writes: an element takes
+// null only where its type writes NULL as null, so a patch stores what the
+// application's own write of the document stores.
+func TestPatch_ADocumentElementTakesNullAsJSONWritesIt(t *testing.T) {
+	schema, err := patch.GeneratePatchSchema[annotated](core.NewSchemaGenerator())
+	require.NoError(t, err)
+	written, err := json.Marshal(annotated{Notes: []sql.NullString{{}}, Rates: []decimal.NullDecimal{{}}})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"id":"","notes":[{"String":"","Valid":false}],"rates":[null]}`, string(written), "the application's own write")
+	for _, tt := range []struct {
+		name string
+		body string
+		want []any
+	}{
+		{"a NULL decimal is null", `[{"op":"replace","path":"/rates","value":[null,"1.5"]}]`, []any{nil, "1.5"}},
+		{"an sql.NullString is its fields", `[{"op":"replace","path":"/notes","value":[{"String":"","Valid":false}]}]`, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := patch.NewParser(schema, nil).Parse([]byte(tt.body))
+			require.NoError(t, err)
+			if tt.want != nil {
+				got, err := json.Marshal(parsed.Operations[0].Value)
+				require.NoError(t, err)
+				want, err := json.Marshal(tt.want)
+				require.NoError(t, err)
+				assert.JSONEq(t, string(want), string(got))
+			}
+		})
+	}
+	for _, body := range []string{
+		`[{"op":"replace","path":"/notes","value":[null]}]`,
+		`[{"op":"array_append","path":"/notes","value":null}]`,
+	} {
+		_, err := patch.NewParser(schema, nil).Parse([]byte(body))
+		assert.ErrorContains(t, err, "null is not valid for sql.NullString", body)
 	}
 }
