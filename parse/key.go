@@ -64,8 +64,8 @@ func (kc keyColumns) normalize(key Key) (Key, error) {
 		return nil, fmt.Errorf("%w: %d values for the %d key columns (%s)", ErrKeyInvalid, len(key), len(kc.names), strings.Join(kc.names, ", "))
 	}
 	out := make(Key, len(key))
-	for i, info := range kc.types {
-		v, err := core.NormalizeScalar(info.Type, info.NumberKind, key[i])
+	for i := range kc.types {
+		v, err := kc.normalizeColumn(i, key[i])
 		switch {
 		case err != nil && len(kc.names) == 1:
 			return nil, fmt.Errorf("%w: %w", ErrKeyInvalid, err)
@@ -77,8 +77,13 @@ func (kc keyColumns) normalize(key Key) (Key, error) {
 	return out, nil
 }
 
-// requested is a key a caller names a row by — a target's, a batch row's,
-// an item route's texts — normalized, its texts valid UTF-8 without U+0000
+// normalizeColumn is v in key column i's canonical form.
+func (kc keyColumns) normalizeColumn(i int, v any) (any, error) {
+	return core.NormalizeScalar(kc.types[i].Type, kc.types[i].NumberKind, v)
+}
+
+// requested is a key a caller names a row by — a target's, a batch row's —
+// normalized, its texts valid UTF-8 without U+0000
 // (core.CheckText): a backend compares a key's text as written, and
 // PostgreSQL refuses either in a parameter. ErrKeyInvalid otherwise. Keys
 // read from stored rows are normalized without the check.

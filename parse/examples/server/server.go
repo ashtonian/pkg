@@ -181,7 +181,7 @@ func (s *server) patch(w http.ResponseWriter, r *http.Request) {
 	item := strings.TrimPrefix(r.URL.EscapedPath(), productsPath+"/")
 	notFound := parsehttp.Body{Code: codeNotFound, Message: "product " + item + " not found"}
 	key, err := parsehttp.ItemKey(r, s.products)
-	if errors.Is(err, parse.ErrKeyInvalid) {
+	if errors.Is(err, parse.ErrNoSuchKey) {
 		// No product has a key its columns cannot hold.
 		s.writeJSON(w, r, http.StatusNotFound, notFound)
 		return

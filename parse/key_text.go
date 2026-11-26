@@ -11,6 +11,13 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
+// ErrNoSuchKey is ParseKey's refusal of a key's text: text a key column
+// cannot hold, such as letters for an integer column, or text holding
+// U+0000 or invalid UTF-8 (core.CheckText). The text is the request's, an
+// item route's path segment, and no row has that key, so answer it as the
+// row not found. ErrKeyInvalid, unlike it, is the server's.
+var ErrNoSuchKey = errors.New("no key of the key columns has this text")
+
 // ParseKey reads a key from its columns' texts, one per key column in key
 // order, as an item route's path segments carry them (parsehttp.ItemKey).
 // An integer column's text is decimal digits with an optional minus sign, a
@@ -19,8 +26,9 @@ import (
 // its value's text: a string as itself, a UUID, decimal, date, time,
 // timestamp, interval or network address in any spelling NormalizeScalar
 // reads. The key is then normalized as ByKey's is, so ParseKey's key and
-// ByKey's name a row alike. Another number of texts than key columns, or a
-// text its column cannot hold, is ErrKeyInvalid naming the column.
+// ByKey's name a row alike. A text its column cannot hold is ErrNoSuchKey
+// naming the column; another number of texts than key columns is the
+// caller's ErrKeyInvalid.
 func (r *Resource[T]) ParseKey(texts ...string) (Key, error) {
 	kc := r.keyColumns()
 	if len(texts) != len(kc.names) {
@@ -29,17 +37,19 @@ func (r *Resource[T]) ParseKey(texts ...string) (Key, error) {
 	}
 	key := make(Key, len(texts))
 	for i, text := range texts {
-		v, err := scalarText(kc.types[i], text)
-		if err != nil {
-			return nil, fmt.Errorf("parse: %s: %w: key column %s: %w", r.table, ErrKeyInvalid, kc.names[i], err)
+		err := core.CheckText(text)
+		var v any
+		if err == nil {
+			v, err = scalarText(kc.types[i], text)
 		}
-		key[i] = v
+		if err == nil {
+			key[i], err = kc.normalizeColumn(i, v)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parse: %s: %w: key column %s: %w", r.table, ErrNoSuchKey, kc.names[i], err)
+		}
 	}
-	normalized, err := kc.requested(key)
-	if err != nil {
-		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
-	}
-	return normalized, nil
+	return key, nil
 }
 
 // scalarText is text as a column of type info holds it.
