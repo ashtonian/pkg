@@ -28,7 +28,8 @@ var ErrKeyValue = errors.New("client: a key value no path segment carries")
 // (parse.Resource.ParseKey): a string as itself, an integer in decimal, a
 // float as its JSON number, a bool as true or false, a Quoted value as its
 // value, and a value with a MarshalText method (a UUID, a decimal, a
-// time.Time) as the text it marshals.
+// time.Time) as the text it marshals. A pointer is refused, nil or not:
+// pass the value it points to.
 func ItemPath(key ...any) (string, error) {
 	if len(key) == 0 {
 		return "", fmt.Errorf("%w: a key has a value per key column", ErrKeyValue)
@@ -54,6 +55,11 @@ type quoted interface{ quotedValue() any }
 func (q Quoted[T]) quotedValue() any { return q.Value }
 
 func keyText(v any) (string, error) {
+	// Before the interface cases: a nil pointer's value MarshalText method
+	// panics, and a pointer is refused whatever it points to.
+	if reflect.ValueOf(v).Kind() == reflect.Pointer {
+		return "", fmt.Errorf("%w: a pointer has no key text; pass the value it points to", ErrKeyValue)
+	}
 	switch v := v.(type) {
 	case quoted:
 		return keyText(v.quotedValue())

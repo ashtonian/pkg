@@ -106,6 +106,25 @@ func TestDecodeError(t *testing.T) {
 			name: "a code that is no string", status: http.StatusBadRequest, body: `{"code":2077,"message":"m"}`,
 			want: &Error{Status: 400}, text: "client: HTTP 400",
 		},
+		{
+			name: "a message that is null", status: http.StatusBadRequest, body: `{"code":"E2071","message":null}`,
+			want: &Error{Status: 400}, text: "client: HTTP 400",
+		},
+		{
+			name: "an index of another type keeps the code", status: http.StatusBadRequest,
+			body: `{"code":"E2071","message":"m","index":"3","path":"/a"}`,
+			want: &Error{Status: 400, Code: CodeUnknownField, Message: "m", Path: "/a"}, text: "client: E2071 (HTTP 400): m at /a",
+		},
+		{
+			name: "details of another type keep the code", status: http.StatusBadRequest,
+			body: `{"code":"E2071","message":"m","details":["x"],"index":1}`,
+			want: &Error{Status: 400, Code: CodeUnknownField, Message: "m", Index: new(1)}, text: "client: E2071 (HTTP 400): m in operation 1",
+		},
+		{
+			name: "a path of another type keeps the code", status: http.StatusBadRequest,
+			body: `{"code":"E2071","message":"m","path":5,"index":null}`,
+			want: &Error{Status: 400, Code: CodeUnknownField, Message: "m"}, text: "client: E2071 (HTTP 400): m",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
