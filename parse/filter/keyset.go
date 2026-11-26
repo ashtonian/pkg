@@ -399,15 +399,18 @@ func SeekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 	return seekPredicate(d, keys, token, bind), nil
 }
 
-// seekPredicate renders "rows strictly after the token" in the walk order:
-// the lexicographic expansion OR over depth i of (key_0 = v_0 AND … AND
-// key_i after v_i), NULL-aware. bind binds one value and returns its
-// placeholder; every non-null token value is bound once and its placeholder
-// reused across depths. A native row-value comparison is used when the
-// dialect supports it and no key or value involves NULL.
+// seekPredicate renders "rows strictly after the token" in the walk order.
+// Keys that all walk one direction, none nullable and no value NULL, take a
+// row-value comparison, (key_0, …, key_n) > (v_0, …, v_n), which every
+// dialect has (SQLite from 3.15.0, below the release parse supports) and
+// which seeks an index on the keys to the cursor's row. Others take the
+// lexicographic expansion, OR over depth i of (key_0 = v_0 AND … AND key_i
+// after v_i), NULL-aware. bind binds one value and returns its placeholder;
+// every non-null token value is bound once and its placeholder reused
+// across depths.
 func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any) string) string {
 	phs := make([]string, len(keys))
-	native := d.NativeRowCompare() && len(keys) > 1
+	native := len(keys) > 1
 	for i, k := range keys {
 		v := token.Fields[i].Value
 		if v != nil {

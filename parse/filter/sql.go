@@ -42,12 +42,6 @@ type Dialect interface {
 	// facet plan; the filter scan must happen exactly once.
 	CTEMaterializeHint() string
 
-	// NativeRowCompare reports whether keyset seeks may use a native
-	// row-value comparison `(a, b) > ($1, $2)` (used only when no key is
-	// nullable and every key walks the same direction). Dialects without it
-	// get the lexicographic OR-expansion.
-	NativeRowCompare() bool
-
 	// CodePointOrder returns expr under code-point (bytewise) collation, the
 	// order string comparisons, keyset walks and the memory backend share; a
 	// column's linguistic collation would order "B" before "a".
