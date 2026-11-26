@@ -52,7 +52,7 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 	if untypedDocument(t) {
 		return documentValue(obj)
 	}
-	if customJSONType(t) {
+	if core.CustomJSON(t) {
 		return nil, fmt.Errorf("object merge for custom JSON type %s is not supported; use JSON Patch replace", gowalker.TypeText(t))
 	}
 
@@ -164,14 +164,6 @@ func untypedDocument(t reflect.Type) bool {
 	return t.Kind() == reflect.Interface || t == reflect.TypeFor[json.RawMessage]()
 }
 
-func customJSONType(t reflect.Type) bool {
-	if t == nil {
-		return false
-	}
-	return t.Implements(reflect.TypeFor[json.Marshaler]()) || reflect.PointerTo(t).Implements(reflect.TypeFor[json.Marshaler]()) ||
-		t.Implements(reflect.TypeFor[json.Unmarshaler]()) || reflect.PointerTo(t).Implements(reflect.TypeFor[json.Unmarshaler]())
-}
-
 // Declared JSON uses Go's JSON contract before scalar/driver conversion. The
 // decoded value validates the input and controls ordinary field omission; custom
 // subtrees retain their original representation for the single storage decode.
@@ -228,7 +220,7 @@ func checkDocumentMember(schema *PatchSchema, op PatchOp, path string, value any
 		for t != nil && t.Kind() == reflect.Pointer {
 			t = t.Elem()
 		}
-		if t == nil || untypedDocument(t) || customJSONType(t) {
+		if t == nil || untypedDocument(t) || core.CustomJSON(t) {
 			return nil
 		}
 		parent := t
@@ -312,7 +304,7 @@ func jsonNil(v reflect.Value) bool {
 
 func canonicalJSONReplacement(value reflect.Value, document any) (any, error) {
 	t := value.Type()
-	if customJSONType(t) || t.Kind() == reflect.Interface {
+	if core.CustomJSON(t) || t.Kind() == reflect.Interface {
 		return document, nil
 	}
 	if value.Kind() == reflect.Pointer {
@@ -517,7 +509,7 @@ func rejectCustomObjectMerge(t reflect.Type, value, normalized any) error {
 	}
 	// A json.RawMessage member is a document like an interface one; a value
 	// of a custom-encoded Go type merges into neither.
-	if (customJSONType(t) && !untypedDocument(t)) || customJSONType(reflect.TypeOf(value)) {
+	if (core.CustomJSON(t) && !untypedDocument(t)) || core.CustomJSON(reflect.TypeOf(value)) {
 		return fmt.Errorf("object merge for custom JSON type %s is not supported; use JSON Patch replace", gowalker.TypeText(t))
 	}
 	return nil

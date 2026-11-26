@@ -20,8 +20,6 @@ type Wire string
 // 9007199254740993.
 const WireString Wire = "string"
 
-var jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
-
 // stringOption is encoding/json's field-name tag option that quotes a
 // scalar field.
 const stringOption = "string"
@@ -29,9 +27,9 @@ const stringOption = "string"
 // Quoted reports whether encoding/json quotes the field: its field-name tag
 // carries the string option, and its type — through one unnamed pointer,
 // as encoding/json follows — is a bool, integer, float or string that does
-// not marshal itself (json.Marshaler, encoding.TextMarshaler, on the value
-// or its pointer). The option is read from the generator's field-name tag,
-// the tag parse names fields by.
+// not marshal itself (MarshalsJSON, encoding.TextMarshaler, on the value or
+// its pointer). The option is read from the generator's field-name tag, the
+// tag parse names fields by.
 func (f *Field) Quoted() bool {
 	if !f.HasFieldNameOption(stringOption) {
 		return false
@@ -40,10 +38,8 @@ func (f *Field) Quoted() bool {
 	if t.Name() == "" && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	for _, m := range []reflect.Type{jsonMarshalerType, textMarshalerType} {
-		if t.Implements(m) || reflect.PointerTo(t).Implements(m) {
-			return false
-		}
+	if MarshalsJSON(t) || implementsOnValueOrPointer(t, textMarshalerType) {
+		return false
 	}
 	switch t.Kind() {
 	case reflect.Bool,

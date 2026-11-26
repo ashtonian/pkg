@@ -2,7 +2,6 @@ package parse
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -550,8 +549,7 @@ func sqlTypes(table string, cfg resourceConfig, columns map[string]reflect.Type)
 // Values such as interfaces and nested structs are checked by the JSON encoder
 // at the write boundary; construction must not invoke user encoding hooks.
 func jsonRepresentableType(t reflect.Type) bool {
-	marshaler := reflect.TypeFor[json.Marshaler]()
-	if t.Implements(marshaler) || reflect.PointerTo(t).Implements(marshaler) {
+	if core.MarshalsJSON(t) {
 		return true
 	}
 	switch t.Kind() {
