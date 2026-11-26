@@ -89,8 +89,8 @@ type PolicyConstraint struct {
 	// the row's columns equal it; under OpIn, Value is a []core.Key and the
 	// row's columns, together, equal one of them, SQL binding the set as one
 	// parameter. Each key holds a value per column. One column compiles as
-	// Field does; a set over several compares string, UUID and integer
-	// columns only.
+	// Field does; a key over several compares stored columns of a key type
+	// (core.IsKeyType), never a computed one (ResourceSchema.Computed).
 	Fields []string
 }
 

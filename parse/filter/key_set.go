@@ -24,7 +24,10 @@ type KeySet struct {
 // keyNode compiles a key constraint (PolicyConstraint.Fields). One column
 // compiles exactly as a constraint on Field does, an empty set as an empty
 // `$in`; a key of several columns is an AND of equalities under OpEq and a
-// KeySet under OpIn.
+// KeySet under OpIn, over stored columns only: a computed column
+// (ResourceSchema.Computed) has no place in the table's row type the set is
+// typed by, and reading the stored column beneath it would test another
+// value than a constraint on the field alone does.
 func keyNode(norm *FilterParser, schema *ResourceSchema, c *PolicyConstraint) (*FilterNode, error) {
 	if c.Field != "" || c.Member != nil {
 		return nil, fmt.Errorf("%w: a key constraint names its columns in Fields alone, with no Field or Member", ErrPolicyInvalid)
@@ -62,7 +65,7 @@ func keyNode(norm *FilterParser, schema *ResourceSchema, c *PolicyConstraint) (*
 		if !ok {
 			return nil, fmt.Errorf("%w: field %q is not a field of %s", ErrPolicyInvalid, name, schema.Name)
 		}
-		err = keySetField(field, c.Operator)
+		err = keySetField(field, c.Operator, schema.computes(field.RowColumn()))
 		if err != nil {
 			return nil, policyFault(name, err)
 		}
@@ -134,11 +137,14 @@ func constraintKeys(c *PolicyConstraint) ([]core.Key, error) {
 }
 
 // keySetField refuses a key column a bound key set cannot test: one that is
-// no plain column, or, for a set, one with no equality to compare by
-// (core.IsKeyType).
-func keySetField(f *FieldSchema, op FilterOperator) error {
+// no stored column — a relation, a path, an expression, a computed column —
+// or, for a set, one with no equality to compare by (core.IsKeyType).
+func keySetField(f *FieldSchema, op FilterOperator, computed bool) error {
 	if f.Relation != nil || f.Path != nil || f.Expr != "" || f.Column == "" {
 		return fmt.Errorf("field %s is not a column of %s", f.ExternalName, f.Table)
+	}
+	if computed {
+		return fmt.Errorf("field %s is a computed column of %s, which a key of several columns cannot compare; constrain it on its own Field", f.ExternalName, f.Table)
 	}
 	if op == OpIn && !core.IsKeyType(f.DataType) {
 		return fmt.Errorf("a key set compares scalar columns, and %s is %s", f.ExternalName, f.DataType)
@@ -173,6 +179,9 @@ func (b *SQLBuilder) buildKeySet(s *buildState, node *FilterNode) (string, error
 	for i, f := range ks.Fields {
 		if f.Table != ks.Fields[0].Table {
 			return "", fmt.Errorf("%w: key set spans %s and %s", ErrPolicyInvalid, ks.Fields[0].Table, f.Table)
+		}
+		if b.exprs.computes(f) {
+			return "", fmt.Errorf("%w: key set column %s is computed", ErrPolicyInvalid, f.ExternalName)
 		}
 		columns[i], types[i] = f.Column, core.TypeInfo{Type: f.DataType, NumberKind: f.NumberKind}
 	}

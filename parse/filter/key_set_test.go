@@ -262,3 +262,30 @@ func TestKeyConstraint_EmptySetAdmitsNoRow(t *testing.T) {
 		})
 	}
 }
+
+// A key of several columns compares stored columns: a computed column has no
+// place in the row type the set is typed by, and its stored column, when one
+// shares its name, holds another value than the expression a constraint on
+// the field alone reads. Such a key is refused when the policy compiles,
+// while one column compiles through the expression as Field does.
+func TestKeyConstraint_RefusesAComputedColumnOfSeveral(t *testing.T) {
+	schema := stockSchema()
+	schema.Computed = []filter.ComputedColumn{{Column: "sku", Expr: func(filter.Dialect) (string, error) { return `lower("stock_items"."code")`, nil }}}
+	apply := func(c *filter.PolicyConstraint) (*filter.FilterAST, error) {
+		return filter.ApplyPolicyConstraints(schema, nil, &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{c}})
+	}
+	for _, c := range []*filter.PolicyConstraint{
+		{Fields: []string{"warehouse_id", "sku"}, Operator: filter.OpIn, Value: []core.Key{{"w1", "a"}}},
+		{Fields: []string{"warehouse_id", "sku"}, Operator: filter.OpEq, Value: core.Key{"w1", "a"}},
+	} {
+		_, err := apply(c)
+		require.ErrorIs(t, err, filter.ErrPolicyInvalid)
+		assert.ErrorContains(t, err, "sku is a computed column")
+	}
+
+	ast, err := apply(&filter.PolicyConstraint{Fields: []string{"sku"}, Operator: filter.OpIn, Value: []core.Key{{"a"}}})
+	require.NoError(t, err)
+	res, err := filter.NewSQLBuilder(schema, filter.SQLiteDialect{}).Build(ast)
+	require.NoError(t, err)
+	assert.Contains(t, res.Where, `lower("stock_items"."code")`)
+}
