@@ -3,29 +3,85 @@
 package parse_test
 
 import (
+	"database/sql"
+	"maps"
+	"slices"
+	"strings"
 	"testing"
+	"time"
 
-	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ashtonian/pkg/parse"
+	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/filter/filtertest"
 )
 
-// Timestamps on PostgreSQL 18: a TIMESTAMPTZ column, read on sessions
-// whose TimeZone and DateStyle are neither UTC nor ISO, which the facet
-// keys must not depend on. The settings are startup parameters, so every
-// connection the pool opens has them.
-func TestTimestamps_PostgreSQL(t *testing.T) {
-	config := dbtest.PostgresConfig(t)
-	config.RuntimeParams["TimeZone"] = "Asia/Kolkata"
-	config.RuntimeParams["DateStyle"] = "SQL, DMY"
-	db := stdlib.OpenDB(*config)
-	t.Cleanup(func() { _ = db.Close() })
+// Timestamps on each backend. SQLite's column holds each row's canonical
+// text, declared TEXT or DATETIME; modernc.org/sqlite scans the DATETIME
+// column's text into a time.Time of the same instant. PostgreSQL's
+// TIMESTAMPTZ column is read on sessions whose TimeZone and DateStyle are
+// neither UTC nor ISO, which the facet keys must not depend on.
+func TestTimestamps(t *testing.T) {
+	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
+		if b.engine == postgresEngine {
+			db := b.open(t)
+			var zone, style string
+			require.NoError(t, db.QueryRowContext(t.Context(), "SELECT current_setting('TimeZone'), current_setting('DateStyle')").Scan(&zone, &style))
+			require.Equal(t, "Asia/Kolkata", zone)
+			require.Equal(t, "SQL, DMY", style)
+			runTimestamps(t, b, db)
+			return
+		}
+		for _, atType := range []string{"TEXT", "DATETIME"} {
+			t.Run(atType, func(t *testing.T) {
+				b := b.with(storing(core.FieldTypeTimestamp, atType))
+				db := b.open(t)
+				runTimestamps(t, b, db)
+				if atType != "DATETIME" {
+					return
+				}
+				schema, err := filtertest.TimestampSchema()
+				require.NoError(t, err)
+				var at time.Time
+				require.NoError(t, db.QueryRowContext(t.Context(), "SELECT at FROM "+schema.Name+" WHERE id = 'a'").Scan(&at))
+				assert.True(t, filtertest.TimestampRecords()[0].At.Equal(at), "scanned %v", at)
+			})
+		}
+	}, sessionParams(map[string]string{"TimeZone": "Asia/Kolkata", "DateStyle": "SQL, DMY"}))
+}
 
-	var zone, style string
-	require.NoError(t, db.QueryRow("SELECT current_setting('TimeZone'), current_setting('DateStyle')").Scan(&zone, &style))
-	require.Equal(t, "Asia/Kolkata", zone)
-	require.Equal(t, "SQL, DMY", style)
-	runTimestamps(t, timestampDB{db: db, dialect: filter.PostgresDialect{}, atType: "TIMESTAMPTZ"})
+// runTimestamps writes TimestampRecords through the dialect's MarshalValue,
+// each row in its own offset, then checks that facets, filters, sorts and
+// keyset walks on the column read instants: the buckets, rows and orders
+// the fixture names, the same on every backend.
+func runTimestamps(t *testing.T, b sqlBackend, db *sql.DB) {
+	t.Helper()
+	schema, err := filtertest.TimestampSchema()
+	require.NoError(t, err)
+	table := schemaTable(schema)
+	b.load(t, db, table, recordRows(t, table, filtertest.TimestampRecords()))
+	res, err := parse.NewResource[filtertest.TimestampRecord](schema.Name, parse.PageSize(walkPage, walkPage))
+	require.NoError(t, err)
+
+	t.Run("facet", func(t *testing.T) {
+		got := facetCounts(t, db, b.dialect, schema, "at")
+		assert.Equal(t, map[string]map[string]int64{"at": filtertest.TimestampFacets}, got)
+	})
+
+	for _, doc := range slices.Sorted(maps.Keys(filtertest.TimestampFilters)) {
+		t.Run("filter "+doc, func(t *testing.T) {
+			f, err := res.ParseFilter(doc)
+			require.NoError(t, err)
+			where, err := filter.NewSQLBuilder(schema, b.dialect).Build(f.AST())
+			require.NoError(t, err)
+			ids := queryRows[string](t, db, "SELECT id FROM "+schema.Name+" WHERE "+where.Where+" ORDER BY id", where.Args...)
+			assert.Equal(t, filtertest.TimestampFilters[doc], strings.Join(ids, ""))
+		})
+	}
+
+	walkOrders(t, walker[filtertest.TimestampRecord]{db: db, dialect: b.dialect, resource: res,
+		id: func(r filtertest.TimestampRecord) string { return r.ID }}, filtertest.TimestampOrders)
 }

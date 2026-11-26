@@ -14,31 +14,12 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
 type crxBin struct {
 	ID   int64  `json:"id"   db:"id"   parse:"filter,sort"`
 	Name string `json:"name" db:"name" parse:"filter"`
-}
-
-type crxStock struct {
-	WarehouseID int64  `json:"warehouse_id" db:"warehouse_id" parse:"filter,sort"`
-	SKU         string `json:"sku"          db:"sku"          parse:"filter,sort"`
-	Name        string `json:"name"         db:"name"         parse:"filter"`
-}
-
-type crxMove struct {
-	ID          int64  `json:"id"           db:"id"           parse:"filter,sort"`
-	WarehouseID int64  `json:"warehouse_id" db:"warehouse_id" parse:"filter"`
-	SKU         string `json:"sku"          db:"sku"          parse:"filter"`
-	Code        string `json:"code"         db:"code"         parse:"filter"`
-}
-
-type crxTag struct {
-	ID    string `json:"id"    db:"id"    parse:"filter,sort"`
-	Label string `json:"label" db:"label" parse:"filter"`
 }
 
 // crxPairTag is a tag whose stock is a pair table compared by key: the
@@ -58,18 +39,18 @@ type crxStockRef struct {
 // the target of a has-many, a belongs-to and a many-to-many each.
 type crxGraph struct {
 	bins  *parse.Resource[crxBin]
-	stock *parse.Resource[crxStock]
-	moves *parse.Resource[crxMove]
-	tags  *parse.Resource[crxTag]
+	stock *parse.Resource[crStock]
+	moves *parse.Resource[crMove]
+	tags  *parse.Resource[crTag]
 }
 
 func crxResources(t *testing.T) crxGraph {
 	t.Helper()
 	g := crxGraph{
 		bins:  parse.MustResource[crxBin]("crx_bins"),
-		stock: parse.MustResource[crxStock]("crx_stock", parse.PrimaryKey("warehouse_id", "sku")),
-		moves: parse.MustResource[crxMove]("crx_moves"),
-		tags:  parse.MustResource[crxTag]("crx_tags"),
+		stock: parse.MustResource[crStock]("crx_stock", parse.PrimaryKey("warehouse_id", "sku")),
+		moves: parse.MustResource[crMove]("crx_moves"),
+		tags:  parse.MustResource[crTag]("crx_tags"),
 	}
 	key := []string{"warehouse_id", "sku"}
 	all := []parse.RelationOption{parse.Indexed(), parse.Includable(), parse.Facetable()}
@@ -85,9 +66,8 @@ func crxResources(t *testing.T) crxGraph {
 // crxFixture: each key column alone ties across stock rows — warehouse 1
 // holds SKUs a and b, SKU a is in warehouses 1 and 2 — so only the whole
 // key relates a row. Move 13 names stock that does not exist.
-func crxFixture(t *testing.T, db *sql.DB) {
-	t.Helper()
-	for _, stmt := range []string{
+func crxFixture() []string {
+	stmts := []string{
 		`CREATE TABLE crx_bins (id BIGINT PRIMARY KEY, name TEXT NOT NULL)`,
 		`CREATE TABLE crx_stock (warehouse_id BIGINT NOT NULL, sku TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (warehouse_id, sku))`,
 		`CREATE TABLE crx_moves (id BIGINT PRIMARY KEY, warehouse_id BIGINT NOT NULL, sku TEXT NOT NULL, code TEXT NOT NULL)`,
@@ -98,26 +78,21 @@ func crxFixture(t *testing.T, db *sql.DB) {
 		`INSERT INTO crx_moves VALUES (10, 1, 'a', 'in'), (11, 1, 'a', 'out'), (12, 2, 'b', 'in'), (13, 2, 'c', 'in')`,
 		`INSERT INTO crx_tags VALUES ('red', 'Red'), ('blue', 'Blue'), ('green', 'Green')`,
 		`INSERT INTO crx_stock_tags VALUES (1, 'a', 'red'), (1, 'a', 'blue'), (2, 'a', 'red'), (2, 'b', 'blue')`,
-	} {
-		_, err := db.ExecContext(t.Context(), stmt)
-		require.NoError(t, err, stmt)
 	}
+	return stmts
 }
 
-func TestCompositeKeyRelations_SQLite(t *testing.T) {
-	testCompositeKeyRelations(t, func(t *testing.T) *sql.DB { return dbtest.SQLite(t) }, filter.SQLiteDialect{})
+func TestCompositeKeyRelations(t *testing.T) {
+	runSQLBackends(t, runCompositeKeyRelations)
 }
 
-func TestCompositeKeyRelations_Postgres(t *testing.T) {
-	testCompositeKeyRelations(t, func(t *testing.T) *sql.DB { return dbtest.Postgres(t) }, filter.PostgresDialect{})
-}
-
-func testCompositeKeyRelations(t *testing.T, open func(*testing.T) *sql.DB, d filter.Dialect) {
+func runCompositeKeyRelations(t *testing.T, b sqlBackend) {
 	g := crxResources(t)
+	d := b.dialect
 	setup := func(t *testing.T) *sql.DB {
 		t.Helper()
-		db := open(t)
-		crxFixture(t, db)
+		db := b.open(t)
+		execStatements(t, db, crxFixture()...)
 		return db
 	}
 	db := setup(t)
@@ -301,16 +276,16 @@ func testCompositeKeyRelations(t *testing.T, open func(*testing.T) *sql.DB, d fi
 func crxPairs(t *testing.T, db *sql.DB) []string {
 	t.Helper()
 	var pairs []string
-	for _, row := range queryRows(t, db, `SELECT warehouse_id, sku, tag_id FROM crx_stock_tags ORDER BY warehouse_id, sku, tag_id`, nil) {
+	for _, row := range queryRows[[]any](t, db, `SELECT warehouse_id, sku, tag_id FROM crx_stock_tags ORDER BY warehouse_id, sku, tag_id`) {
 		pairs = append(pairs, fmt.Sprintf("%v/%v/%v", row[0], row[1], row[2]))
 	}
 	return pairs
 }
 
-func crxStockKey(s crxStock) string { return fmt.Sprintf("%d/%s", s.WarehouseID, s.SKU) }
-func crxMoveKey(m crxMove) string   { return fmt.Sprint(m.ID) }
-func crxBinKey(b crxBin) string     { return fmt.Sprint(b.ID) }
-func crxTagKey(t crxTag) string     { return t.ID }
+func crxStockKey(s crStock) string { return fmt.Sprintf("%d/%s", s.WarehouseID, s.SKU) }
+func crxMoveKey(m crMove) string   { return fmt.Sprint(m.ID) }
+func crxBinKey(b crxBin) string    { return fmt.Sprint(b.ID) }
+func crxTagKey(t crTag) string     { return t.ID }
 
 // crxList lists r's rows a filter document admits, each as key names it,
 // in key order.

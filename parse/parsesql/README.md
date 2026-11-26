@@ -90,7 +90,7 @@ make test-parse-unit         # unit tests, SQLite in memory
 make test-parse-integration  # SQLite and PostgreSQL
 ```
 
-The executor contract (`executor_contract_cases_test.go` in the root package: changed and unchanged rows, junction counts, rollback, savepoints, batches, pages, dialect refusal) runs on SQLite through this package and on PostgreSQL through `parsepgx`. The row contract's cases (`row_contract_cases_test.go`) page every row shape on both.
+The executor contract (`executor_contract_integration_test.go` in the root package: changed and unchanged rows, junction counts, rollback, savepoints, batches, pages, dialect refusal) runs on SQLite through this package and on PostgreSQL through `parsepgx`. The row contract's cases (`row_contract_integration_test.go`) page every row shape on both.
 
 ## Operations
 

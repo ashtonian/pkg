@@ -32,42 +32,16 @@ type resolvedLookup interface {
 	filter.IncludeLookup
 }
 
-// loadTable reads every row of table as a map of column to value.
-func loadTable(t *testing.T, db *sql.DB, d filter.Dialect, table string) []map[string]any {
-	t.Helper()
-	rows, err := db.QueryContext(t.Context(), "SELECT * FROM "+d.QuoteIdent(table))
-	require.NoError(t, err, table)
-	defer func() { require.NoError(t, rows.Close()) }()
-	columns, err := rows.Columns()
-	require.NoError(t, err)
-	var out []map[string]any
-	for rows.Next() {
-		values := make([]any, len(columns))
-		ptrs := make([]any, len(columns))
-		for i := range values {
-			ptrs[i] = &values[i]
-		}
-		require.NoError(t, rows.Scan(ptrs...))
-		row := make(map[string]any, len(columns))
-		for i, c := range columns {
-			row[c] = values[i]
-		}
-		out = append(out, row)
-	}
-	require.NoError(t, rows.Err())
-	return out
-}
-
 // resolvedStores loads tables into memory and names each lookup.
 func resolvedStores(t *testing.T, db *sql.DB, d filter.Dialect, tables ...string) (governedMemory, map[string]resolvedLookup) {
 	t.Helper()
 	store := governedMemory{}
 	for _, table := range tables {
-		store[table] = append(store[table], loadTable(t, db, d, table)...)
+		store[table] = append(store[table], queryRows[map[string]any](t, db, "SELECT * FROM "+d.QuoteIdent(table))...)
 	}
 	lookups := map[string]resolvedLookup{
 		"memory": store,
-		"sql":    sqlMembershipLookup{t: t, d: d, query: func(t *testing.T, q string, args []any) [][]any { return queryRows(t, db, q, args) }},
+		"sql":    sqlMembershipLookup{t: t, d: d, db: db},
 	}
 	return store, lookups
 }

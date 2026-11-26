@@ -59,27 +59,6 @@ func orderResource(t *testing.T) *parse.Resource[order] {
 	return orders
 }
 
-func orderFixtureSQL(docType string) []string {
-	literal := func(v any) string {
-		if v == nil {
-			return "NULL"
-		}
-		return "'" + v.(string) + "'"
-	}
-	values := make([]string, len(orderRows))
-	for i, r := range orderRows {
-		cells := make([]string, len(r))
-		for j, v := range r {
-			cells[j] = literal(v)
-		}
-		values[i] = "(" + strings.Join(cells, ", ") + ")"
-	}
-	return []string{
-		`CREATE TABLE orders (id TEXT PRIMARY KEY, items ` + docType + `, notes ` + docType + `, parent_id TEXT, meta ` + docType + `)`,
-		`INSERT INTO orders VALUES ` + strings.Join(values, ", "),
-	}
-}
-
 var elementCases = []struct {
 	name, filter string
 	want         []string
@@ -108,36 +87,6 @@ var elementRelationCases = []struct {
 	{"an element path through a relation", `{"children":{"$some":{"items":{"$some":{"sku":"a","qty":{"$gt":2}}}}}}`, []string{"o1", "o4"}},
 	{"an array path's element through a relation", `{"children":{"$some":{"meta.tags":{"$some":{"$eq":"x"}}}}}`, []string{"o1"}},
 	{"no related row with an element", `{"children":{"$none":{"items":{"$some":{}}}}}`, []string{"o2", "o3", "o5", "o6"}},
-}
-
-func runElementCases(t *testing.T, d filter.Dialect, query func(t *testing.T, sql string, args []any) [][]any) {
-	t.Helper()
-	orders := orderResource(t)
-	for _, tc := range slices.Concat(elementCases, elementRelationCases) {
-		t.Run(tc.name, func(t *testing.T) {
-			req, err := orders.ParseList(url.Values{filter.ParamFilter: {tc.filter}})
-			require.NoError(t, err)
-			plan, err := orders.BuildList(d, req, parse.Scope{})
-			require.NoError(t, err)
-			var got []string
-			for _, row := range query(t, plan.Page.SQL, plan.Page.Args) {
-				id, ok := row[0].(string)
-				require.True(t, ok)
-				got = append(got, id)
-			}
-			slices.Sort(got)
-			assert.Equal(t, tc.want, got, plan.Page.SQL)
-		})
-	}
-
-	for _, bad := range []string{
-		`{"items":{"$some":{"colour":"red"}}}`,
-		`{"items":{"$some":"a"}}`,
-		`{"items":{"$is":{}}}`,
-	} {
-		_, err := orders.ParseList(url.Values{filter.ParamFilter: {bad}})
-		assert.Error(t, err, bad)
-	}
 }
 
 // The reference evaluator selects the rows the SQL dialects select.

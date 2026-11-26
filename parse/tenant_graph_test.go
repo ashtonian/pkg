@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"database/sql"
 	"slices"
 	"testing"
 
@@ -13,12 +12,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
-
-func TestTenantKeyGraph_SQLite(t *testing.T) {
-	runTenantKeyGraph(t, func(t *testing.T) *sql.DB { return dbtest.SQLite(t) }, filter.SQLiteDialect{}, "TEXT")
-}
 
 // relateInOrder declares relations in order, or reversed, and returns the
 // first refusal.

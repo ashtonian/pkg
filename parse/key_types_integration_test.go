@@ -17,7 +17,6 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -161,15 +160,13 @@ func ktFixture(t *testing.T, db *sql.DB, d filter.Dialect) {
 	}
 }
 
-func TestKeyTypes_SQLite(t *testing.T) {
-	testKeyTypes(t, func(t *testing.T) *sql.DB { return dbtest.SQLite(t) }, filter.SQLiteDialect{})
+func TestKeyTypes(t *testing.T) {
+	runSQLBackends(t, testKeyTypes)
 }
 
-func TestKeyTypes_Postgres(t *testing.T) {
-	testKeyTypes(t, func(t *testing.T) *sql.DB { return dbtest.Postgres(t) }, filter.PostgresDialect{})
-}
-
-func testKeyTypes(t *testing.T, open func(*testing.T) *sql.DB, d filter.Dialect) {
+func testKeyTypes(t *testing.T, b sqlBackend) {
+	open := b.open
+	d := b.dialect
 	ktT0, ktT1, ktT2 := ktInstants()
 	g := ktResources(t)
 	setup := func(t *testing.T) *sql.DB {
@@ -481,7 +478,7 @@ func ktBatch[T any](t *testing.T, db *sql.DB, d filter.Dialect, r *parse.Resourc
 func ktPairs(t *testing.T, db *sql.DB, query string) []string {
 	t.Helper()
 	var out []string
-	for _, row := range queryRows(t, db, query, nil) {
+	for _, row := range queryRows[[]any](t, db, query) {
 		out = append(out, ktJoin(t, row))
 	}
 	return out
@@ -502,7 +499,7 @@ func ktChunkKeys(t *testing.T, keys []parse.Key) []string {
 func ktCurrentKeys(t *testing.T, db *sql.DB, current parse.Statement, width int) []string {
 	t.Helper()
 	var out []string
-	for _, row := range queryRows(t, db, current.SQL, current.Args) {
+	for _, row := range queryRows[[]any](t, db, current.SQL, current.Args...) {
 		out = append(out, ktJoin(t, row[:width]))
 	}
 	return out

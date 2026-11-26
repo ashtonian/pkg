@@ -3,23 +3,28 @@
 package parse_test
 
 import (
+	"maps"
+	"slices"
 	"testing"
 
-	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/ashtonian/pkg/parse/filter/filtertest"
 )
 
-// Numeric facet keys on PostgreSQL 18: a jsonb document, double precision,
-// real, bigint and real[] columns.
-func TestNumberKeys_PostgreSQL(t *testing.T) {
-	runNumberKeys(t, numberKeyDB{
-		db: dbtest.Postgres(t), dialect: filter.PostgresDialect{},
-		docType: "JSONB", f64Type: "DOUBLE PRECISION", f32Type: "REAL", intType: "BIGINT", listType: "REAL[]", docCast: "%s::jsonb",
-		list: func(l []float32) any {
-			if l == nil {
-				return nil
-			}
-			return l
-		},
+// Numeric facet keys on each backend: REAL columns, a JSON text document and
+// a JSON text list on SQLite; a jsonb document, double precision, real,
+// bigint and real[] columns on PostgreSQL. Every facet counts in one facet
+// query, keyed as BuildFacetQuery and FacetKeys give them.
+func TestNumberKeys(t *testing.T) {
+	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
+		db := b.open(t)
+		schema, err := filtertest.NumberKeySchema()
+		require.NoError(t, err)
+		table := schemaTable(schema)
+		b.load(t, db, table, recordRows(t, table, filtertest.NumberKeyRecords()))
+		got := facetCounts(t, db, b.dialect, schema, slices.Sorted(maps.Keys(filtertest.NumberKeyFacets))...)
+		assert.Equal(t, filtertest.NumberKeyFacets, got)
 	})
 }
