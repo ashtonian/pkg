@@ -4,7 +4,6 @@ import (
 	"errors"
 	"reflect"
 	"slices"
-	"sync"
 )
 
 var errDropTiesAlone = errors.New("DropTies settles ties left by ResolveByDepth or WithJSONFields; give one of them")
@@ -43,6 +42,13 @@ type settings struct {
 // retains reports whether a cache holding entries keeps one more.
 func (s *settings) retains(entries int) bool {
 	return s.unbounded || entries < s.capacity
+}
+
+// stats describes a cache these settings bound.
+func (s *settings) stats[K comparable, V any](entries *writeOnceMap[K, V]) CacheStats {
+	held, uncached := entries.counts()
+	stats := CacheStats{Entries: held, Capacity: s.capacity, Unbounded: s.unbounded, Uncached: uncached}
+	return stats
 }
 
 // CacheStats describes an engine's or a [TypeCache]'s cache.
@@ -218,16 +224,17 @@ func WithLimits(limits Limits) Option {
 // It must not be copied after first use. Compiling does not retain caller values.
 type Engine struct {
 	settings settings
-	mu       sync.RWMutex
-	cache    map[reflect.Type]*Schema
-	uncached uint64
+	// schemas is nil in an Engine New did not build.
+	schemas *writeOnceMap[reflect.Type, *Schema]
 }
 
 // CacheStats reports the engine's schema cache.
 func (e *Engine) CacheStats() CacheStats {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return CacheStats{Entries: len(e.cache), Capacity: e.settings.capacity, Unbounded: e.settings.unbounded, Uncached: e.uncached}
+	if e.schemas == nil {
+		var none CacheStats
+		return none
+	}
+	return e.settings.stats(e.schemas)
 }
 
 // New creates an engine using exported Go field names, exact matching, a cache
@@ -245,7 +252,8 @@ func New(options ...Option) (*Engine, error) {
 	if s.dropTies && !s.resolvesByDepth() {
 		return nil, failure("new", ErrSchema, nil, emptyPath, -1, errDropTiesAlone)
 	}
-	return &Engine{settings: s, cache: make(map[reflect.Type]*Schema)}, nil
+	e := &Engine{settings: s, schemas: new(writeOnceMap[reflect.Type, *Schema])}
+	return e, nil
 }
 
 // defaultEngine backs the package-level functions. It is unexported so that no
@@ -282,17 +290,15 @@ func (e *Engine) Compile[T any]() (*Schema, error) {
 }
 
 // CompileType returns a fully constructed immutable schema for a runtime type.
-// Concurrent cold requests
-// may build independently; only complete results are published under the lock.
-// Recursive construction never waits on an unfinished cache entry.
+// Concurrent cold requests may build independently; a schema is published
+// only once complete, the first one kept, and a lookup of a kept type takes
+// no lock. Recursive construction never waits on an unfinished cache entry.
 func (e *Engine) CompileType(t reflect.Type) (*Schema, error) {
-	if e == nil || e.cache == nil || t == nil {
+	if e == nil || e.schemas == nil || t == nil {
 		return nil, failure("compile", ErrType, t, emptyPath, -1, nil)
 	}
-	e.mu.RLock()
-	cached := e.cache[t]
-	e.mu.RUnlock()
-	if cached != nil {
+	cached, ok := e.schemas.load(t)
+	if ok {
 		return cached, nil
 	}
 	b := newBuilder(e)
@@ -305,15 +311,5 @@ func (e *Engine) CompileType(t reflect.Type) (*Schema, error) {
 	}
 	schema := &Schema{engine: e, root: root}
 	b.graph.schemas[root] = schema
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if cached := e.cache[t]; cached != nil {
-		return cached, nil
-	}
-	if e.settings.retains(len(e.cache)) {
-		e.cache[t] = schema
-	} else {
-		e.uncached++
-	}
-	return schema, nil
+	return e.schemas.publish(t, schema, e.settings.retains), nil
 }

@@ -1,31 +1,23 @@
 package gowalker
 
-import (
-	"reflect"
-	"sync"
-)
+import "reflect"
 
 // TypeCache computes a library's own metadata once per Go type — column lists,
 // parsed tag options, help text — from an engine's schema, and shares it across
 // calls and goroutines. Results, including errors, are retained for up to the
 // engine's cache capacity of types, or for every type with
 // [WithUnboundedCache]; beyond the capacity they are computed on each call,
-// which [TypeCache.CacheStats] counts.
+// which [TypeCache.CacheStats] counts. A lookup of a kept type takes no
+// lock.
 type TypeCache[M any] struct {
-	engine *Engine
-	build  func(*Schema) (M, error)
-
-	mu       sync.RWMutex
-	entries  map[reflect.Type]typeCacheEntry[M]
-	uncached uint64
+	engine  *Engine
+	build   func(*Schema) (M, error)
+	entries writeOnceMap[reflect.Type, typeCacheEntry[M]]
 }
 
 // CacheStats reports the cache; Uncached counts builds not kept.
 func (c *TypeCache[M]) CacheStats() CacheStats {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	s := c.engine.settings
-	return CacheStats{Entries: len(c.entries), Capacity: s.capacity, Unbounded: s.unbounded, Uncached: c.uncached}
+	return c.engine.settings.stats(&c.entries)
 }
 
 type typeCacheEntry[M any] struct {
@@ -43,7 +35,8 @@ func NewTypeCache[M any](engine *Engine, build func(*Schema) (M, error)) *TypeCa
 	if engine == nil || build == nil {
 		panic("gowalker: NewTypeCache requires an engine and a build function")
 	}
-	return &TypeCache[M]{engine: engine, build: build, entries: make(map[reflect.Type]typeCacheEntry[M])}
+	c := &TypeCache[M]{engine: engine, build: build}
+	return c
 }
 
 // For returns T's metadata.
@@ -54,9 +47,7 @@ func (c *TypeCache[M]) For[T any]() (M, error) {
 // Get returns the metadata of the exact type t. A schema compilation error is
 // returned as is; an error from build is returned as build returned it.
 func (c *TypeCache[M]) Get(t reflect.Type) (M, error) {
-	c.mu.RLock()
-	entry, ok := c.entries[t]
-	c.mu.RUnlock()
+	entry, ok := c.entries.load(t)
 	if ok {
 		return entry.value, entry.err
 	}
@@ -66,15 +57,6 @@ func (c *TypeCache[M]) Get(t reflect.Type) (M, error) {
 	} else {
 		entry.err = err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if cached, ok := c.entries[t]; ok {
-		return cached.value, cached.err
-	}
-	if c.engine.settings.retains(len(c.entries)) {
-		c.entries[t] = entry
-	} else {
-		c.uncached++
-	}
+	entry = c.entries.publish(t, entry, c.engine.settings.retains)
 	return entry.value, entry.err
 }

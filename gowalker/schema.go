@@ -3,7 +3,6 @@ package gowalker
 import (
 	"errors"
 	"reflect"
-	"sync"
 
 	"github.com/ashtonian/pkg/gowalker/path"
 )
@@ -16,8 +15,7 @@ var emptyPath path.Path
 type Schema struct {
 	engine      *Engine
 	root        *Shape
-	fieldMu     sync.RWMutex
-	fieldAccess map[*Field]*Accessor
+	fieldAccess writeOnceMap[*Field, *Accessor]
 }
 
 // Type returns the exact declared root type, including any pointer layers.
@@ -107,25 +105,15 @@ func (s *Schema) AccessField(field *Field) (*Accessor, error) {
 	if err != nil || owner.atomic || owner.Kind() != reflect.Struct || field == nil || !owner.owns(field) {
 		return nil, failure("resolve", ErrPath, s.Type(), emptyPath, -1, nil)
 	}
-	s.fieldMu.RLock()
-	cached := s.fieldAccess[field]
-	s.fieldMu.RUnlock()
-	if cached != nil {
-		return cached, nil
-	}
-	s.fieldMu.Lock()
-	defer s.fieldMu.Unlock()
-	if cached := s.fieldAccess[field]; cached != nil {
+	cached, ok := s.fieldAccess.load(field)
+	if ok {
 		return cached, nil
 	}
 	step := path.Field(field.name)
 	a := &Accessor{schema: s, path: path.Of(step), steps: []accessStep{{step: step, field: field}}, typ: field.shape.typ}
 	a.route = staticRoute(s.root, a.steps, s.engine.settings.limits.MaxDepth)
-	if s.fieldAccess == nil {
-		s.fieldAccess = make(map[*Field]*Accessor)
-	}
-	s.fieldAccess[field] = a
-	return a, nil
+	// The root's fields bound the map.
+	return s.fieldAccess.publish(field, a, keepAll), nil
 }
 
 type accessStep struct {

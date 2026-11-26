@@ -251,7 +251,11 @@ func WithTaggedFields(key string, options ...TagOption) Option {
 //     every tied field as encoding/json does.
 //
 // An unexported embedded struct a tag names is a field, as encoding/json
-// writes it as a member. Reflection cannot read or write its value whole, so
+// writes it as a member, unless its type, or a pointer to it, has a method
+// encoding/json would call on it (MarshalJSON, UnmarshalJSON, AppendText,
+// MarshalText, UnmarshalText, MarshalJSONTo, UnmarshalJSONFrom, or IsZero
+// under omitzero): encoding/json cannot call a method through an unexported
+// field, and drops it, as this option does. Reflection cannot read or write its value whole, so
 // reading it, or walking a value into it, returns [ErrAccess]; with
 // [NestedFields], paths to its exported fields read and write as through any
 // struct. Its declaration's GoField is unexported, for a consumer that reads
@@ -326,6 +330,10 @@ func (n *tagNaming) rule(sf reflect.StructField, atomic func(reflect.Type) bool)
 		return inline, nil
 	}
 	privateEmbed := n.json && explicit && !sf.IsExported() && sf.Anonymous && promotable(sf.Type, atomic)
+	if privateEmbed && jsonDropsPrivateEmbed(sf, raw) {
+		dropped := FieldRule{Skip: true}
+		return dropped, nil
+	}
 	if explicit && n.valid != nil && (sf.IsExported() || privateEmbed) {
 		if err := n.valid(name); err != nil {
 			return FieldRule{}, err
@@ -342,15 +350,20 @@ func (n *tagNaming) rule(sf reflect.StructField, atomic func(reflect.Type) bool)
 }
 
 // jsonCaseStrict reports a json tag's case:strict option, with which
-// encoding/json matches the field only by its exact name. Options follow the
-// name's comma; format, whose value may hold commas, is the last.
+// encoding/json matches the field only by its exact name.
 func jsonCaseStrict(tag string) bool {
+	return jsonTagOption(tag, "case:strict")
+}
+
+// jsonTagOption reports a json tag giving option. Options follow the name's
+// comma; format, whose value may hold commas, is the last.
+func jsonTagOption(tag, option string) bool {
 	_, options, _ := strings.Cut(tag, ",")
-	for option := range strings.SplitSeq(options, ",") {
-		if strings.HasPrefix(option, "format:") {
+	for given := range strings.SplitSeq(options, ",") {
+		if strings.HasPrefix(given, "format:") {
 			return false
 		}
-		if option == "case:strict" {
+		if given == option {
 			return true
 		}
 	}

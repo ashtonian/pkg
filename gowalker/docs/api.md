@@ -168,7 +168,7 @@ Options relax those defaults:
 | `json:"-"` | Excluded |
 | `json:"-,"` | `-` |
 | Embedded struct or pointer to one without a tag name, exported or not | Its fields, promoted, a leaf type's included: leaf rules decide where paths and walks stop, not which members `encoding/json` writes, and paths, writes and walks cross the leaf to the fields it promotes |
-| Unexported embedded struct with a tag name, a leaf type included | A field under that name, as `encoding/json` writes it as a member. Its `GoField` is unexported: reading or writing its value whole, or walking a value into it, returns ErrAccess; with `NestedFields()`, paths to its exported fields read and write |
+| Unexported embedded struct with a tag name, a leaf type included | A field under that name, as `encoding/json` writes it as a member, unless its type or a pointer to it has a method `encoding/json` would call on it (`MarshalJSON`, `UnmarshalJSON`, `AppendText`, `MarshalText`, `UnmarshalText`, `MarshalJSONTo`, `UnmarshalJSONFrom`, or `IsZero` under `omitzero`): `encoding/json` cannot call a method through an unexported field and drops it, and so does the option. Its `GoField` is unexported: reading or writing its value whole, or walking a value into it, returns ErrAccess; with `NestedFields()`, paths to its exported fields read and write |
 | A struct embedded inside itself, directly or through others | Its fields once, at the shallowest depth, as `encoding/json` explores each embedded struct once |
 | A name two fields claim | Settled as with `ResolveByDepth()`, which the option implies; a remaining tie fails, or with `DropTies()` drops every field claiming the name |
 | An embedded struct whose own fields tie, in a struct whose own field settles the name | The struct compiles, with the settling field, as `encoding/json` writes it; the embedded struct compiled alone, or as a named section, still fails |
@@ -199,7 +199,10 @@ call compiles and builds again. `CacheStats()` on the engine and on a
 compilations or builds whose result was not kept.
 
 Concurrent first requests for one type can each run `build`; one result is kept,
-so `build` must be deterministic and free of side effects that matter. `build`
+so `build` must be deterministic and free of side effects that matter. A kept
+type's lookup takes no lock, in a `TypeCache`, the engine's schema cache and a
+schema's root-field accessors alike, so concurrent readers of one type do not
+contend. `build`
 may request other types from the same cache. A recursive type must not request
 itself, or it recurses forever: track the types in progress inside `build`.
 A compilation error is returned unchanged; a `build` error is returned as built.
@@ -212,7 +215,8 @@ Embedding does not imply promotion. A resolver returns a `FieldRule` with a name
 aliases, skip, inline or leaf behavior. An empty name falls back to the Go name.
 Private fields remain excluded; an explicitly inlined anonymous struct can expose
 its exported descendants when safe reflection permits access, and
-`WithJSONFields` names an unexported embedded struct a tag names. Inline pointers
+`WithJSONFields` names an unexported embedded struct a tag names, unless its
+type has a method `encoding/json` would call on it. Inline pointers
 are followed for reads. Writes can allocate exported inline pointers when
 requested; safe reflection cannot allocate an unexported embedded pointer.
 
@@ -364,28 +368,37 @@ back. It is decided once per node when the type is compiled, so a library
 walking a compiled graph reads each map's keys from its `Key()` shape without
 compiling the key type or reflecting on its methods again.
 
+The reference is Go 1.27's `encoding/json` as Go builds it by default, on
+`encoding/json/v2`, and each rule is tested against it. Under
+`GOEXPERIMENT=nojsonv2` the older implementation refuses float and pointer
+keys and the name `null`, which these rules read.
+
 `Shape.JSONKey(name)` returns the key `encoding/json` reads `name` into, the
 member name it writes for that key (the key's canonical text), and whether it
 reads one and writes one. `Shape.IsCanonicalJSONKey(name)` reports whether
-`name`, held as bytes such as a decoder's, is the canonical text of the key it
-reads into, so a document that spells a key another way (`07` for an int key,
-`0:0:0:0:0:0:0:1` for a `netip.Addr`) can be refused. `Shape.CheckJSONKey()`
+`name`, a member name as a decoder reads it (unescaped, each byte of invalid
+UTF-8 replaced by U+FFFD, as `jsontext.AppendUnquote` and `encoding/json`
+give it), is the canonical text of the key it reads into, so a document that
+spells a key another way (`07` for an int key, `0:0:0:0:0:0:0:1` for a
+`netip.Addr`) can be refused. Every such name is a string key's canonical
+text; a name passed with invalid UTF-8 still in it is judged as decoding
+would replace it. `Shape.CheckJSONKey()`
 returns an error matching `ErrKey` when `encoding/json` refuses the type as a
 map key; its text names the type and never a member name.
 
 | Key type | `JSONKey` reads | Canonical text |
 |---|---|---|
-| String kind without text methods | Every name; each byte of invalid UTF-8 becomes U+FFFD | The name, when it is valid UTF-8 |
-| Integer kind without text methods | Base-10 text within the type's range, leading zeros included; a signed kind's may carry a `+` or `-` | Without a `+`, leading zeros or `-0`: `+7` and `07` read as `7` |
-| A type with `UnmarshalText`, or with `MarshalText` on its value | What `encoding/json` reads through the method or the kind | What `encoding/json` writes: `MarshalText` of a value that has it, otherwise the kind's text |
+| String kind without text methods | Every name; each byte of invalid UTF-8 becomes U+FFFD | The name as decoded |
+| Integer kind without text methods | Base-10 text within the type's range, leading zeros included; a signed kind's may carry a `+` or `-`; `null`, read as zero as `encoding/json` reads a JSON null into an integer | Without a `+`, leading zeros or `-0`: `+7` and `07` read as `7`, `null` as `0` |
+| A type with `UnmarshalText`, or with `AppendText` or `MarshalText` on its value | What `encoding/json` reads through the method or the kind | What `encoding/json` writes: `AppendText`, else `MarshalText`, of a value that has it (a string kind's own text whatever its methods), otherwise the kind's text |
 | Float kind | Numbers `encoding/json` reads | Their shortest form: `1.50` reads as `1.5` |
 | `any` | Every name, as a string | The name |
-| Pointer | What its element type reads, or its own text methods | What its element type writes, or its own `MarshalText` |
-| Not comparable, a non-empty interface, or a bool, complex, struct, array, channel or `unsafe.Pointer` kind without both `UnmarshalText` and a `MarshalText` on its value | Nothing: `CheckJSONKey` fails | None |
+| Pointer | What its element type reads, or its own text methods | What its element type writes, or its own `AppendText` or `MarshalText` |
+| Not comparable, a non-empty interface, or a bool, complex, struct, array, channel or `unsafe.Pointer` kind without both `UnmarshalText` and an `AppendText` or `MarshalText` on its value | Nothing: `CheckJSONKey` fails | None |
 
 JSON methods play no part: `encoding/json` calls neither `MarshalJSON` nor
-`UnmarshalJSON` on a key, and calls `MarshalText` only on the key's value, so a
-pointer-receiver `MarshalText` leaves a struct key unwritable. `IsCanonicalJSONKey`
+`UnmarshalJSON` on a key, and calls `AppendText` and `MarshalText` only on the
+key's value, so a pointer-receiver one leaves a struct key unwritable. `IsCanonicalJSONKey`
 allocates nothing for string and integer kinds without text methods; every
 other rule, and `JSONKey` always, allocate, the third column's rules through
 an `encoding/json` round trip.

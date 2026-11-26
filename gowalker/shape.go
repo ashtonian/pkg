@@ -80,7 +80,10 @@ type declaredField struct {
 // their own descriptor. Recursive relationships refer back to existing Shapes.
 // Atomic marks a traversal leaf; its declared relationships remain inspectable.
 type Shape struct {
-	typ          reflect.Type
+	typ reflect.Type
+	// kind is typ.Kind(), kept so Kind is a field read rather than an
+	// interface call: walks ask it at every node.
+	kind         reflect.Kind
 	atomic       bool
 	elem         *Shape
 	key          *Shape
@@ -104,8 +107,11 @@ type Shape struct {
 	// conflict is the name conflict of a struct reached only aside (see
 	// builder.view), in place of its view.
 	conflict *NameConflict
-	// jsonKey is the type's rule as a JSON map key (JSONKey).
-	jsonKey jsonKeyRule
+	// jsonKey is the type's rule as a JSON map key (JSONKey), and
+	// jsonKeyMax an integer key's largest magnitude: the most a positive
+	// key's digits may read.
+	jsonKey    jsonKeyRule
+	jsonKeyMax uint64
 }
 
 // conflictError is the error compiling s alone returns for its conflict, new
@@ -195,7 +201,7 @@ type declaration struct {
 func (s *Shape) Type() reflect.Type { return s.typ }
 
 // Kind returns the declared kind without dereferencing pointers.
-func (s *Shape) Kind() reflect.Kind { return s.typ.Kind() }
+func (s *Shape) Kind() reflect.Kind { return s.kind }
 
 // Atomic reports a leaf: paths and walks do not descend into it.
 // Whole-value reads/writes and raw type relationships remain available.
@@ -603,7 +609,8 @@ func (b *builder) build(t reflect.Type, depth int) (*Shape, error) {
 	if depth > limits.MaxDepth || len(b.nodes) >= limits.MaxTypes {
 		return nil, failure("compile", ErrLimit, t, emptyPath, -1, nil)
 	}
-	s := &Shape{typ: t, fold: b.engine.settings.fold, atomic: b.engine.settings.isAtomic(t), graph: b.graph, jsonKey: jsonKeyRuleOf(t)}
+	s := &Shape{typ: t, kind: t.Kind(), fold: b.engine.settings.fold, atomic: b.engine.settings.isAtomic(t), graph: b.graph}
+	s.jsonKey, s.jsonKeyMax = jsonKeyRuleOf(t)
 	b.nodes[t] = s
 	var err error
 	switch t.Kind() {
