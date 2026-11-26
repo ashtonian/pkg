@@ -1,4 +1,4 @@
-//go:build unit || integration || concurrency
+//go:build unit || integration
 
 // Package dbtest opens real databases for parse's result-based tests: SQL
 // the builders emit is executed and the returned rows / stored values are
