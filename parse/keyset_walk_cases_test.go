@@ -20,15 +20,20 @@ import (
 )
 
 // trackItem is a generated-schema entity: table-qualified sort expressions,
-// a UUID primary key, nullable keys, a timestamp key and a decimal key.
+// a UUID primary key, nullable keys (pointers and sql.Null types), a
+// timestamp key and a decimal key.
 type trackItem struct {
 	ID        uuid.UUID        `json:"id"         db:"id"         parse:"filter,sort"`
 	Rank      *int64           `json:"rank"       db:"rank"       parse:"filter,sort"`
+	Score     sql.NullInt64    `json:"score"      db:"score"      parse:"filter,sort"`
 	Name      string           `json:"name"       db:"name"       parse:"filter,sort"`
 	CreatedAt time.Time        `json:"created_at" db:"created_at" parse:"filter,sort"`
+	SeenAt    sql.NullTime     `json:"seen_at"    db:"seen_at"    parse:"filter,sort"`
 	Price     *decimal.Decimal `json:"price"      db:"price"      parse:"filter,sort"`
 }
 
+// A seed's score is its rank and its seen_at its created_at, NULL where its
+// rank is: the sql.Null keys order as the pointer key does.
 type trackSeed struct {
 	id      string
 	rank    *int64
@@ -56,6 +61,11 @@ var trackOrders = map[string]string{
 	"":            "abcdefg",
 	"rank":        "abdfceg",
 	"-rank":       "gecfdba",
+	"score":       "abdfceg",
+	"-score":      "gecfdba",
+	"seen_at":     "bdafceg",
+	"-seen_at":    "gecfadb",
+	"seen_at,id":  "bdafceg",
 	"rank,-name":  "abdfgce",
 	"-created_at": "fadcebg",
 	"name":        "edcbagf",
@@ -179,4 +189,12 @@ func queryTrack(t *testing.T, tdb trackDB, p *parse.Resource[trackItem], res *fi
 
 func trackTime(s trackSeed) time.Time {
 	return trackBase.Add(time.Duration(s.created) * time.Second)
+}
+
+// trackSeen is a seed's seen_at: its created_at, or NULL where its rank is.
+func trackSeen(s trackSeed) sql.NullTime {
+	if s.rank == nil {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: trackTime(s), Valid: true}
 }

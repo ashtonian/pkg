@@ -577,7 +577,7 @@ func normalizeCompositeKeys(columns []RelationKey, v any, codec core.Codec) (any
 func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
 	v = normalizeNilPointer(v)
 	if v == nil {
-		if isNullableType(t) {
+		if core.IsNullableType(t) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("null is not valid for %s", gowalker.TypeText(t))

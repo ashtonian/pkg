@@ -302,7 +302,7 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 			continue
 		}
 		ft := field.Type()
-		nullable := ft.Kind() == reflect.Pointer || ft.Kind() == reflect.Slice || ft.Kind() == reflect.Map || ft.Kind() == reflect.Interface
+		nullable := core.IsNullableType(ft)
 		fieldType := info.Type
 		if !sortable(ft, fieldType) {
 			// A cursor carries a scalar per key; a document, array or geo
