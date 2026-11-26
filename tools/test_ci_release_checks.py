@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 import ci_release_checks as ci
+import make_dry_run
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = (ROOT / ".github/workflows/ci.yml").read_text()
@@ -363,7 +364,7 @@ class PnpmContract(unittest.TestCase):
                 install = f"cd {project} && pnpm install --frozen-lockfile"
                 before = MAKEFILE.split(install, 1)[0]
                 target = re.findall(r"^([\w-]+):", before, re.M)[-1]
-                commands = subprocess.check_output(["make", "-s", "-n", target], cwd=ROOT, timeout=30).decode().splitlines()
+                commands = make_dry_run.dry_run(target, timeout=30).splitlines()
                 installs = [i for i, command in enumerate(commands) if install in command]
                 self.assertTrue(installs, target)
                 self.assertIn("node tools/check-pnpm.mjs", commands[:installs[0]], target)
@@ -372,8 +373,7 @@ class PnpmContract(unittest.TestCase):
 
 class Make(unittest.TestCase):
     def recipe(self, target, packages):
-        return subprocess.check_output(["make", "-s", "-n", target, f"PACKAGES={packages}"],
-                                       cwd=ROOT, timeout=30).decode().strip()
+        return make_dry_run.dry_run(target, timeout=30, PACKAGES=packages).strip()
 
     def test_make_covers_exactly_the_listed_packages(self):
         self.assertEqual(self.recipe("test-gowalker", "all").split()[-1], "./gowalker/...")

@@ -12,6 +12,8 @@ import re
 import subprocess
 import unittest
 
+import make_dry_run
+
 ROOT = Path(__file__).resolve().parents[1]
 RACE_LANE_TAG = "concurrency"
 # Tags of the lanes pull requests run under race.
@@ -60,8 +62,7 @@ class ParseRaceLane(unittest.TestCase):
         self.assertEqual(missing, [], f"add `|| {RACE_LANE_TAG}` to their //go:build lines")
 
     def test_the_race_target_builds_the_tagged_files(self):
-        recipe = subprocess.check_output(["make", "-s", "-n", "test-parse-race", "PACKAGES=all"],
-                                         cwd=ROOT, timeout=30).decode().split()
+        recipe = make_dry_run.dry_run("test-parse-race", timeout=30, PACKAGES="all").split()
         self.assertIn("-race", recipe)
         self.assertIn(f"-tags={RACE_LANE_TAG}", recipe)
 

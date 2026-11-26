@@ -11,8 +11,9 @@ uncached run.
 """
 from pathlib import Path
 import re
-import subprocess
 import unittest
+
+import make_dry_run
 
 ROOT = Path(__file__).resolve().parents[1]
 MAKEFILE = (ROOT / "Makefile").read_text()
@@ -43,10 +44,10 @@ def rules():
 
 def dry_run(*targets, count=None):
     """The go test commands make would run for targets over every package."""
-    args = ["make", "-s", "-n", *targets, "PACKAGES=all"]
+    variables = {"PACKAGES": "all"}
     if count is not None:
-        args.append(f"UNIT_TEST_COUNT={count}")
-    out = subprocess.check_output(args, cwd=ROOT, timeout=60, text=True)
+        variables["UNIT_TEST_COUNT"] = count
+    out = make_dry_run.dry_run(*targets, **variables)
     return [line for line in out.splitlines() if line.startswith("go test")]
 
 
