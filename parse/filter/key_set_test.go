@@ -230,3 +230,35 @@ func TestKeyConstraint_SelectsWholeKeys(t *testing.T) {
 	}
 	assert.Equal(t, []int64{2, 3}, inMemory)
 }
+
+// An empty key set admits no row, of one column as of several, in SQL and in
+// memory: a subject granted no key reads nothing.
+func TestKeyConstraint_EmptySetAdmitsNoRow(t *testing.T) {
+	db := dbtest.SQLite(t)
+	_, err := db.ExecContext(t.Context(), `CREATE TABLE stock_items (warehouse_id TEXT NOT NULL, sku TEXT NOT NULL, qty INTEGER NOT NULL, PRIMARY KEY (warehouse_id, sku))`)
+	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO stock_items VALUES ('w1', 'a', 1)`)
+	require.NoError(t, err)
+	for name, fields := range map[string][]string{"one column": {"warehouse_id"}, "several columns": {"warehouse_id", "sku"}} {
+		t.Run(name, func(t *testing.T) {
+			c := &filter.PolicyConstraint{Fields: fields, Operator: filter.OpIn, Value: []core.Key{}}
+			for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
+				_, err := keyWhere(t, d, c)
+				require.NoError(t, err, d.Name())
+			}
+			res, err := keyWhere(t, filter.SQLiteDialect{}, c)
+			require.NoError(t, err)
+			var n int
+			require.NoError(t, db.QueryRowContext(t.Context(), "SELECT count(*) FROM stock_items WHERE "+res.Where, res.Args...).Scan(&n))
+			assert.Zero(t, n)
+
+			ast, err := filter.ApplyPolicyConstraints(stockSchema(), nil, &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{c}})
+			require.NoError(t, err)
+			truth, err := filter.Evaluate(ast.Root, filter.RowFunc(func(f *filter.FieldSchema) (any, bool, error) {
+				return map[string]any{"warehouse_id": "w1", "sku": "a"}[f.Column], true, nil
+			}))
+			require.NoError(t, err)
+			assert.Equal(t, filter.False, truth)
+		})
+	}
+}

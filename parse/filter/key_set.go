@@ -22,8 +22,9 @@ type KeySet struct {
 }
 
 // keyNode compiles a key constraint (PolicyConstraint.Fields). One column
-// compiles exactly as a constraint on Field does; a key of several columns
-// is an AND of equalities under OpEq and a KeySet under OpIn.
+// compiles exactly as a constraint on Field does, an empty set as an empty
+// `$in`; a key of several columns is an AND of equalities under OpEq and a
+// KeySet under OpIn.
 func keyNode(norm *FilterParser, schema *ResourceSchema, c *PolicyConstraint) (*FilterNode, error) {
 	if c.Field != "" || c.Member != nil {
 		return nil, fmt.Errorf("%w: a key constraint names its columns in Fields alone, with no Field or Member", ErrPolicyInvalid)
@@ -38,8 +39,9 @@ func keyNode(norm *FilterParser, schema *ResourceSchema, c *PolicyConstraint) (*
 	if len(c.Fields) == 1 {
 		single := *c
 		single.Field, single.Fields = c.Fields[0], nil
-		single.Value = keys[0][0]
-		if c.Operator == OpIn {
+		if c.Operator == OpEq {
+			single.Value = keys[0][0]
+		} else {
 			values := make([]any, len(keys))
 			for i, k := range keys {
 				values[i] = k[0]
