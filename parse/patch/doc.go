@@ -51,7 +51,9 @@
 // patch names no database: SQL whose form differs between databases is a
 // method of the dialect it compiles for, [SQLDialect] for a SET clause and
 // its preconditions and [RelationDialect] for membership statements, so a
-// SQL provider is one type implementing them. The parse/filter dialects do.
+// SQL provider is one type implementing them. The set is sealed: both embed
+// the module's internal dialect kind, so the parse/filter dialects implement
+// them, and a new provider is a type there.
 //
 // # Policy Enforcement
 //

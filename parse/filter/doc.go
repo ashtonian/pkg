@@ -46,10 +46,15 @@
 // [PostgresDialect] generates PostgreSQL SQL ($1 placeholders, jsonb
 // documents, native arrays, PostGIS geo). [SQLiteDialect] generates SQLite
 // SQL (?1 placeholders, JSON text documents and arrays matched through
-// json_each). These are the only dialects: [Dialect] has unexported methods,
-// so no type outside the module implements it. Every piece of SQL whose form
-// differs between databases is a [Dialect] method, the SQL a patch writes
-// and what a row scan decodes included, so a new SQL provider is one type
+// json_each). These are the only dialects, and the set is sealed: [Dialect]
+// has unexported methods, so no type outside the module implements it of its
+// own. A type that embeds one of the two to override a method is not a
+// dialect parse supports, whatever it compiles to: the built-in methods call
+// their own receiver's (a statement quotes and binds as the embedded dialect
+// does, whatever the outer type declares), and a plan is matched to its
+// executor by Name alone. Every piece of SQL whose form differs between
+// databases is a [Dialect] method, the SQL a patch writes and what a row scan
+// decodes included, so a new SQL provider is one type in this package
 // implementing it, and [DialectFromDSN] maps its connection strings to it. A
 // dialect's Condition builds a predicate's SQL and arguments together. A
 // `$in` / `$nin` set binds as one array parameter whatever its size:

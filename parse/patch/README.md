@@ -11,7 +11,7 @@ JSON Patch and Merge Patch validation, SQL SET compilation, relation membership 
 | [Junction statements and transaction requirements](../docs/pair-tables.md#update-membership) | Consumer guide |
 | [Error catalog](../docs/http-errors.md) | Consumer guide |
 
-patch names no database: every piece of SQL whose form differs between databases is a method of the dialect it compiles for (`SQLDialect`, `RelationDialect`), so a new SQL provider is one type implementing them, in `parse/filter` beside its read-side SQL (`filter.Dialect`).
+patch names no database: every piece of SQL whose form differs between databases is a method of the dialect it compiles for (`SQLDialect`, `RelationDialect`), so a new SQL provider is one type implementing them, in `parse/filter` beside its read-side SQL (`filter.Dialect`). The set is sealed: both interfaces embed the module's internal dialect kind, and a type outside the module that embeds a built-in dialect to override a method is not a dialect parse supports ([dialects](../docs/queries.md#configuration)).
 
 Parsers read their limits from `core.ParserConfig`; SQL compilation takes `PatchSQLOption`s ([patch configuration](../docs/patches.md#configuration)) and a policy its `PolicyOption`s ([policy](../docs/patches.md#policy)).
 
