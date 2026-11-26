@@ -127,3 +127,21 @@ func TestError_IsMatchesItsCodeOnly(t *testing.T) {
 	}
 	check(t, "E2071", CodeUnknownField.Error())
 }
+
+func TestDecodeError_OptionalMembers(t *testing.T) {
+	for _, tc := range []struct {
+		fields, path         string
+		hasIndex, hasDetails bool
+	}{
+		{`"index":"3","path":"/x","details":{}`, "/x", false, true},
+		{`"path":5,"index":0,"details":{}`, "", true, true},
+		{`"details":["x"],"index":0,"path":"/x"`, "/x", true, false},
+	} {
+		got := DecodeError(422, []byte(`{"code":"E2071","message":"m",`+tc.fields+`}`))
+		checkErrorIs(t, got, CodeUnknownField)
+		check(t, "m", got.Message)
+		check(t, tc.path, got.Path)
+		check(t, tc.hasIndex, got.Index != nil)
+		check(t, tc.hasDetails, got.Details != nil)
+	}
+}

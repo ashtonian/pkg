@@ -471,3 +471,17 @@ func TestListParams_LeavesZeroMembersOut(t *testing.T) {
 	_, err = ListParams{Filter: Or()}.Values()
 	checkErrorIs(t, err, ErrEmptyOr)
 }
+
+func TestOperation_FreezesOperand(t *testing.T) {
+	doc := map[string]string{"color": "red"}
+	op := Add("/attrs", doc)
+	doc["color"] = "blue"
+	checkJSON(t, `{"op":"add","path":"/attrs","value":{"color":"red"}}`, encode(t, op))
+}
+
+func TestOperation_RefusesInvalidOperand(t *testing.T) {
+	op := Replace("/score", math.NaN())
+	checkErrorIs(t, op.Err(), ErrOperand)
+	_, err := json.Marshal([]Operation{op})
+	checkErrorIs(t, err, ErrOperand)
+}

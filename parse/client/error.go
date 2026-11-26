@@ -80,19 +80,31 @@ type Error struct {
 func DecodeError(status int, body []byte) *Error {
 	refused := &Error{Status: status}
 	var answer struct {
-		Code    *Code          `json:"code"`
-		Message *string        `json:"message"`
-		Path    string         `json:"path"`
-		Index   *int           `json:"index"`
-		Details map[string]any `json:"details"`
+		Code    *Code           `json:"code"`
+		Message *string         `json:"message"`
+		Path    json.RawMessage `json:"path"`
+		Index   json.RawMessage `json:"index"`
+		Details json.RawMessage `json:"details"`
 	}
 	err := json.Unmarshal(body, &answer)
 	if err != nil || answer.Code == nil || answer.Message == nil {
 		return refused
 	}
 	refused.Code, refused.Message = *answer.Code, *answer.Message
-	refused.Path, refused.Index, refused.Details = answer.Path, answer.Index, answer.Details
+	refused.Path = optionalMember[string](answer.Path)
+	refused.Index = optionalMember[*int](answer.Index)
+	refused.Details = optionalMember[map[string]any](answer.Details)
 	return refused
+}
+
+// optionalMember discards a malformed member, including any partially decoded value.
+func optionalMember[T any](raw json.RawMessage) T {
+	var value T
+	if len(raw) != 0 && json.Unmarshal(raw, &value) != nil {
+		var zero T
+		return zero
+	}
+	return value
 }
 
 // Error names the code, the status, the message and the patch member or
