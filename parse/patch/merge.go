@@ -97,7 +97,11 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 
 func validateMergeMember(schema *PatchSchema, codec core.Codec, key string, value any) (*PatchOperation, error) {
 	path := core.FormatPointer(key)
-	pathSchema, err := matchPath(schema, path)
+	err := core.CheckText(key)
+	var pathSchema *PathSchema
+	if err == nil {
+		pathSchema, err = matchPath(schema, path)
+	}
 	if err != nil {
 		return nil, &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodePatchFieldNotFound.String(),

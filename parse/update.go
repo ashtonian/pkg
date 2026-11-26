@@ -406,7 +406,7 @@ func (r *Resource[T]) targetKeys(keys []Key) ([]Key, error) {
 	}
 	out := make([]Key, len(keys))
 	for i, key := range keys {
-		v, err := r.normalizeKey(key)
+		v, err := r.keyColumns().requested(key)
 		if err != nil {
 			if len(keys) == 1 {
 				return nil, fmt.Errorf("parse: %s: target key: %w", r.table, err)
@@ -416,11 +416,6 @@ func (r *Resource[T]) targetKeys(keys []Key) ([]Key, error) {
 		out[i] = v
 	}
 	return out, nil
-}
-
-// normalizeKey is key in the key columns' canonical forms (keyColumns.normalize).
-func (r *Resource[T]) normalizeKey(key Key) (Key, error) {
-	return r.keyColumns().normalize(key)
 }
 
 // rowKey is row's key as a map key (keyColumns.identity), so rows scanned

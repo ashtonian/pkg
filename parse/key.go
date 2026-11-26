@@ -77,6 +77,27 @@ func (kc keyColumns) normalize(key Key) (Key, error) {
 	return out, nil
 }
 
+// requested is a key a caller names a row by — a target's, a batch row's,
+// an item route's texts — normalized, its texts valid UTF-8 without U+0000
+// (core.CheckText): a backend compares a key's text as written, and
+// PostgreSQL refuses either in a parameter. ErrKeyInvalid otherwise. Keys
+// read from stored rows are normalized without the check.
+func (kc keyColumns) requested(key Key) (Key, error) {
+	out, err := kc.normalize(key)
+	if err != nil {
+		return nil, err
+	}
+	for i, v := range out {
+		if err := core.CheckValueText(v); err != nil {
+			if len(kc.names) == 1 {
+				return nil, fmt.Errorf("%w: %w", ErrKeyInvalid, err)
+			}
+			return nil, fmt.Errorf("%w: key column %s: %w", ErrKeyInvalid, kc.names[i], err)
+		}
+	}
+	return out, nil
+}
+
 // stored is a normalized key as d's database holds it
 // (Dialect.StoredKeyValue): a timestamp at the database's precision.
 func (kc keyColumns) stored(d Dialect, key Key) (Key, error) {

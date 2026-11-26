@@ -5,7 +5,6 @@ package parse_test
 import (
 	"encoding/json"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
@@ -58,9 +57,11 @@ func FuzzPatchApplyPreservesTarget(f *testing.F) {
 func FuzzEmptyKeyPatchPaths(f *testing.F) {
 	f.Add("", "value")
 	f.Add("a/b~c", "value")
-	f.Add("\x00", "\x00")
+	f.Add("\x01", "\x01")
 	f.Fuzz(func(t *testing.T, key, value string) {
-		if len(key)+len(value) > 4096 || !utf8.ValidString(key) || !utf8.ValidString(value) {
+		// A patch's text holding U+0000 or invalid UTF-8 is refused at parse
+		// (TestParse_RefusesInvalidText); stored members may hold U+0000.
+		if len(key)+len(value) > 4096 || core.CheckText(key) != nil || core.CheckText(value) != nil {
 			t.Skip()
 		}
 		p := emptyKeyParser(t)

@@ -157,7 +157,7 @@ func buildSearchCondition(schema *SearchSchema, dialect Dialect, query string, s
 	if schema == nil || query == "" || len(schema.Fields) == 0 {
 		return nil, nil
 	}
-	if err := core.CheckNUL(query); err != nil {
+	if err := core.CheckText(query); err != nil {
 		param := cmp.Or(schema.Param, ParamSearch)
 		return nil, &core.ParseError{
 			Kind:    core.ParseErrorKindFilter,

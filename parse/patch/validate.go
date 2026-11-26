@@ -67,8 +67,9 @@ func newValueChecker(schema *PatchSchema, codec core.Codec) valueChecker {
 
 // check is the check both wire formats run on one operation's value: the
 // operation is allowed on the path, a clear is nullable, the value
-// normalizes (a relation's keys once each, within the limit), its validators
-// pass, and an array set whole holds the path's element counts. value is
+// normalizes (a relation's keys once each, within the limit) with every
+// string in it valid UTF-8 without U+0000 (core.CheckValueText), its
+// validators pass, and an array set whole holds the path's element counts. value is
 // what the operation writes, at a path depth tokens deep. It returns the normalized value, or the failures: the first of the
 // first three checks, else every validator's and the count's, in order.
 //
@@ -116,6 +117,9 @@ func (c valueChecker) check(ps *PathSchema, op PatchOp, value any, depth int, me
 			normalized, err = normalizeMergeValue(ps, op, value, c.codec)
 		} else {
 			normalized, err = normalizeOpValue(ps, op, value, depth, c.codec)
+		}
+		if err == nil {
+			err = core.CheckValueText(normalized)
 		}
 		if err != nil {
 			return nil, invalid(err)

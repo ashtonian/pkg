@@ -35,7 +35,7 @@ func (r *Resource[T]) ParseKey(texts ...string) (Key, error) {
 		}
 		key[i] = v
 	}
-	normalized, err := kc.normalize(key)
+	normalized, err := kc.requested(key)
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
 	}

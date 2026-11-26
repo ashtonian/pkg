@@ -236,10 +236,15 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 	return &PatchOperation{Op: op, Path: raw.Path, From: raw.From, Value: value, Schema: pathSchema, fromSchema: fromSchema}, nil
 }
 
-// resolvePath validates a JSON Pointer (RFC 6901 syntax, depth within
-// ParserConfig.MaxDepth) and returns its schema entry and token count.
+// resolvePath validates a JSON Pointer (RFC 6901 syntax, valid UTF-8
+// without U+0000, depth within ParserConfig.MaxDepth) and returns its
+// schema entry and token count.
 func (p *Parser) resolvePath(path string, index int) (*PathSchema, int, error) {
 	tokens, err := core.ParsePointer(path)
+	if err == nil {
+		// SQL binds a member's tokens as text (a jsonb path).
+		err = core.CheckText(path)
+	}
 	if err != nil {
 		return nil, 0, &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodeInvalidPatchOp.String(),

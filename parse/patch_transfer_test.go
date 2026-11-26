@@ -113,7 +113,7 @@ func TestPatchEmptyObjectKeys(t *testing.T) {
  {"op":"move","from":"/meta/copied","path":"/meta//moved"},
  {"op":"remove","path":"/meta//x"},
  {"op":"add","path":"/meta/array/0//z","value":"new"},
- {"op":"add","path":"/meta//payload","value":{"":{"a/b":"ok"},"\u0000":"keep"}},
+ {"op":"add","path":"/meta//payload","value":{"":{"a/b":"ok"},"\u0001":"keep"}},
  {"op":"test","path":"/meta//moved","value":"new"},
  {"op":"test","path":"/meta/array/0//z","value":"new"},
  {"op":"test","path":"/meta//payload//a~1b","value":"ok"}
@@ -127,7 +127,7 @@ func TestPatchEmptyObjectKeys(t *testing.T) {
 	require.NotContains(t, nested, "x")
 	payload, payloadOK := nested["payload"].(map[string]any)
 	require.True(t, payloadOK)
-	require.Equal(t, "keep", payload["\x00"])
+	require.Equal(t, "keep", payload["\x01"])
 	original, originalOK := target.Meta[""].(map[string]any)
 	require.True(t, originalOK)
 	require.Equal(t, "old", original["x"])

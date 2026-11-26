@@ -34,8 +34,9 @@ type keyTextRow struct {
 }
 
 // ParseKey reads each column's text by the column's type and normalizes the
-// key as ByKey does; a text its column cannot hold, or another number of
-// texts than columns, is ErrKeyInvalid naming the column.
+// key as ByKey does; a text its column cannot hold, text holding U+0000 or
+// invalid UTF-8, or another number of texts than columns, is ErrKeyInvalid
+// naming the column.
 func TestResource_ParseKey(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -70,6 +71,8 @@ func TestResource_ParseKey(t *testing.T) {
 		{name: "not a uuid", key: []string{"u"}, texts: []string{"nope"}, wantErr: "key column u: invalid UUID"},
 		{name: "not a date", key: []string{"d"}, texts: []string{"2027-02-29"}, wantErr: "key column d:"},
 		{name: "composite column", key: []string{"s", "i64"}, texts: []string{"w1", "x"}, wantErr: `key column i64: "x" is not a decimal integer`},
+		{name: "U+0000", key: []string{"s"}, texts: []string{"a\x00b"}, wantErr: "holds U+0000"},
+		{name: "invalid UTF-8", key: []string{"s", "i64"}, texts: []string{"a\xff", "1"}, wantErr: "key column s: invalid text: it is not valid UTF-8"},
 		{name: "too few texts", key: []string{"s", "i64"}, texts: []string{"w1"}, wantErr: "1 texts for the 2 key columns (s, i64)"},
 		{name: "too many texts", key: []string{"s"}, texts: []string{"w1", "a"}, wantErr: "2 texts for the 1 key columns (s)"},
 	}

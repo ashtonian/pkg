@@ -115,7 +115,7 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 		}
 		// As the database holds the key, so the rows Current returns check
 		// against it and two keys it holds equal are one row's.
-		normalized, err := key.normalize(row.Key)
+		normalized, err := key.requested(row.Key)
 		if err == nil {
 			normalized, err = key.stored(d, normalized)
 		}

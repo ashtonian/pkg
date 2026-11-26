@@ -505,7 +505,7 @@ func ValidateCursor(token *PageToken, keys []CursorKey) error {
 			}
 		}
 		if s, ok := v.(string); ok && err == nil {
-			err = core.CheckNUL(s)
+			err = core.CheckText(s)
 		}
 		if err != nil {
 			return &core.ParseError{
