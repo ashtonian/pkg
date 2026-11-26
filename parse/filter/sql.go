@@ -341,7 +341,7 @@ func textValue(op FilterOperator, value any) (string, error) {
 }
 
 // unsupportedOperator is the error for an operator the field type does not
-// define; parsed filters never reach it (checkOperators), programmatic
+// define; parsed filters never reach it (CheckOperators), programmatic
 // ASTs can.
 func unsupportedOperator(field *FieldSchema, op FilterOperator) error {
 	return fmt.Errorf("operator %q is not defined for %s field %q", op, field.DataType, field.ExternalName)

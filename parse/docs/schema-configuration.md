@@ -76,7 +76,7 @@ A resource's key is the columns `parse.PrimaryKey` names, in key order: `"id"` a
 | Where | One column | Several columns |
 |---|---|---|
 | Lists | The keyset ends on the key column, unless the sort names it | The keyset ends on each key column the sort does not name, in key order and in the sort's direction, so pages are stable under every sort; a cursor minted under another key is refused (E2082) |
-| Requests | The key column is a request field, tagged or not | Every key column is a request field |
+| Requests | The key column is a request field, tagged or not, taking `eq`, the ranges and `in` as its type does (`filter.KeyOperators`: no range on a boolean, interval or network key) | Every key column is a request field, each taking its own type's |
 | A row's key | `Resource.Key(item)` is a `parse.Key` of one value | A `parse.Key` of a value per column, in key order |
 | Updates | `ByID(id)`, `ByIDs(ids...)`, or `ByKey` / `ByKeys` with one-value keys | `ByKey(k)`, `ByKeys(ks...)`; a key of another length than the key is `ErrKeyInvalid`, naming both lengths. One key compiles to the AND of its columns' equalities, a set of keys to the row value of the columns `IN` the set, bound as one parameter whatever its size |
 | Update batches | `RowUpdate.Key`: one-value keys | `RowUpdate.Key`: a value per column; rows lock in key order, column by column |

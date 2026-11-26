@@ -202,7 +202,7 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		if err := applyStorage(g, fs, field); err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
-		if err := checkOperators(fs); err != nil {
+		if err := CheckOperators(fs); err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 		// After storage, which can make a document field a scalar.
