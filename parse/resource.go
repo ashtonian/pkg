@@ -137,9 +137,9 @@ func TenantColumn(column string) ResourceOption {
 
 // DeletedColumn names the soft-delete timestamp: a row is live while it is
 // NULL, so its field must hold NULL (core.IsNullableType: a pointer, or a
-// type such as sql.NullTime whose zero value scans and writes NULL), and it
-// is neither the key nor the tenant column. Lists exclude deleted rows
-// unless Scope.IncludeDeleted; updates never reach them.
+// type such as sql.NullTime whose zero value writes NULL and scans NULL
+// back), and it is neither the key nor the tenant column. Lists exclude
+// deleted rows unless Scope.IncludeDeleted; updates never reach them.
 func DeletedColumn(column string) ResourceOption {
 	return func(c *resourceConfig) { c.deleted = column }
 }

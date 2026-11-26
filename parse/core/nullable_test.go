@@ -52,6 +52,28 @@ func (s refusingValuer) Value() (driver.Value, error) {
 	return "x", nil
 }
 
+// flaggedNull's zero value writes 0, and only a NULL scan marks it NULL: a
+// field cleared to its zero value would write 0 where SQL wrote NULL.
+type flaggedNull struct {
+	n    int64
+	null bool
+}
+
+func (f *flaggedNull) Scan(src any) error {
+	f.null = src == nil
+	if n, ok := src.(int64); ok {
+		f.n = n
+	}
+	return nil
+}
+
+func (f flaggedNull) Value() (driver.Value, error) {
+	if f.null {
+		return nil, nil
+	}
+	return f.n, nil
+}
+
 func TestIsNullableType(t *testing.T) {
 	tests := []struct {
 		name string
@@ -83,6 +105,7 @@ func TestIsNullableType(t *testing.T) {
 		{"a Scan that panics on NULL", reflect.TypeFor[nilPanicScanner](), false},
 		{"a Scanner without a Valuer", reflect.TypeFor[readOnlyScanner](), false},
 		{"a Valuer that refuses NULL", reflect.TypeFor[refusingValuer](), false},
+		{"a zero value that writes a value", reflect.TypeFor[flaggedNull](), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
