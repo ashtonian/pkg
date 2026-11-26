@@ -92,6 +92,8 @@ A key column is of any scalar type (`core.IsKeyType`): a string, UUID, integer, 
 | Go identity (an update batch's duplicate and `CheckCurrent` checks, include grouping) | `core.KeyTextOf` of the normalized key: equal exactly when the database holds the keys equal; `-0` is `0`, NaN and the infinities are no key |
 | Update batch lock order | `filter.KeyOrder`, which `filter.CompareKeyValues` mirrors in Go: decimals and numbers by value, timestamps by instant, strings by code point; an interval or network value, which no sort orders, by its canonical text's code points |
 
+A key normalizes by one rule wherever it binds, `core.NormalizeKey`: a value per key column, each read as the database holds it (`core.StoredValue`: a `driver.Valuer` stands for the value it writes) and normalized as its column's type. An update's targets (`ByKey`, `ByKeys`, `RowUpdate.Key`), `ParseKey`, the owner keys relation statements and includes bind, a relation's members, and key sets all go through it, so a key whose Go value is a codec names the row the driver stored, in each.
+
 PostgreSQL holds a timestamp at microseconds and rounds a finer one, half to even, as it reads it; an update batch's keys are held at that precision (`Dialect.StoredKeyValue`), so a key a few nanoseconds off names the row there, and SQLite, which holds the canonical text as written, names no row by it. The tenant column may be a key column, as `("tenant_id", "sku")`; the soft-delete column may not.
 
 <!-- output of ExamplePrimaryKey -->
@@ -178,6 +180,7 @@ Request documents (JSON filters, JSON Patch and merge patch bodies) decode with 
 | `ParsePointer` / `FormatPointer` / `EscapePointerToken` | RFC 6901 paths (`~0`, `~1` escapes) |
 | `TypeOf(t)` | `TypeInfo{Type, Elem, NumberKind, SQLType}` — Go-only classification; `SQLType` is empty, slices of scalars are arrays, maps/`any`/`json.RawMessage` and other slices are JSON, structs are objects |
 | `IsKeyType(t)` | Whether a `FieldType` is a scalar and so may be a key: anything but a document, array, geometry or opaque value. Key columns, relation correlation columns and target keys, and membership fields must be one. A tenant column is narrower: a string, UUID or integer, the types `Scope.Tenant`'s text names one value of |
+| `NormalizeKey(types, key)` | A key with each value read as the database holds it (`StoredValue`) and normalized as its column's type (`NormalizeScalar`): the one key rule. A key of another length is an error naming both lengths; a value its column cannot hold, NULL, or a column of no scalar type is a `*KeyValueError` naming the value's position |
 | `KeyTextOf(types, key)` / `KeyValueText(t, v)` | A key's canonical text, each value normalized as its column's type: equal for two keys exactly when the database holds them equal (`"1.50"` and `1.5`, one instant in two zones, `-0` and `0`), and the text includes and facets name the row by. NaN, the infinities and a document are errors |
 | `SchemaGenerator.FieldType(field)` | Go classification combined with declared physical `SQLType`; JSON scalar/slice fields become documents, typed objects retain members, and native arrays remain arrays |
 

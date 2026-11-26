@@ -174,47 +174,28 @@ func relationValueKeys(values []any, columns []string, types []core.TypeInfo) ([
 	return relationKeys(keys, columns, types)
 }
 
-// relationKeys are keys as one parameter binds them: a value per column,
-// each in its column's type's canonical form (core.NormalizeScalar), a
-// driver.Valuer read as the value it stands for, none null.
+// relationKeys are keys as one parameter binds them: each in its columns'
+// canonical form by the one key rule (core.NormalizeKey), which the root
+// package's targets and owners are normalized by too, so a key binds alike
+// as a target and as a relation's member.
 func relationKeys(keys []core.Key, columns []string, types []core.TypeInfo) ([]core.Key, error) {
 	out := make([]core.Key, len(keys))
 	for i, k := range keys {
-		if len(k) != len(columns) {
-			return nil, fmt.Errorf("key %d has %d values for %d columns", i, len(k), len(columns))
-		}
-		out[i] = make(core.Key, len(k))
-		for j, part := range k {
-			v, err := driverScalar(part)
-			if err == nil {
-				v, err = core.NormalizeScalar(types[j].Type, types[j].NumberKind, v)
+		normalized, err := core.NormalizeKey(types, k)
+		if err != nil {
+			valueErr, ok := errors.AsType[*core.KeyValueError](err)
+			switch {
+			case !ok:
+				return nil, fmt.Errorf("key %d: %w", i, err)
+			case len(columns) == 1:
+				return nil, fmt.Errorf("key %d: %w", i, valueErr.Err)
 			}
-			if err != nil {
-				if len(columns) == 1 {
-					return nil, fmt.Errorf("key %d: %w", i, err)
-				}
-				return nil, fmt.Errorf("key %d: column %s: %w", i, columns[j], err)
-			}
-			out[i][j] = v
+			return nil, fmt.Errorf("key %d: column %s: %w", i, columns[valueErr.Index], valueErr.Err)
 		}
+		out[i] = normalized
 	}
 	return out, nil
 }
-
-// driverScalar is k as the database binds it (core.StoredValue); null is
-// no value.
-func driverScalar(k any) (any, error) {
-	v, null, err := core.StoredValue(k)
-	if err != nil {
-		return nil, err
-	}
-	if null {
-		return nil, errNullKey
-	}
-	return v, nil
-}
-
-var errNullKey = errors.New("null is not a key")
 
 // tenantScalar is a tenant value as a JSON record binds it: the value the
 // database holds (core.StoredValue) as a JSON scalar, an integer as int64
@@ -222,9 +203,12 @@ var errNullKey = errors.New("null is not a key")
 // type holds it, and a value parse types by its Go type (a UUID, a time, a
 // decimal, a network value) as encoding/json writes it: its text.
 func tenantScalar(k any) (any, error) {
-	k, err := driverScalar(k)
+	k, null, err := core.StoredValue(k)
 	if err != nil {
 		return nil, err
+	}
+	if null {
+		return nil, errors.New("null is not a key")
 	}
 	rv := reflect.ValueOf(k)
 	switch rv.Kind() {

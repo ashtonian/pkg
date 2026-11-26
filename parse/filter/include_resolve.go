@@ -120,15 +120,13 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 		if err != nil {
 			return IncludeRows{}, fmt.Errorf("resolving include %s owner: %w", field.ExternalName, err)
 		}
-		target, err := pairKey(pair.Target, len(rel.TargetColumns))
+		stored, err := pairKey(pair.Target, len(rel.TargetColumns))
 		if err != nil {
 			return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, err)
 		}
-		for i, t := range rel.TargetTypes {
-			target[i], err = core.NormalizeScalar(t.Type, t.NumberKind, target[i])
-			if err != nil {
-				return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, err)
-			}
+		target, err := core.NormalizeKey(rel.TargetTypes, stored)
+		if err != nil {
+			return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, err)
 		}
 		keys := byOwner[name]
 		at, found := slices.BinarySearchFunc(keys, target, compare)
