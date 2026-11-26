@@ -2,8 +2,8 @@
 // encoding/json writes them for the Go value it decodes into, so a document
 // read from a row or written by a patch has one spelling per member: the
 // row scan of a stored document and typed patch application share it. It
-// walks the shape core.JSONDocumentOf compiles for the value's type, and
-// keeps no type metadata of its own.
+// walks the shape shapes.Document compiles for the value's type, and keeps
+// no type metadata of its own.
 package jsonkeys
 
 import (
@@ -20,6 +20,7 @@ import (
 
 	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/shapes"
 )
 
 // CanonicalMapKey decodes a member name into a key of map key type t, as
@@ -29,7 +30,7 @@ func CanonicalMapKey(t reflect.Type, name string) (reflect.Value, string, error)
 	if t == nil {
 		return reflect.Value{}, "", invalidKeyType(t)
 	}
-	shape, err := core.JSONDocumentOf(t)
+	shape, err := shapes.Document(t)
 	if err != nil {
 		return reflect.Value{}, "", err
 	}
@@ -56,13 +57,13 @@ func invalidKeyType(t reflect.Type) error {
 // reads it, invalid UTF-8 replaced. Members the type does not hold, and
 // interface, json.RawMessage and self-decoding subtrees, are opaque. Only
 // decoded's type is read, through its compiled shape
-// (core.JSONDocumentOf), so validation is one pass over raw.
+// (shapes.Document), so validation is one pass over raw.
 func Validate(raw []byte, decoded any) error {
 	target := reflect.ValueOf(decoded)
 	if !target.IsValid() || target.Kind() != reflect.Pointer || target.IsNil() {
 		return fmt.Errorf("JSON key validation target must be a non-nil pointer, got %s", gowalker.TypeText(reflect.TypeOf(decoded)))
 	}
-	shape, err := core.JSONDocumentOf(target.Type().Elem())
+	shape, err := shapes.Document(target.Type().Elem())
 	if err != nil {
 		return fmt.Errorf("JSON key validation: %w", err)
 	}
@@ -107,7 +108,7 @@ func decodedShape(shape *gowalker.Shape) *gowalker.Shape {
 
 // CheckDecodable refuses a document type encoding/json cannot decode every
 // member it writes into: one holding, at any depth, a struct whose member is
-// promoted through an unexported embedded pointer (core.CheckWritableField).
+// promoted through an unexported embedded pointer (shapes.CheckWritable).
 // encoding/json writes that member while the pointer is set, and decoding
 // into a fresh value, where the pointer is nil, fails on it. Self-decoding
 // subtrees are opaque, as Validate reads them.
@@ -119,7 +120,7 @@ func CheckDecodable(t reflect.Type) error {
 		// needs no compiled shape.
 		return nil
 	}
-	shape, err := core.JSONDocumentOf(t)
+	shape, err := shapes.Document(t)
 	if err != nil {
 		return err
 	}
@@ -137,7 +138,7 @@ func checkDecodable(shape *gowalker.Shape, seen map[*gowalker.Shape]bool) error 
 		return checkDecodable(shape.Elem(), seen)
 	case reflect.Struct:
 		for _, f := range shape.Fields() {
-			err := core.CheckWritableField(f)
+			err := shapes.CheckWritable(f)
 			if err == nil {
 				err = checkDecodable(f.Shape(), seen)
 			}

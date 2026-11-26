@@ -5,6 +5,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/ashtonian/pkg/parse/internal/shapes"
 )
 
 // GeneratorOption configures a SchemaGenerator.
@@ -285,7 +287,7 @@ func (g *SchemaGenerator) column(field, dbTag string) string {
 // JSONTagKey is the struct tag encoding/json names members by, and the
 // default FieldNameTag; DefaultColumnTagKey is the default ColumnTag.
 const (
-	JSONTagKey          = "json"
+	JSONTagKey          = shapes.JSONTagKey
 	DefaultColumnTagKey = "db"
 )
 

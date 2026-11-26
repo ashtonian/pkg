@@ -184,53 +184,18 @@ type docCollide struct {
 	Z int `json:"z"`
 }
 
-type docOf struct {
-	Own   docSelfA        `json:"own"`
-	Both  docCollide      `json:"both"`
-	Raw   json.RawMessage `json:"raw"`
-	Sizes map[uint8]int   `json:"sizes"`
-	Items []*docCollide   `json:"items"`
-}
-
-// A document's shape stops at a type that codes itself, and nowhere else:
-// a struct whose embedded types' methods collide holds the members
-// encoding/json writes for it, and a map's key shape reads its names.
-func TestJSONDocumentOf_StopsWhereATypeCodesItself(t *testing.T) {
-	root, err := JSONDocumentOf(reflect.TypeFor[docOf]())
-	require.NoError(t, err)
-	for _, name := range []string{"own", "raw"} {
-		f, _ := root.Lookup(name)
-		require.NotNil(t, f, name)
-		assert.True(t, f.Shape().Atomic(), name)
-	}
-	both, _ := root.Lookup("both")
-	require.NotNil(t, both)
-	assert.False(t, both.Shape().Atomic())
-	raw, err := json.Marshal(docCollide{})
-	require.NoError(t, err)
-	var members map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(raw, &members))
-	var names []string
-	for _, f := range both.Shape().Fields() {
-		names = append(names, f.Name())
-	}
-	assert.ElementsMatch(t, slices.Collect(maps.Keys(members)), names)
-
-	sizes, _ := root.Lookup("sizes")
-	require.NotNil(t, sizes)
-	assert.True(t, sizes.Shape().Key().IsCanonicalJSONKey([]byte("7")))
-	assert.False(t, sizes.Shape().Key().IsCanonicalJSONKey([]byte("07")))
-	items, _ := root.Lookup("items")
-	require.NotNil(t, items)
-	assert.Same(t, both.Shape(), items.Shape().Elem().Elem(), "one node per type")
-
-	again, err := JSONDocumentOf(reflect.TypeFor[docOf]())
-	require.NoError(t, err)
-	assert.Same(t, root, again, "compiled once")
-
-	// JSONFieldsOf still names a self-coding type's fields.
+// JSONFieldsOf names a self-coding type's fields, which a list response
+// masks, where a document's shape (shapes.Document) stops at the type.
+func TestJSONFieldsOf_NamesTheFieldsOfATypeThatCodesItself(t *testing.T) {
 	fields, err := JSONFieldsOf(reflect.TypeFor[docSelfB]())
 	require.NoError(t, err)
 	_, ok := fields.External("y")
 	assert.True(t, ok)
+	both, err := JSONFieldsOf(reflect.TypeFor[docCollide]())
+	require.NoError(t, err)
+	var names []string
+	for f := range both.Fields() {
+		names = append(names, f.External())
+	}
+	assert.ElementsMatch(t, []string{"X", "y", "z"}, names)
 }

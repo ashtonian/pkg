@@ -1,9 +1,9 @@
 package core
 
 import (
-	"encoding/json"
-	jsonv2 "encoding/json/v2"
 	"reflect"
+
+	"github.com/ashtonian/pkg/parse/internal/shapes"
 )
 
 // CustomJSON reports a type that encodes or decodes itself as JSON: it has
@@ -12,7 +12,7 @@ import (
 // its value or its pointer. Its JSON need not follow its Go fields, so what
 // a document of it holds is the type's own business. A nil type is false.
 func CustomJSON(t reflect.Type) bool {
-	unmarshalers := jsonUnmarshalers()
+	unmarshalers := shapes.JSONUnmarshalers()
 	return MarshalsJSON(t) || implementsOnValueOrPointer(t, unmarshalers[:]...)
 }
 
@@ -20,28 +20,8 @@ func CustomJSON(t reflect.Type) bool {
 // marshaling half, MarshalJSON or MarshalJSONTo on its value or its
 // pointer. A nil type is false.
 func MarshalsJSON(t reflect.Type) bool {
-	marshalers := jsonMarshalers()
+	marshalers := shapes.JSONMarshalers()
 	return implementsOnValueOrPointer(t, marshalers[:]...)
-}
-
-// jsonMarshalers and jsonUnmarshalers are the interfaces by which a type
-// encodes or decodes itself as JSON, as arrays, so a check allocates
-// nothing.
-func jsonMarshalers() [2]reflect.Type {
-	marshalers := [2]reflect.Type{reflect.TypeFor[json.Marshaler](), reflect.TypeFor[jsonv2.MarshalerTo]()}
-	return marshalers
-}
-
-func jsonUnmarshalers() [2]reflect.Type {
-	unmarshalers := [2]reflect.Type{reflect.TypeFor[json.Unmarshaler](), reflect.TypeFor[jsonv2.UnmarshalerFrom]()}
-	return unmarshalers
-}
-
-// customJSONInterfaces are all four, for an engine that stops at every type
-// CustomJSON reports.
-func customJSONInterfaces() []reflect.Type {
-	marshalers, unmarshalers := jsonMarshalers(), jsonUnmarshalers()
-	return append(marshalers[:], unmarshalers[:]...)
 }
 
 // implementsOnValueOrPointer reports t or *t implementing one of ifaces, as
