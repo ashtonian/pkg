@@ -283,7 +283,8 @@ func text(v any) (string, bool) {
 // boolean returns v as a bool when it is one, named bool types included, as
 // text and nativeInt read named strings and integers.
 func boolean(v any) (bool, bool) {
-	if b, ok := v.(bool); ok {
+	b, ok := v.(bool)
+	if ok {
 		return b, true
 	}
 	rv := reflect.ValueOf(v)

@@ -11,16 +11,17 @@ import (
 // beside the generator's field-name and column tags: the parse tag, the
 // keys readTags reads (textTags, boolTags) and the constraints
 // readConstraints reads.
-var parseTagKeys = func() []string {
+func parseTagKeys() []string {
+	var t Tags
 	keys := []string{"parse"}
-	for _, b := range boolTags {
+	for _, b := range boolTags(&t) {
 		keys = append(keys, b.key)
 	}
-	for _, s := range textTags {
+	for _, s := range textTags(&t) {
 		keys = append(keys, s.key)
 	}
-	return append(keys, constraintTagKeys...)
-}()
+	return append(keys, constraintTagKeys()...)
+}
 
 // misspeltTagKey is a key on a walked field's tag that parse does not read,
 // so close to one it does that it most likely means that one.
@@ -40,11 +41,13 @@ func (m misspeltTagKey) err() error {
 // character from them, bson beside json.
 func misspeltTagKeys(d gowalker.Declaration, k fieldsKey) []misspeltTagKey {
 	var found []misspeltTagKey
+	known := parseTagKeys()
 	for key := range d.TagKeys() {
 		if key == k.name || key == k.column {
 			continue
 		}
-		if meant, ok := gowalker.MisspeltTagKey(key, parseTagKeys); ok {
+		meant, ok := gowalker.MisspeltTagKey(key, known)
+		if ok {
 			found = append(found, misspeltTagKey{declaring: d.DeclaringType, field: d.GoField.Name, written: key, meant: meant})
 		}
 	}

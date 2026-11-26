@@ -30,7 +30,7 @@ func TestParseTagKeys_AreRead(t *testing.T) {
 		return tags, enum, bounds
 	}
 	zeroTags, zeroEnum, zeroBounds := read(t, `json:"f"`)
-	for _, key := range parseTagKeys {
+	for _, key := range parseTagKeys() {
 		t.Run(key, func(t *testing.T) {
 			value, ok := values[key]
 			if !ok {

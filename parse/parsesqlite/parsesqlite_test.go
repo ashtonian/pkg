@@ -211,9 +211,9 @@ func TestDecimalFloat32_IsTheScannedFloat32(t *testing.T) {
 		} {
 			t.Run(d.name, func(t *testing.T) {
 				var scanned float32
-				require.NoError(t, d.db.QueryRow("SELECT ?", v).Scan(&scanned))
+				require.NoError(t, d.db.QueryRowContext(t.Context(), "SELECT ?", v).Scan(&scanned))
 				var key string
-				require.NoError(t, d.db.QueryRow("SELECT parse_decimal_float32(?)", v).Scan(&key))
+				require.NoError(t, d.db.QueryRowContext(t.Context(), "SELECT parse_decimal_float32(?)", v).Scan(&key))
 				want, err := core.DecimalText(scanned)
 				require.NoError(t, err)
 				assert.Equal(t, want, key, "%v", v)

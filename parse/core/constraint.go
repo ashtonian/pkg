@@ -14,6 +14,7 @@ const (
 )
 
 // constraintTagKeys are the constraint tags readConstraints reads.
-var constraintTagKeys = []string{
-	ConstraintEnum, ConstraintMinLen, ConstraintMaxLen, ConstraintMin, ConstraintMax, ConstraintMinItems, ConstraintMaxItems,
+func constraintTagKeys() []string {
+	keys := []string{ConstraintEnum, ConstraintMinLen, ConstraintMaxLen, ConstraintMin, ConstraintMax, ConstraintMinItems, ConstraintMaxItems}
+	return keys
 }
