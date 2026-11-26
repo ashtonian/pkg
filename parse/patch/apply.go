@@ -369,7 +369,10 @@ func assignStoredJSON(dst reflect.Value, value any) error {
 // exact kind (no wrap, no truncation), strings reach encoding.TextUnmarshaler
 // destinations (time.Time, uuid.UUID), pointers are allocated and assigned
 // through, and composite kinds (slices, maps, structs) decode via the codec,
-// whose decoder range-checks every leaf.
+// whose decoder range-checks every leaf. dst never shares memory with v: a
+// value that can (a map, a slice, an interface holding a document) is
+// decoded afresh, so each result is its own, and changing it changes
+// neither the patch nor another result.
 func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 	t := dst.Type()
 	if v == nil {
@@ -385,7 +388,7 @@ func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 		return nil
 	}
 	rv := reflect.ValueOf(v)
-	if rv.Type() == t {
+	if rv.Type() == t && !sharesMemory(t) {
 		dst.Set(rv)
 		return nil
 	}
@@ -431,7 +434,9 @@ func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 		dst.SetBool(b)
 		return nil
 	case reflect.Interface:
-		if rv.Type().AssignableTo(t) {
+		// A scalar is shared safely, and no document decodes into an
+		// interface with methods: it holds the value parsed.
+		if rv.Type().AssignableTo(t) && (!sharesMemory(rv.Type()) || t.NumMethod() > 0) {
 			dst.Set(rv)
 			return nil
 		}
@@ -446,6 +451,26 @@ func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 	}
 	dst.Set(decoded.Elem())
 	return nil
+}
+
+// sharesMemory reports whether two values of t can share memory that one
+// of them changes: t is, or holds in an element or a field, a map, slice,
+// pointer, interface, channel or function. A string shares only memory no
+// one changes.
+func sharesMemory(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Pointer, reflect.Interface, reflect.Chan, reflect.Func, reflect.UnsafePointer:
+		return true
+	case reflect.Array:
+		return sharesMemory(t.Elem())
+	case reflect.Struct:
+		for i := range t.NumField() {
+			if sharesMemory(t.Field(i).Type) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // checkDocumentFieldNames catches the default JSON codec paired with a
