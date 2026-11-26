@@ -666,6 +666,12 @@ func (d PostgresDialect) DecimalOrder(o DecimalOperand) string { return d.Decima
 // lexicographically with full composite-index support.
 func (PostgresDialect) NativeRowCompare() bool { return true }
 
+// codePointPair collates the column, which an index in the same collation
+// serves.
+func (d PostgresDialect) codePointPair(expr, operand string) (string, string) {
+	return d.CodePointOrder(expr), operand
+}
+
 // CodePointOrder applies the dialect's Collation. A column declared with the
 // same collation is indexed
 // in the order every keyset sort and string range filter compiles to.

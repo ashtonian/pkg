@@ -468,7 +468,7 @@ sqlite   WHERE ("products"."category" = ?1 AND "products"."price" >= ?2 AND "pro
 first: WHERE 1=1 ORDER BY "products"."price" DESC, "products"."id" DESC LIMIT 3 []
 items: 2 has_next_page: true
 postgres WHERE (1=1 AND ("products"."price", "products"."id") < ($1, $2)) ORDER BY "products"."price" DESC, "products"."id" DESC [80 0190f3c2-…-000000000012]
-sqlite   WHERE (1=1 AND (("products"."price" < ?1) OR ("products"."price" = ?1 AND "products"."id" < ?2))) ORDER BY "products"."price" DESC, "products"."id" DESC [80 0190f3c2-…-000000000012]
+sqlite   WHERE (1=1 AND ("products"."price", "products"."id") < (?1, ?2)) ORDER BY "products"."price" DESC, "products"."id" DESC [80 0190f3c2-…-000000000012]
 ```
 
 **Count, facets and search** share the request's filter; the count and facets ignore the cursor. For the filter `{"price":{"$lt":200}}`, the search `cordless drill`, `include_total` and the facet `category`:

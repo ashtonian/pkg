@@ -181,7 +181,7 @@ func TestDecimal_SeekBindsExactNumbers(t *testing.T) {
 		where   string
 	}{
 		{filter.PostgresDialect{}, `("priceds"."price", "priceds"."id" COLLATE pg_c_utf8) > ($1::numeric, $2)`},
-		{filter.SQLiteDialect{}, `((parse_decimal_key("priceds"."price") > parse_decimal_key(?1)) OR (parse_decimal_key("priceds"."price") = parse_decimal_key(?1) AND "priceds"."id" COLLATE BINARY > ?2))`},
+		{filter.SQLiteDialect{}, `(parse_decimal_key("priceds"."price"), "priceds"."id") > (parse_decimal_key(?1), ?2 COLLATE BINARY)`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.dialect.Name(), func(t *testing.T) {

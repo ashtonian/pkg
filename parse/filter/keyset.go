@@ -333,17 +333,23 @@ func keyDecimal(d Dialect, k CursorKey) DecimalOperand {
 	return DecimalColumn(k.sql(d))
 }
 
-// keyExpr is a key's ordering expression: text keys — strings, and a path's
-// timestamp and UUID members — order by code point, as filters and the
-// memory backend compare; decimals order through Dialect.DecimalOrder.
+// keyExpr is a key's ordering expression: text keys (codePointKey) order
+// by code point, as filters and the memory backend compare; decimals order
+// through Dialect.DecimalOrder.
 func keyExpr(d Dialect, k CursorKey) string {
 	switch {
-	case k.DataType == core.FieldTypeString || (k.Path != nil && (k.DataType == core.FieldTypeTimestamp || k.DataType == core.FieldTypeUUID)):
+	case codePointKey(k):
 		return d.CodePointOrder(keyValue(d, k))
 	case k.DataType == core.FieldTypeDecimal:
 		return d.DecimalOrder(keyDecimal(d, k))
 	}
 	return keyValue(d, k)
+}
+
+// codePointKey reports whether k orders as text by code point: a string,
+// or a path's timestamp or UUID member, which a document holds as text.
+func codePointKey(k CursorKey) bool {
+	return k.DataType == core.FieldTypeString || (k.Path != nil && (k.DataType == core.FieldTypeTimestamp || k.DataType == core.FieldTypeUUID))
 }
 
 // OrderByKeys renders the ORDER BY clause that walks keys forwards, or
@@ -417,6 +423,10 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 	if native {
 		exprs := make([]string, len(keys))
 		for i, k := range keys {
+			if codePointKey(k) {
+				exprs[i], phs[i] = d.codePointPair(keyValue(d, k), phs[i])
+				continue
+			}
 			exprs[i] = keyExpr(d, k)
 		}
 		op := ">"

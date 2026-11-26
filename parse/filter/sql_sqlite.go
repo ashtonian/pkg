@@ -508,10 +508,18 @@ func (d SQLiteDialect) DecimalOrder(o DecimalOperand) string {
 	return decimals.SQLiteKeyFunc + "(" + operand + ")"
 }
 
-// NativeRowCompare reports false: row-value comparison is unevenly
-// supported across the SQLite build matrix, and the expansion stays
-// planner-friendly on single-column indexes.
-func (SQLiteDialect) NativeRowCompare() bool { return false }
+// NativeRowCompare reports true: SQLite compares row values from 3.15.0,
+// below the release parse supports (parsesqlite's README), and seeks an
+// index on the keys to the cursor's row, where the OR-expansion scans the
+// index from its start.
+func (SQLiteDialect) NativeRowCompare() bool { return true }
+
+// codePointPair collates the operand: SQLite seeks an index only on a row
+// value's bare columns, and BINARY on the operand still overrides a column
+// declared NOCASE or RTRIM, an explicit collation outranking a column's.
+func (d SQLiteDialect) codePointPair(expr, operand string) (string, string) {
+	return expr, d.CodePointOrder(operand)
+}
 
 // CodePointOrder applies BINARY collation, overriding a column declared
 // NOCASE or RTRIM.

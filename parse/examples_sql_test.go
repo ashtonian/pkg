@@ -141,7 +141,7 @@ func Example_keysetPages() {
 	// first: WHERE 1=1 ORDER BY "products"."price" DESC, "products"."id" DESC LIMIT 3 []
 	// items: 2 has_next_page: true
 	// postgres WHERE (1=1 AND ("products"."price", "products"."id") < ($1, $2)) ORDER BY "products"."price" DESC, "products"."id" DESC [80 0190f3c2-0000-7000-8000-000000000012]
-	// sqlite   WHERE (1=1 AND (("products"."price" < ?1) OR ("products"."price" = ?1 AND "products"."id" < ?2))) ORDER BY "products"."price" DESC, "products"."id" DESC [80 0190f3c2-0000-7000-8000-000000000012]
+	// sqlite   WHERE (1=1 AND ("products"."price", "products"."id") < (?1, ?2)) ORDER BY "products"."price" DESC, "products"."id" DESC [80 0190f3c2-0000-7000-8000-000000000012]
 }
 
 // Example_countFacetsSearch: one request can also produce its total, its
