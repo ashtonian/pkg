@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // ChangedCondition is column IS DISTINCT FROM expr and, where a type's
@@ -167,12 +166,12 @@ func pgMemberPath(member []string, bind func(any) string) string {
 // column's type (a string key of a uuid column). A record's member is the
 // column's exact name, the name the quoted column reads. The tenant is a
 // member of each owner record.
-func (d PostgresDialect) RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *dialect.PairTenant, bind func(any) string) (dialect.PairRows, error) {
+func (d PostgresDialect) RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *core.PairTenant, bind func(any) string) (core.PairRows, error) {
 	var tenantValue any
 	if tenant != nil {
 		v, err := tenant.Record()
 		if err != nil {
-			return dialect.PairRows{}, fmt.Errorf("tenant: %w", err)
+			return core.PairRows{}, fmt.Errorf("tenant: %w", err)
 		}
 		tenantValue = v
 	}
@@ -195,13 +194,13 @@ func (d PostgresDialect) RelationRows(rel *core.RelationSchema, owners, values [
 	}
 	ownersJSON, err := json.Marshal(ownerRows)
 	if err != nil {
-		return dialect.PairRows{}, err
+		return core.PairRows{}, err
 	}
 	valuesJSON, err := json.Marshal(valueRows)
 	if err != nil {
-		return dialect.PairRows{}, err
+		return core.PairRows{}, err
 	}
-	rows := dialect.PairRows{Sources: make([]string, len(rel.SourceColumns)), Targets: make([]string, len(rel.TargetColumns))}
+	rows := core.PairRows{Sources: make([]string, len(rel.SourceColumns)), Targets: make([]string, len(rel.TargetColumns))}
 	for i, c := range rel.SourceColumns {
 		rows.Sources[i] = qualified(d, "o", c)
 	}

@@ -75,7 +75,7 @@ func (SQLiteDialect) IsObject(doc string, member []string, bind func(any) string
 // the column's affinity on insert, so no row type is needed. The tenant
 // binds as a parameter of its own, and the condition true makes a WHERE
 // that parts the upsert's ON CONFLICT from a join's ON.
-func (d SQLiteDialect) RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *dialect.PairTenant, bind func(any) string) (dialect.PairRows, error) {
+func (d SQLiteDialect) RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *core.PairTenant, bind func(any) string) (core.PairRows, error) {
 	bindKeys := func(keys []core.Key) (string, error) {
 		var doc any = keys
 		if len(keys) > 0 && len(keys[0]) == 1 {
@@ -93,11 +93,11 @@ func (d SQLiteDialect) RelationRows(rel *core.RelationSchema, owners, values []c
 	}
 	ownersParam, err := bindKeys(owners)
 	if err != nil {
-		return dialect.PairRows{}, err
+		return core.PairRows{}, err
 	}
 	valuesParam, err := bindKeys(values)
 	if err != nil {
-		return dialect.PairRows{}, err
+		return core.PairRows{}, err
 	}
 	read := func(alias string, width int) []string {
 		if width == 1 {
@@ -110,7 +110,7 @@ func (d SQLiteDialect) RelationRows(rel *core.RelationSchema, owners, values []c
 		}
 		return positions
 	}
-	rows := dialect.PairRows{
+	rows := core.PairRows{
 		Sources: read("o", len(rel.SourceColumns)),
 		Targets: read("v", len(rel.TargetColumns)),
 		From:    " FROM json_each(" + ownersParam + ") AS o, json_each(" + valuesParam + ") AS v",

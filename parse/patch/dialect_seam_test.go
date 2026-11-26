@@ -12,7 +12,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dialect"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -55,8 +54,8 @@ func (providerDialect) IsObject(doc string, member []string, bind func(any) stri
 	return "object(" + doc + ", " + bind(strings.Join(member, ".")) + ")"
 }
 
-func (providerDialect) RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *dialect.PairTenant, bind func(any) string) (dialect.PairRows, error) {
-	rows := dialect.PairRows{Sources: []string{"o.k"}, Targets: []string{"v.k"}, From: " FROM pairs(" + bind(len(owners)) + ", " + bind(len(values)) + ")", Where: []string{"rows_ok"}}
+func (providerDialect) RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *core.PairTenant, bind func(any) string) (core.PairRows, error) {
+	rows := core.PairRows{Sources: []string{"o.k"}, Targets: []string{"v.k"}, From: " FROM pairs(" + bind(len(owners)) + ", " + bind(len(values)) + ")", Where: []string{"rows_ok"}}
 	if tenant != nil {
 		rows.Tenant = "t." + bind(tenant.Value)
 	}

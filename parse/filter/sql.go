@@ -199,7 +199,7 @@ type Dialect interface {
 	RemoveMember(doc string, member []string, bind func(any) string) string
 	HasMember(doc string, member []string, bind func(any) string) string
 	IsObject(doc string, member []string, bind func(any) string) string
-	RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *dialect.PairTenant, bind func(any) string) (dialect.PairRows, error)
+	RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *core.PairTenant, bind func(any) string) (core.PairRows, error)
 
 	// StoresAsText reports whether the database stores a value of type t,
 	// in a column declared no JSON type, as text a row scan decodes rather

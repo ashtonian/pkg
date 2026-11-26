@@ -1,10 +1,9 @@
 // Package dialect is the SQL dialect kind parse compiles for: the
-// placeholder and identifier rules of PostgreSQL and SQLite, and the values
-// filter's dialects hand patch (PairRows, PairTenant). filter's dialects
-// embed a kind and add their SQL as methods, which filter.Dialect and the
-// interfaces patch consumes name: SQL differs by database only there, and
-// a dialect's Kind decides nothing but which type filter.DialectFromDSN
-// builds.
+// placeholder, identifier and literal rules of PostgreSQL and SQLite.
+// filter's dialects embed a kind and add their SQL as methods, which
+// filter.Dialect and the interfaces patch consumes name: SQL differs by
+// database only there, and a dialect's Kind decides nothing but which type
+// filter.DialectFromDSN builds.
 //
 // The set is closed. Dialect has an unexported method, so only this
 // package's Postgres and SQLite, and the types embedding them, implement
