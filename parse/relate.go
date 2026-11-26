@@ -201,9 +201,10 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if _, ok := fs.SystemFields[name]; ok {
 		return fmt.Errorf("parse: %s: relation %q names a system field", r.table, name)
 	}
-	readsSearch := r.searchParam != "" && slices.Contains(filter.FlatParamFields(r.searchParam), name)
-	if readsSearch {
-		return fmt.Errorf("parse: %s: relation %q: search parameter %q would be a flat filter on it", r.table, name, r.searchParam)
+	for _, own := range r.ownParams() {
+		if slices.Contains(filter.FlatParamFields(own.name), name) {
+			return fmt.Errorf("parse: %s: relation %q: %s would be a flat filter on it", r.table, name, own)
+		}
 	}
 	// Refused here rather than as ambiguous later: a relation under a name
 	// policies already resolve would change what those policies constrain.

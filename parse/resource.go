@@ -196,7 +196,10 @@ func ParserOptions(opts ...core.Option) ResourceOption {
 
 // AcceptParams names query parameters the endpoint reads itself. ParseList
 // leaves them alone; any other parameter that is neither a list parameter
-// (filter.Param*) nor a filterable field is an error (E2071).
+// (filter.Param*) nor a filterable field is an error (E2071). A name that is
+// a list parameter, the search parameter, or a flat filter on a field
+// (filter.FlatParamFields) is refused by NewResource, and by Relate and
+// WithPaths for the fields they add: ParseList would skip that filter.
 func AcceptParams(names ...string) ResourceOption {
 	return func(c *resourceConfig) { c.accepted = append(c.accepted, names...) }
 }
@@ -314,7 +317,8 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	}
 	r.filterSchema.SystemFields = systemFields(table, cfg, columns, fieldsByColumn)
 	r.filterSchema.PrimaryKey = slices.Clone(cfg.pk)
-	err = r.setSearchParam()
+	r.setSearchParam()
+	err = r.checkQueryParams(r.filterSchema)
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
 	}
@@ -979,7 +983,7 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
 	}
-	err = r.checkSearchParam(fs)
+	err = r.checkQueryParams(fs)
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
 	}
