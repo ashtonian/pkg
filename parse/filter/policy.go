@@ -144,8 +144,12 @@ func ApplyPolicyConstraints(schema *ResourceSchema, userAST *FilterAST, pc *Poli
 // ApplyPolicyConstraintsAt is ApplyPolicyConstraints with every
 // relative-time token (`now-30d`) resolved against now: the instant a
 // caller compiling several statements for one request reads once, so they
-// admit the same rows.
+// admit the same rows. A zero now is the wall clock, as RelationScope.Now's
+// is.
 func ApplyPolicyConstraintsAt(schema *ResourceSchema, userAST *FilterAST, pc *PolicyConstraints, now time.Time) (*FilterAST, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	return applyPolicyConstraints(schema, userAST, pc, now)
 }
 
