@@ -1,6 +1,7 @@
 package parse
 
 import (
+	"bytes"
 	"fmt"
 	"reflect"
 	"slices"
@@ -40,6 +41,8 @@ import (
 type RowScanner[T any] struct {
 	table   string
 	columns []rowColumn
+	// documents counts the columns decoded as stored documents.
+	documents int
 }
 
 // rowColumn is one column's destination rule.
@@ -98,13 +101,17 @@ func (r *Resource[T]) RowScanner(d Dialect, opts ...ScanOption) (*RowScanner[T],
 		}
 	}
 	sqlite := dialect.KindOf(d) == dialect.KindSQLite
-	columns := make([]rowColumn, len(r.read))
+	scanner := &RowScanner[T]{table: r.table, columns: make([]rowColumn, len(r.read))}
 	for i, name := range r.read {
 		f := r.columnFields[name]
 		storage, declared := r.sqlTypes[name]
-		columns[i] = rowColumn{name: name, field: f, decode: rowDecodeOf(f.Type(), declared && storage.IsJSON() || slices.Contains(cfg.json, name), sqlite)}
+		c := rowColumn{name: name, field: f, decode: rowDecodeOf(f.Type(), declared && storage.IsJSON() || slices.Contains(cfg.json, name), sqlite)}
+		if c.decode == decodeJSON {
+			scanner.documents++
+		}
+		scanner.columns[i] = c
 	}
-	return &RowScanner[T]{table: r.table, columns: columns}, nil
+	return scanner, nil
 }
 
 // rowDecodeOf is the rule for a field of type t: json when the column holds
@@ -159,7 +166,11 @@ func (r *Resource[T]) checkScannable() error {
 
 // Scan reads one row. scan is the driver's row scan (sql.Rows.Scan,
 // pgx.Rows.Scan), called once with one destination per column; its error
-// is returned as it is, as drivers name the column that failed.
+// is returned as it is, as drivers name the column that failed. Stored
+// documents are decoded once scan has returned, so a type's own
+// UnmarshalJSON runs outside the driver's scan: a panic in it unwinds
+// through rows the driver can still close (database/sql's Rows.Close waits
+// forever after a panic inside Rows.Scan).
 func (s *RowScanner[T]) Scan(scan func(dest ...any) error) (T, error) {
 	var item T
 	v := reflect.ValueOf(&item).Elem()
@@ -168,6 +179,8 @@ func (s *RowScanner[T]) Scan(scan func(dest ...any) error) (T, error) {
 		v = v.Elem()
 	}
 	dest := make([]any, len(s.columns))
+	// Sized up front: dest points into documents, so it never grows.
+	documents := make([]heldDocument, 0, s.documents)
 	for i, c := range s.columns {
 		fv, err := c.field.Settable(v)
 		if err != nil {
@@ -176,7 +189,8 @@ func (s *RowScanner[T]) Scan(scan func(dest ...any) error) (T, error) {
 		}
 		switch c.decode {
 		case decodeJSON:
-			dest[i] = jsonColumn{target: fv}
+			documents = append(documents, heldDocument{column: c.name, target: jsonColumn{target: fv}})
+			dest[i] = &documents[len(documents)-1]
 		case decodeTimestamp:
 			dest[i] = timestampColumn{target: fv}
 		default:
@@ -187,7 +201,32 @@ func (s *RowScanner[T]) Scan(scan func(dest ...any) error) (T, error) {
 		var zero T
 		return zero, err
 	}
+	for _, doc := range documents {
+		err := doc.target.Scan(doc.src)
+		if err != nil {
+			var zero T
+			return zero, fmt.Errorf("parse: %s: column %s: %w", s.table, doc.column, err)
+		}
+	}
 	return item, nil
+}
+
+// heldDocument keeps a stored document as the driver's scan hands it over,
+// for Scan to decode into target once the driver's scan has returned.
+type heldDocument struct {
+	column string
+	target jsonColumn
+	src    any
+}
+
+// Scan keeps src, copying bytes the driver may reuse for its next row.
+func (h *heldDocument) Scan(src any) error {
+	b, isBytes := src.([]byte)
+	if isBytes {
+		src = bytes.Clone(b)
+	}
+	h.src = src
+	return nil
 }
 
 // jsonColumn decodes a stored document into target, a settable field.

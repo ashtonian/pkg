@@ -692,12 +692,4 @@ func (r *Resource[T]) IncludeQueries(plan *ListPlan, ownerKeys []Key) ([]filter.
 
 // ownsPlan refuses a plan r did not build: its keyset and includes name
 // another table's columns.
-func (r *Resource[T]) ownsPlan(plan *ListPlan) error {
-	if plan == nil {
-		return fmt.Errorf("parse: %s: nil list plan", r.table)
-	}
-	if plan.table != r.table {
-		return fmt.Errorf("parse: %s: list plan built for %q", r.table, plan.table)
-	}
-	return nil
-}
+func (r *Resource[T]) ownsPlan(plan *ListPlan) error { return r.owns(plan.header()) }

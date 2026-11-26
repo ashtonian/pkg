@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"unicode"
 	"unicode/utf8"
@@ -297,18 +298,24 @@ func (d Declaration) TagKeys() iter.Seq[string] { return slices.Values(d.keys) }
 // [Shape.Fields] is for a conflict. The result is a copy.
 func (s *Shape) Declarations() []Declaration {
 	result := make([]Declaration, len(s.declarations))
-	for i, d := range s.declarations {
-		result[i] = Declaration{
-			State:         d.state,
-			Field:         d.field,
-			GoField:       copyStructField(d.goField),
-			DeclaringType: d.declaring,
-			Index:         append([]int(nil), d.index...),
-			InlineParents: copyStructFields(d.parents),
-			keys:          d.keys,
-		}
+	for i := range s.declarations {
+		result[i] = s.declarations[i].public()
 	}
 	return result
+}
+
+// public is the caller's copy of d.
+func (d *declaration) public() Declaration {
+	public := Declaration{
+		State:         d.state,
+		Field:         d.field,
+		GoField:       copyStructField(d.goField),
+		DeclaringType: d.declaring,
+		Index:         append([]int(nil), d.index...),
+		InlineParents: copyStructFields(d.parents),
+		keys:          d.keys,
+	}
+	return public
 }
 
 // Lookup returns the field selected by a canonical name or alias, or
@@ -475,6 +482,52 @@ func (f *Field) Inline() bool { return f.inline }
 // InlineParents preserves the inline owners, outermost first, for consumer
 // metadata inheritance. Each field's own Index is relative to its declaring type.
 func (f *Field) InlineParents() []reflect.StructField { return copyStructFields(f.parents) }
+
+// GoSelector is the field's Go selector from the struct whose view lists it:
+// the names of the InlineParents it is reached through, then its own, joined
+// by dots, so two promoted ID fields read as Audit.ID and Base.ID rather
+// than as two IDs. Error text labels a field with it.
+func (f *Field) GoSelector() string {
+	if len(f.parents) == 0 {
+		return f.goField.Name
+	}
+	var b strings.Builder
+	for _, parent := range f.parents {
+		b.WriteString(parent.Name)
+		b.WriteByte('.')
+	}
+	b.WriteString(f.goField.Name)
+	return b.String()
+}
+
+// UnallocatableParent returns the first of the field's InlineParents that is
+// an unexported pointer. Reflection can neither allocate such a pointer nor
+// point it at a copy of what it points to, so a write cannot reach the field
+// in a value where the pointer is nil, as in a freshly decoded or scanned one,
+// nor in a copy that must not share the parent with its original, as a
+// copy-on-write patch needs; WithPointerAllocation then fails with ErrAccess.
+// An unexported struct held by value is no obstacle: its exported fields are
+// settable, as encoding/json sets them. ok is false when every parent can be
+// allocated. It is static, so a library can refuse such a field when it builds
+// its metadata rather than on the first write.
+func (f *Field) UnallocatableParent() (parent reflect.StructField, ok bool) {
+	return unallocatableParent(f.parents)
+}
+
+// UnallocatableParent is [Field.UnallocatableParent] for the declaration's
+// InlineParents, skipped declarations included.
+func (d Declaration) UnallocatableParent() (parent reflect.StructField, ok bool) {
+	return unallocatableParent(d.InlineParents)
+}
+
+func unallocatableParent(parents []reflect.StructField) (reflect.StructField, bool) {
+	for _, p := range parents {
+		if p.Type.Kind() == reflect.Pointer && !p.IsExported() {
+			return copyStructField(p), true
+		}
+	}
+	return reflect.StructField{}, false
+}
 
 func copyStructField(f reflect.StructField) reflect.StructField {
 	f.Index = append([]int(nil), f.Index...)
