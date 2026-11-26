@@ -298,18 +298,24 @@ func (d Declaration) TagKeys() iter.Seq[string] { return slices.Values(d.keys) }
 // [Shape.Fields] is for a conflict. The result is a copy.
 func (s *Shape) Declarations() []Declaration {
 	result := make([]Declaration, len(s.declarations))
-	for i, d := range s.declarations {
-		result[i] = Declaration{
-			State:         d.state,
-			Field:         d.field,
-			GoField:       copyStructField(d.goField),
-			DeclaringType: d.declaring,
-			Index:         append([]int(nil), d.index...),
-			InlineParents: copyStructFields(d.parents),
-			keys:          d.keys,
-		}
+	for i := range s.declarations {
+		result[i] = s.declarations[i].public()
 	}
 	return result
+}
+
+// public is the caller's copy of d.
+func (d *declaration) public() Declaration {
+	public := Declaration{
+		State:         d.state,
+		Field:         d.field,
+		GoField:       copyStructField(d.goField),
+		DeclaringType: d.declaring,
+		Index:         append([]int(nil), d.index...),
+		InlineParents: copyStructFields(d.parents),
+		keys:          d.keys,
+	}
+	return public
 }
 
 // Lookup returns the field selected by a canonical name or alias, or

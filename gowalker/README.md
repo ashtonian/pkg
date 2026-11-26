@@ -84,6 +84,9 @@ compiled field or declaration yields the keys compilation already read
 (`TagKeys()`), and `MisspeltTagKey(key, known)` names the key of yours a key you
 do not read most likely misspells (equal ignoring case, `-` and `_`, or one
 character away), for your library to refuse it rather than ignore it.
+`shape.MisspeltTagKeys(known)` makes that check on every declared field of a
+struct and returns each misspelling with its declaration, for you to filter
+and word.
 
 ## Pick a naming convention
 
@@ -216,7 +219,7 @@ The standard library only, Go 1.27 or later. There are no external services.
 |---|---|
 | `engine.go` | `Engine`, options, limits, the schema cache and `CacheStats` |
 | `tags.go` | Tag parsing, `TagKeys`, `WithTaggedFields` and `WithJSONFields` |
-| `tag_spelling.go` | `MisspeltTagKey`: the known tag key a misspelt one means |
+| `tag_spelling.go` | `MisspeltTagKey`: the known tag key a misspelt one means; `Shape.MisspeltTagKeys` and `TagMisspelling`: every misspelling a struct's declarations carry |
 | `shape.go` | Compilation: the raw type graph, field rules, inlining, name resolution, the view pass and `Declarations` |
 | `schema.go` | `Schema`, `At`, path resolution and cached root-field accessors |
 | `route.go` | Static routes for paths of struct fields and pointers |

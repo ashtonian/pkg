@@ -117,7 +117,13 @@ included, which compilation has already read and checked: an `iter.Seq[string]`
 over metadata the schema keeps, which cannot change it (`slices.Collect` copies
 it); ranging over it allocates nothing, while keeping the iterator, or passing
 it to a function that is not inlined, allocates its closure. A copied `Declaration` yields the same keys; one a
-caller builds yields none. `TagKeys(tag)` returns a `*TagError` for a tag
+caller builds yields none. `shape.MisspeltTagKeys(known)` runs that check over
+every field `Declarations` lists, skipped and private ones included, and
+returns each misspelling as a `TagMisspelling`: the `Declaration` that carries
+it, the key `Written` and the key `Meant`, in declaration and then tag order,
+copying only the declarations it returns. It words no error. Which states to
+hold to your keys, and which keys to leave alone because another library reads
+them, stay yours: filter by `State`, `DeclaringType` or `Written`. `TagKeys(tag)` returns a `*TagError` for a tag
 that `reflect.StructTag` stops reading early, such as `parse: "filter"` with a
 space after the colon (`Lookup` then reports that key and every later one
 absent), or that repeats a key (`Lookup` returns only the first). Compiling a
