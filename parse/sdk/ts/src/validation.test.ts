@@ -62,17 +62,22 @@ describe("time, interval and network values are text the server parses", () => {
 });
 
 describe("sort validation matches Go ParseSort bounds", () => {
-  const fields = { name: {} };
-  it("counts empty comma slots before skipping them", () => {
-    expectCode(() => { validateSort("name,,,", { fields, max_fields: 3 }); }, "E2081");
-    expect(() => { validateSort("name,,", { fields, max_fields: 3 }); }).not.toThrow();
+  const fields = { name: {}, count: {}, id: {}, created: {} };
+  it("counts only the fields named, never blank slots", () => {
+    expect(() => { validateSort("name,,,", { fields, max_fields: 1 }); }).not.toThrow();
+    expect(() => { validateSort(" , ", { fields, max_fields: 1 }); }).not.toThrow();
+    expectCode(() => { validateSort("name,,count", { fields, max_fields: 1 }); }, "E2081");
   });
   it("uses the server default of three fields when max_fields is zero", () => {
-    expectCode(() => { validateSort("name,name,name,name", { fields, max_fields: 0 }); }, "E2081");
-    expect(() => { validateSort("name,name,name", { fields, max_fields: 0 }); }).not.toThrow();
+    expectCode(() => { validateSort("name,count,id,created", { fields, max_fields: 0 }); }, "E2081");
+    expect(() => { validateSort("name,count,id", { fields, max_fields: 0 }); }).not.toThrow();
+  });
+  it("refuses a field named twice, in either direction", () => {
+    expectCode(() => { validateSort(" +name, -name, ", { fields, max_fields: 3 }); }, "E2079");
+    expectCode(() => { validateSort("name,name", { fields, max_fields: 3 }); }, "E2079");
   });
   it("preserves signs and whitespace handling", () => {
-    expect(() => { validateSort(" +name, -name, ", { fields, max_fields: 3 }); }).not.toThrow();
+    expect(() => { validateSort(" +name, -count, ", { fields, max_fields: 3 }); }).not.toThrow();
     expectCode(() => { validateSort("+missing", { fields, max_fields: 3 }); }, "E2079");
   });
 });

@@ -297,7 +297,7 @@ func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQuer
 		return nil, fmt.Errorf("field %q is not opted into include via parse:\"include\"", field.ExternalName)
 	}
 	if field.Relation.Policy && field.Related == nil {
-		return nil, fmt.Errorf("policy-scoped relation has no target schema")
+		return nil, unresolvableRelation(field, "is policy-scoped without a target schema to hold its policy")
 	}
 	err := field.Relation.Check()
 	if err != nil {
@@ -399,7 +399,7 @@ func policyScope(field *FieldSchema, exprs columnExprs, dialect Dialect, scope r
 		return "", nil
 	}
 	if field.Related == nil {
-		return "", fmt.Errorf("policy-scoped relation has no target schema")
+		return "", unresolvableRelation(field, "is policy-scoped without a target schema to hold its policy")
 	}
 	root, err := related.on(field, nil)
 	if err != nil || root == nil {

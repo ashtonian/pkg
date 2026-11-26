@@ -17,7 +17,8 @@
             "gte",
             "lte",
             "in"
-          ]
+          ],
+          "indexed": true
         },
         "quoted_tags": {
           "name": "quoted_tags",

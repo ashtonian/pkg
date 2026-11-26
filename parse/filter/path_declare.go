@@ -28,7 +28,9 @@ type PathDecl struct {
 	// Elem is an array member's element type, a scalar a path may hold.
 	Elem core.FieldType
 	// Ops are the operators allowed on the path; nil means the type's
-	// defaults with the NULL tests (a path can always be absent).
+	// defaults with the NULL tests (a path can always be absent). The
+	// schema keeps a copy of Ops, Facet and Enum, so a declaration can be
+	// reused or changed after WithPaths returns.
 	Ops     []FilterOperator
 	Indexed bool
 	// Sort also makes the path a sort key (SortSchema.WithPaths). An array
@@ -122,7 +124,7 @@ func newPathField(doc *FieldSchema, segs []string, d PathDecl, kind reflect.Kind
 	if err := p.validate(d.Type, d.Elem, MaxPathDepth); err != nil {
 		return nil, err
 	}
-	ops := d.Ops
+	ops := slices.Clone(d.Ops)
 	if ops == nil {
 		ops = slices.Clone(defaultFilterOps[d.Type])
 		for _, op := range []FilterOperator{OpNull, OpNotNull, OpExists} {
@@ -509,9 +511,9 @@ func (s *SortSchema) WithPaths(fields *ResourceSchema, decls ...PathDecl) (*Sort
 	return &out, nil
 }
 
-// setPathFacet makes a path facetable with facet's configuration; its SQL
-// is the path's value expression, rendered per dialect. An array member's
-// facet counts its elements' terms.
+// setPathFacet makes a path facetable with a copy of facet's
+// configuration; its SQL is the path's value expression, rendered per
+// dialect. An array member's facet counts its elements' terms.
 func setPathFacet(f *FieldSchema, facet *FacetSchema) error {
 	if facet == nil {
 		return nil
@@ -519,8 +521,8 @@ func setPathFacet(f *FieldSchema, facet *FacetSchema) error {
 	if err := checkFacet(f, facet); err != nil {
 		return err
 	}
-	cfg := *facet
+	cfg := facet.clone()
 	cfg.Field = f.ExternalName
-	f.Facetable, f.FacetSchema = true, &cfg
+	f.Facetable, f.FacetSchema = true, cfg
 	return nil
 }

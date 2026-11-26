@@ -115,6 +115,21 @@ func TestNewPage_EveryFlagHasItsCursor(t *testing.T) {
 	}
 }
 
+// A page holds at least one row: a limit below 1 is the caller's error,
+// with or without rows, never a panic on the page's last row.
+func TestNewPage_RefusesALimitBelowOne(t *testing.T) {
+	t.Parallel()
+	plan := CursorPlan{Keys: []CursorKey{{Name: "id", Column: "id", Direction: SortAsc}}}
+	get := func(id string, _ string) (any, error) { return id, nil }
+	for _, limit := range []int{0, -1} {
+		for _, rows := range [][]string{nil, {"a"}, {"a", "b"}} {
+			page, err := NewPage(rows, limit, plan, get)
+			require.ErrorContains(t, err, "is below 1", "limit %d, %d rows", limit, len(rows))
+			assert.Nil(t, page)
+		}
+	}
+}
+
 // A query that matches nothing hands NewPage nil rows; the page still
 // encodes "items":[], as a client reading an array expects, beside the
 // metadata an executor sets on it.

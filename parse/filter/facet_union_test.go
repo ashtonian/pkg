@@ -460,6 +460,118 @@ func TestBuildFacetQuery_RoundTrip_NumbersTieByValue(t *testing.T) {
 	}
 }
 
+// A relation terms facet on a numeric target key breaks count ties, and
+// cuts at its limit, by the keys' values, as FacetBuckets does: 2 before
+// 10, 9 before 10.5. A string key keeps code-point order.
+func TestBuildFacetQuery_RelationFacet_NumbersTieByValue(t *testing.T) {
+	require.NoError(t, parsesqlite.Register())
+	db, err := sql.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	for _, stmt := range []string{
+		`CREATE TABLE items (id TEXT PRIMARY KEY)`,
+		`CREATE TABLE item_ranks (item_id TEXT NOT NULL, rank_id INTEGER NOT NULL)`,
+		`CREATE TABLE item_prices (item_id TEXT NOT NULL, price TEXT NOT NULL)`,
+		`CREATE TABLE item_weights (item_id TEXT NOT NULL, weight REAL NOT NULL)`,
+		`CREATE TABLE item_codes (item_id TEXT NOT NULL, code TEXT NOT NULL)`,
+		`INSERT INTO items VALUES ('a'), ('b'), ('c')`,
+		`INSERT INTO item_ranks VALUES ('a', 10), ('b', 2), ('c', 1), ('a', 1)`,
+		`INSERT INTO item_prices VALUES ('a', '10.5'), ('b', '9'), ('c', '-1'), ('a', '-1')`,
+		`INSERT INTO item_weights VALUES ('a', 10.25), ('b', 9.5), ('c', -1), ('a', -1)`,
+		`INSERT INTO item_codes VALUES ('a', '10'), ('b', '9'), ('c', '-1'), ('a', '-1')`,
+	} {
+		_, err := db.ExecContext(t.Context(), stmt)
+		require.NoError(t, err, stmt)
+	}
+	related := func(table, column string, t core.FieldType) *filter.FieldSchema {
+		return &filter.FieldSchema{
+			ExternalName: column, DataType: t, Facetable: true,
+			Relation: &core.RelationSchema{
+				JoinTable: table, SourceColumns: []string{"item_id"}, TargetColumns: []string{column}, OwnerKey: []string{"id"},
+				SourceTypes: textKey(), TargetTypes: []core.TypeInfo{{Type: t}},
+			},
+		}
+	}
+	schema := &filter.ResourceSchema{
+		Name: "items", PrimaryKey: []string{"id"},
+		SystemFields: map[string]*filter.FieldSchema{
+			"id": {ExternalName: "id", Table: "items", Column: "id", DataType: core.FieldTypeString},
+		},
+		Fields: map[string]*filter.FieldSchema{
+			"rank_id": related("item_ranks", "rank_id", core.FieldTypeInt),
+			"price":   related("item_prices", "price", core.FieldTypeDecimal),
+			"weight":  related("item_weights", "weight", core.FieldTypeFloat),
+			"code":    related("item_codes", "code", core.FieldTypeString),
+		},
+	}
+	q, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil,
+		[]filter.FacetRequest{{Field: "rank_id", Limit: 2}, {Field: "price", Limit: 2}, {Field: "weight", Limit: 2}, {Field: "code", Limit: 2}},
+		filter.WithFacetRelationScope(filter.RelationScope{}))
+	require.NoError(t, err)
+	rows, err := db.QueryContext(t.Context(), q.SQL, q.Args...)
+	require.NoError(t, err, q.SQL)
+	defer func() { require.NoError(t, rows.Close()) }()
+	results, err := filter.ScanFacetUnion(rows)
+	require.NoError(t, err)
+
+	want := map[string][]filter.FacetBucket{
+		"rank_id": {{Key: "1", Count: 2}, {Key: "2", Count: 1}},
+		"price":   {{Key: "-1", Count: 2}, {Key: "9", Count: 1}},
+		"weight":  {{Key: "-1", Count: 2}, {Key: "9.5", Count: 1}},
+		"code":    {{Key: "-1", Count: 2}, {Key: "10", Count: 1}},
+	}
+	got := indexFacets(results)
+	assert.Equal(t, want, got, q.SQL)
+	all := map[string]map[string]int64{
+		"rank_id": {"1": 2, "10": 1, "2": 1},
+		"price":   {"-1": 2, "10.5": 1, "9": 1},
+		"weight":  {"-1": 2, "10.25": 1, "9.5": 1},
+		"code":    {"-1": 2, "10": 1, "9": 1},
+	}
+	for name, counts := range all {
+		assert.Equal(t, want[name], filter.FacetBuckets(schema.Fields[name], counts, 2), "FacetBuckets(%s)", name)
+	}
+}
+
+// A relation facet groups its string keys by code point, as includes name
+// them, whatever the junction column's collation: a case-insensitive
+// column's "Red" and "red" are two keys.
+func TestBuildFacetQuery_RelationFacet_KeysByCodePoint(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	for _, stmt := range []string{
+		`CREATE TABLE items (id TEXT PRIMARY KEY)`,
+		`CREATE TABLE item_tags (item_id TEXT NOT NULL, tag TEXT NOT NULL COLLATE NOCASE)`,
+		`INSERT INTO items VALUES ('a'), ('b'), ('c')`,
+		`INSERT INTO item_tags VALUES ('a', 'Red'), ('b', 'red'), ('c', 'red')`,
+	} {
+		_, err := db.ExecContext(t.Context(), stmt)
+		require.NoError(t, err, stmt)
+	}
+	schema := &filter.ResourceSchema{
+		Name: "items", PrimaryKey: []string{"id"},
+		SystemFields: map[string]*filter.FieldSchema{
+			"id": {ExternalName: "id", Table: "items", Column: "id", DataType: core.FieldTypeString},
+		},
+		Fields: map[string]*filter.FieldSchema{
+			"tags": {
+				ExternalName: "tags", DataType: core.FieldTypeString, Facetable: true,
+				Relation: &core.RelationSchema{JoinTable: "item_tags", SourceColumns: []string{"item_id"}, TargetColumns: []string{"tag"}, OwnerKey: []string{"id"}, SourceTypes: textKey(), TargetTypes: textKey()},
+			},
+		},
+	}
+	q, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil, []filter.FacetRequest{{Field: "tags"}},
+		filter.WithFacetRelationScope(filter.RelationScope{}))
+	require.NoError(t, err)
+	rows, err := db.QueryContext(t.Context(), q.SQL, q.Args...)
+	require.NoError(t, err, q.SQL)
+	defer func() { require.NoError(t, rows.Close()) }()
+	results, err := filter.ScanFacetUnion(rows)
+	require.NoError(t, err)
+	assert.Equal(t, []filter.FacetBucket{{Key: "red", Count: 2}, {Key: "Red", Count: 1}}, indexFacets(results)["tags"], q.SQL)
+}
+
 // A list column's terms facet counts each distinct element once per row,
 // the rows holding it, as memory backends count it: a repeated element is
 // one row, an absent list none.

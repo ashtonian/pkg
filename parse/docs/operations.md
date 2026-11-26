@@ -27,7 +27,7 @@ Errors the root package returns read `parse: <table>: <operation or field>: <cau
 
 - `filter.ErrPolicyInvalid`, for example `filter: invalid policy constraint: field "owner_org" is not a field of devices`: a `Scope.Policy`, `Scope.Related` or `Scope.Governance` constraint does not compile against the schema. It is the server's policy, so the list fails closed and the handler answers 500; fix the policy builder for the field, operator or value it names.
 - `filter.ErrRelatedPolicyRequired`, `relation type on device_types: filter: a policy-scoped relation is built without the target's policy`: the request used a `PolicyScoped()` relation and `Scope.Related` has no entry for the target table. Add the target's policy to the scope the handler builds.
-- `filter.ErrRelationTenantRequired`, `relation junction board_labels (tenant column tenant_id): filter: a tenant-scoped pair table is joined without a tenant…`: a resource without a tenant column joined a pair table with one, and the scope named no tenant. Set `Scope.Tenant`, or `RelationScope.Unscoped` for platform tooling only.
+- `filter.ErrRelationTenantRequired`, `relation table board_labels (tenant column tenant_id): filter: a tenant-scoped pair table is joined without a tenant…`: a resource without a tenant column joined or looked up a pair table with one, and the scope named no tenant. Set `Scope.Tenant`, or `RelationScope.Unscoped` for platform tooling only.
 
 ### Tenant key errors
 
@@ -94,7 +94,7 @@ fragment; consumers never split SQL strings to recover them.
 
 ## Query costs and limits
 
-Parser cost is a rejection heuristic, not a database execution-time estimate. The default `MaxCost` is 50; an indexed relation condition costs 8, an unindexed one 80. `indexed:"true"` describes an actual index you created; it does not create one or make a scan cheap.
+Parser cost is a rejection heuristic, not a database execution-time estimate. The default `MaxCost` is 50; an indexed relation condition costs 8, an unindexed one 80. `indexed:"true"` describes an actual index you created; it does not create one or make a scan cheap. A filter on the resource's key costs as indexed without a tag, since a primary key is an index.
 
 Set limits deliberately for your endpoint. [Configuration](schema-configuration.md) covers nesting, input size, filter condition/array sizes, and cumulative copied-source bytes. List limits default to 50 with a maximum of 1000; patch schemas default to 50 operations. Keep database deadlines and resource limits independently of parser limits.
 

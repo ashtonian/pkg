@@ -18,7 +18,8 @@
               "gte",
               "lte",
               "in"
-            ]
+            ],
+            "indexed": true
           }
         }
       },
@@ -3053,10 +3054,14 @@
       "errorCode": "E2081"
     },
     {
-      "name": "err_too_many_slots",
+      "name": "blank_slots_count_toward_no_limit",
       "input": "name,,,count",
-      "valid": false,
-      "errorCode": "E2081"
+      "valid": true
+    },
+    {
+      "name": "blank_slots_only",
+      "input": " , ",
+      "valid": true
     },
     {
       "name": "err_sign_alone",
@@ -3071,9 +3076,10 @@
       "errorCode": "E2079"
     },
     {
-      "name": "repeated_field",
+      "name": "err_repeated_field",
       "input": "name,-name",
-      "valid": true
+      "valid": false,
+      "errorCode": "E2079"
     }
   ],
   "list": [

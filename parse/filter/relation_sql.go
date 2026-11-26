@@ -26,11 +26,11 @@ var ErrRelatedPolicyRequired = errors.New("filter: a policy-scoped relation is b
 func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, error) {
 	rel, target := node.Field.Relation, node.Field.Related
 	if target == nil {
-		return "", invalidRelation(node.Field, "has no target resource to filter")
+		return "", unresolvableRelation(node.Field, "has no target resource to filter")
 	}
 	err := rel.Check()
 	if err != nil {
-		return "", invalidRelation(node.Field, err.Error())
+		return "", unresolvableRelation(node.Field, err.Error())
 	}
 	// The target's predicates read its computed columns as the owner's
 	// dialect does; one the dialect refuses fails the build.
@@ -218,6 +218,23 @@ func rebaseField(f *FieldSchema, table, alias string, computed columnExprs, move
 	return &c, nil
 }
 
+// ErrRelationUnresolvable is a relation the server declared or wired so
+// that it cannot be evaluated: no target resource, or no key field there,
+// for a relation that needs one; a declaration that does not check; a
+// policy-scoped relation without a target schema; or, outside SQL, no
+// membership or include lookup, a lookup that is no RelationLookup for a
+// relation that filters its target, a relation not resolved before
+// Evaluate, or a comparison only SQL evaluates. It is the server's fault,
+// never the request's.
+var ErrRelationUnresolvable = errors.New("filter: a relation is declared or wired so that it cannot be evaluated")
+
+// unresolvableRelation is ErrRelationUnresolvable for f, saying why.
+func unresolvableRelation(f *FieldSchema, why string) error {
+	return fmt.Errorf("relation %s %s: %w", f.ExternalName, why, ErrRelationUnresolvable)
+}
+
+// invalidRelation is the request's fault on relation f: an operator it
+// chose that the relation cannot take.
 func invalidRelation(f *FieldSchema, msg string) error {
 	return &core.ParseError{
 		Kind: core.ParseErrorKindFilter, Code: ECodeInvalidRelation.String(),

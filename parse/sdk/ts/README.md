@@ -249,7 +249,7 @@ try {
 
 All of it is server-supplied text; treat it as untrusted.
 
-Validation codes match the Go parser: E2071 unknown field, E2072 operator not allowed, E2073 value type mismatch, E2062 non-array membership value, E2086 malformed `$and` / `$or` / `$not`, E2087 value outside the enum, E2116 non-string UUID, E2079 / E2081 sort field / count, E2064 / E2066 / E2076 patch operation / size / path, E2118 / E2119 a null relation key / too many relation keys, E2067 a search on a resource without one.
+Validation codes match the Go parser: E2071 unknown field, E2072 operator not allowed, E2073 value type mismatch, E2062 non-array membership value, E2086 malformed `$and` / `$or` / `$not`, E2087 value outside the enum, E2116 non-string UUID, E2079 / E2081 sort field (unknown, or named twice) / count (blank items count toward none), E2064 / E2066 / E2076 patch operation / size / path, E2118 / E2119 a null relation key / too many relation keys, E2067 a search on a resource without one.
 
 ## Testing
 

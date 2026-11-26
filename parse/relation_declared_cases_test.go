@@ -245,11 +245,11 @@ func runRelationMemberships(t *testing.T, r relResources, d filter.Dialect, quer
 	}
 
 	_, err := filter.ResolveMemberships(context.Background(), relationFilter(t, r, `{"commands":"c1"}`), keysOnlyLookup{lookup}, filter.ResolveRelationScope(filter.RelationScope{Tenant: "t1"}))
-	assert.ErrorContains(t, err, "cannot evaluate filters", "a store without filter evaluation refuses rather than over-matches")
+	require.ErrorIs(t, err, filter.ErrRelationUnresolvable, "a store without filter evaluation refuses rather than over-matches")
 	_, err = filter.ResolveMemberships(context.Background(), relationFilter(t, r, `{"commands":"c1"}`), nil)
-	assert.ErrorContains(t, err, "needs a membership lookup", "a backend without a lookup refuses a relation predicate")
+	require.ErrorIs(t, err, filter.ErrRelationUnresolvable, "a backend without a lookup refuses a relation predicate as its own fault")
 	_, err = filter.ResolveMemberships(context.Background(), relationFilter(t, r, `{"commands":"c1"}`), lookup)
-	assert.ErrorContains(t, err, "tenant-scoped", "a tenant-scoped relation needs the tenant")
+	require.ErrorIs(t, err, filter.ErrRelationTenantRequired, "a tenant-scoped relation needs the tenant")
 	_, err = filter.ResolveMemberships(context.Background(), relationFilter(t, r, `{"type":{"$is":{}}}`), lookup, filter.ResolveRelationScope(filter.RelationScope{Tenant: "t1"}))
 	assert.ErrorIs(t, err, filter.ErrRelatedPolicyRequired)
 }
