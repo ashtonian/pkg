@@ -152,7 +152,7 @@ Declare `Includable()` on a has-many or many-to-many and a list may ask for its 
 
 ### Facet by related keys
 
-Declare `Facetable()` on a has-many or many-to-many and `facets=tags` counts the matched rows per visible related key — distinct owners per key, the related rows scoped as includes and filters are. A facetable relation correlates on the owner's key, which it counts, and a related key of several columns is its bucket's text (`["1","a"]`). A belongs-to facets through its foreign-key column instead.
+Declare `Facetable()` on a has-many or many-to-many and `facets=tags` counts the matched rows per visible related key — distinct owners per key, the related rows scoped as includes and filters are. A facetable relation correlates on the owner's key, which it counts, and a related key of several columns is its bucket's text (`["1","a"]`). Text keys are grouped by code point, as includes name them, whatever the junction column's collation: a case-insensitive column's `Red` and `red` are two buckets. A belongs-to facets through its foreign-key column instead.
 
 ### Change membership
 

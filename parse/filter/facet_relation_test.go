@@ -61,8 +61,8 @@ func TestBuildFacetQuery_RelationFacet_PostgresJoin(t *testing.T) {
 		`"items"."id" AS __owner_pk`,
 		`INNER JOIN "item_tags" j ON "j"."item_id" = base.__owner_pk`,
 		`AND "j"."tenant_id" = `,
-		`GROUP BY "j"."tag_id"`,
-		`ORDER BY c DESC, "j"."tag_id"::text COLLATE pg_c_utf8 LIMIT 5`,
+		`GROUP BY ("j"."tag_id" COLLATE pg_c_utf8)`,
+		`ORDER BY c DESC, ("j"."tag_id" COLLATE pg_c_utf8)::text COLLATE pg_c_utf8 LIMIT 5`,
 	}
 	for _, sub := range wants {
 		if !strings.Contains(q.SQL, sub) {
@@ -160,7 +160,7 @@ func TestBuildFacetQuery_RelationFacet_SQLite(t *testing.T) {
 		t.Fatalf("BuildFacetQuery: %v", err)
 	}
 	// SQLite uses CAST for type coercion rather than ::text.
-	if !strings.Contains(q.SQL, `CAST("j"."tag_id" AS TEXT)`) {
+	if !strings.Contains(q.SQL, `CAST(("j"."tag_id" COLLATE BINARY) AS TEXT)`) {
 		t.Errorf("expected CAST(...AS TEXT) on SQLite, got: %s", q.SQL)
 	}
 }
@@ -259,15 +259,16 @@ func TestBuildFacetQuery_RelationFacet_TargetKeyOfSeveralColumns(t *testing.T) {
 		name    string
 		dialect filter.Dialect
 		want    string
+		group   string
 	}{
-		{"postgres", filter.PostgresDialect{}, `array_to_json(ARRAY[`},
-		{"sqlite", filter.SQLiteDialect{}, `json_array(`},
+		{"postgres", filter.PostgresDialect{}, `array_to_json(ARRAY[`, `GROUP BY ("j"."warehouse_id" COLLATE pg_c_utf8), ("j"."sku" COLLATE pg_c_utf8)`},
+		{"sqlite", filter.SQLiteDialect{}, `json_array(`, `GROUP BY ("j"."warehouse_id" COLLATE BINARY), ("j"."sku" COLLATE BINARY)`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			q, err := build(tt.dialect)
 			require.NoError(t, err)
 			assert.Contains(t, q.SQL, tt.want)
-			assert.Contains(t, q.SQL, `GROUP BY "j"."warehouse_id", "j"."sku"`)
+			assert.Contains(t, q.SQL, tt.group)
 		})
 	}
 

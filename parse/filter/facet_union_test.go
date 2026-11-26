@@ -533,6 +533,45 @@ func TestBuildFacetQuery_RelationFacet_NumbersTieByValue(t *testing.T) {
 	}
 }
 
+// A relation facet groups its string keys by code point, as includes name
+// them, whatever the junction column's collation: a case-insensitive
+// column's "Red" and "red" are two keys.
+func TestBuildFacetQuery_RelationFacet_KeysByCodePoint(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	for _, stmt := range []string{
+		`CREATE TABLE items (id TEXT PRIMARY KEY)`,
+		`CREATE TABLE item_tags (item_id TEXT NOT NULL, tag TEXT NOT NULL COLLATE NOCASE)`,
+		`INSERT INTO items VALUES ('a'), ('b'), ('c')`,
+		`INSERT INTO item_tags VALUES ('a', 'Red'), ('b', 'red'), ('c', 'red')`,
+	} {
+		_, err := db.ExecContext(t.Context(), stmt)
+		require.NoError(t, err, stmt)
+	}
+	schema := &filter.ResourceSchema{
+		Name: "items", PrimaryKey: []string{"id"},
+		SystemFields: map[string]*filter.FieldSchema{
+			"id": {ExternalName: "id", Table: "items", Column: "id", DataType: core.FieldTypeString},
+		},
+		Fields: map[string]*filter.FieldSchema{
+			"tags": {
+				ExternalName: "tags", DataType: core.FieldTypeString, Facetable: true,
+				Relation: &core.RelationSchema{JoinTable: "item_tags", SourceColumns: []string{"item_id"}, TargetColumns: []string{"tag"}, OwnerKey: []string{"id"}, SourceTypes: textKey(), TargetTypes: textKey()},
+			},
+		},
+	}
+	q, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil, []filter.FacetRequest{{Field: "tags"}},
+		filter.WithFacetRelationScope(filter.RelationScope{}))
+	require.NoError(t, err)
+	rows, err := db.QueryContext(t.Context(), q.SQL, q.Args...)
+	require.NoError(t, err, q.SQL)
+	defer func() { require.NoError(t, rows.Close()) }()
+	results, err := filter.ScanFacetUnion(rows)
+	require.NoError(t, err)
+	assert.Equal(t, []filter.FacetBucket{{Key: "red", Count: 2}, {Key: "Red", Count: 1}}, indexFacets(results)["tags"], q.SQL)
+}
+
 // A list column's terms facet counts each distinct element once per row,
 // the rows holding it, as memory backends count it: a repeated element is
 // one row, an absent list none.
