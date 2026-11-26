@@ -126,7 +126,7 @@ func TestQueryParams_NotNullSuffix(t *testing.T) {
 	}
 	p, err := parse.NewResource[row]("rows")
 	require.NoError(t, err)
-	qp := filter.NewQueryParamParser(p.FilterSchema())
+	qp := queryParams(t, p.FilterSchema())
 
 	ast, err := qp.Parse(url.Values{"name_not_null": {"true"}})
 	require.NoError(t, err)

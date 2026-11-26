@@ -284,7 +284,11 @@ func (r *Resource[T]) parseListFilter(doc string, fields map[string][]string, no
 	if err != nil {
 		return nil, err
 	}
-	flatAST, err := filter.NewQueryParamParser(r.filterSchema, filter.QueryParamFieldsOnly(), filter.QueryParamConfig(r.cfg)).At(now).Parse(fields)
+	qp, err := filter.NewQueryParamParser(r.filterSchema, filter.QueryParamFieldsOnly(), filter.QueryParamConfig(r.cfg))
+	if err != nil {
+		return nil, err
+	}
+	flatAST, err := qp.At(now).Parse(fields)
 	if err != nil {
 		return nil, err
 	}
@@ -369,13 +373,18 @@ func (r *Resource[T]) checkQueryParams(fs *filter.ResourceSchema) error {
 		return fmt.Errorf("search parameter %q is a parameter the endpoint reads itself (AcceptParams %q)", p, p)
 	}
 	for _, own := range r.ownParams() {
-		if filter.IsListParam(own.name) {
+		err := filter.CheckAcceptedParam(fs, own.name)
+		if err == nil {
+			continue
+		}
+		collision, ok := errors.AsType[*filter.AcceptedParamError](err)
+		switch {
+		case !ok:
+			return fmt.Errorf("%s: %w", own, err)
+		case collision.Field == "":
 			return fmt.Errorf("%s is the list parameter %s", own, own.name)
 		}
-		field, ok := flatFilterField(fs, own.name)
-		if ok {
-			return fmt.Errorf("%s is a flat filter on field %q", own, field)
-		}
+		return fmt.Errorf("%s is a flat filter on field %q", own, collision.Field)
 	}
 	return nil
 }
@@ -407,18 +416,6 @@ func (r *Resource[T]) ownParams() []ownParam {
 		params = append(params, ownParam{name: name, accepted: true})
 	}
 	return params
-}
-
-// flatFilterField is the request field of fs a flat query parameter
-// filters, if any (filter.FlatParamFields).
-func flatFilterField(fs *filter.ResourceSchema, param string) (string, bool) {
-	for _, name := range filter.FlatParamFields(param) {
-		_, isField := fs.RequestField(name)
-		if isField {
-			return name, true
-		}
-	}
-	return "", false
 }
 
 func boolParam(q url.Values, name string) (bool, error) {

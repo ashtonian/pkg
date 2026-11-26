@@ -65,7 +65,9 @@ func (r *Resource[T]) parseFilter(query string, cfg *core.ParserConfig) (*filter
 // (status=active&price_gte=10, see filter.QueryParamParser), ANDed and bounded
 // by the parser's limits as one filter. A parameter that is neither a list
 // parameter (filter.Param*), a name filter.QueryParamAccept lists, nor a
-// filterable field is E2071; filter.QueryParamLenient ignores it instead. A
+// filterable field is E2071; filter.QueryParamLenient ignores it instead. An
+// accepted name the parser reads itself, a list parameter or a flat filter
+// on a field, is refused with a plain error (filter.CheckAcceptedParam). A
 // list parameter given more than once is E2067, as in ParseList. The search
 // parameter the search schema advertises (core.WithSearchParam) is a list
 // parameter too. The parser's own configuration bounds the flat parameters,
@@ -85,7 +87,11 @@ func (r *Resource[T]) ParseRequestFilter(q url.Values, opts ...filter.QueryParam
 	if r.searchParam != "" {
 		flatOpts = append(flatOpts, filter.QueryParamAccept(r.searchParam))
 	}
-	flatAST, err := filter.NewQueryParamParser(r.filterSchema, flatOpts...).At(now).Parse(q)
+	qp, err := filter.NewQueryParamParser(r.filterSchema, flatOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
+	}
+	flatAST, err := qp.At(now).Parse(q)
 	if err != nil {
 		return nil, err
 	}

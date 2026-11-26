@@ -91,7 +91,11 @@ func Example_flatQueryParameters() {
 	if err != nil {
 		panic(err)
 	}
-	ast, err := filter.NewQueryParamParser(tp.FilterSchema()).Parse(q)
+	qp, err := filter.NewQueryParamParser(tp.FilterSchema())
+	if err != nil {
+		panic(err)
+	}
+	ast, err := qp.Parse(q)
 	if err != nil {
 		panic(err)
 	}

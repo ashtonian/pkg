@@ -243,7 +243,11 @@ func TestEveryEntryPoint_RefusesAMisspeltFilter(t *testing.T) {
 			return err
 		},
 		"filter.QueryParamParser": func(q url.Values) error {
-			_, err := filter.NewQueryParamParser(r.FilterSchema(), filter.QueryParamAccept("view")).Parse(q)
+			qp, err := filter.NewQueryParamParser(r.FilterSchema(), filter.QueryParamAccept("view"))
+			if err != nil {
+				return err
+			}
+			_, err = qp.Parse(q)
 			return err
 		},
 	}

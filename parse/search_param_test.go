@@ -193,6 +193,31 @@ func TestAcceptParams_CollisionsAreRefusedAtConstruction(t *testing.T) {
 	assert.NotNil(t, req.Filter(), "a field beside an accepted parameter still filters")
 }
 
+// A name one call accepts is held to the rule AcceptParams is: a list
+// parameter, or a flat filter on a field, is refused rather than skipped,
+// which would list every row the filter narrows.
+func TestQueryParamAccept_CollisionsAreRefusedPerCall(t *testing.T) {
+	res, err := searchedPumps(t, "")
+	require.NoError(t, err)
+	q := url.Values{"category": {"pump"}, "name_like": {"P%"}, "id": {"p1"}}
+	for _, tt := range []struct {
+		name, param, want string
+	}{
+		{"a list parameter", "sort", `QueryParamAccept: "sort" is a list parameter`},
+		{"a field", "category", `QueryParamAccept: "category" is a flat filter on field "category"`},
+		{"a field's operator", "name_like", `QueryParamAccept: "name_like" is a flat filter on field "name"`},
+		{"the key", "id", `QueryParamAccept: "id" is a flat filter on field "id"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := res.ParseRequestFilter(q, filter.QueryParamAccept(tt.param))
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+	f, err := res.ParseRequestFilter(url.Values{"category": {"pump"}, "view": {"grid"}}, filter.QueryParamAccept("view"))
+	require.NoError(t, err)
+	assert.NotNil(t, f.AST().Root, "a field beside an accepted parameter still filters")
+}
+
 func requireParseError(t *testing.T, err error, code string) *core.ParseError {
 	t.Helper()
 	pe, ok := errors.AsType[*core.ParseError](err)

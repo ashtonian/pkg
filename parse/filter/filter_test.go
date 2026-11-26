@@ -17,6 +17,14 @@ import (
 
 // --- Test Helpers ---
 
+// queryParams is NewQueryParamParser over schema with options it accepts.
+func queryParams(t testing.TB, schema *filter.ResourceSchema, opts ...filter.QueryParamOption) *filter.QueryParamParser {
+	t.Helper()
+	qp, err := filter.NewQueryParamParser(schema, opts...)
+	require.NoError(t, err)
+	return qp
+}
+
 func testSchema() *filter.ResourceSchema {
 	return &filter.ResourceSchema{
 		Name:       "items",
@@ -209,7 +217,7 @@ func TestParseSort_InvalidField(t *testing.T) {
 // --- QueryParamParser Tests ---
 
 func TestQueryParamParser_SimpleEq(t *testing.T) {
-	qp := filter.NewQueryParamParser(testSchema())
+	qp := queryParams(t, testSchema())
 	ast, err := qp.Parse(url.Values{"status": {"active"}})
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +236,7 @@ func TestQueryParamParser_SimpleEq(t *testing.T) {
 }
 
 func TestQueryParamParser_Suffixes(t *testing.T) {
-	qp := filter.NewQueryParamParser(testSchema())
+	qp := queryParams(t, testSchema())
 	ast, err := qp.Parse(url.Values{"count_gt": {"10"}, "count_lte": {"100"}})
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +252,7 @@ func TestQueryParamParser_Suffixes(t *testing.T) {
 }
 
 func TestQueryParamParser_InSuffix(t *testing.T) {
-	qp := filter.NewQueryParamParser(testSchema())
+	qp := queryParams(t, testSchema())
 	ast, err := qp.Parse(url.Values{"status_in": {"active,inactive"}})
 	if err != nil {
 		t.Fatal(err)
@@ -277,7 +285,7 @@ func TestFlatParamFields(t *testing.T) {
 }
 
 func TestQueryParamParser_IgnoresReserved(t *testing.T) {
-	qp := filter.NewQueryParamParser(testSchema())
+	qp := queryParams(t, testSchema())
 	ast, err := qp.Parse(url.Values{"sort": {"-name"}, "page_size": {"10"}, "cursor": {"abc"}, "include_total": {"true"}, "filter": {"{}"}})
 	if err != nil {
 		t.Fatal(err)
@@ -750,7 +758,7 @@ func TestQueryParamParser_RefusesUnknownParameters(t *testing.T) {
 		{"lenient", []filter.QueryParamOption{filter.QueryParamLenient()}, url.Values{"nam": {"x"}, "status": {"active"}}, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ast, err := filter.NewQueryParamParser(testSchema(), tc.opts...).Parse(tc.params)
+			ast, err := queryParams(t, testSchema(), tc.opts...).Parse(tc.params)
 			if tc.code != "" {
 				var pe *core.ParseError
 				require.ErrorAs(t, err, &pe)
@@ -761,6 +769,34 @@ func TestQueryParamParser_RefusesUnknownParameters(t *testing.T) {
 			assert.Equal(t, tc.filters, ast.Root != nil)
 		})
 	}
+}
+
+// An accepted name the parser would read itself is refused when the parser
+// is built: skipped, a flat filter would narrow nothing and a list
+// parameter would be read twice.
+func TestNewQueryParamParser_RefusesAnAcceptedNameItReads(t *testing.T) {
+	for _, tc := range []struct {
+		name, param, want string
+	}{
+		{"a list parameter", "sort", `filter: QueryParamAccept: "sort" is a list parameter`},
+		{"a field", "status", `filter: QueryParamAccept: "status" is a flat filter on field "status"`},
+		{"a field's operator", "count_gte", `filter: QueryParamAccept: "count_gte" is a flat filter on field "count"`},
+		{"the key", "id", `filter: QueryParamAccept: "id" is a flat filter on field "id"`},
+		{"the key's operator", "id_in", `filter: QueryParamAccept: "id_in" is a flat filter on field "id"`},
+		// The parser reads it as name's $like, which the field refuses
+		// (E2072); skipped, it would never be refused.
+		{"an operator the field does not take", "status_like", `filter: QueryParamAccept: "status_like" is a flat filter on field "status"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			qp, err := filter.NewQueryParamParser(testSchema(), filter.QueryParamAccept("debug", tc.param))
+			assert.Nil(t, qp)
+			require.EqualError(t, err, tc.want)
+		})
+	}
+	_, err := filter.NewQueryParamParser(testSchema(), filter.QueryParamAccept("debug", "statuses", "count_"))
+	require.NoError(t, err, "names no field reading")
+	_, err = filter.NewQueryParamParser(nil)
+	require.EqualError(t, err, "filter: NewQueryParamParser: nil schema")
 }
 
 // --- Integer Validation Tests ---

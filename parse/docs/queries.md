@@ -394,7 +394,7 @@ Facet, include, and flat-query options:
 | `WithIncludeRelationScope(s)` | `RelationScope` | none | How the include reads related rows; a `RowTenant` joins the owner's table, which `WithIncludeOwner` names. `ResolveInclude` refuses a `RowTenant` |
 | `WithIncludeOwner(owner)` | `*ResourceSchema` | none | The owner's schema, whose table a `RowTenant` reads |
 | `WithMaxIncludePerRelation(n)` | int | `100` | Targets per owner; distinct keys capped in SQL or non-SQL resolution. The cap must leave room for the truncation sentinel |
-| `QueryParamAccept(names...)` | `...string` | none | Parameters the endpoint reads itself; left alone like the list parameters |
+| `QueryParamAccept(names...)` | `...string` | none | Parameters the endpoint reads itself; left alone like the list parameters. `NewQueryParamParser` refuses a name that is a list parameter or a flat filter on a request field, suffix forms included (`filter.CheckAcceptedParam`): the parser would skip that filter |
 | `QueryParamLenient()` | — | off | Ignore a parameter naming no filterable field instead of refusing it (E2071) |
 | `QueryParamFieldsOnly()` | — | off | Read every parameter as a field filter, for values that hold nothing else: the list parameters (`Param*`) are not skipped, so a field named like one is filtered on, and any other name that is no filterable field is E2071 |
 | `QueryParamConfig(cfg)` | `*core.ParserConfig` | `core.DefaultConfig()` | Limits and value configuration for flat filters |

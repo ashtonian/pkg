@@ -29,12 +29,12 @@ func TestRequestText_Refused(t *testing.T) {
 
 	for _, text := range []struct{ name, bad string }{{"U+0000", "\x00"}, {"invalid UTF-8", "\xff"}} {
 		t.Run("flat parameter, "+text.name, func(t *testing.T) {
-			_, err := filter.NewQueryParamParser(testSchema()).Parse(url.Values{"name": {"Al" + text.bad + "pha"}})
+			_, err := queryParams(t, testSchema()).Parse(url.Values{"name": {"Al" + text.bad + "pha"}})
 			assert.Equal(t, filter.ECodeValueTypeMismatch.String(), code(t, err))
 			assert.ErrorIs(t, err, core.ErrInvalidText)
 		})
 		t.Run("flat pattern parameter, "+text.name, func(t *testing.T) {
-			_, err := filter.NewQueryParamParser(testSchema()).Parse(url.Values{"name_like": {"Al%" + text.bad}})
+			_, err := queryParams(t, testSchema()).Parse(url.Values{"name_like": {"Al%" + text.bad}})
 			assert.Equal(t, filter.ECodeValueTypeMismatch.String(), code(t, err))
 		})
 		for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {

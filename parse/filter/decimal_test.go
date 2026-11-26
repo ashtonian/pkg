@@ -103,7 +103,7 @@ func TestDecimal_SQLBindsExactNumbers(t *testing.T) {
 
 func TestDecimal_QueryParams(t *testing.T) {
 	fs, _ := pricedSchemas(t)
-	ast, err := filter.NewQueryParamParser(fs).Parse(url.Values{"price_gte": {"10.50"}, "cost": {"1", "2.0"}})
+	ast, err := queryParams(t, fs).Parse(url.Values{"price_gte": {"10.50"}, "cost": {"1", "2.0"}})
 	require.NoError(t, err)
 	res, err := filter.NewSQLBuilder(fs, filter.PostgresDialect{}).Build(ast)
 	require.NoError(t, err)

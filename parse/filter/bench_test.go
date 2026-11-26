@@ -132,7 +132,7 @@ func BenchmarkSQLBuilder_SQLiteJSONContains(b *testing.B) {
 
 func benchQueryParams(b *testing.B, params url.Values) {
 	fs, _ := benchSchemas(b)
-	qp := filter.NewQueryParamParser(fs)
+	qp := queryParams(b, fs)
 	if ast, err := qp.Parse(params); err != nil || ast.Root == nil {
 		b.Fatalf("query params: %v", err)
 	}

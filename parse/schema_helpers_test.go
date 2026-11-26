@@ -2,7 +2,23 @@
 
 package parse_test
 
-import "github.com/ashtonian/pkg/parse/patch"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/patch"
+)
+
+// queryParams is filter.NewQueryParamParser over schema with options it
+// accepts.
+func queryParams(t testing.TB, schema *filter.ResourceSchema, opts ...filter.QueryParamOption) *filter.QueryParamParser {
+	t.Helper()
+	qp, err := filter.NewQueryParamParser(schema, opts...)
+	require.NoError(t, err)
+	return qp
+}
 
 // newSchema builds a test schema, which must be valid, holding at most
 // maxOperations operations (0: any number).
