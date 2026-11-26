@@ -343,7 +343,13 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 				in.WriteString(key)
 				// Owners, not junction rows: two rows pairing one owner with
 				// one target (typed edges) count the owner once.
-				in.WriteString(" AS k, COUNT(DISTINCT " + facetOwnerCount(m.owner, dialect) + ") AS c FROM base INNER JOIN ")
+				in.WriteString(" AS k, COUNT(DISTINCT " + facetOwnerCount(m.owner, dialect) + ") AS c")
+				order := relationValueOrder(rel, dialect)
+				ordered = order != ""
+				if ordered {
+					in.WriteString(", MIN(" + order + ") AS o")
+				}
+				in.WriteString(" FROM base INNER JOIN ")
 				in.WriteString(dialect.QuoteIdent(rel.JoinTable))
 				in.WriteString(" " + junctionAlias + " ON ")
 				for j, alias := range m.owner {
@@ -492,6 +498,19 @@ func relationKeyColumns(rel *core.RelationSchema, dialect Dialect) []string {
 		out[i] = includeKey(dialect, qualified(dialect, junctionAlias, c), rel.TargetTypes[i])
 	}
 	return out
+}
+
+// relationValueOrder is the order of a relation facet's keys where their
+// text is not it: a target key of one numeric column, read on the
+// junction as facetValueOrder reads a column. A key of several columns is
+// its text (core.KeyText), and so is ordered by it, as FacetBuckets orders
+// it.
+func relationValueOrder(rel *core.RelationSchema, dialect Dialect) string {
+	if len(rel.TargetColumns) != 1 {
+		return ""
+	}
+	column, t := rel.TargetColumns[0], rel.TargetTypes[0]
+	return facetValueOrder(keyField(column, qualified(dialect, junctionAlias, column), t), dialect)
 }
 
 // relationKeyExpr renders the junction's target key as TEXT so the UNION
