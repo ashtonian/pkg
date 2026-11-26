@@ -333,11 +333,13 @@ function describe(val: unknown): string {
   return typeof val === "string" ? JSON.stringify(val) : val === null ? "null" : typeof val;
 }
 
-/** Validate a sort string against a SortSchema. */
+/**
+ * Validate a sort string against a SortSchema, as Go's ParseSort does:
+ * blank items name no field and count toward no limit, and a field named
+ * twice is E2079.
+ */
 export function validateSort(sortStr: string, schema: SortSchema): void {
-  if (!sortStr) return;
-  // Go counts comma-separated slots before ignoring empty entries.
-  const fields = sortStr.split(",");
+  const fields = sortStr.split(",").map((part) => part.trim()).filter((part) => part !== "");
   const maxFields = schema.max_fields === 0 ? 3 : schema.max_fields;
   if (fields.length > maxFields) {
     throw new SchemaValidationError(
@@ -345,9 +347,8 @@ export function validateSort(sortStr: string, schema: SortSchema): void {
       `Too many sort fields (${String(fields.length)}). Maximum: ${String(maxFields)}`,
     );
   }
-  for (const part of fields) {
-    const raw = part.trim();
-    if (!raw) continue;
+  const named = new Set<string>();
+  for (const raw of fields) {
     const field = raw.startsWith("-") || raw.startsWith("+") ? raw.slice(1) : raw;
     if (!Object.hasOwn(schema.fields, field) || !schema.fields[field]) {
       throw new SchemaValidationError(
@@ -355,5 +356,9 @@ export function validateSort(sortStr: string, schema: SortSchema): void {
         `Sort field "${field}" is not allowed. Sortable fields: ${Object.keys(schema.fields).join(", ")}`,
       );
     }
+    if (named.has(field)) {
+      throw new SchemaValidationError(field, "E2079", `Sort field "${field}" is named more than once`);
+    }
+    named.add(field);
   }
 }
