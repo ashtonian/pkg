@@ -108,7 +108,7 @@ Two fields claiming one name fail compilation with an error naming both.
 | Call | Returns | Keep it for |
 |---|---|---|
 | `gowalker.Compile[T]()` or `engine.Compile[T]()` | `*Schema`, cached by the engine | Every use of `T` |
-| `schema.Root().Fields()` | `[]*Field`: `Name`, `Type`, `Tag(key)`, `Tags`, `Index` | Building your metadata |
+| `schema.Root().Fields()` | `[]*Field`: `Name`, `Type`, `Tag(key)`, `Tags`, `Index`; `GoSelector` (`Audit.ID`) to name one in your errors | Building your metadata |
 | `schema.Root().Match(name)` | The field `encoding/json` decodes a member named `name` into, and whether it matched exactly or only by case (`ExactMatch`, `FoldedMatch`, `NoMatch`); `MatchBytes` for a decoder's bytes | Telling a member spelled in another case from an unknown one |
 | `schema.Root().Declarations()` | Every declared field with what the view made of it: named, unnamed, shadowed, tied, skipped | Checking your tags on every field; reading fields the view hides, with `KeepHidden` |
 | `gowalker.NewTypeCache(engine, build)` | Your per-type metadata, built once | Your library's hot path |

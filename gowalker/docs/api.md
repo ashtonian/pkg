@@ -286,6 +286,9 @@ Leaves retain raw type structure and its compilation-budget cost.
 `Shape.Fields()` returns visible handles in declaration/inline order. Each field
 provides its declared `Type`, raw `Tags`, Go `StructField`, declared `Shape`, copied physical `Index`,
 original `DeclaringType`, and copied `InlineParents` for inherited consumer metadata.
+`Field.GoSelector()` is the Go selector from the listing's struct, through
+those parents: `Audit.ID` for an `ID` promoted from an embedded `Audit`, the
+label every gowalker error gives a field, for an adapter's own diagnostics.
 `Shape.DeclaredView()` returns selected declarations before inline expansion;
 `Field.Inline()` identifies inline owners, including empty ones whose tags a
 consumer still needs to validate. Skipped fields and fields kept without a name
@@ -319,7 +322,8 @@ tag option applies it to exported fields a tag hides with `"-"`, under
 
 Schema collisions wrap `*NameConflict`, available with `errors.As`. Its owner,
 conflicting name and two field handles let adapters build their own diagnostics.
-Default error text omits those names.
+Its text names both fields by `GoSelector`, the owner by `TypeText` and the
+name, all from the type's declaration; it holds no caller value or tag value.
 
 `Shape.DeclaredFields()` preserves raw fields, including private fields. Pointer,
 collection and key relationships remain inspectable through `Elem()` and `Key()`.

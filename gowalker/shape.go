@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"unicode"
 	"unicode/utf8"
@@ -475,6 +476,23 @@ func (f *Field) Inline() bool { return f.inline }
 // InlineParents preserves the inline owners, outermost first, for consumer
 // metadata inheritance. Each field's own Index is relative to its declaring type.
 func (f *Field) InlineParents() []reflect.StructField { return copyStructFields(f.parents) }
+
+// GoSelector is the field's Go selector from the struct whose view lists it:
+// the names of the InlineParents it is reached through, then its own, joined
+// by dots, so two promoted ID fields read as Audit.ID and Base.ID rather
+// than as two IDs. Error text labels a field with it.
+func (f *Field) GoSelector() string {
+	if len(f.parents) == 0 {
+		return f.goField.Name
+	}
+	var b strings.Builder
+	for _, parent := range f.parents {
+		b.WriteString(parent.Name)
+		b.WriteByte('.')
+	}
+	b.WriteString(f.goField.Name)
+	return b.String()
+}
 
 func copyStructField(f reflect.StructField) reflect.StructField {
 	f.Index = append([]int(nil), f.Index...)
