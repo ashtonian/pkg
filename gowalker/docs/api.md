@@ -167,8 +167,8 @@ Options relax those defaults:
 | `json:"id,case:strict"` | `id`, which `Shape.Match` matches only exactly, as `encoding/json` does |
 | `json:"-"` | Excluded |
 | `json:"-,"` | `-` |
-| Embedded struct or pointer to one without a tag name, exported or not | Its fields, promoted |
-| Unexported embedded struct with a tag name | A field under that name, as `encoding/json` writes it as a member. Its `GoField` is unexported: reading or writing its value whole, or walking a value into it, returns ErrAccess; with `NestedFields()`, paths to its exported fields read and write |
+| Embedded struct or pointer to one without a tag name, exported or not | Its fields, promoted, a leaf type's included: leaf rules decide where paths and walks stop, not which members `encoding/json` writes, and paths, writes and walks cross the leaf to the fields it promotes |
+| Unexported embedded struct with a tag name, a leaf type included | A field under that name, as `encoding/json` writes it as a member. Its `GoField` is unexported: reading or writing its value whole, or walking a value into it, returns ErrAccess; with `NestedFields()`, paths to its exported fields read and write |
 | A struct embedded inside itself, directly or through others | Its fields once, at the shallowest depth, as `encoding/json` explores each embedded struct once |
 | A name two fields claim | Settled as with `ResolveByDepth()`, which the option implies; a remaining tie fails, or with `DropTies()` drops every field claiming the name |
 | An embedded struct whose own fields tie, in a struct whose own field settles the name | The struct compiles, with the settling field, as `encoding/json` writes it; the embedded struct compiled alone, or as a named section, still fails |
@@ -305,7 +305,8 @@ a library refuse the field when it builds its metadata. An unexported struct
 embedded by value is no obstacle, since its exported fields are settable.
 `Shape.DeclaredView()` returns selected declarations before inline expansion;
 `Field.Inline()` identifies inline owners, including empty ones whose tags a
-consumer still needs to validate. Skipped fields and fields kept without a name
+consumer still needs to validate. A leaf's is empty, unless `WithJSONFields`
+inlines it. Skipped fields and fields kept without a name
 are absent from both views.
 Use `StructTag.Lookup` for absent versus present-empty tags; tag option syntax belongs to the resolver.
 

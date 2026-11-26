@@ -129,7 +129,8 @@ retain metadata only, never the values you pass them. Synchronize your own value
 - **Leaf** (also *atomic*): a value read or replaced whole; paths and walks do
   not descend into it. Each `WithTaggedFields` field is a leaf unless
   `NestedFields` is set; `WithAtomicType` and `WithAtomicImplementers` make
-  whole types leaves.
+  whole types leaves. `WithJSONFields` still promotes an embedded leaf's
+  fields, as `encoding/json` writes them.
 - **Inline** / **promote**: expose an embedded struct's fields as if they were
   declared on the outer struct.
 - **Present**, **Nil**, **Missing**: a read reached a value (zero included), reached

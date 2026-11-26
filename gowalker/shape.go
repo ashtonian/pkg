@@ -18,7 +18,8 @@ import (
 // FieldRule chooses a field's name and aliases, excludes it, inlines its
 // struct fields, or keeps it without a name. An empty Name uses the Go name.
 // Skip takes precedence. Inline accepts a struct or pointers to a struct; it
-// cannot inline an atomic type. Atomic treats this field as a leaf without
+// cannot inline an atomic type, which only [WithJSONFields] does, as
+// encoding/json promotes it. Atomic treats this field as a leaf without
 // changing other uses of its type. It cannot be combined with Inline. Raw
 // type relationships remain inspectable. Private fields are always excluded
 // except explicitly inlined anonymous fields, and the unexported embedded
@@ -54,6 +55,10 @@ type FieldRule struct {
 	// encoding/json matches only by its exact name: Shape.Match does too.
 	// Only WithJSONFields sets it.
 	caseStrict bool
+	// inlineLeaf lets Inline expand a struct the leaf rules make a leaf, as
+	// encoding/json promotes an embedded struct whatever its methods. Only
+	// WithJSONFields sets it.
+	inlineLeaf bool
 }
 
 // FieldResolver runs once per field in each reachable, non-atomic struct during
@@ -812,11 +817,11 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 			continue
 		}
 		if rule.Inline {
-			child, err := indirectShape(declared.shape)
+			child, err := indirect(declared.shape, rule.inlineLeaf)
 			if err != nil {
 				return failure("compile", ErrSchema, sf.Type, emptyPath, -1, fmt.Errorf("field %s: inlining %s: %w", sf.Name, TypeText(sf.Type), err))
 			}
-			if child.atomic || child.Kind() != reflect.Struct {
+			if child.atomic && !rule.inlineLeaf || child.Kind() != reflect.Struct {
 				return failure("compile", ErrSchema, current.typ, emptyPath, -1, fmt.Errorf("field %s: %s is not a struct with fields to inline", sf.Name, TypeText(sf.Type)))
 			}
 			listed.state, listed.field = InlineOwner, declared.selected
@@ -973,9 +978,12 @@ func (s *Shape) lookupKey(name string) string {
 	return name
 }
 
-func indirectShape(s *Shape) (*Shape, error) {
+func indirectShape(s *Shape) (*Shape, error) { return indirect(s, false) }
+
+// indirect follows s's pointers, stopping at a leaf unless throughLeaves.
+func indirect(s *Shape, throughLeaves bool) (*Shape, error) {
 	seen := make(map[*Shape]bool)
-	for s.Kind() == reflect.Pointer && !s.atomic {
+	for s.Kind() == reflect.Pointer && (throughLeaves || !s.atomic) {
 		if seen[s] {
 			return nil, ErrPath
 		}

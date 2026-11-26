@@ -117,6 +117,7 @@ func (t Tag) Has(option string) bool {
 // tagNaming is the field rule WithTaggedFields builds. It is part of the
 // engine's settings, rather than a FieldResolver closure, because promotion
 // must respect the engine's leaf rules: an embedded time.Time stays one field.
+// WithJSONFields promotes as encoding/json does instead, leaves included.
 type tagNaming struct {
 	key        string
 	untagged   func(string) string
@@ -242,8 +243,7 @@ func WithTaggedFields(key string, options ...TagOption) Option {
 //     json:"'a b'" names nothing. Invalid UTF-8 becomes U+FFFD.
 //   - An exported field without a tag name keeps its Go name.
 //   - An embedded struct, or pointer to one, without a tag name contributes
-//     its fields, an unexported struct type included; an embedded leaf type
-//     stays one field.
+//     its fields, an unexported struct type included.
 //   - Only a tag of exactly "-" excludes a field; "-," names it "-".
 //   - A name two fields claim goes to the shallower, then to the one a tag
 //     names, as with [ResolveByDepth], which this option implies. A tie that
@@ -260,7 +260,12 @@ func WithTaggedFields(key string, options ...TagOption) Option {
 // A type with its own MarshalJSON or MarshalText method, including one
 // promoted from an embedded field, is written by that method; this option
 // still describes its fields. Add [WithAtomicImplementers] with json.Marshaler
-// and encoding.TextMarshaler to treat such types as single values.
+// and encoding.TextMarshaler to treat such types as single values. Leaf rules
+// decide where paths and walks stop, never which members exist: an embedded
+// struct of a leaf type still contributes its fields, and one a tag names is
+// still a member, as encoding/json, which writes an embedded struct by its
+// fields wherever the outer struct does not inherit its methods, names them.
+// Paths, writes and walks reach a field so promoted through the leaf.
 //
 // [ValidName], [NestedFields] and [KeepHidden] apply. UntaggedName,
 // PromoteEmbedded and DashCommaName are refused: they would change what this
@@ -311,8 +316,14 @@ func (n *tagNaming) rule(sf reflect.StructField, atomic func(reflect.Type) bool)
 	if raw == "-" || name == "-" && !n.dashComma {
 		return FieldRule{Unnamed: n.keepHidden, Skip: !n.keepHidden || !sf.IsExported()}, nil
 	}
+	if n.json {
+		// encoding/json names members by its own rules alone, so a leaf
+		// rule, which decides where paths stop, changes none of them.
+		atomic = noLeaves
+	}
 	if !explicit && n.promote && sf.Anonymous && promotable(sf.Type, atomic) {
-		return FieldRule{Inline: true}, nil
+		inline := FieldRule{Inline: true, inlineLeaf: n.json}
+		return inline, nil
 	}
 	privateEmbed := n.json && explicit && !sf.IsExported() && sf.Anonymous && promotable(sf.Type, atomic)
 	if explicit && n.valid != nil && (sf.IsExported() || privateEmbed) {
@@ -383,6 +394,8 @@ func jsonTagName(tag string) (name string, ok bool) {
 	}
 	return name, true
 }
+
+func noLeaves(reflect.Type) bool { return false }
 
 func promotable(t reflect.Type, atomic func(reflect.Type) bool) bool {
 	if atomic(t) {

@@ -439,6 +439,13 @@ for types matched another way. Embedding promotes methods, so a struct that
 embeds `time.Time` implements `TextUnmarshaler` itself and becomes a leaf;
 `encoding/json` has the same behavior.
 
+A struct that embeds two types with `MarshalJSON` inherits neither, the two
+colliding, and `encoding/json` writes it by its fields, promoting the embedded
+structs' fields although each writes itself elsewhere. `WithJSONFields` names
+those members whatever the leaf rules: with `WithAtomicImplementers` the
+embedded types stay leaves wherever a field holds one, and their promoted
+fields stay paths of the outer struct.
+
 ## Write your own field rules
 
 When a preset is not enough, `WithFieldResolver` receives each
