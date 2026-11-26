@@ -47,7 +47,6 @@ flowchart LR
 
 **Dependencies**
 - *Imports*: `parse/internal/decimals`, `parse/internal/geo`, `gowalker` (type text in errors), `modernc.org/sqlite`
-- *Test imports*: `github.com/mattn/go-sqlite3` (cgo), for the [driver check](#supported-sqlite)
 - *Imported by*: applications running parse plans on SQLite, `parse/internal/dbtest`, the example server
 - *Package boundary*: `filter` does not import this package, so the compiler stays driver-free; both read the function names from `internal/decimals` and `internal/geo`
 
@@ -110,10 +109,10 @@ parse's SQLite plans need **SQLite 3.38.0** or later, with its JSON functions, w
 
 | Driver | SQLite it runs |
 |---|---|
-| `modernc.org/sqlite` | the release it bundles |
-| `github.com/mattn/go-sqlite3` | the release it bundles; built with the `libsqlite3` tag, the system's library, which must meet the minimum itself |
+| `modernc.org/sqlite` | the release it bundles: 3.54.1 in v1.62.0, the version this module requires |
+| `github.com/mattn/go-sqlite3` | the release it bundles: 3.54.1 in v1.14.53 (`SQLITE_VERSION` in its `sqlite3-binding.c`); built with the `libsqlite3` tag, the system's library, which must meet the minimum itself |
 
-`TestDrivers_MeetTheSQLiteMinimum` opens both drivers at the versions this module requires, checks that each reports at least the release above, and runs each construct it lists. It links `mattn/go-sqlite3`, and so needs cgo, in this package's tests alone; no parse package imports it.
+`TestDriver_MeetsTheSQLiteMinimum` opens `modernc.org/sqlite` at the version this module requires, checks that it reports at least the release above, and runs each construct it lists. This module does not require `mattn/go-sqlite3`, a cgo driver every consumer's module graph would carry: an application on it, or on a system `libsqlite3`, checks its release against the minimum, `SELECT sqlite_version()`.
 
 ## Configuration
 
@@ -159,6 +158,6 @@ The functions read only their argument, allocate at most the value's digits (bou
 | File | Responsibility |
 |---|---|
 | [`parsesqlite.go`](parsesqlite.go) | `Function` and the `Functions` table, `Register`, `RegisterOn`, `Decimal`, `DecimalKey`, `DecimalFloat32`, `GeoNear`, `GeoInBox`, `GeoCoveredBy` and the function names |
-| [`drivers_test.go`](drivers_test.go) | The [supported SQLite](#supported-sqlite) check: each documented driver's release and the constructs the minimum is for |
+| [`drivers_test.go`](drivers_test.go) | The [supported SQLite](#supported-sqlite) check: the required driver's release and the constructs the minimum is for |
 | [`../internal/decimals`](../internal/decimals/decimals.go) | `Value` (a SQLite value as a decimal), `Float32Value` (as a float32), `Member` (a document member as a decimal), `Key`, the function names |
 | [`../internal/geo`](../internal/geo/geo.go) | `Distance` (WGS 84 geodesic, ported from GeographicLib), `Geodetic`, `Box`, `CoveredBy`, `Near`, `ReadPoint` / `ReadPointJSON` and `Coordinate` (a stored point, its members read as float8), the polygon WKB, the function names |

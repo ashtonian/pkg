@@ -37,6 +37,10 @@ go test -tags=integration -count=1 -timeout=15m "$module/..."
 go list -deps -f '{{with .Module}}{{.Path}}{{end}}' "$module/..." | sort -u |
     awk '/^github\.com\/ashtonian\// && !/^github\.com\/ashtonian\/pkg(\/|$)/ {print "dependency outside this repository: " $0 > "/dev/stderr"; bad=1} END {exit bad}'
 go list -m -f '{{if .Replace}}unexpected replacement{{end}}' all | awk 'NF {exit 1}'
+# parse and its tests link no cgo package: a cgo driver one test needs is a
+# requirement in every consumer's module graph and vulnerability scan.
+go list -deps -test -tags=unit,integration -f '{{if and (not .Standard) .CgoFiles}}{{.ImportPath}}{{end}}' "$module/..." | sort -u |
+    awk 'NF {print "cgo package in parse or its tests: " $0 > "/dev/stderr"; bad=1} END {exit bad}'
 
 downloaded=$(go list -m -f '{{.Dir}}' "$module")
 awk '/^```go$/{code=1;next} /^```$/{if(code)exit} code{print}' "$downloaded/README.md" > main.go
