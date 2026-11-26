@@ -222,12 +222,11 @@ type memberFact struct {
 }
 
 // documentExpr folds the operations of the document column col, some of
-// which write a member, and returns the path schema its change predicate
-// compares the column as: the whole-value operation's when the document is
-// known, else a JSON document's, since the fold's expression is the
-// document MemberDocument reads whatever the column's JSON type (jsonb on
-// PostgreSQL).
-func (b *setBuilder) documentExpr(col string, ops []*PatchOperation) (string, *PathSchema, error) {
+// which write a member. When an operation writes the document whole and
+// the members fold onto its value in Go, the column is written whole, as
+// that operation's path declares it; otherwise its members are written
+// over the stored document.
+func (b *setBuilder) documentExpr(col string, ops []*PatchOperation) (columnWrite, error) {
 	f := &documentFold{b: b, col: col, expr: b.dialect.MemberDocument(b.dialect.QuoteIdent(col)), facts: map[string]memberFact{}}
 	whole := -1
 	for i, op := range ops {
@@ -239,25 +238,24 @@ func (b *setBuilder) documentExpr(col string, ops []*PatchOperation) (string, *P
 		f.overwritten = i < whole
 		err := f.apply(op)
 		if err != nil {
-			return "", nil, err
+			return columnWrite{}, err
 		}
 	}
 	if !f.known {
-		storedDocument := &PathSchema{DataType: core.FieldTypeJSON, SQLType: core.SQLJSON}
-		return f.expr, storedDocument, nil
+		return columnWrite{expr: f.expr, members: true}, nil
 	}
 	value := f.doc
 	if !f.folded {
 		value, _ = wholeValue(f.base)
 	}
 	if value == nil {
-		return "NULL", f.base.Schema, nil
+		return columnWrite{expr: "NULL", schema: f.base.Schema}, nil
 	}
 	val, err := marshalIfComplex(value, f.base.Schema, f.b.dialect)
 	if err != nil {
-		return "", nil, fmt.Errorf("marshaling value for %s: %w", f.base.Path, err)
+		return columnWrite{}, fmt.Errorf("marshaling value for %s: %w", f.base.Path, err)
 	}
-	return f.b.bind(val), f.base.Schema, nil
+	return columnWrite{expr: f.b.bind(val), schema: f.base.Schema}, nil
 }
 
 func (f *documentFold) apply(op *PatchOperation) error {

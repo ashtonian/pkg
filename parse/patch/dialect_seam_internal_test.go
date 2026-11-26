@@ -29,6 +29,10 @@ func (providerDialect) ChangedCondition(column, expr string, t core.TypeInfo) st
 	return "changed(" + column + ", " + expr + ", " + string(t.Type) + ")"
 }
 
+func (providerDialect) ChangedDocumentCondition(column, doc string) string {
+	return "doc_changed(" + column + ", " + doc + ")"
+}
+
 func (providerDialect) MergePatch(doc string, storage core.SQLType, p map[string]any, bind func(any) string) (string, error) {
 	text, err := json.Marshal(p)
 	if err != nil {
@@ -113,12 +117,12 @@ func TestBuildPatchSQL_WritesThroughTheDialect(t *testing.T) {
 		{name: "a member added", body: `[{"op":"add","path":"/doc/b/c","value":1}]`,
 			set:     `"doc" = set(doc("doc"), ?1, ?2)`,
 			pre:     `(object(doc("doc"), ?3))`,
-			changed: `(changed("doc", set(doc("doc"), ?1, ?2), json))`,
+			changed: `(doc_changed("doc", set(doc("doc"), ?1, ?2)))`,
 			args:    []any{"b.c", "1", "b"}},
 		{name: "a member replaced and another removed", body: `[{"op":"replace","path":"/doc/a","value":2},{"op":"remove","path":"/doc/b"}]`,
 			set:     `"doc" = remove(set(doc("doc"), ?1, ?2), ?3)`,
 			pre:     `(has(doc("doc"), ?4) AND has(doc("doc"), ?5))`,
-			changed: `(changed("doc", remove(set(doc("doc"), ?1, ?2), ?3), json))`,
+			changed: `(doc_changed("doc", remove(set(doc("doc"), ?1, ?2), ?3)))`,
 			args:    []any{"a", "2", "b", "a", "b"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

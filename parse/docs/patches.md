@@ -250,6 +250,7 @@ A patch with columns and relations changes the memberships of every target row, 
 | Civil date, UUID, time, interval, inet, cidr, macaddr | Their text: one value, one text. An `Interval` whose fields differ (`P1M`, `P30D`) counts as changed though PostgreSQL's equality matches them | The canonical text; a legacy midnight timestamp in a date column counts as changed, and the write stores the date |
 | JSON document (`jsonb`) | jsonb's text, which is canonical: key order, whitespace and duplicate keys do not count; a number's written form (`1.0` against `1`) does | By text. parse writes compact JSON with object keys in Go's sorted order, and a merge keeps the stored order: a document stored in another order or spacing counts as changed once, and the write stores parse's text |
 | JSON declared `core.SQLJSON` (`json`) | Compared as `jsonb` text (`json` has no equality operator): a document whose stored text differs only in whitespace or key order counts as unchanged, although a read returns that text | By text, as above |
+| A document whose members a patch writes ([document members](#document-members)) | Compared as `jsonb` text whatever the column declares (`jsonb`, `json` or `text`): the members are written over the stored document read as `jsonb` | By text: `json_set` and `json_remove` return compact text, so a document stored in other spacing counts as changed once |
 | Native array | Its text: element by element, in order | By text, as documents |
 | Cleared value | A slice or map field clears to empty, unchanged when already empty; others to NULL | The same |
 
@@ -311,7 +312,7 @@ JSON Patch `test` checks the supplied document shape; missing struct members are
 | `WithAutoTimestampSQL(col, expr)` | string, string | none | `WithAutoTimestamp` with `col` set to the SQL expression `expr` (the database's clock, `NOW()`) instead of a bound time — for a repository whose other writes stamp the database's clock |
 | `WithIncrement(col)` | string | none | Also set `col` to `col + 1` (once, even if the patch sets it); repeat for each counter. `col` must be an identifier and differ from the timestamp column |
 | `WithTimeFunc(fn)` | `func() time.Time` | `time.Now().UTC` | Clock for `WithAutoTimestamp` |
-| `WithChangePredicate()` | — | off | Also render `PatchSQLResult.ChangePredicate`: true for a row the patch's columns change, over the SET clause's own placeholders and without the timestamp or increments; [Skipping unchanged rows](#skipping-unchanged-rows) defines its comparisons, each the dialect's `ChangedCondition` |
+| `WithChangePredicate()` | — | off | Also render `PatchSQLResult.ChangePredicate`: true for a row the patch's columns change, over the SET clause's own placeholders and without the timestamp or increments; [Skipping unchanged rows](#skipping-unchanged-rows) defines its comparisons, each the dialect's `ChangedCondition`, or `ChangedDocumentCondition` for a document whose members the patch writes |
 
 Parsers take a `*core.ParserConfig` (`MaxDepth` — pointer segments, and merge-patch nesting; `MaxInputSize`; codec; see [schema/configuration](schema-configuration.md)); `PatchSchema.MaxOperations` (default `50`) bounds operations per patch, merge patches counted as above (E2066), and `PatchSchema.MaxRelationValues` (default `1000`) the keys of one relation operation (E2119).
 

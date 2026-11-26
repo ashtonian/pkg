@@ -188,10 +188,12 @@ type Dialect interface {
 
 	// The SQL a patch writes, documented method by method where patch
 	// consumes it (patch.SQLDialect, patch.RelationDialect): a changed
-	// column's condition, an RFC 7396 merge, a native array append, a JSON
-	// document member's read, set, removal and preconditions, and the rows
-	// a pair table's insert reads when no target table holds its values.
+	// column's condition, written whole or by its members, an RFC 7396
+	// merge, a native array append, a JSON document member's read, set,
+	// removal and preconditions, and the rows a pair table's insert reads
+	// when no target table holds its values.
 	ChangedCondition(column, expr string, t core.TypeInfo) string
+	ChangedDocumentCondition(column, doc string) string
 	MergePatch(doc string, storage core.SQLType, patch map[string]any, bind func(any) string) (string, error)
 	ArrayAppend(array string, element any, bind func(any) string) (string, error)
 	MemberDocument(expr string) string

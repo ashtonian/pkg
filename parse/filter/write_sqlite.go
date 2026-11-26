@@ -18,6 +18,13 @@ func (SQLiteDialect) ChangedCondition(column, expr string, _ core.TypeInfo) stri
 	return column + " COLLATE BINARY IS NOT " + expr
 }
 
+// ChangedDocumentCondition compares the document's JSON text as
+// ChangedCondition compares any column: json_set and json_remove return
+// the text the column then holds.
+func (d SQLiteDialect) ChangedDocumentCondition(column, doc string) string {
+	return d.ChangedCondition(column, doc, core.TypeInfo{})
+}
+
 // MergePatch is json_patch, SQLite's RFC 7396, with the patch bound as its
 // JSON text and a NULL document merged as {}.
 func (SQLiteDialect) MergePatch(doc string, _ core.SQLType, patch map[string]any, bind func(any) string) (string, error) {

@@ -17,10 +17,7 @@ import (
 func (PostgresDialect) ChangedCondition(column, expr string, t core.TypeInfo) string {
 	switch {
 	case t.SQLType == core.SQLJSON:
-		// json has no equality operator, and jsonb's text is canonical:
-		// key order and whitespace do not count, a number's written form
-		// does. The cast to json types the placeholder as the column.
-		return column + `::jsonb::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::json::jsonb::text"
+		return pgDocumentChanged(column, expr)
 	case t.Type == core.FieldTypeDecimal:
 		// A decimal's value has no scale (core.DecimalText binds 1.50 as
 		// 1.5), and a numeric(p,s) column pads every value to s: its text
@@ -34,6 +31,21 @@ func (PostgresDialect) ChangedCondition(column, expr string, t core.TypeInfo) st
 	// the WHERE precedes the SET clause: it types the placeholder as the
 	// column (an enum, a domain), where a first use as text would not.
 	return column + " IS DISTINCT FROM " + expr + " OR " + column + `::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::text"
+}
+
+// ChangedDocumentCondition compares the column and the jsonb document the
+// member methods built by their canonical jsonb text, whatever JSON type
+// the column declares.
+func (PostgresDialect) ChangedDocumentCondition(column, doc string) string {
+	return pgDocumentChanged(column, doc)
+}
+
+// pgDocumentChanged compares a document column with expr as documents. json
+// has no equality operator, and jsonb's text is canonical: key order and
+// whitespace do not count, a number's written form does. The cast to json
+// types a placeholder as the column.
+func pgDocumentChanged(column, expr string) string {
+	return column + `::jsonb::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::json::jsonb::text"
 }
 
 // MergePatch compiles the merge level by level over jsonb (pgMerge):
