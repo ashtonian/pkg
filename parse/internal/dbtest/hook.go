@@ -1,4 +1,4 @@
-//go:build unit || integration
+//go:build unit || integration || concurrency
 
 package dbtest
 

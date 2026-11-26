@@ -61,8 +61,8 @@ superseded run leaves no change unvalidated. The scope lists the workspace's pac
   the SDK job for the SDK, the corpora in `parse/testdata` or its check scripts.
   Their test and lint targets cover only the reached packages (`PACKAGES`), and of those
   only the ones with a file under the target's build tags, as a `path/...` pattern does: go
-  refuses a package named explicitly whose files the tags all exclude, such as
-  `parse/internal/dbtest` under `-tags=concurrency`.
+  refuses a package named explicitly whose files the tags all exclude, such as a test-helper
+  package tagged only for other lanes.
 - The release checks of the module trees the change touches (`tools/ci_release_checks.py`,
   below); the modules job runs only when one is selected.
 
