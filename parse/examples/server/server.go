@@ -212,7 +212,8 @@ func (s *server) patch(w http.ResponseWriter, r *http.Request) {
 }
 
 // patchMany applies one merge patch to the products its id[] keys name. A
-// key with no product is a failed item, not a failed request.
+// key with no product is a failed item, not a failed request, and so is a
+// text the key column cannot hold, which names no product.
 func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
 	q, ok := s.patchQuery(w, r, "id[]")
 	if !ok {
@@ -226,14 +227,28 @@ func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	keys := make([]any, len(ids))
-	for i, id := range ids {
-		keys[i] = id
+	// Each id is read as its column's text, as the item route reads its
+	// segment: request text reaches the plan only through ParseKey.
+	keys := make([]parse.Key, 0, len(ids))
+	for _, id := range ids {
+		key, err := s.products.ParseKey(id)
+		if errors.Is(err, parse.ErrNoSuchKey) {
+			continue // no product has it: a failed item below
+		}
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		keys = append(keys, key)
 	}
-	items, err := s.update(r, parse.ByIDs(keys...))
-	if err != nil {
-		s.fail(w, r, err)
-		return
+	var items []Product
+	if len(keys) > 0 {
+		var err error
+		items, err = s.update(r, parse.ByKeys(keys...))
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
 	}
 	res := parsehttp.PatchAnswer[Product]{Updated: items}
 	updated := make(map[string]bool, len(items))

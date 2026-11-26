@@ -323,7 +323,9 @@ func TestServer_BatchMergePatch(t *testing.T) {
 			ID, Code, Error string
 		} `json:"failed"`
 	}
-	q := url.Values{"id[]": {"p02", "p03", "nope", "p02"}}
+	// "\x00" and "\xff" are texts no key column holds: ParseKey reads them
+	// as naming no product, so each is a failed item, not a failed request.
+	q := url.Values{"id[]": {"p02", "p03", "nope", "p02", "\x00", "\xff"}}
 	require.Equal(t, http.StatusOK, call(t, srv, http.MethodPatch, "/api/products?"+q.Encode(), `{"price":7}`, &res))
 	ids := make([]string, len(res.Updated))
 	for i, p := range res.Updated {
@@ -331,9 +333,23 @@ func TestServer_BatchMergePatch(t *testing.T) {
 		assert.InDelta(t, 7.0, p.Price, 0)
 	}
 	assert.ElementsMatch(t, []string{"p02", "p03"}, ids)
-	require.Len(t, res.Failed, 1, "a key without a product fails once, however often it is named")
-	assert.Equal(t, "nope", res.Failed[0].ID)
-	assert.Equal(t, codeNotFound, res.Failed[0].Code)
+	failed := make([]string, len(res.Failed))
+	for i, f := range res.Failed {
+		failed[i] = f.ID
+		assert.Equal(t, codeNotFound, f.Code)
+	}
+	// encoding/json writes invalid UTF-8 as U+FFFD.
+	assert.ElementsMatch(t, []string{"nope", "\x00", "\ufffd"}, failed, "a key without a product fails once, however often it is named")
+
+	// A batch of keys no product can have writes nothing and fails each.
+	var none struct {
+		Updated []Product                   `json:"updated"`
+		Failed  []struct{ ID, Code string } `json:"failed"`
+	}
+	require.Equal(t, http.StatusOK, call(t, srv, http.MethodPatch, "/api/products?id[]=%FF", `{"price":8}`, &none))
+	assert.Empty(t, none.Updated)
+	require.Len(t, none.Failed, 1)
+	assert.Equal(t, codeNotFound, none.Failed[0].Code)
 
 	var single struct {
 		Updated []Product `json:"updated"`
