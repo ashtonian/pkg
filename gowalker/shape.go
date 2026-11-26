@@ -104,6 +104,8 @@ type Shape struct {
 	// conflict is the name conflict of a struct reached only aside (see
 	// builder.view), in place of its view.
 	conflict *NameConflict
+	// jsonKey is the type's rule as a JSON map key (JSONKey).
+	jsonKey jsonKeyRule
 }
 
 // conflictError is the error compiling s alone returns for its conflict, new
@@ -588,7 +590,7 @@ func (b *builder) build(t reflect.Type, depth int) (*Shape, error) {
 	if depth > limits.MaxDepth || len(b.nodes) >= limits.MaxTypes {
 		return nil, failure("compile", ErrLimit, t, emptyPath, -1, nil)
 	}
-	s := &Shape{typ: t, fold: b.engine.settings.fold, atomic: b.engine.settings.isAtomic(t), graph: b.graph}
+	s := &Shape{typ: t, fold: b.engine.settings.fold, atomic: b.engine.settings.isAtomic(t), graph: b.graph, jsonKey: jsonKeyRuleOf(t)}
 	b.nodes[t] = s
 	var err error
 	switch t.Kind() {

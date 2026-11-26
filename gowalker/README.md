@@ -113,6 +113,7 @@ Two fields claiming one name fail compilation with an error naming both.
 | `gowalker.Compile[T]()` or `engine.Compile[T]()` | `*Schema`, cached by the engine | Every use of `T` |
 | `schema.Root().Fields()` | `[]*Field`: `Name`, `Type`, `Tag(key)`, `Tags`, `Index`; `GoSelector` (`Audit.ID`) to name one in your errors | Building your metadata |
 | `schema.Root().Match(name)` | The field `encoding/json` decodes a member named `name` into, and whether it matched exactly or only by case (`ExactMatch`, `FoldedMatch`, `NoMatch`); `MatchBytes` for a decoder's bytes | Telling a member spelled in another case from an unknown one |
+| `shape.JSONKey(name)`, `IsCanonicalJSONKey(name)`, `CheckJSONKey()` | The key `encoding/json` reads a member name into for a map keyed by the shape's type, the name it writes back, and whether it refuses the type as a key | Checking that a document spells each map key as `encoding/json` writes it |
 | `schema.Root().Declarations()` | Every declared field with what the view made of it: named, unnamed, shadowed, tied, skipped | Checking your tags on every field; reading fields the view hides, with `KeepHidden`; refusing a field behind an unexported embedded pointer, which no write can allocate (`UnallocatableParent`) |
 | `gowalker.NewTypeCache(engine, build)` | Your per-type metadata, built once | Your library's hot path |
 | `schema.AccessName(name)` | `*Accessor`, cached by the schema | Reading or writing one field across many values |
@@ -222,6 +223,7 @@ The standard library only, Go 1.27 or later. There are no external services.
 | `tags.go` | Tag parsing, `TagKeys`, `WithTaggedFields` and `WithJSONFields` |
 | `tag_spelling.go` | `MisspeltTagKey`: the known tag key a misspelt one means; `Shape.MisspeltTagKeys` and `TagMisspelling`: every misspelling a struct's declarations carry |
 | `shape.go` | Compilation: the raw type graph, field rules, inlining, name resolution, the view pass and `Declarations` |
+| `json_key.go` | JSON map-key rules: `Shape.JSONKey`, `IsCanonicalJSONKey` and `CheckJSONKey` |
 | `schema.go` | `Schema`, `At`, path resolution and cached root-field accessors |
 | `route.go` | Static routes for paths of struct fields and pointers |
 | `access.go` | Reads and value states |

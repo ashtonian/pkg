@@ -350,6 +350,40 @@ selected as terminals.
 The [examples](../example_test.go) demonstrate independent db-tag and config-style
 field rules. These are naming examples, not complete SQL or configuration adapters.
 
+## JSON map keys
+
+Every shape carries the rule by which `encoding/json` reads a JSON object
+member name into a key of a map keyed by the shape's type, and writes the key
+back. It is decided once per node when the type is compiled, so a library
+walking a compiled graph reads each map's keys from its `Key()` shape without
+compiling the key type or reflecting on its methods again.
+
+`Shape.JSONKey(name)` returns the key `encoding/json` reads `name` into, the
+member name it writes for that key (the key's canonical text), and whether it
+reads one and writes one. `Shape.IsCanonicalJSONKey(name)` reports whether
+`name`, held as bytes such as a decoder's, is the canonical text of the key it
+reads into, so a document that spells a key another way (`07` for an int key,
+`0:0:0:0:0:0:0:1` for a `netip.Addr`) can be refused. `Shape.CheckJSONKey()`
+returns an error matching `ErrKey` when `encoding/json` refuses the type as a
+map key; its text names the type and never a member name.
+
+| Key type | `JSONKey` reads | Canonical text |
+|---|---|---|
+| String kind without text methods | Every name; each byte of invalid UTF-8 becomes U+FFFD | The name, when it is valid UTF-8 |
+| Integer kind without text methods | Base-10 text within the type's range, leading zeros included; a signed kind's may carry a `+` or `-` | Without a `+`, leading zeros or `-0`: `+7` and `07` read as `7` |
+| A type with `UnmarshalText`, or with `MarshalText` on its value | What `encoding/json` reads through the method or the kind | What `encoding/json` writes: `MarshalText` of a value that has it, otherwise the kind's text |
+| Float kind | Numbers `encoding/json` reads | Their shortest form: `1.50` reads as `1.5` |
+| `any` | Every name, as a string | The name |
+| Pointer | What its element type reads, or its own text methods | What its element type writes, or its own `MarshalText` |
+| Not comparable, a non-empty interface, or a bool, complex, struct, array, channel or `unsafe.Pointer` kind without both `UnmarshalText` and a `MarshalText` on its value | Nothing: `CheckJSONKey` fails | None |
+
+JSON methods play no part: `encoding/json` calls neither `MarshalJSON` nor
+`UnmarshalJSON` on a key, and calls `MarshalText` only on the key's value, so a
+pointer-receiver `MarshalText` leaves a struct key unwritable. `IsCanonicalJSONKey`
+allocates nothing for string and integer kinds without text methods; every
+other rule, and `JSONKey` always, allocate, the third column's rules through
+an `encoding/json` round trip.
+
 ## Root binding
 
 | Schema | `accessor.Get` accepts | Empty path returns |

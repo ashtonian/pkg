@@ -446,6 +446,25 @@ those members whatever the leaf rules: with `WithAtomicImplementers` the
 embedded types stay leaves wherever a field holds one, and their promoted
 fields stay paths of the outer struct.
 
+## Check JSON map keys
+
+A library that validates JSON documents against a Go type finds each map's
+key rule on its key shape: `Key().JSONKey(name)` reads a member name into a
+key as `encoding/json` does and returns the name `encoding/json` writes for
+it, `IsCanonicalJSONKey` tells whether a member already spells its key that
+way, and `CheckJSONKey` refuses a key type `encoding/json` cannot use, such
+as `bool`. The [example](../example_test.go) (`ExampleShape_JSONKey`) reads a
+`map[uint16]int`'s members:
+
+```text
+"7": key 7, written "7", canonical true
+"007": key 7, written "7", canonical false
+"+7": no uint16 key
+"70000": no uint16 key
+"seven": no uint16 key
+gowalker: json key bool: unsupported map key: encoding/json reads no member name into it, or writes none for it
+```
+
 ## Write your own field rules
 
 When a preset is not enough, `WithFieldResolver` receives each

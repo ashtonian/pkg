@@ -118,6 +118,12 @@ of an exact type a leaf. Here, “atomic” describes traversal, not synchroniza
 or a database transaction. Raw type relationships remain available, and still
 count toward compilation limits.
 
+Each node also records its JSON map-key rule when it is built (`json_key.go`):
+whether `encoding/json` refuses the type as a key, reads and writes it by its
+string or integer kind, or needs its own round trip, for text methods, floats,
+pointers and `any`. The rule depends on the type alone, not the engine, and
+costs one method-set check per node.
+
 Compilation checks all reachable visible fields, even if a caller later reads
 only one. The `WithTaggedFields` preset marks each selected column
 as a leaf because its internal fields are irrelevant to column naming. This prevents tags
