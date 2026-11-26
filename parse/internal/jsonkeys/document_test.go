@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/ashtonian/pkg/parse/internal/shapes"
 )
 
 // cyclePointer points to itself: no document decodes into one past null.
@@ -66,6 +68,51 @@ func TestValidate_InvalidUTF8MemberNames(t *testing.T) {
 			assert.ErrorContains(t, err, tt.err)
 		})
 	}
+}
+
+// Validate reads a document strictly first and again as decoding reads it
+// when the strict read refuses it; its answer is the permissive read's,
+// whatever the document holds and wherever its invalid UTF-8 sits.
+func TestValidate_StrictReadAnswersAsThePermissiveRead(t *testing.T) {
+	docs := []string{
+		`{"x":1,"ints":{"7":1},"Names":{"a":{"y":1}}}`,
+		`{"X":1}`,
+		`{"ints":{"07":1}}`,
+		`{"ints":{"7":1,"7":2}}`,
+		`{"x":1,"x":2}`,
+		`{"Names":{"\u0061":null,"a":null}}`,
+		"{\"Names\":{\"\xff\":null}}",
+		"{\"Names\":{\"\xff\":null,\"\xfe\":null}}",
+		"{\"X\":1,\"Names\":{\"\xff\":null}}",
+		"{\"Names\":{\"\xff\":null},\"X\":1}",
+		"{\"raw\":\"\xff\",\"X\":1}",
+		"{\"x\":\"\xff\"}",
+		`{"Names":{"\ud800":null,"\udc00":null}}`,
+		`{"Names":{"\ud800":null},"X":1}`,
+		`{"x":1`,
+		`{"x":1}{}`,
+		"{\"x\":1,\"\xff",
+	}
+	for _, doc := range docs {
+		decoded := new(keyDoc)
+		want := permissiveValidate(t, []byte(doc), decoded)
+		got := Validate([]byte(doc), decoded)
+		if want == nil {
+			require.NoError(t, got, "%q", doc)
+			continue
+		}
+		require.EqualError(t, got, want.Error(), "%q", doc)
+	}
+}
+
+// permissiveValidate is Validate reading only as decoding reads.
+func permissiveValidate(t *testing.T, raw []byte, decoded any) error {
+	t.Helper()
+	shape, err := shapes.Document(reflect.TypeOf(decoded).Elem())
+	require.NoError(t, err)
+	v, _ := keyValidators.Get().(*keyValidator)
+	defer v.release()
+	return v.validate(raw, shape, false)
 }
 
 // textInner reaches textDecoded's field V only through an unexported

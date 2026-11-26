@@ -69,9 +69,27 @@ func Validate(raw []byte, decoded any) error {
 	}
 	v, _ := keyValidators.Get().(*keyValidator)
 	defer v.release()
+	err = v.validate(raw, shape, true)
+	if errors.Is(err, errInvalidJSONDocument) {
+		// The strict read stops at invalid UTF-8, which decoding replaces;
+		// read the document again as decoding does.
+		err = v.validate(raw, shape, false)
+	}
+	return err
+}
+
+// validate reads raw once, strictly or as decoding reads it, from empty
+// scratch.
+func (v *keyValidator) validate(raw []byte, shape *gowalker.Shape, strict bool) error {
+	options := decodedJSONOptions
+	if strict {
+		options = strictJSONOptions
+	}
+	v.strict = strict
+	v.clear()
 	v.reader.Reset(raw)
-	v.dec.Reset(&v.reader, decodedJSONOptions)
-	err = v.value(shape)
+	v.dec.Reset(&v.reader, options)
+	err := v.value(shape)
 	if err != nil {
 		return err
 	}
@@ -86,7 +104,14 @@ var errInvalidJSONDocument = errors.New("invalid JSON document")
 
 // decodedJSONOptions read a document as encoding/json decodes one: a
 // repeated member and invalid UTF-8 are accepted, and judged here.
-var decodedJSONOptions = jsonv2.JoinOptions(jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(true))
+// strictJSONOptions refuse invalid UTF-8, so the decoder's own scan proves
+// every member name valid and memberName need not scan it again; nearly
+// every stored document reads this way, and one that does not is read
+// again under decodedJSONOptions.
+var (
+	decodedJSONOptions = jsonv2.JoinOptions(jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(true))
+	strictJSONOptions  = jsonv2.JoinOptions(jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(false))
+)
 
 // decodedShape follows shape's pointers to the shape a JSON value decodes
 // into, stopping at a leaf. A pointer type that leads back to itself, which
@@ -155,6 +180,8 @@ func checkDecodable(shape *gowalker.Shape, seen map[*gowalker.Shape]bool) error 
 type keyValidator struct {
 	reader bytes.Reader
 	dec    *jsontext.Decoder
+	// strict is a read under strictJSONOptions.
+	strict bool
 	// name holds the member name just read when it had to be unquoted.
 	name []byte
 	// seen marks the struct members met in each open struct object, a
@@ -183,9 +210,15 @@ func (v *keyValidator) release() {
 	if cap(v.mapNames) > maxPooledScratch || cap(v.seen) > maxPooledScratch {
 		return
 	}
+	v.clear()
+	keyValidators.Put(v)
+}
+
+// clear empties the scratch stacks, which a read that failed part way
+// leaves holding its open objects.
+func (v *keyValidator) clear() {
 	v.name = v.name[:0]
 	v.seen, v.mapNames, v.mapSpans = v.seen[:0], v.mapNames[:0], v.mapSpans[:0]
-	keyValidators.Put(v)
 }
 
 // value reads one JSON value bound for shape.
@@ -259,11 +292,12 @@ func (v *keyValidator) memberName() ([]byte, error) {
 		return nil, errInvalidJSONDocument
 	}
 	quoted := raw[1 : len(raw)-1]
-	if bytes.IndexByte(quoted, '\\') < 0 && utf8.Valid(quoted) {
+	if bytes.IndexByte(quoted, '\\') < 0 && (v.strict || utf8.Valid(quoted)) {
 		return quoted, nil
 	}
 	// The decoder has read the name, so the only error left is invalid
-	// UTF-8, which it accepts and decoding replaces, as here.
+	// UTF-8, which a permissive read accepts and decoding replaces, as
+	// here.
 	v.name, _ = jsontext.AppendUnquote(v.name[:0], raw)
 	return v.name, nil
 }
