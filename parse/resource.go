@@ -751,8 +751,12 @@ func (r *Resource[T]) TenantColumnName() string { return r.tenant }
 // DeletedColumnName is the soft-delete column; "" without soft delete.
 func (r *Resource[T]) DeletedColumnName() string { return r.deleted }
 
-// ColumnSQLType returns a column's explicit storage declaration. The returned
-// value cannot mutate the resource's metadata; false means no declaration.
+// ColumnSQLType returns the SQL type a column is read and written as: its
+// declaration (ColumnType), or, for a value type that declares none, the
+// type its Go type implies (core.ImpliedSQLType: a civil date, an interval,
+// an array of intervals). false means neither: the column holds its Go
+// type's own representation. The returned value cannot mutate the
+// resource's metadata.
 func (r *Resource[T]) ColumnSQLType(column string) (core.SQLType, bool) {
 	t, ok := r.sqlTypes[column]
 	return t, ok
