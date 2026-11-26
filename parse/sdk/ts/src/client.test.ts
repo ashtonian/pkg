@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { type Client, createClient } from "./client.js";
 // ApiError and the problem types come through the package's public entry points.
-import { ApiError, NonFiniteNumberError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaVersionError } from "./core/index.js";
+import { ApiError, NonFiniteNumberError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaVersionError, UnencodableValueError } from "./core/index.js";
 import type { FacetResult, ListResult } from "./filter/types.js";
 import type { FieldError, Problem } from "./index.js";
 import type { PatchInput, PatchResult } from "./patch/types.js";
@@ -1186,10 +1186,10 @@ describe("requests the server would misroute", () => {
 });
 
 describe("validation before sending", () => {
-  const facetServer = () => fakeServer(({ url }) => {
+  const facetServer = () => fakeServer(({ method, url }) => {
     if (url.pathname.endsWith("/wire_parts/schema")) return json(related["wire_parts"]);
     if (url.pathname.endsWith("/schema")) return json(schema);
-    return json({ facets: {} });
+    return json(method === "OPTIONS" ? { facets: {} } : page(0));
   });
 
   it("validates facets' fields and their filter's relation predicates as list does", async () => {
@@ -1392,5 +1392,150 @@ describe("non-finite numbers", () => {
       await expect(items.facets(["name"], { filter })).rejects.toMatchObject(nan);
       expect(server.calls).toHaveLength(0);
     });
+  });
+});
+
+describe("what validation and the transports read", () => {
+  interface Seen extends WireItem {
+    seen: Date | string | null;
+  }
+  // The recorded wire_items schema with a nullable timestamp, filterable and patchable.
+  const recordedPatch = schema.patch;
+  const recordedFilter = schema.filter;
+  if (!recordedPatch || !recordedFilter) throw new Error("the recorded schema has no patch or filter section");
+  const seenSchema: ResourceSchema = {
+    ...schema,
+    filter: { ...recordedFilter, fields: { ...recordedFilter.fields, seen: { name: "seen", data_type: "timestamp", operators: ["eq", "gte", "lt", "null"] } } },
+    patch: { ...recordedPatch, paths: { ...recordedPatch.paths, "/seen": { allowed_ops: ["replace", "remove"], data_type: "timestamp", nullable: true } } },
+  };
+  const empty = { items: [], page_info: { has_next_page: false, has_prev_page: false } };
+  const seenServer = () => fakeServer(({ method, url }) => {
+    if (url.pathname.endsWith("/schema")) return json(seenSchema);
+    if (method === "PATCH") return json({ updated: [] });
+    if (method === "OPTIONS") return json({ facets: {} });
+    return json(empty);
+  });
+  const items = (fetchFn: typeof globalThis.fetch, validate: boolean) =>
+    client(fetchFn, validate).resource<Seen>("items", { schema: "wire_items" });
+  const at = new Date("2026-01-02T03:04:05.000Z");
+  // A value as a caller whose compiler admits undefined members passes it.
+  const loose = (value: object): never => value as never;
+
+  describe.each([false, true])("with validateBeforeSend %s", (validate) => {
+    it("refuses an invalid Date in a patch or filter, sending nothing", async () => {
+      const server = seenServer();
+      const r = items(server.fetch, validate);
+      const invalid = new Date(Number.NaN);
+      await expect(r.patch("one", { seen: invalid })).rejects.toMatchObject({ name: "UnencodableValueError", payload: "patch", pointer: "/seen", value: invalid });
+      await expect(r.list({ filter: { seen: { $gte: invalid } } })).rejects.toBeInstanceOf(UnencodableValueError);
+      await expect(r.facets(["name"], { filter: { seen: { $gte: invalid } } })).rejects.toBeInstanceOf(UnencodableValueError);
+      expect(server.calls).toHaveLength(0);
+    });
+
+    it("sends a Date as its RFC 3339 text and leaves undefined members out", async () => {
+      const server = seenServer();
+      const r = items(server.fetch, validate);
+      // exactOptionalPropertyTypes refuses undefined members; a caller without it, or JavaScript, sends them.
+      await r.patch("one", loose({ seen: at, name: undefined }));
+      await r.list({ filter: loose({ seen: { $gte: at }, name: undefined }) }, { method: "POST" });
+      await r.list({ filter: loose({ name: undefined }) });
+      const sent = server.calls.filter((c) => !c.url.pathname.endsWith("/schema"));
+      expect(sent[0]?.body).toEqual({ seen: "2026-01-02T03:04:05.000Z" });
+      expect(sent[1]?.body).toEqual({ filter: { seen: { $gte: "2026-01-02T03:04:05.000Z" } } });
+      expect(sent[2]?.url.searchParams.has("filter")).toBe(false);
+    });
+  });
+
+  it("validates the JSON the request sends, not the JavaScript value", async () => {
+    const server = seenServer();
+    const r = items(server.fetch, true);
+    // Each member below is wrong only for a value the wire never carries.
+    await expect(r.list({ filter: { seen: { $gte: at } } })).resolves.toEqual(empty);
+    await expect(r.facets(["name"], { filter: { seen: { $lt: at } } })).resolves.toEqual({});
+    await expect(r.patch("one", { seen: at })).resolves.toEqual({ updated: [] });
+    await expect(r.patchMany(["one"], loose({ seen: at, name: undefined }))).resolves.toEqual({ updated: [] });
+    // And a wrong value is still refused: a timestamp is text.
+    await expect(r.patch("one", { seen: 5 as unknown as string })).rejects.toBeInstanceOf(SchemaValidationError);
+  });
+});
+
+describe("the schema cache", () => {
+  interface Colored extends WireItem {
+    color: string;
+  }
+  const recordedFilter = schema.filter;
+  if (!recordedFilter) throw new Error("the recorded schema has no filter section");
+  const withColor: ResourceSchema = {
+    ...schema,
+    filter: { ...recordedFilter, fields: { ...recordedFilter.fields, color: { name: "color", data_type: "string", operators: ["eq"] } } },
+  };
+  const empty = { items: [], page_info: { has_next_page: false, has_prev_page: false } };
+
+  it("validates against the document schemas() cached last", async () => {
+    let served = schema;
+    const server = fakeServer(({ url }) => {
+      if (url.pathname.endsWith("/schemas")) return json({ schemas: [served] });
+      if (url.pathname.endsWith("/schema")) return json(served);
+      return json(empty);
+    });
+    const c = client(server.fetch, true);
+    const r = c.resource<Colored>("items", { schema: "wire_items" });
+    await expect(r.list({ filter: { color: "red" } })).rejects.toMatchObject({ code: "E2071" });
+    served = withColor;
+    await c.schemas();
+    await expect(r.list({ filter: { color: "red" } })).resolves.toEqual(empty);
+    expect((await r.validator()).filterableFields()).toContain("color");
+  });
+
+  it("hands out a frozen document, so no caller changes what validation reads", async () => {
+    const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(schema) : json(empty)));
+    const r = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
+    const doc = await r.schema();
+    expect(Object.isFrozen(doc)).toBe(true);
+    expect(Object.isFrozen(doc.filter?.fields)).toBe(true);
+    expect(() => {
+      delete (doc.filter?.fields as Record<string, unknown>)["name"];
+    }).toThrow(TypeError);
+    await expect(r.list({ filter: { name: "alpha" } })).resolves.toEqual(empty);
+  });
+});
+
+describe("2xx answers of another shape", () => {
+  const cases: { name: string; call: (c: Client) => Promise<unknown>; answer: unknown; reason: string }[] = [
+    { name: "a schema of null", call: (c) => c.resource("items", { schema: "wire_items" }).schema(), answer: null, reason: "not an object naming its resource" },
+    { name: "a schema list without schemas", call: (c) => c.schemas(), answer: {}, reason: "no schemas array" },
+    { name: "a schema list holding null", call: (c) => c.schemas(), answer: { schemas: [null] }, reason: "no schemas array" },
+    { name: "a page without page_info", call: (c) => c.resource<WireItem>("items").list(), answer: { items: [] }, reason: "page_info" },
+    { name: "a page whose items are no array", call: (c) => c.resource<WireItem>("items").list(), answer: { items: {}, page_info: { has_next_page: false } }, reason: "no items array" },
+    { name: "a page with a numeric cursor", call: (c) => c.resource<WireItem>("items").list(), answer: { items: [], page_info: { has_next_page: true, end_cursor: 5 } }, reason: "end_cursor is not a string" },
+    { name: "a patch answer without updated", call: (c) => c.resource<WireItem>("items").patch("a", { name: "b" }), answer: { ok: true }, reason: "no updated array" },
+    { name: "a facets answer of facets that are no object", call: (c) => c.resource<WireItem>("items").facets(["name"]), answer: { facets: [] }, reason: "not an object of facets" },
+  ];
+
+  it.each(cases)("reject $name with a ResponseError", async ({ call, answer, reason }) => {
+    const err = await call(client(fakeServer(() => json(answer)).fetch)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResponseError);
+    expect(err).toMatchObject({ status: 200, code: "" });
+    expect((err as Error).message).toContain(reason);
+  });
+});
+
+describe("listAll over cursors that do not advance", () => {
+  const pageWith = (info: Record<string, unknown>) => json({ items: [], page_info: { has_prev_page: false, ...info } });
+
+  it("refuses a cursor that repeats the one it was asked with", async () => {
+    const server = fakeServer(() => pageWith({ has_next_page: true, end_cursor: "same" }));
+    const pages = client(server.fetch).resource<WireItem>("items").listAll();
+    await pages.next();
+    await pages.next();
+    await expect(pages.next()).rejects.toMatchObject({ name: "ResponseError", status: 200 });
+    expect(server.calls).toHaveLength(2);
+  });
+
+  it("refuses a next page it gives no cursor for, rather than ending early", async () => {
+    const server = fakeServer(() => pageWith({ has_next_page: true }));
+    const pages = client(server.fetch).resource<WireItem>("items").listAll();
+    await pages.next();
+    await expect(pages.next()).rejects.toThrow("has_next_page is true without an end_cursor");
   });
 });

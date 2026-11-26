@@ -76,9 +76,32 @@ function isOperatorObject(v: unknown): v is Record<string, unknown> {
   return keys.length > 0 && keys.every((k) => k.startsWith("$"));
 }
 
+// own sets a member on a plain object as an own data property, so a member
+// named __proto__ stays a member rather than the object's prototype.
+function own(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
+// snapshot copies the plain data of an operand (objects, arrays, Dates) so
+// that neither the caller's later changes nor a change to what build()
+// returned reaches the builder. Any other object (a class instance with a
+// toJSON, such as a decimal) is held as it is: it is the caller's value.
+function snapshot(value: unknown): unknown {
+  if (value instanceof Date) return new Date(value.getTime());
+  if (Array.isArray(value)) return value.map(snapshot);
+  if (typeof value !== "object" || value === null) return value;
+  const proto: unknown = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
+  const copy: Record<string, unknown> = {};
+  for (const [key, member] of Object.entries(value)) own(copy, key, snapshot(member));
+  return copy;
+}
+
 /**
  * An immutable conjunction of field conditions: each {@link FilterBuilder.where}
- * returns a new builder. Combine builders and expressions with {@link and},
+ * returns a new builder. Operands are copied when added and the expression
+ * when built, so changing a value after passing it, or the expression
+ * build() returned, changes no builder. Combine builders and expressions with {@link and},
  * {@link or} and {@link not}.
  */
 export class FilterBuilder<T> {
@@ -100,28 +123,28 @@ export class FilterBuilder<T> {
     field: K,
     value: T[K] | FilterOperators<T[K]>,
   ): FilterBuilder<T> {
-    // defineProperty keeps a field named __proto__ an own member.
     const next = { ...this.conditions } as Record<string, unknown>;
+    const added = snapshot(value);
     if (!Object.hasOwn(next, field)) {
-      Object.defineProperty(next, field, { value, enumerable: true, writable: true, configurable: true });
+      own(next, field, added);
       return new FilterBuilder<T>(next as FilterExpression<T>);
     }
     const current = next[field];
-    if (!isOperatorObject(current) || !isOperatorObject(value)) {
+    if (!isOperatorObject(current) || !isOperatorObject(added)) {
       throw new RangeError(`field "${field}" already has a condition that a bare value cannot share; combine them with and()`);
     }
-    for (const op of Object.keys(value)) {
+    for (const op of Object.keys(added)) {
       if (Object.hasOwn(current, op)) {
         throw new RangeError(`field "${field}" already has ${op}; combine the conditions with and() or or()`);
       }
     }
-    Object.defineProperty(next, field, { value: { ...current, ...value }, enumerable: true, writable: true, configurable: true });
+    own(next, field, { ...current, ...added });
     return new FilterBuilder<T>(next as FilterExpression<T>);
   }
 
-  /** The filter expression: each field's conditions, conjoined. */
+  /** The filter expression, each field's conditions conjoined: a copy the caller may change. */
   build(): FilterExpression<T> {
-    return { ...this.conditions };
+    return snapshot(this.conditions) as FilterExpression<T>;
   }
 }
 

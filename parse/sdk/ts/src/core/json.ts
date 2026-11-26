@@ -1,4 +1,4 @@
-import { NonFiniteNumberError, type Payload } from "./errors.js";
+import { NonFiniteNumberError, type Payload, UnencodableValueError } from "./errors.js";
 
 declare const encoded: unique symbol;
 
@@ -7,11 +7,14 @@ export type JSONText = string & { readonly [encoded]: true };
 
 /**
  * The JSON text of a request payload, as JSON.stringify writes it, except
- * that a number JSON cannot carry (NaN, Infinity, -Infinity), which
- * JSON.stringify would write as null, throws {@link NonFiniteNumberError}
- * naming its member, as Go's encoding/json refuses one. Every JSON payload
- * the client sends is encoded here, so none can turn a number into null: a
- * removal in a merge patch, a NULL comparison in a filter.
+ * that a value JSON.stringify would write as null though it is not null
+ * throws {@link UnencodableValueError} naming its member, as Go's
+ * encoding/json refuses one: a number JSON cannot carry (NaN, Infinity,
+ * -Infinity) as {@link NonFiniteNumberError}, an invalid Date or any other
+ * toJSON that returns null, and undefined, a function or a symbol in an
+ * array. Every JSON payload the client sends is encoded here, so nothing
+ * the caller did not write as null becomes one: a removal in a merge patch,
+ * a NULL comparison in a filter.
  */
 export function encodeJSON(value: unknown, payload: Payload): JSONText {
   // A non-finite number is written as null, so text without "null" holds
@@ -40,11 +43,24 @@ function encodeChecked(value: unknown, payload: Payload): JSONText {
     const parent = places.get(place.holder);
     return parent === undefined ? "" : `${pointer(parent)}/${escapePointerToken(place.key)}`;
   };
+  // The replacer sees a member after its toJSON ran; `this[key]` is the
+  // value the caller passed.
   const text = JSON.stringify(value, function (this: object, key: string, member: unknown): unknown {
+    const refuse = (description: string, original: unknown): never => {
+      throw new UnencodableValueError(payload, pointer({ holder: this, key }), original, description);
+    };
     // A Number object is written as the number it holds.
     const number = typeof member === "number" ? member : member instanceof Number ? member.valueOf() : undefined;
     if (number !== undefined && !Number.isFinite(number)) {
       throw new NonFiniteNumberError(payload, pointer({ holder: this, key }), number);
+    }
+    const original: unknown = (this as Record<string, unknown>)[key];
+    if (member === null && original !== null) {
+      refuse(original instanceof Date ? "an invalid Date" : "a value whose toJSON() is null", original);
+    }
+    // An object leaves such a member out; an array writes null in its place.
+    if (Array.isArray(this) && (member === undefined || typeof member === "function" || typeof member === "symbol")) {
+      refuse(`${typeof member} in an array`, original);
     }
     if (typeof member === "object" && member !== null) places.set(member, { holder: this, key });
     return member;

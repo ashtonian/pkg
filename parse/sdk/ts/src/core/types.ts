@@ -61,8 +61,9 @@ export interface SendOptions<B = unknown, R = unknown> {
   /** Query parameters, appended to the URL as `URLSearchParams` writes them. */
   query?: URLSearchParams | Record<string, string>;
   /** The JSON body, sent as `application/json` through the encoder of every
-   *  payload the client sends, so a non-finite number is a
-   *  `NonFiniteNumberError` before anything is sent. Unset, the request has
+   *  payload the client sends, so a value JSON would write as null (a
+   *  non-finite number, an invalid Date) is an `UnencodableValueError`
+   *  before anything is sent. Unset, the request has
    *  no body and no `Content-Type`. */
   body?: B;
   /** What a 2xx answer carries. `"json"`, the default: a JSON body, read as
