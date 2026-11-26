@@ -39,26 +39,28 @@ const (
 
 var errJSONKeyRefused = errors.New("encoding/json reads no member name into it, or writes none for it")
 
-func jsonKeyRuleOf(t reflect.Type) jsonKeyRule {
+// jsonKeyRuleOf is t's rule, and for an integer rule the largest magnitude
+// of a positive key.
+func jsonKeyRuleOf(t reflect.Type) (jsonKeyRule, uint64) {
 	if !t.Comparable() {
-		return jsonKeyRefused
+		return jsonKeyRefused, 0
 	}
 	reads, writes := jsonKeyAccess(t, nil)
 	if !reads || !writes {
-		return jsonKeyRefused
+		return jsonKeyRefused, 0
 	}
 	if implementsText(t, reflect.TypeFor[encoding.TextAppender]()) || implementsText(t, reflect.TypeFor[encoding.TextMarshaler]()) || implementsText(t, reflect.TypeFor[encoding.TextUnmarshaler]()) {
-		return jsonKeyCodec
+		return jsonKeyCodec, 0
 	}
 	switch t.Kind() {
 	case reflect.String:
-		return jsonKeyString
+		return jsonKeyString, 0
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return jsonKeySigned
+		return jsonKeySigned, uint64(1)<<(t.Bits()-1) - 1
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return jsonKeyUnsigned
+		return jsonKeyUnsigned, math.MaxUint64 >> (64 - t.Bits())
 	}
-	return jsonKeyCodec
+	return jsonKeyCodec, 0
 }
 
 // jsonKeyAccess reports whether encoding/json reads a member name into a map
@@ -176,14 +178,14 @@ func (s *Shape) IsCanonicalJSONKey(name []byte) bool {
 		if !ok || negative && n == 0 {
 			return false
 		}
-		limit := uint64(1)<<(s.typ.Bits()-1) - 1
+		limit := s.jsonKeyMax
 		if negative {
 			limit++
 		}
 		return n <= limit
 	case jsonKeyUnsigned:
 		n, ok := canonicalDigits(name)
-		return ok && n <= math.MaxUint64>>(64-s.typ.Bits())
+		return ok && n <= s.jsonKeyMax
 	}
 	read := string(name)
 	if !utf8.ValidString(read) {
