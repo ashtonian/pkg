@@ -4,6 +4,7 @@ package parse_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -64,4 +65,17 @@ func TestStatementFailed(t *testing.T) {
 	var failed *parse.StatementError
 	require.ErrorAs(t, err, &failed)
 	assert.Equal(t, "include tags", failed.Statement)
+}
+
+func TestNewExecConfig(t *testing.T) {
+	cfg, err := parse.NewExecConfig()
+	require.NoError(t, err)
+	assert.Equal(t, parse.DefaultSettleTimeout, cfg.SettleTimeout)
+	cfg, err = parse.NewExecConfig(parse.WithSettleTimeout(time.Second), nil)
+	require.NoError(t, err)
+	assert.Equal(t, time.Second, cfg.SettleTimeout, "a nil option is skipped")
+	for _, d := range []time.Duration{0, -time.Second} {
+		_, err := parse.NewExecConfig(parse.WithSettleTimeout(d))
+		require.ErrorContains(t, err, "must be positive", "%s", d)
+	}
 }

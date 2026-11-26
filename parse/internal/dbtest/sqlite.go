@@ -12,20 +12,33 @@ import (
 	"github.com/ashtonian/pkg/parse/parsesqlite"
 )
 
+// sqliteDSN is one in-memory database whose transactions begin IMMEDIATE,
+// as parsesql documents for its updates.
+const sqliteDSN = ":memory:?_txlock=immediate"
+
 // SQLite returns a fresh in-memory SQLite database with parse's functions
 // (parsesqlite), closed at test cleanup. One connection: every statement
 // sees the same in-memory database. Transactions begin IMMEDIATE, as
 // parsesql documents for its updates.
 func SQLite(t testing.TB) *sql.DB {
 	t.Helper()
-	if err := parsesqlite.Register(); err != nil {
+	db := openSQLite(t)
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+// openSQLite opens, without connecting, a handle on sqliteDSN through the
+// sqlite driver, parse's functions registered on it first.
+func openSQLite(t testing.TB) *sql.DB {
+	t.Helper()
+	err := parsesqlite.Register()
+	if err != nil {
 		t.Fatalf("dbtest: %v", err)
 	}
-	db, err := sql.Open("sqlite", ":memory:?_txlock=immediate")
+	db, err := sql.Open("sqlite", sqliteDSN)
 	if err != nil {
 		t.Fatalf("dbtest: open sqlite: %v", err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
 	return db
 }

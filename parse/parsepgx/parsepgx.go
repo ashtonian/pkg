@@ -72,7 +72,8 @@ func QueryPage[T any](ctx context.Context, db Querier, r *parse.Resource[T], pla
 			return parse.StatementFailed("facets", err)
 		})
 	}
-	if err := db.SendBatch(ctx, b).Close(); err != nil {
+	err = sendBatch(ctx, db, b)
+	if err != nil {
 		return nil, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
 	}
 
@@ -98,7 +99,8 @@ func Query[T any](ctx context.Context, db Querier, r *parse.Resource[T], st pars
 		rows, err = collect(rs, r)
 		return err
 	})
-	if err := db.SendBatch(ctx, b).Close(); err != nil {
+	err := sendBatch(ctx, db, b)
+	if err != nil {
 		return nil, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
 	}
 	return rows, nil
@@ -121,7 +123,7 @@ func queryIncludes[T any](ctx context.Context, db Querier, page *filter.Page[T],
 			return nil
 		})
 	}
-	return db.SendBatch(ctx, b).Close()
+	return sendBatch(ctx, db, b)
 }
 
 // Update applies plan and reports its target rows as the update left them,
@@ -129,8 +131,9 @@ func queryIncludes[T any](ctx context.Context, db Querier, page *filter.Page[T],
 // many junction rows its membership changes touched (parse.Resource.FollowUp);
 // neither split holding a row means the target is not found. The update
 // runs in one transaction — a savepoint when db is a pgx.Tx (transact) —
-// settled only once every row has scanned, so an error
-// means nothing it wrote is kept. A guarded plan (SkipUnchanged:
+// settled only once every row has scanned, so an error means nothing it
+// wrote is kept, unless errors.Is(err, parse.ErrCommitUnknown); opts bound
+// the settle (parse.WithSettleTimeout). A guarded plan (SkipUnchanged:
 // plan.Current set) sends Current before Owner in one batch, so Current's
 // lock holds every target while Owner compares them. A patch of document
 // members (plan.Conflict set) sends Current and Conflict, whose row fails
@@ -141,13 +144,17 @@ func queryIncludes[T any](ctx context.Context, db Querier, page *filter.Page[T],
 // the requested keys, then, for a resource with computed columns
 // (parse.ReadExpr), reads those rows again (Resource.Reread), so a column
 // over a relation's pairs reads them as the update left them.
-func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse.UpdatePlan) (parse.UpdateResult[T], error) {
+func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse.UpdatePlan, opts ...parse.ExecOption) (parse.UpdateResult[T], error) {
 	err := r.CheckPlan(plan, filter.PostgresDialect{})
 	if err != nil {
 		return parse.UpdateResult[T]{}, err
 	}
+	cfg, err := parse.NewExecConfig(opts...)
+	if err != nil {
+		return parse.UpdateResult[T]{}, err
+	}
 	var res parse.UpdateResult[T]
-	err = transact(ctx, db, func(tx pgx.Tx) error {
+	err = transact(ctx, cfg, db, func(tx pgx.Tx) error {
 		follow, err := queryTargets(ctx, tx, r, plan)
 		if err != nil {
 			return err
@@ -176,7 +183,7 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 		}
 		reread(follow.RereadChanged, &res.Changed)
 		reread(follow.RereadUnchanged, &res.Unchanged)
-		return parse.StatementFailed("relations", tx.SendBatch(ctx, b).Close())
+		return parse.StatementFailed("relations", sendBatch(ctx, tx, b))
 	})
 	if err != nil {
 		return parse.UpdateResult[T]{}, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
@@ -215,7 +222,7 @@ func queryTargets[T any](ctx context.Context, db Querier, resource *parse.Resour
 			}
 			return parse.StatementFailed("conflict", r.Err())
 		})
-		err := db.SendBatch(ctx, b).Close()
+		err := sendBatch(ctx, db, b)
 		if err != nil {
 			return nil, err
 		}
@@ -229,13 +236,15 @@ func queryTargets[T any](ctx context.Context, db Querier, resource *parse.Resour
 		owner, err = collect(r, resource)
 		return parse.StatementFailed("owner", err)
 	})
-	if err := db.SendBatch(ctx, b).Close(); err != nil {
+	err := sendBatch(ctx, db, b)
+	if err != nil {
 		return nil, err
 	}
 	return resource.FollowUp(plan, owner, current)
 }
 
-// UpdateBatch applies plan in one transaction — a savepoint when db is one.
+// UpdateBatch applies plan in one transaction — a savepoint when db is one —
+// held as Update holds its own, opts included.
 // Every chunk's Current goes first, in one batch, locking its targets in key
 // order; each chunk's rows must be exactly its keys
 // (parse.Resource.CheckBatchCurrent: parse.ErrUpdateBatchTargets otherwise,
@@ -243,8 +252,12 @@ func queryTargets[T any](ctx context.Context, db Querier, resource *parse.Resour
 // result (parse.Resource.BatchResult) holds as Changed the rows the owners
 // wrote, chunk by chunk, and as Unchanged the locked rows a SkipUnchanged
 // owner left as they were.
-func UpdateBatch[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse.UpdateBatchPlan) (parse.UpdateResult[T], error) {
+func UpdateBatch[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse.UpdateBatchPlan, opts ...parse.ExecOption) (parse.UpdateResult[T], error) {
 	err := r.CheckPlan(plan, filter.PostgresDialect{})
+	if err != nil {
+		return parse.UpdateResult[T]{}, err
+	}
+	cfg, err := parse.NewExecConfig(opts...)
 	if err != nil {
 		return parse.UpdateResult[T]{}, err
 	}
@@ -252,7 +265,7 @@ func UpdateBatch[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *
 		return parse.UpdateResult[T]{}, nil
 	}
 	var res parse.UpdateResult[T]
-	err = transact(ctx, db, func(tx pgx.Tx) error {
+	err = transact(ctx, cfg, db, func(tx pgx.Tx) error {
 		current := make([][]T, len(plan.Chunks))
 		b := &pgx.Batch{}
 		for i, chunk := range plan.Chunks {
@@ -262,10 +275,11 @@ func UpdateBatch[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *
 				return parse.StatementFailed("current", err)
 			})
 		}
-		if err := tx.SendBatch(ctx, b).Close(); err != nil {
+		err := sendBatch(ctx, tx, b)
+		if err != nil {
 			return err
 		}
-		err := r.CheckBatchCurrent(plan, current)
+		err = r.CheckBatchCurrent(plan, current)
 		if err != nil {
 			return err
 		}
@@ -282,7 +296,8 @@ func UpdateBatch[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *
 			})
 		}
 		if b.Len() > 0 {
-			if err := tx.SendBatch(ctx, b).Close(); err != nil {
+			err := sendBatch(ctx, tx, b)
+			if err != nil {
 				return err
 			}
 		}
@@ -299,51 +314,92 @@ func UpdateBatch[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *
 // transaction, and under a savepoint of the caller's pgx.Tx otherwise, and
 // settles it only once apply has returned, every row read and scanned. Its
 // contract is parsesql's: an error means nothing apply wrote is kept and the
-// caller's transaction is still usable; once apply succeeds the update is
-// finished whatever ctx does since, so a reported error never hides an
-// applied update. Settling — the commit, the release or the undo —
-// therefore runs without ctx's cancellation: pgx sends nothing on a done
-// context, which would leave a savepoint's writes in the caller's
-// transaction. The savepoint is taken by hand rather than through pgx's
-// nested Begin, whose failed release can no longer be rolled back.
-func transact(ctx context.Context, db DB, apply func(pgx.Tx) error) error {
-	settle := context.WithoutCancel(ctx)
+// caller's transaction is still usable, but for parse.ErrCommitUnknown
+// (commitFailed); once apply succeeds the update is finished whatever ctx
+// does since, so a reported error never hides an applied update. Each
+// settling statement — the commit, the release or the undo — therefore runs
+// under its own settle context (parse.ExecConfig.SettleContext): pgx sends
+// nothing on a done context, which would leave a savepoint's writes in the
+// caller's transaction. A panic in apply settles as an error does on its way
+// out, so no transaction stays open on the connection. The savepoint is
+// taken by hand rather than through pgx's nested Begin, whose failed release
+// can no longer be rolled back.
+func transact(ctx context.Context, cfg parse.ExecConfig, db DB, apply func(pgx.Tx) error) error {
 	caller, inTx := db.(pgx.Tx)
 	if inTx {
-		return underSavepoint(ctx, settle, caller, apply)
+		return underSavepoint(ctx, cfg, caller, apply)
 	}
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return parse.StatementFailed("begin", err)
 	}
+	returned := false
+	defer func() {
+		if !returned {
+			// The panic goes on to the caller, so the rollback's error has
+			// nowhere to go; a rollback that fails closes the connection,
+			// and the server rolls back with it.
+			_ = settle(ctx, cfg, tx.Rollback)
+		}
+	}()
 	err = apply(tx)
+	returned = true
 	if err != nil {
 		// A transaction pgx already closed (its connection lost) kept
 		// nothing to roll back.
-		rollback := tx.Rollback(settle)
+		rollback := settle(ctx, cfg, tx.Rollback)
 		if !errors.Is(rollback, pgx.ErrTxClosed) {
 			err = errors.Join(err, parse.StatementFailed("rollback", rollback))
 		}
 		return err
 	}
-	return parse.StatementFailed("commit", tx.Commit(settle))
+	return commitFailed(settle(ctx, cfg, tx.Commit))
+}
+
+// commitFailed is a failed COMMIT's error, saying whether it may have taken.
+// PostgreSQL answers a COMMIT it refuses with an ERROR (a deferred
+// constraint, a serialization failure) and rolls the transaction back, as it
+// does for the COMMIT of an aborted transaction (pgx.ErrTxCommitRollback);
+// pgx reports a COMMIT it never sent as safe to retry. Any other failure —
+// the connection lost or the settle timeout run out while the COMMIT was in
+// flight, or a FATAL that ends the session — leaves the outcome unknown.
+func commitFailed(err error) error {
+	if err == nil {
+		return nil
+	}
+	failed := parse.StatementFailed("commit", err)
+	pgErr, answered := errors.AsType[*pgconn.PgError](err)
+	refused := answered && pgErr.SeverityUnlocalized == "ERROR"
+	if refused || errors.Is(err, pgx.ErrTxCommitRollback) || pgconn.SafeToRetry(err) {
+		return failed
+	}
+	return fmt.Errorf("%w: %w", parse.ErrCommitUnknown, failed)
 }
 
 // underSavepoint is transact in the caller's transaction tx: apply runs
 // after a savepoint, released once apply succeeds and rolled back to
-// otherwise, settling under settle.
-func underSavepoint(ctx, settle context.Context, tx pgx.Tx, apply func(pgx.Tx) error) error {
+// otherwise, or as a panic in apply unwinds.
+func underSavepoint(ctx context.Context, cfg parse.ExecConfig, tx pgx.Tx, apply func(pgx.Tx) error) error {
 	_, err := tx.Exec(ctx, "SAVEPOINT "+savepoint)
 	if err != nil {
 		return parse.StatementFailed("savepoint", err)
 	}
+	returned := false
+	defer func() {
+		if !returned {
+			// The panic goes on to the caller; the undo's error has nowhere
+			// to go.
+			_ = undoSavepoint(ctx, cfg, tx)
+		}
+	}()
 	err = apply(tx)
+	returned = true
 	if err != nil {
-		return errors.Join(err, undoSavepoint(settle, tx))
+		return errors.Join(err, undoSavepoint(ctx, cfg, tx))
 	}
-	_, err = tx.Exec(settle, "RELEASE SAVEPOINT "+savepoint)
+	err = settleExec(ctx, cfg, tx, "RELEASE SAVEPOINT "+savepoint)
 	if err != nil {
-		return errors.Join(parse.StatementFailed("release savepoint", err), undoSavepoint(settle, tx))
+		return errors.Join(parse.StatementFailed("release savepoint", err), undoSavepoint(ctx, cfg, tx))
 	}
 	return nil
 }
@@ -351,8 +407,41 @@ func underSavepoint(ctx, settle context.Context, tx pgx.Tx, apply func(pgx.Tx) e
 // undoSavepoint rolls the caller's transaction back to the update's
 // savepoint and releases it, so the transaction keeps nothing the update
 // wrote and stays usable, a failed statement's abort included.
-func undoSavepoint(ctx context.Context, tx pgx.Tx) error {
-	_, rollback := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+savepoint)
-	_, release := tx.Exec(ctx, "RELEASE SAVEPOINT "+savepoint)
+func undoSavepoint(ctx context.Context, cfg parse.ExecConfig, tx pgx.Tx) error {
+	rollback := settleExec(ctx, cfg, tx, "ROLLBACK TO SAVEPOINT "+savepoint)
+	release := settleExec(ctx, cfg, tx, "RELEASE SAVEPOINT "+savepoint)
 	return parse.StatementFailed("rollback to savepoint", errors.Join(rollback, release))
+}
+
+// settleExec runs statement, one that settles the update, on tx.
+func settleExec(ctx context.Context, cfg parse.ExecConfig, tx pgx.Tx, statement string) error {
+	return settle(ctx, cfg, func(ctx context.Context) error {
+		_, err := tx.Exec(ctx, statement)
+		return err
+	})
+}
+
+// settle runs call, one settling statement, under a settle context of its
+// own, so a statement that ran out of time leaves the next its full bound.
+func settle(ctx context.Context, cfg parse.ExecConfig, call func(context.Context) error) error {
+	settleCtx, cancel := cfg.SettleContext(ctx)
+	defer cancel()
+	return call(settleCtx)
+}
+
+// sendBatch sends b and reads every result through b's callbacks. A
+// callback that panics leaves the rest of the batch unread and the
+// connection busy (and a pool's connection unreleased); reading the rest as
+// the panic unwinds frees it for the settle that follows.
+func sendBatch(ctx context.Context, db Querier, b *pgx.Batch) error {
+	results := db.SendBatch(ctx, b)
+	closed := false
+	defer func() {
+		if !closed {
+			_ = results.Close()
+		}
+	}()
+	err := results.Close()
+	closed = true
+	return err
 }
