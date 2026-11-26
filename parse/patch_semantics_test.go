@@ -198,9 +198,8 @@ func TestSchemaIsolation_DefaultOperatorSlices(t *testing.T) {
 		Attrs map[string]string `json:"attrs" parse:"patch"`
 	}
 	a, err := parse.NewResource[entity]("entities", parse.CustomizeSchemas(func(s parse.Schemas) error {
-		pathOf(s.Patch, "/attrs").AllowedOps[0] = patch.PatchOpTest
 		s.Filter.Fields["name"].AllowedOperators[0] = filter.OpGt
-		return nil
+		return s.Patch.UpdatePath("/attrs", func(ps *patch.PathSchema) { ps.AllowedOps[0] = patch.PatchOpTest })
 	}))
 	require.NoError(t, err)
 	b, err := parse.NewResource[entity]("entities")

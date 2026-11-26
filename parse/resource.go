@@ -213,7 +213,8 @@ type Schemas struct {
 }
 
 // CustomizeSchemas changes the generated schemas while the resource is
-// built: a patch path pattern (patch.PatchSchema.AddPath), a validator, a
+// built: a patch path pattern (patch.PatchSchema.AddPath), a patch path's
+// validator or narrower operation set (UpdatePath), a filter field's
 // narrower operator set. NewResource runs the functions in order, before its
 // checks, so a customized schema is held to the read set (ReadColumns), the
 // column declarations and the computed columns as a generated one is; an
