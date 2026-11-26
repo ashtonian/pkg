@@ -71,10 +71,11 @@ func jsonNumber(v any) (any, error) {
 	if !ok {
 		return nil, errNotNumber(s)
 	}
-	switch x, r := lit.exactInteger(); {
-	case r == integerExact:
+	switch x, r := lit.exactInteger(); r {
+	case integerExact:
 		return x.value(), nil
-	case lit.integral():
+	case integerOverflow:
+		// An integer by value, however it is written (1e20, 1.0e20).
 		return nil, fmt.Errorf("integer %s exceeds 64 bits", s)
 	}
 	if !PortableDecimal(s) {
