@@ -54,7 +54,7 @@ func (d SQLiteDialect) KeyOperand(expr string, t core.TypeInfo) string {
 }
 
 // keyValueText renders a key column, read as expr and typed t, as its
-// canonical text (core.KeyValueText): a string, UUID or integer column's
+// canonical text (core.CanonicalText): a string, UUID or integer column's
 // text, a network value's display form (ReadColumn), and otherwise the text
 // a terms facet keys the value by (termsKeyExpr).
 func keyValueText(d Dialect, expr string, t core.TypeInfo) string {

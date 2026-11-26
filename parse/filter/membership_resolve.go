@@ -450,8 +450,8 @@ func MatchLookupRow(cond *LookupCond, column func(name string) (value any, ok bo
 // equalAs is a lookup condition's equality of a stored value and its value
 // in compared column i, both as the database holds them (lookupStored), nil
 // for NULL: lookupEqual, or, for a typed condition (LookupCond.Types), the
-// two values' canonical texts as the column's type (core.KeyValueText), one
-// exactly when the database holds them equal.
+// two values' canonical texts as the column's type (core.CanonicalText),
+// one exactly when the database holds them equal.
 func equalAs(types []core.TypeInfo, i int, stored, want any) bool {
 	if types == nil {
 		return lookupEqual(stored, want)
@@ -459,11 +459,11 @@ func equalAs(types []core.TypeInfo, i int, stored, want any) bool {
 	if stored == nil || want == nil {
 		return false
 	}
-	x, err := core.KeyValueText(types[i], projectedValue(stored))
+	x, err := core.CanonicalText(types[i], projectedValue(stored))
 	if err != nil {
 		return false
 	}
-	y, err := core.KeyValueText(types[i], projectedValue(want))
+	y, err := core.CanonicalText(types[i], projectedValue(want))
 	return err == nil && x == y
 }
 

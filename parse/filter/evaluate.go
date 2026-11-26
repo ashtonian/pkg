@@ -113,9 +113,10 @@ func (r ColumnRow) Value(f *FieldSchema) (any, bool, error) {
 // or a driver.Valuer whose value is nil. A document is a Document's decoded
 // value, or decoded from its JSON text (string, []byte, json.RawMessage) or
 // encoding; an array's elements
-// normalize to f.Elem; a scalar is reduced as CursorValue reduces it — so
-// drivers' Valuers, decimals, times and text-marshalling types such as UUIDs
-// compare as SQL compares them — then normalized to f's type.
+// normalize to f.Elem; a scalar is read as the database holds it
+// (core.StoredValue: drivers' Valuers read, decimals, times, dates and UUIDs
+// kept as their types) and normalized to f's type, so it compares as SQL
+// compares it: a time.Time a driver scans a DATE into as its day.
 func ColumnValue(f *FieldSchema, v any) (any, bool, error) {
 	v = core.Deref(v)
 	if v == nil || isNilReference(v) {
@@ -152,16 +153,17 @@ func ColumnValue(f *FieldSchema, v any) (any, bool, error) {
 	case f.DataType == core.FieldTypeGeo || f.DataType == core.FieldTypeAny:
 		return v, true, nil
 	}
-	raw, err := CursorValue(v)
+	raw, null, err := core.StoredValue(v)
 	if err != nil {
 		return nil, false, fmt.Errorf("field %s: %w", f.ExternalName, err)
 	}
-	if raw == nil {
+	if null {
 		return nil, false, nil
 	}
 	// A Valuer may hold a number as its text.
-	if text, ok := raw.(string); ok && (f.DataType == core.FieldTypeInt || f.DataType == core.FieldTypeFloat) {
-		raw = json.Number(text)
+	rv := reflect.ValueOf(raw)
+	if rv.Kind() == reflect.String && (f.DataType == core.FieldTypeInt || f.DataType == core.FieldTypeFloat) {
+		raw = json.Number(rv.String())
 	}
 	scalar, err := core.NormalizeScalar(f.DataType, f.NumberKind, raw)
 	if err != nil {
@@ -203,8 +205,9 @@ func isNilReference(v any) bool {
 //   - $in: [] is False and $nin: [] True, NULL or not.
 //   - A key set (PolicyConstraint.Fields under $in) holds where every
 //     column equals its position in one of the keys.
-//   - Numbers and decimals compare by exact value; strings, UUIDs,
-//     timestamps and dates by code point; booleans as false < true.
+//   - Scalars compare in their type's one order (core.CompareCanonical):
+//     numbers and decimals by exact value, strings by code point, UUIDs,
+//     timestamps and dates by canonical text, booleans as false < true.
 //   - Documents compare as jsonb does (core.JSONEqual, JSONContains, JSONHasKey);
 //     an array $contains every listed element; $like and $ilike match as
 //     MatchLike; $some / $none test a document's elements, or a scalar
@@ -493,40 +496,16 @@ func membershipTruth(f *FieldSchema, op FilterOperator, lit, v any) (Truth, erro
 }
 
 // compareScalar orders a row value against a filter value of type t, both in
-// the canonical domain.
+// the canonical domain, in the type's one order (core.CompareCanonical).
 func compareScalar(f *FieldSchema, t core.FieldType, v, lit any) (int, error) {
-	switch t {
-	case core.FieldTypeInt, core.FieldTypeFloat:
-		if c, ok := core.CompareNumbers(v, lit); ok {
-			return c, nil
-		}
-	case core.FieldTypeDecimal:
-		if c, ok := core.CompareDecimals(v, lit); ok {
-			return c, nil
-		}
-	case core.FieldTypeString, core.FieldTypeUUID, core.FieldTypeTimestamp, core.FieldTypeDate,
-		core.FieldTypeTime, core.FieldTypeInterval, core.FieldTypeInet, core.FieldTypeCIDR, core.FieldTypeMACAddr:
-		a, aok := v.(string)
-		b, bok := lit.(string)
-		if aok && bok {
-			return strings.Compare(a, b), nil
-		}
-	case core.FieldTypeBool:
-		a, aok := v.(bool)
-		b, bok := lit.(bool)
-		if aok && bok {
-			switch {
-			case a == b:
-				return 0, nil
-			case b:
-				return -1, nil
-			}
-			return 1, nil
-		}
-	default:
+	if !core.IsKeyType(t) {
 		return 0, fmt.Errorf("field %s: type %q has no scalar comparison", f.ExternalName, t)
 	}
-	return 0, fmt.Errorf("field %s: cannot compare %s value %s with %s", f.ExternalName, t, gowalker.TypeText(reflect.TypeOf(v)), gowalker.TypeText(reflect.TypeOf(lit)))
+	c, err := core.CompareCanonical(core.TypeInfo{Type: t, NumberKind: f.NumberKind}, v, lit)
+	if err != nil {
+		return 0, fmt.Errorf("field %s: %w", f.ExternalName, err)
+	}
+	return c, nil
 }
 
 // ordered applies a comparison operator to c, the sign of value - literal.

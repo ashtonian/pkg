@@ -65,7 +65,7 @@ func TestStoredValues_FacetsCursorsAndRelationsAgree(t *testing.T) {
 			require.NoError(t, err, "cursor")
 			token := &filter.PageToken{Fields: []filter.CursorField{{Name: "f", Value: value}}}
 			require.NoError(t, filter.ValidateCursor(token, []filter.CursorKey{key}), "cursor")
-			cursorText, err := core.KeyValueText(info, token.Fields[0].Value)
+			cursorText, err := core.CanonicalText(info, token.Fields[0].Value)
 			require.NoError(t, err, "cursor")
 			assert.Equal(t, tc.want, cursorText, "cursor")
 
@@ -78,7 +78,7 @@ func TestStoredValues_FacetsCursorsAndRelationsAgree(t *testing.T) {
 			bound := reflect.ValueOf(stmts[0].Args[len(stmts[0].Args)-1])
 			require.Equal(t, reflect.Slice, bound.Kind(), "the targets bind as one array")
 			require.Equal(t, 1, bound.Len())
-			relationText, err := core.KeyValueText(info, bound.Index(0).Interface())
+			relationText, err := core.CanonicalText(info, bound.Index(0).Interface())
 			require.NoError(t, err, "relation")
 			assert.Equal(t, tc.want, relationText, "relation")
 		})

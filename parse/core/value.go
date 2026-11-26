@@ -83,7 +83,8 @@ func checkElementsText(elements []any) error {
 //   - FieldTypeUUID      → canonical lowercase UUID string
 //   - FieldTypeBool      → bool
 //   - FieldTypeTimestamp → RFC 3339 UTC string with nanosecond precision, of fixed width (TimestampLayout); a UTC year outside 0001 to 9999 is an error (time.Time accepted)
-//   - FieldTypeDate      → YYYY-MM-DD (Date accepted)
+//   - FieldTypeDate      → YYYY-MM-DD (Date accepted, and a time.Time at
+//     midnight, as a driver scans a SQL DATE)
 //   - FieldTypeTime, FieldTypeInterval, FieldTypeInet, FieldTypeCIDR,
 //     FieldTypeMACAddr   → the canonical text of LocalTime, Interval, Inet,
 //     CIDR and MACAddr (each type accepted, and netip.Addr, netip.Prefix
@@ -143,6 +144,10 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 		}
 		if text, ok := v.(string); ok {
 			date, err := ParseDate(text)
+			return string(date), err
+		}
+		if t, ok := v.(time.Time); ok {
+			date, err := dateOf(t)
 			return string(date), err
 		}
 		return nil, fmt.Errorf("expected civil date string, got %s", gowalker.TypeText(reflect.TypeOf(v)))

@@ -131,7 +131,19 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 	}
 	// Rows lock in key order, as Current's ORDER BY reads them, so two
 	// batches over the same rows cannot each hold a lock the other waits on.
-	slices.SortFunc(ordered, func(a, b RowUpdate) int { return key.compare(a.Key, b.Key) })
+	// The keys are normalized, which their columns' types always order; the
+	// first refusal is kept and returned all the same.
+	var orderErr error
+	slices.SortFunc(ordered, func(a, b RowUpdate) int {
+		c, err := key.compare(a.Key, b.Key)
+		if err != nil && orderErr == nil {
+			orderErr = err
+		}
+		return c
+	})
+	if orderErr != nil {
+		return nil, fmt.Errorf("parse: %s: update batch: %w", r.table, orderErr)
+	}
 	plan := &UpdateBatchPlan{Chunks: []UpdateBatchChunk{}, dialect: d, table: r.table}
 	var compiled []compiledRowUpdate
 	var offset int

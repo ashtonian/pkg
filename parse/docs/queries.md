@@ -216,7 +216,7 @@ selected := truth == filter.True
 |---|---|
 | NULL | a comparison with a NULL value or an absent path member is `Unknown`; `$and`, `$or` and `$not` are three-valued, so `$ne`, `$nin` and `$not` never select it |
 | Empty sets | `$in: []` is `False` and `$nin: []` `True`, NULL or not |
-| Order | numbers and decimals by exact value; strings, UUIDs, timestamps and dates by code point |
+| Order | each type's one order, `core.CompareCanonical`, which keysets, key order and patch policies share: numbers and decimals by exact value; strings by code point; UUIDs, timestamps and dates by canonical text, so a UUID's bytes, a timestamp's instant and a date's day in any spelling; booleans false before true |
 | Documents and arrays | jsonb's `=` and `@>` (`core.JSONEqual`, `JSONContains`, `JSONHasKey`); an array column `$contains` every listed element; `$some` / `$none` over the elements, never Unknown |
 | Patterns | `$like` / `$ilike` as `MatchLike`; `$contains` on a string is a case-sensitive substring |
 | Geo | `$near` by the WGS 84 geodesic distance, `$within` / `$intersects` a box or polygon with its boundary, as PostGIS decides them on a JSONB point; a NULL point is `Unknown`; native `geography` / `geometry` storage is E2115 |

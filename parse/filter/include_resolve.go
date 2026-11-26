@@ -89,14 +89,16 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 	if pairs == nil {
 		return IncludeRows{}, fmt.Errorf("resolving include %s: lookup returned no iterator", field.ExternalName)
 	}
-	orders := make([]CursorKey, len(rel.TargetTypes))
-	for i, t := range rel.TargetTypes {
-		orders[i] = CursorKey{DataType: t.Type, NumberKind: t.NumberKind}
-	}
-	// Column by column, as the statement ranks a key of several.
+	// Column by column, as the statement ranks a key of several. Targets
+	// are normalized keys (core.NormalizeKey), which their columns' types
+	// always order; the first refusal is kept and returned all the same.
+	var orderErr error
 	compare := func(a, b core.Key) int {
-		for i, order := range orders {
-			c := CompareKeyValues(order, a[i], b[i])
+		for i, t := range rel.TargetTypes {
+			c, err := core.CompareCanonical(t, a[i], b[i])
+			if err != nil && orderErr == nil {
+				orderErr = err
+			}
 			if c != 0 {
 				return c
 			}
@@ -130,6 +132,9 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 		}
 		keys := byOwner[name]
 		at, found := slices.BinarySearchFunc(keys, target, compare)
+		if orderErr != nil {
+			return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, orderErr)
+		}
 		if found || at > cfg.maxPerOwner {
 			continue
 		}

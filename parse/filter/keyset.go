@@ -230,51 +230,17 @@ func cursorTextValue(v encoding.TextMarshaler) (any, error) {
 	return string(b), nil
 }
 
-// CompareKeyValues orders two canonical key values (see CursorValue) under
-// the keyset model: NULL greatest, numbers and decimals exactly, timestamps
-// by instant, strings bytewise, false before true. Direction is not
-// applied.
-func CompareKeyValues(k CursorKey, a, b any) int {
-	switch {
-	case a == nil && b == nil:
-		return 0
-	case a == nil:
-		return 1
-	case b == nil:
-		return -1
+// CompareKeyValues orders two key values (KeyValue) of key k in the
+// keyset's order, its type's one order (core.CompareCanonical): NULL
+// greatest, numbers and decimals exactly, timestamps by instant, strings
+// by code point, false before true. Direction is not applied. Two values
+// k's type cannot compare are an error, never ordered by their text.
+func CompareKeyValues(k CursorKey, a, b any) (int, error) {
+	c, err := core.CompareCanonical(core.TypeInfo{Type: k.DataType, NumberKind: k.NumberKind}, a, b)
+	if err != nil {
+		return 0, fmt.Errorf("comparing values of key %q: %w", k.Name, err)
 	}
-	if k.DataType == core.FieldTypeDecimal {
-		if c, ok := core.CompareDecimals(a, b); ok {
-			return c
-		}
-	}
-	if c, ok := core.CompareNumbers(a, b); ok {
-		return c
-	}
-	as, aok := a.(string)
-	bs, bok := b.(string)
-	if aok && bok {
-		if k.DataType == core.FieldTypeTimestamp {
-			at, aerr := time.Parse(time.RFC3339Nano, as)
-			bt, berr := time.Parse(time.RFC3339Nano, bs)
-			if aerr == nil && berr == nil {
-				return at.Compare(bt)
-			}
-		}
-		return strings.Compare(as, bs)
-	}
-	ab, aok := a.(bool)
-	bb, bok := b.(bool)
-	if aok && bok {
-		switch {
-		case ab == bb:
-			return 0
-		case !ab:
-			return -1
-		}
-		return 1
-	}
-	return strings.Compare(fmt.Sprint(a), fmt.Sprint(b))
+	return c, nil
 }
 
 // effectiveDirection is the direction a key is walked in: flipped for a

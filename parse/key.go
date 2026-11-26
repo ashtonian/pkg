@@ -144,18 +144,21 @@ func (kc keyColumns) identity(key Key) (any, error) {
 	return text, nil
 }
 
-// compare orders two normalized keys column by column as a statement
-// ordered by filter.KeyOrder reads them (filter.CompareKeyValues): strings
-// by code point, numbers and decimals by value, timestamps by instant,
-// false before true.
-func (kc keyColumns) compare(a, b Key) int {
+// compare orders two keys column by column as a statement ordered by
+// filter.KeyOrder reads them, each column in its type's one order
+// (core.CompareCanonical): strings by code point, numbers and decimals by
+// value, timestamps by instant, false before true.
+func (kc keyColumns) compare(a, b Key) (int, error) {
 	for i, info := range kc.types {
-		c := filter.CompareKeyValues(filter.CursorKey{DataType: info.Type, NumberKind: info.NumberKind}, a[i], b[i])
+		c, err := core.CompareCanonical(info, a[i], b[i])
+		if err != nil {
+			return 0, fmt.Errorf("%w: key column %s: %w", ErrKeyInvalid, kc.names[i], err)
+		}
 		if c != 0 {
-			return c
+			return c, nil
 		}
 	}
-	return 0
+	return 0, nil
 }
 
 // order is the ORDER BY list that reads the key columns of table in

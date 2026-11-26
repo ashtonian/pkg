@@ -26,6 +26,16 @@ func ParseDate(value string) (Date, error) {
 
 func (d Date) String() string { return string(d) }
 
+// dateOf is the civil date t holds as a driver scans a SQL DATE into a
+// time.Time: midnight, read in t's own location. A time of day is an
+// error, never truncated.
+func dateOf(t time.Time) (Date, error) {
+	if t.Hour() != 0 || t.Minute() != 0 || t.Second() != 0 || t.Nanosecond() != 0 {
+		return "", fmt.Errorf("SQL date contains a time of day")
+	}
+	return ParseDate(t.Format(time.DateOnly))
+}
+
 // Time returns the calendar components at UTC midnight for APIs that require
 // time.Time. The conversion does not apply a viewing or session timezone.
 func (d Date) Time() (time.Time, error) {
@@ -79,10 +89,12 @@ func (d Date) Value() (driver.Value, error) {
 func (d *Date) Scan(value any) error {
 	switch v := value.(type) {
 	case time.Time:
-		if v.Hour() != 0 || v.Minute() != 0 || v.Second() != 0 || v.Nanosecond() != 0 {
-			return fmt.Errorf("SQL date contains a time of day")
+		date, err := dateOf(v)
+		if err != nil {
+			return err
 		}
-		return d.UnmarshalText([]byte(v.Format(time.DateOnly)))
+		*d = date
+		return nil
 	case string:
 		return d.UnmarshalText([]byte(v))
 	case []byte:

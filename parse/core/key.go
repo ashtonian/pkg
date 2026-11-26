@@ -85,8 +85,8 @@ func normalizeKeyValue(t TypeInfo, v any) (any, error) {
 }
 
 // KeyTextOf is KeyText of key, each value read as its column's type,
-// paired by position with types: the canonical text KeyValueText gives it,
-// of the key NormalizeKey gives. Two keys of the columns have one text
+// paired by position with types: the canonical text (CanonicalText) of
+// each value of the key NormalizeKey gives. Two keys of the columns have one text
 // exactly when the database holds them equal, and it is the text a
 // statement names their row by.
 func KeyTextOf(types []TypeInfo, key Key) (string, error) {
@@ -100,7 +100,7 @@ func KeyTextOf(types []TypeInfo, key Key) (string, error) {
 	}
 	texts := make([]string, len(normalized))
 	for i, v := range normalized {
-		text, err := normalizedKeyText(types[i], v)
+		text, err := normalizedText(types[i], v)
 		if err != nil {
 			return "", fmt.Errorf("key value %d: %w", i, err)
 		}
@@ -109,22 +109,9 @@ func KeyTextOf(types []TypeInfo, key Key) (string, error) {
 	return joinKeyTexts(texts), nil
 }
 
-// KeyValueText is the canonical text of a key column's value, v normalized
-// as one value of a key (NormalizeKey): the text of a text type's canonical
-// value; a number's canonical decimal text, a float32 column's at float32
-// precision, so -0 is 0; true or false. It is the text statements read the
-// column's key as, so it is equal for two values exactly when the database
-// holds them equal. NaN and the infinities are no key value.
-func KeyValueText(t TypeInfo, v any) (string, error) {
-	n, err := normalizeKeyValue(t, v)
-	if err != nil {
-		return "", err
-	}
-	return normalizedKeyText(t, n)
-}
-
-// normalizedKeyText is the text of a normalized key value n of type t.
-func normalizedKeyText(t TypeInfo, n any) (string, error) {
+// normalizedText is the text of a normalized key value n of type t
+// (CanonicalText).
+func normalizedText(t TypeInfo, n any) (string, error) {
 	switch x := n.(type) {
 	case string:
 		return x, nil

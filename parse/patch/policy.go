@@ -3,7 +3,6 @@ package patch
 import (
 	"errors"
 	"fmt"
-	"reflect"
 	"regexp"
 	"slices"
 
@@ -37,8 +36,11 @@ type PatchPolicyConstraints struct {
 }
 
 // ValueConstraint restricts the values written at a path. AllowedValues and
-// DeniedValues compare numbers by value; Pattern is a regular expression a
-// string must match; Min and Max bound a number.
+// DeniedValues compare as the path's scalar type orders it
+// (core.CompareCanonical) — numbers by value, a UUID in any spelling, a
+// timestamp at its instant — and as JSON at a document path or one no
+// schema types (core.JSONEqual, numbers by value); Pattern is a regular
+// expression a string must match; Min and Max bound a number.
 type ValueConstraint struct {
 	AllowedValues []any
 	DeniedValues  []any
@@ -350,7 +352,7 @@ func (j policyJudge) judge(path string, value any, schema *PathSchema, index int
 		items, _ := core.AnySlice(value)
 		return j.judgeElements(path, items, schema, index)
 	}
-	return vc.check(path, value, isDecimal(schema), index)
+	return vc.check(path, value, orderOf(schema), index)
 }
 
 // judgeElements holds items, elements written into the array at path, to the
@@ -360,8 +362,9 @@ func (j policyJudge) judgeElements(path string, items []any, schema *PathSchema,
 	if vc == nil {
 		return nil
 	}
+	order := orderOf(schema)
 	for _, item := range items {
-		err := vc.check(path, item, isDecimal(schema), index)
+		err := vc.check(path, item, order, index)
 		if err != nil {
 			return err
 		}
@@ -441,24 +444,91 @@ func (j policyJudge) constrainedBelow(path string) bool {
 	return false
 }
 
-func isDecimal(schema *PathSchema) bool {
-	return schema != nil && schema.DataType == core.FieldTypeDecimal
+// valueOrder is how a value constraint compares the values written at a
+// path: as the scalar type the path holds — its schema's, an array path's
+// element type — in that type's one order (core.CompareCanonical), so a
+// UUID in any spelling and a timestamp in any zone are one value, as the
+// database holds them; and as JSON (core.JSONEqual, numbers by value) at a
+// document path or one no schema types.
+type valueOrder struct {
+	info  core.TypeInfo
+	typed bool
+}
+
+// orderOf is the order a constraint compares values written at a path of
+// schema by.
+func orderOf(schema *PathSchema) valueOrder {
+	if schema == nil {
+		return valueOrder{}
+	}
+	info := core.TypeInfo{Type: schema.DataType, NumberKind: core.NumericKind(schema.GoType)}
+	if schema.DataType == core.FieldTypeArray {
+		if schema.GoType == nil {
+			return valueOrder{}
+		}
+		array := core.TypeOf(schema.GoType)
+		info = core.TypeInfo{Type: array.Elem, NumberKind: array.NumberKind}
+	}
+	if !core.IsKeyType(info.Type) {
+		return valueOrder{}
+	}
+	order := valueOrder{info: info, typed: true}
+	return order
+}
+
+// equal reports whether a written value equals a constraint's listed
+// value. A listed value the path's type cannot hold equals no value
+// written there.
+func (o valueOrder) equal(value, listed any) bool {
+	if !o.typed {
+		return core.JSONEqual(value, listed)
+	}
+	c, err := core.CompareCanonical(o.info, value, listed)
+	return err == nil && c == 0
+}
+
+// decimal reports a decimal path, whose values are canonical text.
+func (o valueOrder) decimal() bool {
+	return o.typed && o.info.Type == core.FieldTypeDecimal
+}
+
+// compareBound orders a written value against a bound exactly: as the
+// path's number type, a decimal path's text by value; as a number at a
+// path of no number type. ok is false when value is no number.
+func (o valueOrder) compareBound(value any, bound float64) (int, bool) {
+	if o.numeric() {
+		c, err := core.CompareCanonical(o.info, value, bound)
+		return c, err == nil
+	}
+	return core.CompareNumbers(value, bound)
+}
+
+// numeric reports a path of a number type.
+func (o valueOrder) numeric() bool {
+	if !o.typed {
+		return false
+	}
+	switch o.info.Type {
+	case core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeDecimal:
+		return true
+	}
+	return false
 }
 
 // check judges one value written at path. Null is judged by AllowedValues and
 // DeniedValues; a pattern judges strings and the bounds numbers, and any
 // other value at a path they constrain is refused rather than passed.
-func (vc *valueRule) check(path string, value any, decimal bool, index int) error {
+func (vc *valueRule) check(path string, value any, order valueOrder, index int) error {
 	refuse := func(format string, args ...any) error {
 		return &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
 			Message: fmt.Sprintf(format, args...), Path: path, Index: new(index),
 		}
 	}
-	if len(vc.AllowedValues) > 0 && !valueInList(value, vc.AllowedValues, decimal) {
+	if len(vc.AllowedValues) > 0 && !valueInList(value, vc.AllowedValues, order) {
 		return refuse("value for path '%s' is not in allowed values at index %d", path, index)
 	}
-	if len(vc.DeniedValues) > 0 && valueInList(value, vc.DeniedValues, decimal) {
+	if len(vc.DeniedValues) > 0 && valueInList(value, vc.DeniedValues, order) {
 		return refuse("value for path '%s' is denied by policy at index %d", path, index)
 	}
 	if value == nil {
@@ -476,44 +546,30 @@ func (vc *valueRule) check(path string, value any, decimal bool, index int) erro
 	if vc.Min == nil && vc.Max == nil {
 		return nil
 	}
-	if !core.IsNumber(value) && !decimal {
+	if !core.IsNumber(value) && !order.decimal() {
 		return refuse("value for path '%s' is not a number, which its bounds require, at index %d", path, index)
 	}
 	if vc.Min != nil {
-		if c, ok := compareNumeric(value, *vc.Min, decimal); !ok || c < 0 {
+		if c, ok := order.compareBound(value, *vc.Min); !ok || c < 0 {
 			return refuse("value for path '%s' is below minimum %v at index %d", path, *vc.Min, index)
 		}
 	}
 	if vc.Max != nil {
-		if c, ok := compareNumeric(value, *vc.Max, decimal); !ok || c > 0 {
+		if c, ok := order.compareBound(value, *vc.Max); !ok || c > 0 {
 			return refuse("value for path '%s' exceeds maximum %v at index %d", path, *vc.Max, index)
 		}
 	}
 	return nil
 }
 
-// compareNumeric compares a patch value with a policy's number exactly:
-// as decimals for a decimal path, whose values are canonical text.
-func compareNumeric(value, bound any, decimal bool) (int, bool) {
-	if decimal {
-		return core.CompareDecimals(value, bound)
-	}
-	return core.CompareNumbers(value, bound)
-}
-
-// valueInList reports whether value is in list. Numbers compare by exact
-// value, not Go type — a normalized int64 matches a policy's float64 or int
-// literal, and a decimal path's value matches a list number or decimal
-// string of equal value.
-func valueInList(value any, list []any, decimal bool) bool {
-	for _, v := range list {
-		if c, ok := compareNumeric(value, v, decimal); ok {
-			if c == 0 {
-				return true
-			}
-			continue
-		}
-		if reflect.DeepEqual(value, v) {
+// valueInList reports whether value is in list, compared by the path's
+// order: numbers by exact value, not Go type — a normalized int64 matches
+// a policy's float64 or int literal, and a decimal path's value a listed
+// number or decimal string of equal value — and a typed path's values as
+// its type, so a listed UUID or timestamp matches in any spelling.
+func valueInList(value any, list []any, order valueOrder) bool {
+	for _, listed := range list {
+		if order.equal(value, listed) {
 			return true
 		}
 	}
