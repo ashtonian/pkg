@@ -203,10 +203,11 @@ func (r *memberResolver) scoped(table string, project []string, tenant, deleted 
 	for _, column := range project {
 		conds = append(conds, WhereNotNull(column))
 	}
+	err := r.cfg.scope.tenantMissing(table, tenant)
+	if err != nil {
+		return nil, err
+	}
 	if tenant != "" && !r.cfg.scope.unscoped {
-		if r.cfg.scope.tenant == nil {
-			return nil, fmt.Errorf("relation table %s is tenant-scoped (%s): bind a tenant or opt out explicitly with an unscoped-relations option", table, tenant)
-		}
 		conds = append(conds, WhereEq(tenant, r.cfg.scope.tenant))
 	}
 	if deleted != "" {

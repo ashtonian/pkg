@@ -474,15 +474,28 @@ var ErrRelationTenantRequired = errors.New("filter: a tenant-scoped pair table i
 // (through bind), or the owner row's tenant column. It is "" for a table
 // without one or an unscoped scope, and an error when no scope was chosen.
 func (sc relationScope) clause(d Dialect, table, column, alias string, typ core.FieldType, bind func(any) string) (string, error) {
+	err := sc.tenantMissing(table, column)
+	if err != nil {
+		return "", err
+	}
 	switch {
 	case column == "" || sc.unscoped:
 		return "", nil
 	case sc.row.column != "":
 		return sc.row.match(qualified(d, alias, column), typ), nil
-	case sc.tenant == nil:
-		return "", fmt.Errorf("relation junction %s (tenant column %s): %w", table, column, ErrRelationTenantRequired)
 	}
 	return " AND " + qualified(d, alias, column) + " = " + bind(sc.tenant), nil
+}
+
+// tenantMissing is ErrRelationTenantRequired for a relation table whose
+// tenant column sc holds to no tenant: sc binds none, follows no row's and
+// does not opt out. Every reader of a relation table, its SQL and its
+// lookups outside SQL, refuses it alike.
+func (sc relationScope) tenantMissing(table, column string) error {
+	if column == "" || sc.unscoped || sc.row.column != "" || sc.tenant != nil {
+		return nil
+	}
+	return fmt.Errorf("relation table %s (tenant column %s): %w", table, column, ErrRelationTenantRequired)
 }
 
 // match is " AND <col> = <the row's tenant>". A UUID column and a string

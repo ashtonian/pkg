@@ -27,7 +27,7 @@ Errors the root package returns read `parse: <table>: <operation or field>: <cau
 
 - `filter.ErrPolicyInvalid`, for example `filter: invalid policy constraint: field "owner_org" is not a field of devices`: a `Scope.Policy`, `Scope.Related` or `Scope.Governance` constraint does not compile against the schema. It is the server's policy, so the list fails closed and the handler answers 500; fix the policy builder for the field, operator or value it names.
 - `filter.ErrRelatedPolicyRequired`, `relation type on device_types: filter: a policy-scoped relation is built without the target's policy`: the request used a `PolicyScoped()` relation and `Scope.Related` has no entry for the target table. Add the target's policy to the scope the handler builds.
-- `filter.ErrRelationTenantRequired`, `relation junction board_labels (tenant column tenant_id): filter: a tenant-scoped pair table is joined without a tenant…`: a resource without a tenant column joined a pair table with one, and the scope named no tenant. Set `Scope.Tenant`, or `RelationScope.Unscoped` for platform tooling only.
+- `filter.ErrRelationTenantRequired`, `relation table board_labels (tenant column tenant_id): filter: a tenant-scoped pair table is joined without a tenant…`: a resource without a tenant column joined or looked up a pair table with one, and the scope named no tenant. Set `Scope.Tenant`, or `RelationScope.Unscoped` for platform tooling only.
 
 ### Tenant key errors
 

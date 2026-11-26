@@ -21,8 +21,9 @@ type faultWidget struct {
 
 // What the server declares or wires so that a relation cannot be evaluated
 // — no lookup outside SQL, a relation evaluated before it is resolved, a
-// comparison only SQL evaluates, a relation without its target — is the
-// server's fault: an error matching its sentinel, never a *core.ParseError a client
+// comparison only SQL evaluates, a relation without its target, a
+// tenant-scoped relation table read without a tenant — is the server's
+// fault: an error matching its sentinel, never a *core.ParseError a client
 // would be answered with. The request is valid in every case.
 func TestRelation_ServerFaultsAreSentinels(t *testing.T) {
 	schema, err := filter.GenerateFilterSchema[faultWidget](core.NewSchemaGenerator())
@@ -66,6 +67,10 @@ func TestRelation_ServerFaultsAreSentinels(t *testing.T) {
 			_, err := filter.NewFilterParser(untargeted, nil).Parse(`{"tags":{"$some":{}}}`)
 			return err
 		}, filter.ErrRelationUnresolvable},
+		{"a tenant-scoped relation table resolved without a tenant", func(t *testing.T) error {
+			_, err := filter.ResolveMemberships(t.Context(), filter.NewParsedFilter(parse(t, schema, `{"tags":"red"}`)), noLookup{})
+			return err
+		}, filter.ErrRelationTenantRequired},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.err(t)
