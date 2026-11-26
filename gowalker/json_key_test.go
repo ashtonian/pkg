@@ -50,6 +50,33 @@ func (p *pointerText) UnmarshalText(text []byte) error {
 	return nil
 }
 
+// appendKey is an integer kind written through AppendText, which
+// encoding/json prefers to MarshalText, and read as a number.
+type appendKey uint8
+
+func (k appendKey) AppendText(b []byte) ([]byte, error) {
+	return fmt.Appendf(b, "x%02x", uint8(k)), nil
+}
+
+// appendString is a string kind, which encoding/json writes as itself
+// though it has AppendText.
+type appendString string
+
+func (k appendString) AppendText(b []byte) ([]byte, error) {
+	return append(append(b, "s:"...), k...), nil
+}
+
+// appendPoint is a struct key written through AppendText on its value and
+// read through UnmarshalText on its pointer.
+type appendPoint struct{ X int }
+
+func (p appendPoint) AppendText(b []byte) ([]byte, error) { return fmt.Appendf(b, "p%d", p.X), nil }
+
+func (p *appendPoint) UnmarshalText(text []byte) error {
+	_, err := fmt.Sscanf(string(text), "p%d", &p.X)
+	return err
+}
+
 // jsonInt and jsonStruct have JSON methods, which encoding/json does not use
 // for map keys.
 type jsonInt int
@@ -111,6 +138,7 @@ func jsonKeyTypes() []reflect.Type {
 		reflect.TypeFor[jsonInt](),
 		reflect.TypeFor[float32](), reflect.TypeFor[float64](), reflect.TypeFor[namedFloat](),
 		reflect.TypeFor[readTextKey](), reflect.TypeFor[writeTextKey](), reflect.TypeFor[pointText](), reflect.TypeFor[netip.Addr](),
+		reflect.TypeFor[appendKey](), reflect.TypeFor[appendString](), reflect.TypeFor[appendPoint](),
 		reflect.TypeFor[any](), reflect.TypeFor[*int](), reflect.TypeFor[*pointerText](), reflect.TypeFor[**pointText](),
 		reflect.TypeFor[bool](), reflect.TypeFor[namedBool](), reflect.TypeFor[complex128](), reflect.TypeFor[struct{ A int }](),
 		reflect.TypeFor[[2]int](), reflect.TypeFor[chan int](), reflect.TypeFor[unsafe.Pointer](), reflect.TypeFor[fmt.Stringer](),
@@ -131,6 +159,7 @@ func jsonKeyNames() []string {
 		"9223372036854775807", "9223372036854775808", "-9223372036854775808", "-9223372036854775809",
 		"18446744073709551615", "18446744073709551616", "99999999999999999999999",
 		"a", "Ab", "true", "false", "NaN", "Infinity", "::1", "0:0:0:0:0:0:0:1", "192.0.2.1", "1,2", "01,2",
+		"x07", "x7", "p3", "p03",
 		"\xff", "a\xff\xfeb", "\xed\xa0\x80", "é", "<&>",
 	}
 	return names

@@ -17,7 +17,8 @@ type jsonKeyRule uint8
 
 const (
 	// jsonKeyCodec types are read and written through encoding/json itself:
-	// text methods, floats, pointers and the empty interface.
+	// text methods (AppendText, MarshalText, UnmarshalText), floats,
+	// pointers and the empty interface.
 	jsonKeyCodec jsonKeyRule = iota
 	// jsonKeyString is a string kind without text methods: the name is the
 	// key.
@@ -42,7 +43,7 @@ func jsonKeyRuleOf(t reflect.Type) jsonKeyRule {
 	if !reads || !writes {
 		return jsonKeyRefused
 	}
-	if implementsText(t, reflect.TypeFor[encoding.TextMarshaler]()) || implementsText(t, reflect.TypeFor[encoding.TextUnmarshaler]()) {
+	if implementsText(t, reflect.TypeFor[encoding.TextAppender]()) || implementsText(t, reflect.TypeFor[encoding.TextMarshaler]()) || implementsText(t, reflect.TypeFor[encoding.TextUnmarshaler]()) {
 		return jsonKeyCodec
 	}
 	switch t.Kind() {
@@ -59,13 +60,14 @@ func jsonKeyRuleOf(t reflect.Type) jsonKeyRule {
 // jsonKeyAccess reports whether encoding/json reads a member name into a map
 // key of type t, and whether it writes one for such a key. It ignores JSON
 // methods, which encoding/json does not call on a key, and calls
-// MarshalText only on the key's value: a map key is not addressable. A
+// AppendText or MarshalText only on the key's value: a map key is not
+// addressable. A
 // pointer reads and writes what it points to, unless it has the text method
 // itself; pointers are the types already followed, against a pointer type
 // that points to itself.
 func jsonKeyAccess(t reflect.Type, pointers []reflect.Type) (reads, writes bool) {
 	reads = implementsText(t, reflect.TypeFor[encoding.TextUnmarshaler]())
-	writes = t.Implements(reflect.TypeFor[encoding.TextMarshaler]())
+	writes = t.Implements(reflect.TypeFor[encoding.TextAppender]()) || t.Implements(reflect.TypeFor[encoding.TextMarshaler]())
 	switch t.Kind() {
 	case reflect.String, reflect.Float32, reflect.Float64,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
@@ -101,8 +103,9 @@ func implementsText(t, iface reflect.Type) bool {
 // U+FFFD as encoding/json replaces it. An integer kind reads base-10 text,
 // leading zeros included and, for a signed kind, a sign, and writes it
 // without either. Any other key
-// type, a string or integer with MarshalText or UnmarshalText included, is
-// read and written by encoding/json itself, which allocates on each call.
+// type, a string or integer with AppendText, MarshalText or UnmarshalText
+// included, is read and written by encoding/json itself, which allocates on
+// each call.
 // JSON methods play no part: encoding/json does not call them on a key.
 func (s *Shape) JSONKey(name string) (key reflect.Value, canonical string, ok bool) {
 	switch s.jsonKey {
@@ -194,7 +197,8 @@ func canonicalDigits(digits []byte) (uint64, bool) {
 // s's type as a map key: it reads no member name into a key of the type, or
 // writes none for one. That is a type that is not comparable, a non-empty
 // interface, a bool, complex, struct, array, channel or unsafe.Pointer kind
-// without both UnmarshalText and a MarshalText on its value, and a pointer
+// without both UnmarshalText and an AppendText or MarshalText on its value,
+// and a pointer
 // to a refused type that lacks those methods itself. A nil result does not
 // promise that every name reads: [Shape.JSONKey] decides each. The error
 // names the type, never a name.

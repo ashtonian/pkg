@@ -378,15 +378,15 @@ map key; its text names the type and never a member name.
 |---|---|---|
 | String kind without text methods | Every name; each byte of invalid UTF-8 becomes U+FFFD | The name, when it is valid UTF-8 |
 | Integer kind without text methods | Base-10 text within the type's range, leading zeros included; a signed kind's may carry a `+` or `-` | Without a `+`, leading zeros or `-0`: `+7` and `07` read as `7` |
-| A type with `UnmarshalText`, or with `MarshalText` on its value | What `encoding/json` reads through the method or the kind | What `encoding/json` writes: `MarshalText` of a value that has it, otherwise the kind's text |
+| A type with `UnmarshalText`, or with `AppendText` or `MarshalText` on its value | What `encoding/json` reads through the method or the kind | What `encoding/json` writes: `AppendText`, else `MarshalText`, of a value that has it (a string kind's own text whatever its methods), otherwise the kind's text |
 | Float kind | Numbers `encoding/json` reads | Their shortest form: `1.50` reads as `1.5` |
 | `any` | Every name, as a string | The name |
-| Pointer | What its element type reads, or its own text methods | What its element type writes, or its own `MarshalText` |
-| Not comparable, a non-empty interface, or a bool, complex, struct, array, channel or `unsafe.Pointer` kind without both `UnmarshalText` and a `MarshalText` on its value | Nothing: `CheckJSONKey` fails | None |
+| Pointer | What its element type reads, or its own text methods | What its element type writes, or its own `AppendText` or `MarshalText` |
+| Not comparable, a non-empty interface, or a bool, complex, struct, array, channel or `unsafe.Pointer` kind without both `UnmarshalText` and an `AppendText` or `MarshalText` on its value | Nothing: `CheckJSONKey` fails | None |
 
 JSON methods play no part: `encoding/json` calls neither `MarshalJSON` nor
-`UnmarshalJSON` on a key, and calls `MarshalText` only on the key's value, so a
-pointer-receiver `MarshalText` leaves a struct key unwritable. `IsCanonicalJSONKey`
+`UnmarshalJSON` on a key, and calls `AppendText` and `MarshalText` only on the
+key's value, so a pointer-receiver one leaves a struct key unwritable. `IsCanonicalJSONKey`
 allocates nothing for string and integer kinds without text methods; every
 other rule, and `JSONKey` always, allocate, the third column's rules through
 an `encoding/json` round trip.
