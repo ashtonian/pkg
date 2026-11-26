@@ -73,7 +73,7 @@ A path is checked against the schema before anything compiles, and a request's p
 
 ## Dependencies
 
-- *Imports*: `parse/core`, `parse/internal/{dialect,jsonmerge,rfc6902}`, `gowalker` (type text in errors), `jsonvalue` (declared JSON columns decode as rows scan them), `github.com/evanphx/json-patch/v5` (RFC 6902 application)
+- *Imports*: `parse/core`, `parse/internal/{dialect,jsonmerge}`, `gowalker` (type text in errors), `jsonvalue` (declared JSON columns decode as rows scan them), `github.com/evanphx/json-patch/v5` (RFC 6902 application)
 - *Imported by*: `parse`, the example server, and servers that apply patches themselves
 - *Package boundary*: standalone Parse module
 

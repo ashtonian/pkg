@@ -393,8 +393,8 @@ func toFloat64(v any) (float64, bool) {
 
 // --- Tag Parsing ---
 
-// geoKeyRe is a JSONB member name: it is interpolated into `->>'key'` and
-// `'$.key'` accessors, so only identifiers are accepted.
+// geoKeyRe is the JSONB member name a geo_lat or geo_lon tag may give: an
+// identifier.
 var geoKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // parseGeoTag reads the geo struct tags: geo (jsonb | geography | geometry),

@@ -9,7 +9,6 @@ import (
 
 	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/internal/rfc6902"
 )
 
 // Parser parses and validates JSON Patch documents.
@@ -37,6 +36,16 @@ type RawPatchOp struct {
 	// ParseOps sets it for a null value — a non-nil Value implies it.
 	HasValue bool `json:"-"`
 }
+
+// The members of an RFC 6902 operation object, which RawPatchOp's json tags
+// also spell, for the operations patch reads and writes as maps: a struct
+// field cannot tell a missing value from a null one.
+const (
+	memberOp    = "op"
+	memberPath  = "path"
+	memberFrom  = "from"
+	memberValue = "value"
+)
 
 // present reports whether op carried a value member.
 func (r RawPatchOp) present() bool { return r.HasValue || r.Value != nil }
@@ -93,7 +102,7 @@ func rawOpFrom(doc map[string]any, i int) (RawPatchOp, error) {
 	for _, m := range []struct {
 		name string
 		dst  *string
-	}{{rfc6902.Op, &op.Op}, {rfc6902.Path, &op.Path}, {rfc6902.From, &op.From}} {
+	}{{memberOp, &op.Op}, {memberPath, &op.Path}, {memberFrom, &op.From}} {
 		v, ok := doc[m.name]
 		if !ok {
 			continue
@@ -108,7 +117,7 @@ func rawOpFrom(doc map[string]any, i int) (RawPatchOp, error) {
 		}
 		*m.dst = s
 	}
-	op.Value, op.HasValue = doc[rfc6902.Value]
+	op.Value, op.HasValue = doc[memberValue]
 	return op, nil
 }
 

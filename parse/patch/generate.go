@@ -1,7 +1,6 @@
 package patch
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"reflect"
@@ -93,15 +92,10 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			fieldName, _ = serverFieldName(g, field)
 		}
 		if fieldName == "" {
-			// virtual relation fields conventionally carry
-			// `json:"-"` to hide from response payloads. They still
-			// need an addressable patch path. Generators preserve the declared
-			// API name with relation_name; hand-written structs can fall back
-			// to snake_case without exposing the virtual field in JSON.
-			if tags.Relation == "" {
-				continue
-			}
-			fieldName = cmp.Or(tags.RelationName, core.SnakeCase(field.GoName()))
+			fieldName = field.RelationName()
+		}
+		if fieldName == "" {
+			continue
 		}
 
 		info, err := g.FieldType(field)

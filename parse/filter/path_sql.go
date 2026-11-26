@@ -44,8 +44,8 @@ var maxDecimalMember = strconv.Itoa(decimals.MaxMemberLength)
 // Both operators take a text key, which reads an object's member and is
 // NULL on an array or a scalar: no segment is read as an array subscript or
 // a NULL element, as a text[] path given to #> reads `0` or `null`, so
-// PostgreSQL reads the member the reference rule (memberAt) reads. Segments
-// are identifiers (pathSegment), so no literal needs escaping.
+// PostgreSQL reads the member the reference rule (memberAt) reads. Each key
+// is a string literal (dialect.StringLiteral), whatever its segment holds.
 func pgMember(doc string, segs []string) string {
 	return doc + pgKeys(segs, " -> ")
 }
@@ -59,25 +59,16 @@ func pgKeys(segs []string, op string) string {
 	var b strings.Builder
 	for _, s := range segs {
 		b.WriteString(op)
-		b.WriteString("'")
-		b.WriteString(s)
-		b.WriteString("'")
+		b.WriteString(dialect.StringLiteral(s))
 	}
 	return b.String()
 }
 
-// sqlitePathLiteral is the JSON path of a path's segments, every label
-// quoted so a hyphen is a name character.
+// sqlitePathLiteral is the JSON path of a path's segments
+// (dialect.SQLiteJSONPath) as a string literal: every label quoted, so a
+// hyphen is a name character, and escaped.
 func sqlitePathLiteral(segs []string) string {
-	var b strings.Builder
-	b.WriteString("'$")
-	for _, s := range segs {
-		b.WriteString(`."`)
-		b.WriteString(s)
-		b.WriteString(`"`)
-	}
-	b.WriteString("'")
-	return b.String()
+	return dialect.StringLiteral(dialect.SQLiteJSONPath(segs))
 }
 
 // orderedAsText reports whether ordering comparisons on f compare text and so

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
@@ -44,44 +43,30 @@ func (SQLiteDialect) ArrayAppend(array string, element any, bind func(any) strin
 // MemberDocument is expr itself: SQLite's JSON functions read its text.
 func (SQLiteDialect) MemberDocument(expr string) string { return expr }
 
-// SetMember is json_set at the member's JSON path (sqlitePath), its value
-// read back through json() so a document stays one.
+// SetMember is json_set at the member's JSON path (dialect.SQLiteJSONPath),
+// its value read back through json() so a document stays one.
 func (SQLiteDialect) SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) string {
-	path := bind(sqlitePath(member))
+	path := bind(dialect.SQLiteJSONPath(member))
 	return "json_set(" + doc + ", " + path + ", json(" + bind(string(value)) + "))"
 }
 
 // RemoveMember is json_remove at the member's JSON path.
 func (SQLiteDialect) RemoveMember(doc string, member []string, bind func(any) string) string {
-	return "json_remove(" + doc + ", " + bind(sqlitePath(member)) + ")"
+	return "json_remove(" + doc + ", " + bind(dialect.SQLiteJSONPath(member)) + ")"
 }
 
 // HasMember reads the member's json_type, NULL where it is missing.
 func (SQLiteDialect) HasMember(doc string, member []string, bind func(any) string) string {
-	return "(json_type(" + doc + ", " + bind(sqlitePath(member)) + ") IS NOT NULL)"
+	return "(json_type(" + doc + ", " + bind(dialect.SQLiteJSONPath(member)) + ") IS NOT NULL)"
 }
 
 // IsObject compares the member's json_type with 'object'.
 func (SQLiteDialect) IsObject(doc string, member []string, bind func(any) string) string {
 	typ := "json_type(" + doc + ")"
 	if len(member) > 0 {
-		typ = "json_type(" + doc + ", " + bind(sqlitePath(member)) + ")"
+		typ = "json_type(" + doc + ", " + bind(dialect.SQLiteJSONPath(member)) + ")"
 	}
 	return "COALESCE(" + typ + " = 'object', FALSE)"
-}
-
-// sqlitePath is the SQLite JSON path of member, each token a quoted object
-// label with its quotes and backslashes escaped. A quoted label never
-// indexes an array.
-func sqlitePath(member []string) string {
-	var b strings.Builder
-	b.WriteString("$")
-	for _, token := range member {
-		b.WriteString(`."`)
-		b.WriteString(strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(token))
-		b.WriteString(`"`)
-	}
-	return b.String()
 }
 
 // RelationRows reads the owners and the values each from one bound JSON

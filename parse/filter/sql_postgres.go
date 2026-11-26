@@ -533,12 +533,12 @@ func pgGeography(d dialect.Dialect, field *FieldSchema) string {
 	return field.sql(d) + "::geography"
 }
 
-// pgJSONBPoint builds the point geometry of a JSONB {lat, lon} column. The
-// keys were validated as identifiers at schema generation.
+// pgJSONBPoint builds the point geometry of a JSONB {lat, lon} column, each
+// key a string literal (dialect.StringLiteral).
 func pgJSONBPoint(d dialect.Dialect, field *FieldSchema) string {
 	latKey, lonKey := geoKeys(field)
-	return fmt.Sprintf("ST_SetSRID(ST_MakePoint((%s->>'%s')::float8, (%s->>'%s')::float8), 4326)",
-		field.sql(d), lonKey, field.sql(d), latKey)
+	return fmt.Sprintf("ST_SetSRID(ST_MakePoint((%s->>%s)::float8, (%s->>%s)::float8), 4326)",
+		field.sql(d), dialect.StringLiteral(lonKey), field.sql(d), dialect.StringLiteral(latKey))
 }
 
 // MarshalValue serializes a value for PostgreSQL parameter binding.
