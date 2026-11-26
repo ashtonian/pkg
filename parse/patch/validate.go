@@ -3,7 +3,9 @@ package patch
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -44,6 +46,17 @@ const (
 	DetailValueCount = "count"
 	DetailValueLimit = "limit"
 )
+
+// DetailFailureCount is the Details key, on the first error of an
+// operation refused for more than maxOperationFailures reasons, of how many
+// there were: the parsers report the first maxOperationFailures.
+const DetailFailureCount = "failures"
+
+// maxOperationFailures bounds the failures reported for one operation. An
+// array can fail once per element, and a body under the size limit holds
+// thousands of them, each a retained error joined into the text a handler
+// logs.
+const maxOperationFailures = 10
 
 // stepFailure is why a valueChecker refuses an operation, before the parser
 // that asked frames it with the operation's path and, for JSON Patch, its
@@ -145,9 +158,25 @@ func (c valueChecker) check(ps *PathSchema, op PatchOp, value any, depth int, me
 		failures = append(failures, splitFailures(err)...)
 	}
 	if len(failures) > 0 {
-		return nil, failures
+		return nil, boundFailures(failures)
 	}
 	return value, nil
+}
+
+// boundFailures keeps an operation's first maxOperationFailures failures,
+// the first carrying how many there were (DetailFailureCount).
+func boundFailures(failures []stepFailure) []stepFailure {
+	if len(failures) <= maxOperationFailures {
+		return failures
+	}
+	kept := slices.Clone(failures[:maxOperationFailures])
+	details := maps.Clone(kept[0].details)
+	if details == nil {
+		details = make(map[string]any, 1)
+	}
+	details[DetailFailureCount] = len(failures)
+	kept[0].details = details
+	return kept
 }
 
 // relationValue decides a relation operation's value as it parses, so that

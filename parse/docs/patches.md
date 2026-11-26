@@ -59,7 +59,7 @@ if errors.As(err, &pe) {
 }
 ```
 
-Traverse joined errors through `Unwrap() []error` to collect every parse failure. The TypeScript SDK mirrors the constraint names and limits; multiple merge-patch failures throw `SchemaValidationErrors`, whose `errors` contains the individual failures and whose inherited field/code identify the first.
+Traverse joined errors through `Unwrap() []error` to collect every parse failure. One operation reports at most its first 10, an array failing once per element included; when it fails for more, its first error's `Details` holds how many (`patch.DetailFailureCount`, `"failures"`). The TypeScript SDK mirrors the constraint names and limits; multiple merge-patch failures throw `SchemaValidationErrors`, whose `errors` contains the individual failures and whose inherited field/code identify the first.
 
 Paths are RFC 6901 JSON Pointers: `/labels/a~1b` addresses the key `a/b`, and `~0` escapes a tilde. Patterns match tokens: `*` matches exactly one token and `**` zero or more, wherever it stands, so `/labels/**` matches `/labels` itself. A token is a literal, `*` or `**`: a policy refuses a pattern whose token holds `*` among other characters (`/internal_*`) when it is built. An empty key is a token, so `/labels/*` admits `/labels/` but not `/labels//x`. Among overlapping patterns the most specific decides: more leading literal tokens, then fewer `**`, then fewer `*`.
 
