@@ -284,7 +284,7 @@ A non-SQL-NULL document that decodes to a nil map, slice, pointer or interface i
 
 Keep undeclared document codecs stable across round trips. Do not use top-level `omitempty` / `omitzero` as storage metadata; that enclosing-field omission metadata is not a complete storage schema.
 
-For top-level schema fields, replace/remove can address a field whose current JSON encoding omits it through `omitempty`; these resource-field operations match direct typed application. Nested JSON Pointers keep strict existence rules. A nil pointer target is an application error.
+A top-level schema field exists for every operation even when its current JSON encoding omits it through `omitempty` or `omitzero`: replace and remove write it as direct typed application does, and test, copy and move read the value it holds, written as the field's tag writes it without the omit option (`""`, `null`, `"0"` for a `,string` zero). Nested JSON Pointers keep strict existence rules. A nil pointer target is an application error.
 
 `ApplyValidatedPatch` writes a copy of the value it is given, never the value or anything it points to. Before it writes a field promoted from an embedded pointer, the copy gets its own copy of that parent, allocated when the pointer is nil, as encoding/json allocates it; later writes through the same parent land in that copy. The caller's row, and any pointer it kept to an embedded parent, keep their values whether the patch succeeds or fails part-way.
 

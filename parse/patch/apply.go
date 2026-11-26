@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"unsafe"
 
 	"github.com/ashtonian/pkg/gowalker"
@@ -61,6 +62,12 @@ type Applier[T any] struct {
 	// hidden are the patch paths of the server fields the field-name tag
 	// hides, which only the direct path can set.
 	hidden map[string]bool
+	// presented maps each top-level field name whose tag can omit it
+	// (omitempty, omitzero) to a one-field struct of the field's type,
+	// tagged as the field is without those options. The document path
+	// writes an omitted field through it, so test, copy and move read every
+	// field that replace and remove treat as existing (wireOp).
+	presented map[string]reflect.Type
 	// codecNames maps each name in fields to the name the default JSON
 	// codec writes the same field under, when the field-name tag is not
 	// json; nil when the codec names fields as the schemas do.
@@ -91,6 +98,7 @@ func NewApplier[T any](gen *core.SchemaGenerator, cfg *core.ParserConfig) (*Appl
 		hidden:       hiddenServerPaths(gen, walk),
 	}
 	a.unwritable = unwritableFields(a.fields)
+	a.presented = presentedForms[T](a.fieldNameTag, a.fields)
 	if a.fieldNameTag == core.JSONTagKey {
 		return a, nil
 	}
@@ -135,6 +143,113 @@ func unwritableFields(fields map[string]*core.Field) []string {
 	}
 	slices.Sort(names)
 	return names
+}
+
+// presentedForms builds Applier.presented: a form for each visible field
+// whose json or field-name tag can omit it. A codec names fields by one of
+// those tags, so the form carries both, without their omit options.
+func presentedForms[T any](fieldNameTag string, fields map[string]*core.Field) map[string]reflect.Type {
+	root := reflect.TypeFor[T]()
+	for root.Kind() == reflect.Pointer {
+		root = root.Elem()
+	}
+	forms := make(map[string]reflect.Type)
+	for name, f := range fields {
+		if f.Hidden() {
+			continue
+		}
+		tag, omits := presentedTag(root.FieldByIndex(f.Route()).Tag, core.JSONTagKey, fieldNameTag)
+		if !omits {
+			continue
+		}
+		forms[name] = reflect.StructOf([]reflect.StructField{{Name: "V", Type: f.Type(), Tag: tag}})
+	}
+	return forms
+}
+
+// presentedTag is tag's entries for keys with their omitempty and omitzero
+// options dropped, and whether any had one.
+func presentedTag(tag reflect.StructTag, keys ...string) (reflect.StructTag, bool) {
+	var entries []string
+	omits := false
+	for _, key := range slices.Compact(slices.Sorted(slices.Values(keys))) {
+		value, ok := tag.Lookup(key)
+		if !ok {
+			continue
+		}
+		name, options, _ := strings.Cut(value, ",")
+		kept := []string{name}
+		for option := range strings.SplitSeq(options, ",") {
+			switch option {
+			case "":
+			case jsonOmitEmpty, jsonOmitZero:
+				omits = true
+			default:
+				kept = append(kept, option)
+			}
+		}
+		entries = append(entries, key+":"+strconv.Quote(strings.Join(kept, ",")))
+	}
+	return reflect.StructTag(strings.Join(entries, " ")), omits
+}
+
+// presentOmitted writes into doc, the document of target, each top-level
+// field an operation names that the encoding omitted, as its presented
+// form (Applier.presented) encodes the value it holds. A pointer T encodes
+// its form through a pointer too, so a MarshalJSON with a pointer receiver
+// writes the field as it would in T.
+func (a *Applier[T]) presentOmitted(doc map[string]any, target T, ops []*PatchOperation) error {
+	if len(a.presented) == 0 {
+		return nil
+	}
+	root := reflect.ValueOf(&target).Elem()
+	throughPointer := root.Kind() == reflect.Pointer
+	for root.Kind() == reflect.Pointer {
+		if root.IsNil() {
+			return nil
+		}
+		root = root.Elem()
+	}
+	for _, op := range ops {
+		for _, path := range []string{op.Path, op.From} {
+			tokens, err := core.ParsePointer(path)
+			if err != nil || len(tokens) == 0 {
+				continue
+			}
+			name := tokens[0]
+			form, ok := a.presented[name]
+			if !ok {
+				continue
+			}
+			_, exists := doc[name]
+			if exists {
+				continue
+			}
+			value, err := a.fields[name].Value(root)
+			if err != nil {
+				continue // behind a nil embedded pointer, the field is not there
+			}
+			holder := reflect.New(form)
+			holder.Elem().Field(0).Set(value)
+			encoded := holder.Elem().Interface()
+			if throughPointer {
+				encoded = holder.Interface()
+			}
+			data, err := a.codec.Encode(encoded)
+			if err != nil {
+				return fmt.Errorf("patch: encoding field %s: %w", name, err)
+			}
+			var member map[string]any
+			err = a.codec.Decode(data, &member)
+			if err != nil {
+				return fmt.Errorf("patch: decoding field %s: %w", name, err)
+			}
+			for _, v := range member {
+				doc[name] = v
+			}
+		}
+	}
+	return nil
 }
 
 // CheckSchema refuses a schema with a path that would write a field of T
@@ -548,6 +663,10 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 	var doc map[string]any
 	if err = a.codec.Decode(data, &doc); err != nil {
 		return zero, fmt.Errorf("patch: decoding target to a document: %w", err)
+	}
+	err = a.presentOmitted(doc, target, parsed.Operations)
+	if err != nil {
+		return zero, err
 	}
 
 	run := &jsonPatchRun{codec: a.codec, copyBudget: a.copyBudget}
