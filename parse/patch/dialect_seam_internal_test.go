@@ -20,17 +20,33 @@ import (
 // built-in dialect's: each method marks what it renders. It implements
 // RelationDialect over the internal dialect kind, as a new provider in the
 // module does, so a patch compiled for it is written through those methods
-// alone.
+// alone. It cannot write a member named "nope", test one named
+// "untestable" or compare a decimal, and refuses them as a provider does.
 type providerDialect struct{ dialect.SQLite }
+
+func refused(what string) error {
+	err := &core.ParseError{Kind: core.ParseErrorKindPatch, Code: core.CodeOpNotSQLCompilable.String(), Message: "the provider cannot " + what}
+	return err
+}
+
+func refusesMember(member []string, name string) error {
+	if slices.Contains(member, name) {
+		return refused("reach member " + name)
+	}
+	return nil
+}
 
 func (providerDialect) MarshalValue(value any, _ core.TypeInfo) (any, error) { return value, nil }
 
-func (providerDialect) ChangedCondition(column, expr string, t core.TypeInfo) string {
-	return "changed(" + column + ", " + expr + ", " + string(t.Type) + ")"
+func (providerDialect) ChangedCondition(column, expr string, t core.TypeInfo) (string, error) {
+	if t.Type == core.FieldTypeDecimal {
+		return "", refused("compare a decimal")
+	}
+	return "changed(" + column + ", " + expr + ", " + string(t.Type) + ")", nil
 }
 
-func (providerDialect) ChangedDocumentCondition(column, doc string) string {
-	return "doc_changed(" + column + ", " + doc + ")"
+func (providerDialect) ChangedDocumentCondition(column, doc string) (string, error) {
+	return "doc_changed(" + column + ", " + doc + ")", nil
 }
 
 func (providerDialect) MergePatch(doc string, storage core.SQLType, p map[string]any, bind func(any) string) (string, error) {
@@ -45,22 +61,34 @@ func (providerDialect) ArrayAppend(array string, element any, bind func(any) str
 	return "append(" + array + ", " + bind(element) + ")", nil
 }
 
-func (providerDialect) MemberDocument(expr string) string { return "doc(" + expr + ")" }
+func (providerDialect) MemberDocument(expr string) (string, error) { return "doc(" + expr + ")", nil }
 
-func (providerDialect) SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) string {
-	return "set(" + doc + ", " + bind(strings.Join(member, ".")) + ", " + bind(string(value)) + ")"
+func (providerDialect) SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) (string, error) {
+	if err := refusesMember(member, "nope"); err != nil {
+		return "", err
+	}
+	return "set(" + doc + ", " + bind(strings.Join(member, ".")) + ", " + bind(string(value)) + ")", nil
 }
 
-func (providerDialect) RemoveMember(doc string, member []string, bind func(any) string) string {
-	return "remove(" + doc + ", " + bind(strings.Join(member, ".")) + ")"
+func (providerDialect) RemoveMember(doc string, member []string, bind func(any) string) (string, error) {
+	if err := refusesMember(member, "nope"); err != nil {
+		return "", err
+	}
+	return "remove(" + doc + ", " + bind(strings.Join(member, ".")) + ")", nil
 }
 
-func (providerDialect) HasMember(doc string, member []string, bind func(any) string) string {
-	return "has(" + doc + ", " + bind(strings.Join(member, ".")) + ")"
+func (providerDialect) HasMember(doc string, member []string, bind func(any) string) (string, error) {
+	if err := refusesMember(member, "untestable"); err != nil {
+		return "", err
+	}
+	return "has(" + doc + ", " + bind(strings.Join(member, ".")) + ")", nil
 }
 
-func (providerDialect) IsObject(doc string, member []string, bind func(any) string) string {
-	return "object(" + doc + ", " + bind(strings.Join(member, ".")) + ")"
+func (providerDialect) IsObject(doc string, member []string, bind func(any) string) (string, error) {
+	if err := refusesMember(member, "untestable"); err != nil {
+		return "", err
+	}
+	return "object(" + doc + ", " + bind(strings.Join(member, ".")) + ")", nil
 }
 
 func (providerDialect) KeyIn(_, alias string, columns []string, _ []core.TypeInfo, keys []core.Key, member bool, bind func(any) string) (string, error) {
@@ -88,6 +116,7 @@ func seamSchema(t *testing.T) *PatchSchema {
 	ops := []PatchOp{PatchOpAdd, PatchOpReplace, PatchOpRemove}
 	s, err := NewPatchSchema("things", map[string]*PathSchema{
 		"/raw":    {AllowedOps: ops, DataType: core.FieldTypeJSON, SQLType: core.SQLJSON, SQLColumn: "raw"},
+		"/amount": {AllowedOps: ops, DataType: core.FieldTypeDecimal, SQLColumn: "amount"},
 		"/tags":   {AllowedOps: append(slices.Clone(ops), PatchOpArrayAppend), DataType: core.FieldTypeArray, SQLColumn: "tags", GoType: reflect.TypeFor[[]string]()},
 		"/doc":    {AllowedOps: ops, DataType: core.FieldTypeJSON, SQLType: core.SQLJSONB, SQLColumn: "doc"},
 		"/doc/**": {AllowedOps: ops, DataType: core.FieldTypeAny, SQLColumn: "doc"},
@@ -140,6 +169,31 @@ func TestBuildPatchSQL_WritesThroughTheDialect(t *testing.T) {
 			assert.Equal(t, tc.pre, res.Precondition)
 			assert.Equal(t, tc.changed, res.ChangePredicate)
 			assert.Equal(t, tc.args, res.Args)
+		})
+	}
+}
+
+// TestBuildPatchSQL_ReportsTheDialectsRefusal: what a provider refuses to
+// write, test or compare is the operation's E2070, naming its path.
+func TestBuildPatchSQL_ReportsTheDialectsRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, path string
+	}{
+		{"a member set", `[{"op":"add","path":"/doc/nope","value":1}]`, "/doc/nope"},
+		{"a member removed", `[{"op":"remove","path":"/doc/nope"}]`, "/doc/nope"},
+		{"a member tested", `[{"op":"replace","path":"/doc/untestable","value":1}]`, "/doc/untestable"},
+		{"a member's parent tested", `[{"op":"add","path":"/doc/untestable/a","value":1}]`, "/doc/untestable/a"},
+		{"a column compared", `[{"op":"replace","path":"/amount","value":"1.5"}]`, "/amount"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := NewParser(seamSchema(t), nil).Parse([]byte(tc.body))
+			require.NoError(t, err)
+			_, err = BuildPatchSQL(parsed, providerDialect{}, WithChangePredicate())
+			require.ErrorIs(t, err, core.CodeOpNotSQLCompilable)
+			var pe *core.ParseError
+			require.ErrorAs(t, err, &pe)
+			assert.Equal(t, tc.path, pe.Path)
+			assert.Contains(t, pe.Message, "the provider cannot")
 		})
 	}
 }

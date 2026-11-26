@@ -192,15 +192,15 @@ type Dialect interface {
 	// merge, a native array append, a JSON document member's read, set,
 	// removal and preconditions, and the rows a pair table's insert reads
 	// when no target table holds its values.
-	ChangedCondition(column, expr string, t core.TypeInfo) string
-	ChangedDocumentCondition(column, doc string) string
+	ChangedCondition(column, expr string, t core.TypeInfo) (string, error)
+	ChangedDocumentCondition(column, doc string) (string, error)
 	MergePatch(doc string, storage core.SQLType, patch map[string]any, bind func(any) string) (string, error)
 	ArrayAppend(array string, element any, bind func(any) string) (string, error)
-	MemberDocument(expr string) string
-	SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) string
-	RemoveMember(doc string, member []string, bind func(any) string) string
-	HasMember(doc string, member []string, bind func(any) string) string
-	IsObject(doc string, member []string, bind func(any) string) string
+	MemberDocument(expr string) (string, error)
+	SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) (string, error)
+	RemoveMember(doc string, member []string, bind func(any) string) (string, error)
+	HasMember(doc string, member []string, bind func(any) string) (string, error)
+	IsObject(doc string, member []string, bind func(any) string) (string, error)
 	RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *core.PairTenant, bind func(any) string) (core.PairRows, error)
 
 	// StoresAsText reports whether the database stores a value of type t,

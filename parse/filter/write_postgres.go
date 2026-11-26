@@ -14,15 +14,15 @@ import (
 // equality is coarser than the text a read returns, their texts compared
 // under "C" collation: a document by its canonical jsonb text, a decimal
 // by value alone.
-func (PostgresDialect) ChangedCondition(column, expr string, t core.TypeInfo) string {
+func (PostgresDialect) ChangedCondition(column, expr string, t core.TypeInfo) (string, error) {
 	switch {
 	case t.SQLType == core.SQLJSON:
-		return pgDocumentChanged(column, expr)
+		return pgDocumentChanged(column, expr), nil
 	case t.Type == core.FieldTypeDecimal:
 		// A decimal's value has no scale (core.DecimalText binds 1.50 as
 		// 1.5), and a numeric(p,s) column pads every value to s: its text
 		// would differ from the bound value's on every write.
-		return column + " IS DISTINCT FROM " + expr
+		return column + " IS DISTINCT FROM " + expr, nil
 	}
 	// A type's equality can be coarser than the text a read returns — an
 	// interval's units, a float's zero sign, citext, a nondeterministic
@@ -30,14 +30,14 @@ func (PostgresDialect) ChangedCondition(column, expr string, t core.TypeInfo) st
 	// goes first because PostgreSQL types a placeholder at its first use and
 	// the WHERE precedes the SET clause: it types the placeholder as the
 	// column (an enum, a domain), where a first use as text would not.
-	return column + " IS DISTINCT FROM " + expr + " OR " + column + `::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::text"
+	return column + " IS DISTINCT FROM " + expr + " OR " + column + `::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::text", nil
 }
 
 // ChangedDocumentCondition compares the column and the jsonb document the
 // member methods built by their canonical jsonb text, whatever JSON type
 // the column declares.
-func (PostgresDialect) ChangedDocumentCondition(column, doc string) string {
-	return pgDocumentChanged(column, doc)
+func (PostgresDialect) ChangedDocumentCondition(column, doc string) (string, error) {
+	return pgDocumentChanged(column, doc), nil
 }
 
 // pgDocumentChanged compares a document column with expr as documents. json
@@ -139,31 +139,31 @@ func (PostgresDialect) ArrayAppend(array string, element any, bind func(any) str
 
 // MemberDocument reads expr as jsonb, whatever JSON type its column
 // declares: jsonb_set, #- and #> take jsonb.
-func (PostgresDialect) MemberDocument(expr string) string { return expr + "::jsonb" }
+func (PostgresDialect) MemberDocument(expr string) (string, error) { return expr + "::jsonb", nil }
 
 // SetMember is jsonb_set, which creates a missing last member: the
 // member's path bound as text[], its value as jsonb.
-func (PostgresDialect) SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) string {
+func (PostgresDialect) SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) (string, error) {
 	path := pgMemberPath(member, bind)
-	return "jsonb_set(" + doc + ", " + path + ", " + bind(string(value)) + "::jsonb, true)"
+	return "jsonb_set(" + doc + ", " + path + ", " + bind(string(value)) + "::jsonb, true)", nil
 }
 
 // RemoveMember is #-, the member's path bound as text[].
-func (PostgresDialect) RemoveMember(doc string, member []string, bind func(any) string) string {
-	return "(" + doc + " #- " + pgMemberPath(member, bind) + ")"
+func (PostgresDialect) RemoveMember(doc string, member []string, bind func(any) string) (string, error) {
+	return "(" + doc + " #- " + pgMemberPath(member, bind) + ")", nil
 }
 
 // HasMember reads the member with #>, NULL where it is missing.
-func (PostgresDialect) HasMember(doc string, member []string, bind func(any) string) string {
-	return "((" + doc + " #> " + pgMemberPath(member, bind) + ") IS NOT NULL)"
+func (PostgresDialect) HasMember(doc string, member []string, bind func(any) string) (string, error) {
+	return "((" + doc + " #> " + pgMemberPath(member, bind) + ") IS NOT NULL)", nil
 }
 
 // IsObject is jsonb_typeof of the member, read with #>.
-func (PostgresDialect) IsObject(doc string, member []string, bind func(any) string) string {
+func (PostgresDialect) IsObject(doc string, member []string, bind func(any) string) (string, error) {
 	if len(member) > 0 {
 		doc = "(" + doc + " #> " + pgMemberPath(member, bind) + ")"
 	}
-	return "COALESCE(jsonb_typeof(" + doc + ") = 'object', FALSE)"
+	return "COALESCE(jsonb_typeof(" + doc + ") = 'object', FALSE)", nil
 }
 
 // pgMemberPath binds member as the text[] path #>, #- and jsonb_set take.

@@ -246,8 +246,9 @@ type RelationDialect interface {
 	// each set bound as one parameter whatever its size, and each key read
 	// back as its column's type. tenant, when not nil, is the tenant of
 	// rel.TenantColumn every pair is written for. The result names what
-	// the select list writes each column from, and the conditions the
-	// statement's own are ANDed after.
+	// the select list writes each column from, which the statement repeats
+	// (core.PairRows), and the conditions the statement's own are ANDed
+	// after.
 	RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *core.PairTenant, bind func(any) string) (core.PairRows, error)
 }
 

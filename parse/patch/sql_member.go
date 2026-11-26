@@ -45,8 +45,12 @@ func RenderPreconditions(d SQLDialect, pre []Precondition, bind func(any) string
 		if len(p.Member) == 0 {
 			return "", "", fmt.Errorf("patch: precondition of operation %d (%s) names no member of column %s", p.Op, p.Path, p.Column)
 		}
-		conds[i] = p.condition(d, bind)
-		fmt.Fprintf(&unmet, " WHEN NOT %s THEN %d", conds[i], p.Op)
+		cond, err := p.condition(d, bind)
+		if err != nil {
+			return "", "", dialectError("precondition", p.Path, err)
+		}
+		conds[i] = cond
+		fmt.Fprintf(&unmet, " WHEN NOT %s THEN %d", cond, p.Op)
 	}
 	unmet.WriteString(" END")
 	return "(" + strings.Join(conds, " AND ") + ")", unmet.String(), nil
@@ -56,8 +60,11 @@ func RenderPreconditions(d SQLDialect, pre []Precondition, bind func(any) string
 // member is read by object keys only: PostgreSQL's #> would index an array
 // with a token that reads as an integer, which documentPaths refuses where
 // an array can stand, and SQLite's quoted labels never index one.
-func (p Precondition) condition(d SQLDialect, bind func(any) string) string {
-	doc := d.MemberDocument(d.QuoteIdent(p.Column))
+func (p Precondition) condition(d SQLDialect, bind func(any) string) (string, error) {
+	doc, err := d.MemberDocument(d.QuoteIdent(p.Column))
+	if err != nil {
+		return "", err
+	}
 	if p.Exists {
 		return d.HasMember(doc, p.Member, bind)
 	}
@@ -227,7 +234,11 @@ type memberFact struct {
 // that operation's path declares it; otherwise its members are written
 // over the stored document.
 func (b *setBuilder) documentExpr(col string, ops []*PatchOperation) (columnWrite, error) {
-	f := &documentFold{b: b, col: col, expr: b.dialect.MemberDocument(b.dialect.QuoteIdent(col)), facts: map[string]memberFact{}}
+	doc, err := b.dialect.MemberDocument(b.dialect.QuoteIdent(col))
+	if err != nil {
+		return columnWrite{}, dialectError("document", fieldPath(ops[0]), err)
+	}
+	f := &documentFold{b: b, col: col, expr: doc, facts: map[string]memberFact{}}
 	whole := -1
 	for i, op := range ops {
 		if len(memberTokens(op)) == 0 {
@@ -301,7 +312,7 @@ func (f *documentFold) apply(op *PatchOperation) error {
 	if !f.overwritten {
 		err := f.compile(op.Op, member, value)
 		if err != nil {
-			return fmt.Errorf("%s for %s: %w", op.Op, op.Path, err)
+			return dialectError(string(op.Op), op.Path, err)
 		}
 	}
 	f.record(op.Op, member, value)
@@ -389,14 +400,22 @@ func (f *documentFold) record(op PatchOp, member []string, value any) {
 // replace's.
 func (f *documentFold) compile(op PatchOp, member []string, value any) error {
 	if op == PatchOpRemove {
-		f.expr = f.b.dialect.RemoveMember(f.expr, member, f.b.bind)
+		expr, err := f.b.dialect.RemoveMember(f.expr, member, f.b.bind)
+		if err != nil {
+			return err
+		}
+		f.expr = expr
 		return nil
 	}
 	doc, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	f.expr = f.b.dialect.SetMember(f.expr, member, doc, f.b.bind)
+	expr, err := f.b.dialect.SetMember(f.expr, member, doc, f.b.bind)
+	if err != nil {
+		return err
+	}
+	f.expr = expr
 	return nil
 }
 

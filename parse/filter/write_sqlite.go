@@ -14,14 +14,14 @@ import (
 // FROM is a 3.39 alias). BINARY overrides a NOCASE or RTRIM column and
 // keeps its affinity, which converts the value for the comparison as it
 // does on store.
-func (SQLiteDialect) ChangedCondition(column, expr string, _ core.TypeInfo) string {
-	return column + " COLLATE BINARY IS NOT " + expr
+func (SQLiteDialect) ChangedCondition(column, expr string, _ core.TypeInfo) (string, error) {
+	return column + " COLLATE BINARY IS NOT " + expr, nil
 }
 
 // ChangedDocumentCondition compares the document's JSON text as
 // ChangedCondition compares any column: json_set and json_remove return
 // the text the column then holds.
-func (d SQLiteDialect) ChangedDocumentCondition(column, doc string) string {
+func (d SQLiteDialect) ChangedDocumentCondition(column, doc string) (string, error) {
 	return d.ChangedCondition(column, doc, core.TypeInfo{})
 }
 
@@ -48,32 +48,32 @@ func (SQLiteDialect) ArrayAppend(array string, element any, bind func(any) strin
 }
 
 // MemberDocument is expr itself: SQLite's JSON functions read its text.
-func (SQLiteDialect) MemberDocument(expr string) string { return expr }
+func (SQLiteDialect) MemberDocument(expr string) (string, error) { return expr, nil }
 
 // SetMember is json_set at the member's JSON path (dialect.SQLiteJSONPath),
 // its value read back through json() so a document stays one.
-func (SQLiteDialect) SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) string {
+func (SQLiteDialect) SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) (string, error) {
 	path := bind(dialect.SQLiteJSONPath(member))
-	return "json_set(" + doc + ", " + path + ", json(" + bind(string(value)) + "))"
+	return "json_set(" + doc + ", " + path + ", json(" + bind(string(value)) + "))", nil
 }
 
 // RemoveMember is json_remove at the member's JSON path.
-func (SQLiteDialect) RemoveMember(doc string, member []string, bind func(any) string) string {
-	return "json_remove(" + doc + ", " + bind(dialect.SQLiteJSONPath(member)) + ")"
+func (SQLiteDialect) RemoveMember(doc string, member []string, bind func(any) string) (string, error) {
+	return "json_remove(" + doc + ", " + bind(dialect.SQLiteJSONPath(member)) + ")", nil
 }
 
 // HasMember reads the member's json_type, NULL where it is missing.
-func (SQLiteDialect) HasMember(doc string, member []string, bind func(any) string) string {
-	return "(json_type(" + doc + ", " + bind(dialect.SQLiteJSONPath(member)) + ") IS NOT NULL)"
+func (SQLiteDialect) HasMember(doc string, member []string, bind func(any) string) (string, error) {
+	return "(json_type(" + doc + ", " + bind(dialect.SQLiteJSONPath(member)) + ") IS NOT NULL)", nil
 }
 
 // IsObject compares the member's json_type with 'object'.
-func (SQLiteDialect) IsObject(doc string, member []string, bind func(any) string) string {
+func (SQLiteDialect) IsObject(doc string, member []string, bind func(any) string) (string, error) {
 	typ := "json_type(" + doc + ")"
 	if len(member) > 0 {
 		typ = "json_type(" + doc + ", " + bind(dialect.SQLiteJSONPath(member)) + ")"
 	}
-	return "COALESCE(" + typ + " = 'object', FALSE)"
+	return "COALESCE(" + typ + " = 'object', FALSE)", nil
 }
 
 // RelationRows reads the owners and the values each from one bound JSON

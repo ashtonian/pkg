@@ -197,6 +197,11 @@ type PairRows struct {
 	// Sources and Targets are the expressions the select list writes the
 	// pair table's source and target columns from, in column order, and
 	// Tenant its tenant column's: empty when the pairs carry no tenant.
+	// The insert repeats each in a subquery correlated with From, which
+	// skips a pair the table holds under another spelling of its keys, so
+	// each must read the same there: columns of From's items, or
+	// expressions over them whose placeholders are numbered ones, which a
+	// repetition binds once.
 	Sources, Targets []string
 	Tenant           string
 	// From is the FROM clause, its leading space included.
