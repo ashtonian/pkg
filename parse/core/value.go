@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"time"
@@ -172,6 +173,25 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 		return normalizeMACAddr(v)
 	}
 	return v, nil
+}
+
+// NormalizeStored is NormalizeScalar for v, a value a column of type dt
+// holds rather than a request value: a float column's NaN or infinity is
+// kept, as a float64, where NormalizeScalar refuses one. A request value
+// is finite; a stored one need not be, since a table written outside parse
+// may hold NaN and both infinities (PostgreSQL's float8; SQLite stores the
+// infinities and holds NaN as NULL). Rows Evaluate reads and the values a
+// cursor carries normalize through it.
+func NormalizeStored(dt FieldType, kind reflect.Kind, v any) (any, error) {
+	rv := reflect.ValueOf(Deref(v))
+	isFloat := rv.Kind() == reflect.Float32 || rv.Kind() == reflect.Float64
+	if dt == FieldTypeFloat && isFloat {
+		f := rv.Float()
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return f, nil
+		}
+	}
+	return NormalizeScalar(dt, kind, v)
 }
 
 // TimestampLayout is the canonical timestamp text: RFC 3339 in UTC with

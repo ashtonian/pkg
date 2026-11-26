@@ -149,7 +149,8 @@ func KeyValue(k CursorKey, raw any) (any, error) {
 }
 
 // CursorValue reduces a row value to the canonical form a token carries and
-// SQL binds: nil, string, bool, int64, uint64 or float64. The value is read
+// SQL binds: nil, string, bool, int64, uint64 or float64, NaN and the
+// infinities included, which a float column may hold. The value is read
 // as the database holds it first (core.StoredValue: pointers followed, a
 // driver.Valuer read, NULL as nil); then decimals (core.IsDecimalType)
 // become their canonical text, times RFC 3339 UTC strings (the form SQLite
@@ -191,11 +192,7 @@ func CursorValue(v any) (any, error) {
 		}
 		return int64(u), nil
 	case reflect.Float32, reflect.Float64:
-		f := rv.Float()
-		if math.IsNaN(f) || math.IsInf(f, 0) {
-			return nil, errors.New("cursor: non-finite float key")
-		}
-		return f, nil
+		return rv.Float(), nil
 	case reflect.Struct:
 		if core.IsDecimalType(rv.Type()) {
 			return cursorDecimalValue(v) // its pointer has the method set
@@ -343,12 +340,19 @@ func SeekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 // key_i after v_i), NULL-aware. bind binds one value and returns its
 // placeholder; every non-null token value is bound once and its placeholder
 // reused across depths. A native row-value comparison is used when the
-// dialect supports it and no key or value involves NULL.
+// dialect supports it and no key or value involves NULL. A float key's NaN
+// is a NULL boundary on a dialect that stores NaN as NULL (storesNaN).
 func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any) string) string {
+	values := make([]any, len(keys))
 	phs := make([]string, len(keys))
 	native := d.NativeRowCompare() && len(keys) > 1
 	for i, k := range keys {
 		v := token.Fields[i].Value
+		f, isFloat := v.(float64)
+		if isFloat && math.IsNaN(f) && !d.storesNaN() {
+			v = nil // the rows this database holds NaN in hold NULL
+		}
+		values[i] = v
 		if v != nil {
 			phs[i] = bind(v)
 			if k.DataType == core.FieldTypeDecimal {
@@ -373,13 +377,13 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 
 	var branches []string
 	for i, k := range keys {
-		after := afterExpr(keyExpr(d, k), k.Nullable, token.Fields[i].Value, phs[i], effectiveDirection(k, token.Reverse))
+		after := afterExpr(keyExpr(d, k), k.Nullable, values[i], phs[i], effectiveDirection(k, token.Reverse))
 		if after == "" {
 			continue // nothing orders after a NULL boundary on this key
 		}
 		parts := make([]string, 0, i+1)
 		for j := range i {
-			if token.Fields[j].Value == nil {
+			if values[j] == nil {
 				parts = append(parts, keyValue(d, keys[j])+" IS NULL")
 			} else {
 				parts = append(parts, keyExpr(d, keys[j])+" = "+phs[j])
@@ -393,6 +397,13 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 	}
 	return "(" + strings.Join(branches, " OR ") + ")"
 }
+
+// storesNaN reports true: a float8 column holds NaN, which orders after
+// +Infinity and equals NaN.
+func (PostgresDialect) storesNaN() bool { return true }
+
+// storesNaN reports false: SQLite stores a NaN it is given as NULL.
+func (SQLiteDialect) storesNaN() bool { return false }
 
 // afterExpr is "expr orders strictly after v" in direction dir, with NULL
 // greatest; "" means no value orders after v.
@@ -437,21 +448,7 @@ func ValidateCursor(token *PageToken, keys []CursorKey) error {
 	}
 	values := make([]any, len(keys))
 	for i, k := range keys {
-		v, err := CursorValue(token.Fields[i].Value)
-		if err == nil {
-			if v == nil {
-				if !k.Nullable {
-					err = errors.New("null is not allowed")
-				}
-			} else if k.Path != nil && (k.DataType == core.FieldTypeInt || k.DataType == core.FieldTypeFloat) {
-				v, err = pathNumber(v)
-			} else {
-				v, err = core.NormalizeScalar(k.DataType, k.NumberKind, v)
-			}
-		}
-		if s, ok := v.(string); ok && err == nil {
-			err = core.CheckText(s)
-		}
+		v, err := cursorKeyValue(k, token.Fields[i].Value)
 		if err != nil {
 			return &core.ParseError{
 				Kind:    core.ParseErrorKindSchema,
@@ -466,6 +463,37 @@ func ValidateCursor(token *PageToken, keys []CursorKey) error {
 		token.Fields[i].Value = v
 	}
 	return nil
+}
+
+// cursorKeyValue is a token's value for key k, normalized as a value k's
+// column holds (core.NormalizeStored): a float column's NaN or infinity,
+// on which a page may end, is kept.
+func cursorKeyValue(k CursorKey, raw any) (any, error) {
+	v, err := CursorValue(raw)
+	switch {
+	case err != nil:
+		return nil, err
+	case v == nil:
+		if !k.Nullable {
+			return nil, errors.New("null is not allowed")
+		}
+		return nil, nil
+	case k.Path != nil && (k.DataType == core.FieldTypeInt || k.DataType == core.FieldTypeFloat):
+		return pathNumber(v)
+	}
+	v, err = core.NormalizeStored(k.DataType, k.NumberKind, v)
+	if err != nil {
+		return nil, err
+	}
+	text, isText := v.(string)
+	if !isText {
+		return v, nil
+	}
+	err = core.CheckText(text)
+	if err != nil {
+		return nil, err
+	}
+	return text, nil
 }
 
 // --- Tokens ---
@@ -498,7 +526,12 @@ type PageToken struct {
 // lacks decodes as the zero value. Adding, removing or retyping a member of
 // either is therefore a format change and takes a new generation. Without
 // one, during a rolling deploy a replica on the older release refuses the
-// newer release's cursors as malformed, or misreads them.
+// newer release's cursors as malformed, or misreads them. A member's value
+// an older release refuses, such as a float key's NaN or infinity before
+// releases carried them, changes no member: that release answers the token
+// with E2082 "invalid cursor data" and the client starts again, as it
+// would from a generation the release does not read, while every other
+// token still resumes.
 const cursorGeneration uint32 = 3
 
 // maxCursorLen bounds a cursor both ways: DecodeCursor rejects a longer

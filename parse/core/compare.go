@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 
@@ -16,7 +17,9 @@ import (
 //
 //   - int, float, decimal: by value, exactly, however each is held (an
 //     integer of any kind, a float, a json.Number, a decimal's text or
-//     type), the infinities before and after every finite value;
+//     type), the infinities before and after every finite value; a float
+//     column's NaN after +Infinity and equal to every NaN, as PostgreSQL
+//     orders float8 (SQLite stores NaN as NULL);
 //   - string: by code point;
 //   - uuid, timestamp, date, time, interval, inet, cidr, macaddr: by
 //     canonical text (NormalizeScalar), which orders a UUID as its bytes, a
@@ -29,12 +32,12 @@ import (
 //     values reduce to, numbers by value, text by code point, false before
 //     true.
 //
-// A value t cannot hold, NaN, values of an object or untyped key that
-// reduce to scalars of different kinds, and a type with no order (json,
-// array, geo, any) are errors: no comparison falls back to another
-// reading. Evaluate, keysets, keys and patch policies order and equate
-// values through it, so a filter, a page boundary, a lock order and a
-// policy's allowed values agree.
+// A value t cannot hold, NaN outside a float column, values of an object
+// or untyped key that reduce to scalars of different kinds, and a type
+// with no order (json, array, geo, any) are errors: no comparison falls
+// back to another reading. Evaluate, keysets, keys and patch policies
+// order and equate values through it, so a filter, a page boundary, a
+// lock order and a policy's allowed values agree.
 func CompareCanonical(t TypeInfo, a, b any) (int, error) {
 	x, xnull, err := StoredValue(a)
 	if err != nil {
@@ -53,8 +56,10 @@ func CompareCanonical(t TypeInfo, a, b any) (int, error) {
 		return -1, nil
 	}
 	switch t.Type {
-	case FieldTypeInt, FieldTypeFloat:
+	case FieldTypeInt:
 		return compareNumbers(t.Type, x, y)
+	case FieldTypeFloat:
+		return compareFloatValues(x, y)
 	case FieldTypeDecimal:
 		c, ok := CompareDecimals(x, y)
 		if !ok {
@@ -92,6 +97,37 @@ func compareNumbers(t FieldType, x, y any) (int, error) {
 		return 0, incomparable(t, x, y)
 	}
 	return c, nil
+}
+
+// compareFloatValues orders two values of a float column by value, NaN
+// after every number and equal to NaN. A stored value may be NaN, though
+// no request value is.
+func compareFloatValues(x, y any) (int, error) {
+	xnan, ynan := isNaN(x), isNaN(y)
+	if !xnan && !ynan {
+		return compareNumbers(FieldTypeFloat, x, y)
+	}
+	if xnan && ynan {
+		return 0, nil
+	}
+	number := x
+	if xnan {
+		number = y
+	}
+	_, ok := numberOperand(number)
+	if !ok {
+		return 0, incomparable(FieldTypeFloat, x, y)
+	}
+	if xnan {
+		return 1, nil
+	}
+	return -1, nil
+}
+
+func isNaN(v any) bool {
+	rv := reflect.ValueOf(v)
+	kind := rv.Kind()
+	return (kind == reflect.Float32 || kind == reflect.Float64) && math.IsNaN(rv.Float())
 }
 
 // canonicalString is v normalized as t, a type whose canonical value is

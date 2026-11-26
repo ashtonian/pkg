@@ -4,6 +4,8 @@ package core_test
 
 import (
 	"cmp"
+	"database/sql"
+	"encoding/json"
 	"math"
 	"reflect"
 	"testing"
@@ -51,18 +53,48 @@ func TestCompareCanonical_Conformance(t *testing.T) {
 	}
 }
 
-// A value its type cannot hold, NaN, a type with no order, and object
-// values of different scalar kinds are errors: nothing is ordered by a
-// second reading.
+// A float column orders as PostgreSQL's float8 does: -Infinity, the
+// finite values, +Infinity, then NaN, every NaN equal, NULL after all.
+func TestCompareCanonical_NonFiniteFloats(t *testing.T) {
+	payload := math.Float64frombits(0x7ff8000000000001)
+	ascending := [][]any{
+		{math.Inf(-1), float32(math.Inf(-1))},
+		{-1.5, json.Number("-1.5")},
+		{0.0, int64(0)},
+		{math.MaxFloat64},
+		{math.Inf(1), float32(math.Inf(1))},
+		{math.NaN(), payload, float32(math.NaN()), sql.NullFloat64{Float64: math.NaN(), Valid: true}},
+		{nil, sql.NullFloat64{}},
+	}
+	for _, kind := range []reflect.Kind{reflect.Float64, reflect.Float32} {
+		f := core.TypeInfo{Type: core.FieldTypeFloat, NumberKind: kind}
+		for i, xs := range ascending {
+			for j, ys := range ascending {
+				for _, a := range xs {
+					for _, b := range ys {
+						got, err := core.CompareCanonical(f, a, b)
+						require.NoError(t, err, "%#v vs %#v", a, b)
+						assert.Equal(t, cmp.Compare(i, j), got, "%s: %#v vs %#v", kind, a, b)
+					}
+				}
+			}
+		}
+	}
+}
+
+// A value its type cannot hold, NaN outside a float column, a type with
+// no order, and object values of different scalar kinds are errors:
+// nothing is ordered by a second reading.
 func TestCompareCanonical_Refuses(t *testing.T) {
-	f64 := core.TypeInfo{Type: core.FieldTypeFloat, NumberKind: reflect.Float64}
 	for name, tc := range map[string]struct {
 		t       core.TypeInfo
 		a, b    any
 		wantErr string
 	}{
 		"text as an integer":       {core.TypeInfo{Type: core.FieldTypeInt}, "7", int64(7), "cannot compare int values string and int64"},
-		"NaN":                      {f64, math.NaN(), 1.0, "cannot compare float values float64 and float64"},
+		"NaN as an integer":        {core.TypeInfo{Type: core.FieldTypeInt}, math.NaN(), int64(1), "cannot compare int values float64 and int64"},
+		"NaN as a decimal":         {core.TypeInfo{Type: core.FieldTypeDecimal}, math.NaN(), "1", "cannot compare decimal values float64 and string"},
+		"an untyped NaN":           {core.TypeInfo{}, math.NaN(), 1.0, "cannot compare float64 with float64"},
 		"not a UUID":               {core.TypeInfo{Type: core.FieldTypeUUID}, "nope", "00000000-0000-0000-0000-000000000001", `invalid UUID "nope"`},
 		"a document":               {core.TypeInfo{Type: core.FieldTypeJSON}, "a", "b", "a json value has no order"},
 		"a number and text object": {core.TypeInfo{Type: core.FieldTypeObject}, int64(1), "1", "cannot compare object values int64 and string"},
