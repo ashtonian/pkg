@@ -199,7 +199,10 @@ call compiles and builds again. `CacheStats()` on the engine and on a
 compilations or builds whose result was not kept.
 
 Concurrent first requests for one type can each run `build`; one result is kept,
-so `build` must be deterministic and free of side effects that matter. `build`
+so `build` must be deterministic and free of side effects that matter. A kept
+type's lookup takes no lock, in a `TypeCache`, the engine's schema cache and a
+schema's root-field accessors alike, so concurrent readers of one type do not
+contend. `build`
 may request other types from the same cache. A recursive type must not request
 itself, or it recurses forever: track the types in progress inside `build`.
 A compilation error is returned unchanged; a `build` error is returned as built.

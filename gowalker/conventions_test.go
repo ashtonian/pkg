@@ -424,6 +424,79 @@ func TestTypeVisitInheritedFromInlineOwner(t *testing.T) {
 	assert.Equal(t, map[string]bool{"Token": true, "Name": false}, got)
 }
 
+// Readers and inserters of more types than the capacity, all at once: the
+// first types published are kept and read as one result everywhere, every
+// other call builds afresh and is counted, and stats read concurrently.
+func TestTypeCache_ConcurrentReadsAndInserts(t *testing.T) {
+	const types, capacity, workers, rounds = 64, 40, 16, 4
+	var all []reflect.Type
+	for n := range types {
+		all = append(all, reflect.ArrayOf(n+1, reflect.TypeFor[int]()))
+	}
+	var builds atomic.Int64
+	e := engine(t, gowalker.WithCacheCapacity(capacity))
+	cache := gowalker.NewTypeCache(e, func(*gowalker.Schema) (int64, error) {
+		return builds.Add(1), nil
+	})
+	seen := make([][]map[int64]int, workers)
+	done := make(chan struct{})
+	var stats sync.WaitGroup
+	stats.Go(func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				held := cache.CacheStats().Entries
+				assert.True(t, held <= capacity, "entries within capacity")
+			}
+		}
+	})
+	var wg sync.WaitGroup
+	for w := range workers {
+		wg.Go(func() {
+			seen[w] = make([]map[int64]int, types)
+			for i := range types {
+				seen[w][i] = map[int64]int{}
+			}
+			for round := range rounds {
+				for i := range types {
+					// Each worker starts at its own type, so inserts race.
+					k := (i + w*7 + round) % types
+					got, err := cache.Get(all[k])
+					assert.NoError(t, err)
+					seen[w][k][got]++
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(done)
+	stats.Wait()
+
+	kept := 0
+	for k := range types {
+		results := map[int64]int{}
+		for w := range workers {
+			for v, n := range seen[w][k] {
+				results[v] += n
+			}
+		}
+		switch len(results) {
+		case 1:
+			kept++
+		case workers * rounds:
+		default:
+			t.Errorf("type %d read %d results in %d calls; want one kept or one per call", k, len(results), workers*rounds)
+		}
+	}
+	assert.Equal(t, capacity, kept, "types kept")
+	got := cache.CacheStats()
+	want := gowalker.CacheStats{Entries: capacity, Capacity: capacity, Uncached: uint64((types - capacity) * workers * rounds)}
+	assert.Equal(t, want, got, "type cache stats")
+	assert.Equal(t, capacity, e.CacheStats().Entries, "engine entries")
+}
+
 func TestTypeCache(t *testing.T) {
 	type row struct {
 		ID   int `db:"id"`

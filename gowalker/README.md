@@ -233,6 +233,7 @@ The standard library only, Go 1.27 or later. There are no external services.
 | `write.go`, `assign.go` | Writes, allocation, `Locate` and checked numeric assignment |
 | `walk.go`, `walk_type.go`, `walk_value.go` | Type and value walks |
 | `cache.go` | `TypeCache` for your per-type metadata |
+| `write_once_map.go` | The bounded, write-once map behind the schema cache, `TypeCache` and the root-field accessors, read without a lock |
 | `errors.go` | `Error`, sentinels and `NameConflict` |
 | `path/` | Typed paths and their text grammar |
 
