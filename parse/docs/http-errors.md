@@ -119,7 +119,7 @@ All known codes describe permanent failures and are listed below; retry and cata
 |---|---|---|
 | E2061 | 422 | Filter cost exceeds `MaxCost` |
 | E2062 | 422 | `$in` / `$nin` value is not an array |
-| E2063 | 422 | Filter or patch body exceeds `MaxInputSize`, or a POST list body exceeds `MaxListBodySize` |
+| E2063 | 422 | Filter or patch body exceeds `MaxInputSize` (for a patch body read from a request, 1 MiB when `MaxInputSize` is unlimited), or a POST list body exceeds `MaxListBodySize` |
 | E2064 | 422 | Patch operation not allowed on the path |
 | E2065 | 422 | Sort values at a page boundary too large for a cursor |
 | E2066 | 422 | Too many patch operations |

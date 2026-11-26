@@ -86,6 +86,27 @@ func TestParserConfig_NilListBodyLimit(t *testing.T) {
 	assert.Equal(t, core.DefaultConfig().ListBodyLimit(), (*core.ParserConfig)(nil).ListBodyLimit())
 }
 
+// A patch body is bounded as a list body is: by MaxInputSize, or 1 MiB
+// when the parsers are unlimited.
+func TestParserConfig_PatchBodyLimit(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		cfg  *core.ParserConfig
+		want int
+	}{
+		{"the default input size", core.DefaultConfig(), 64 << 10},
+		{"a set input size", &core.ParserConfig{MaxInputSize: 3 << 20}, 3 << 20},
+		{"an unlimited input size", &core.ParserConfig{MaxInputSize: 0}, 1 << 20},
+		{"a negative input size, which is unlimited", &core.ParserConfig{MaxInputSize: -1}, 1 << 20},
+		{"a list body size, which bounds lists only", &core.ParserConfig{MaxListBodySize: 4096}, 1 << 20},
+		{"no configuration", nil, 64 << 10},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.cfg.PatchBodyLimit())
+		})
+	}
+}
+
 func TestWithGeneratorOptions_Appends(t *testing.T) {
 	cfg := core.DefaultConfig()
 	core.WithGeneratorOptions(core.WithColumnTag("sql"))(cfg)
