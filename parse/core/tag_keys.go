@@ -7,15 +7,20 @@ import (
 	"github.com/ashtonian/pkg/gowalker"
 )
 
-// parseTagKeys are the struct tag keys parse reads on a walked field
-// (readTags and readBounds), beside the generator's field-name and column
-// tags.
-var parseTagKeys = []string{
-	"parse", "relation", "relation_name", "filter_ops", "patch_ops", "facet", "paths", "elements",
-	"storage", "geo", "geo_srid", "geo_lat", "geo_lon", "indexed", "immutable",
-	"label", "description", "group", "order", "sort_default", "search_weight",
-	ConstraintEnum, ConstraintMinLen, ConstraintMaxLen, ConstraintMin, ConstraintMax, ConstraintMinItems, ConstraintMaxItems,
-}
+// parseTagKeys are the struct tag keys parse reads on a walked field,
+// beside the generator's field-name and column tags: the parse tag, the
+// keys readTags reads (textTags, boolTags) and the constraints
+// readConstraints reads.
+var parseTagKeys = func() []string {
+	keys := []string{"parse"}
+	for _, b := range boolTags {
+		keys = append(keys, b.key)
+	}
+	for _, s := range textTags {
+		keys = append(keys, s.key)
+	}
+	return append(keys, constraintTagKeys...)
+}()
 
 // misspeltTagKey is a key on a walked field's tag that parse does not read,
 // so close to one it does that it most likely means that one.

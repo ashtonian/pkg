@@ -474,6 +474,41 @@ func unexportedEmbed(t reflect.Type, route []int) reflect.Type {
 	return nil
 }
 
+// textTags are the tag keys readTags reads as text, each into its field of
+// Tags, and boolTags those it reads as true or false. parseTagKeys is built
+// from them, so a key is listed as parse's exactly when it is read.
+var (
+	textTags = []struct {
+		key  string
+		into func(*Tags) *string
+	}{
+		{"relation", func(t *Tags) *string { return &t.Relation }},
+		{"relation_name", func(t *Tags) *string { return &t.RelationName }},
+		{"filter_ops", func(t *Tags) *string { return &t.FilterOps }},
+		{"patch_ops", func(t *Tags) *string { return &t.PatchOps }},
+		{"facet", func(t *Tags) *string { return &t.Facet }},
+		{"paths", func(t *Tags) *string { return &t.Paths }},
+		{"elements", func(t *Tags) *string { return &t.Elements }},
+		{"storage", func(t *Tags) *string { return &t.Storage }},
+		{"geo", func(t *Tags) *string { return &t.Geo }},
+		{"geo_srid", func(t *Tags) *string { return &t.GeoSRID }},
+		{"geo_lat", func(t *Tags) *string { return &t.GeoLat }},
+		{"geo_lon", func(t *Tags) *string { return &t.GeoLon }},
+		{"label", func(t *Tags) *string { return &t.Label }},
+		{"description", func(t *Tags) *string { return &t.Description }},
+		{"group", func(t *Tags) *string { return &t.Group }},
+		{"order", func(t *Tags) *string { return &t.Order }},
+		{"sort_default", func(t *Tags) *string { return &t.SortDefault }},
+	}
+	boolTags = []struct {
+		key  string
+		into func(*Tags) *bool
+	}{
+		{"indexed", func(t *Tags) *bool { return &t.Indexed }},
+		{"immutable", func(t *Tags) *bool { return &t.Immutable }},
+	}
+)
+
 func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
 	tag := sf.Tag
 	caps, err := parseCapabilities(tag.Get("parse"))
@@ -481,37 +516,16 @@ func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
 		return Tags{}, err
 	}
 	_, opts, _ := strings.Cut(tag.Get(k.name), ",")
-	indexed, err := boolTag(tag, "indexed")
-	if err != nil {
-		return Tags{}, err
+	t := Tags{Parse: caps, Column: tag.Get(k.column), FieldNameOptions: opts}
+	for _, b := range boolTags {
+		v, err := boolTag(tag, b.key)
+		if err != nil {
+			return Tags{}, err
+		}
+		*b.into(&t) = v
 	}
-	immutable, err := boolTag(tag, "immutable")
-	if err != nil {
-		return Tags{}, err
-	}
-	t := Tags{
-		Parse:            caps,
-		Column:           tag.Get(k.column),
-		FieldNameOptions: opts,
-		Relation:         tag.Get("relation"),
-		RelationName:     tag.Get("relation_name"),
-		FilterOps:        tag.Get("filter_ops"),
-		PatchOps:         tag.Get("patch_ops"),
-		Facet:            tag.Get("facet"),
-		Paths:            tag.Get("paths"),
-		Elements:         tag.Get("elements"),
-		Storage:          tag.Get("storage"),
-		Geo:              tag.Get("geo"),
-		GeoSRID:          tag.Get("geo_srid"),
-		GeoLat:           tag.Get("geo_lat"),
-		GeoLon:           tag.Get("geo_lon"),
-		Indexed:          indexed,
-		Immutable:        immutable,
-		Label:            tag.Get("label"),
-		Description:      tag.Get("description"),
-		Group:            tag.Get("group"),
-		Order:            tag.Get("order"),
-		SortDefault:      tag.Get("sort_default"),
+	for _, s := range textTags {
+		*s.into(&t) = tag.Get(s.key)
 	}
 	return t, nil
 }

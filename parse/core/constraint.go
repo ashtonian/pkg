@@ -12,3 +12,8 @@ const (
 	ConstraintMinItems = "minitems"
 	ConstraintMaxItems = "maxitems"
 )
+
+// constraintTagKeys are the constraint tags readConstraints reads.
+var constraintTagKeys = []string{
+	ConstraintEnum, ConstraintMinLen, ConstraintMaxLen, ConstraintMin, ConstraintMax, ConstraintMinItems, ConstraintMaxItems,
+}
