@@ -289,6 +289,14 @@ original `DeclaringType`, and copied `InlineParents` for inherited consumer meta
 `Field.GoSelector()` is the Go selector from the listing's struct, through
 those parents: `Audit.ID` for an `ID` promoted from an embedded `Audit`, the
 label every gowalker error gives a field, for an adapter's own diagnostics.
+`Field.UnallocatableParent()` (and `Declaration.UnallocatableParent()`) returns
+the first of those parents that is an unexported pointer: reflection can
+neither allocate it nor point it at a copy, so a write cannot reach the field
+where the pointer is nil, as in a fresh value a decoder or row scanner fills,
+nor in a copy that must not share it, as a copy-on-write patch needs.
+`WithPointerAllocation` fails there with ErrAccess at run time; the method lets
+a library refuse the field when it builds its metadata. An unexported struct
+embedded by value is no obstacle, since its exported fields are settable.
 `Shape.DeclaredView()` returns selected declarations before inline expansion;
 `Field.Inline()` identifies inline owners, including empty ones whose tags a
 consumer still needs to validate. Skipped fields and fields kept without a name

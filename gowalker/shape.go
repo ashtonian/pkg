@@ -494,6 +494,35 @@ func (f *Field) GoSelector() string {
 	return b.String()
 }
 
+// UnallocatableParent returns the first of the field's InlineParents that is
+// an unexported pointer. Reflection can neither allocate such a pointer nor
+// point it at a copy of what it points to, so a write cannot reach the field
+// in a value where the pointer is nil, as in a freshly decoded or scanned one,
+// nor in a copy that must not share the parent with its original, as a
+// copy-on-write patch needs; WithPointerAllocation then fails with ErrAccess.
+// An unexported struct held by value is no obstacle: its exported fields are
+// settable, as encoding/json sets them. ok is false when every parent can be
+// allocated. It is static, so a library can refuse such a field when it builds
+// its metadata rather than on the first write.
+func (f *Field) UnallocatableParent() (parent reflect.StructField, ok bool) {
+	return unallocatableParent(f.parents)
+}
+
+// UnallocatableParent is [Field.UnallocatableParent] for the declaration's
+// InlineParents, skipped declarations included.
+func (d Declaration) UnallocatableParent() (parent reflect.StructField, ok bool) {
+	return unallocatableParent(d.InlineParents)
+}
+
+func unallocatableParent(parents []reflect.StructField) (reflect.StructField, bool) {
+	for _, p := range parents {
+		if p.Type.Kind() == reflect.Pointer && !p.IsExported() {
+			return copyStructField(p), true
+		}
+	}
+	return reflect.StructField{}, false
+}
+
 func copyStructField(f reflect.StructField) reflect.StructField {
 	f.Index = append([]int(nil), f.Index...)
 	return f
