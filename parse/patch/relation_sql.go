@@ -1,7 +1,6 @@
 package patch
 
 import (
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -175,65 +174,44 @@ func relationValueKeys(values []any, columns []string, types []core.TypeInfo) ([
 	return relationKeys(keys, columns, types)
 }
 
-// relationKeys are keys as one parameter binds them: a value per column,
-// each in its column's type's canonical form (core.NormalizeScalar), a
-// driver.Valuer read as the value it stands for, none null.
+// relationKeys are keys as one parameter binds them: each in its columns'
+// canonical form by the one key rule (core.NormalizeKey), which the root
+// package's targets and owners are normalized by too, so a key binds alike
+// as a target and as a relation's member.
 func relationKeys(keys []core.Key, columns []string, types []core.TypeInfo) ([]core.Key, error) {
 	out := make([]core.Key, len(keys))
 	for i, k := range keys {
-		if len(k) != len(columns) {
-			return nil, fmt.Errorf("key %d has %d values for %d columns", i, len(k), len(columns))
-		}
-		out[i] = make(core.Key, len(k))
-		for j, part := range k {
-			v, err := driverScalar(part)
-			if err == nil {
-				v, err = core.NormalizeScalar(types[j].Type, types[j].NumberKind, v)
+		normalized, err := core.NormalizeKey(types, k)
+		if err != nil {
+			valueErr, ok := errors.AsType[*core.KeyValueError](err)
+			switch {
+			case !ok:
+				return nil, fmt.Errorf("key %d: %w", i, err)
+			case len(columns) == 1:
+				return nil, fmt.Errorf("key %d: %w", i, valueErr.Err)
 			}
-			if err != nil {
-				if len(columns) == 1 {
-					return nil, fmt.Errorf("key %d: %w", i, err)
-				}
-				return nil, fmt.Errorf("key %d: column %s: %w", i, columns[j], err)
-			}
-			out[i][j] = v
+			return nil, fmt.Errorf("key %d: column %s: %w", i, columns[valueErr.Index], valueErr.Err)
 		}
+		out[i] = normalized
 	}
 	return out, nil
 }
 
-// driverScalar is k as the database binds it: a driver.Valuer's value,
-// else k; null is no value.
-func driverScalar(k any) (any, error) {
-	valuer, ok := k.(driver.Valuer)
-	if ok {
-		v, err := valuer.Value()
-		if err != nil {
-			return nil, err
-		}
-		k = v
-	}
-	if k == nil {
-		return nil, errors.New("null is not a key")
-	}
-	return k, nil
-}
-
-// tenantScalar is a tenant value as a JSON record binds it: a database
-// scalar (a driver.Valuer's value, an integer as int64 or uint64, a float
-// as float64, a string, a boolean).
+// tenantScalar is a tenant value as a JSON record binds it: the value the
+// database holds (core.StoredValue) as a JSON scalar, an integer as int64
+// or uint64, a float as float64, a string or a boolean, whatever named
+// type holds it, and a value parse types by its Go type (a UUID, a time, a
+// decimal, a network value) as encoding/json writes it: its text.
 func tenantScalar(k any) (any, error) {
-	if valuer, ok := k.(driver.Valuer); ok {
-		v, err := valuer.Value()
-		if err != nil {
-			return nil, err
-		}
-		k = v
+	k, null, err := core.StoredValue(k)
+	if err != nil {
+		return nil, err
+	}
+	if null {
+		return nil, errors.New("null is not a key")
 	}
 	rv := reflect.ValueOf(k)
 	switch rv.Kind() {
-	case reflect.Invalid:
-		return nil, errors.New("null is not a key")
 	case reflect.String:
 		return rv.String(), nil
 	case reflect.Bool:
@@ -244,6 +222,9 @@ func tenantScalar(k any) (any, error) {
 		return rv.Uint(), nil
 	case reflect.Float32, reflect.Float64:
 		return rv.Float(), nil
+	}
+	if core.IsKeyType(core.TypeOf(rv.Type()).Type) {
+		return k, nil
 	}
 	return nil, fmt.Errorf("%s is not a key: keys are strings, numbers or booleans", gowalker.TypeText(reflect.TypeOf(k)))
 }

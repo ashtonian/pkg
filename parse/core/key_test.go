@@ -3,6 +3,8 @@
 package core_test
 
 import (
+	"database/sql"
+	"errors"
 	"math"
 	"reflect"
 	"testing"
@@ -46,7 +48,7 @@ func TestKeyTextOf(t *testing.T) {
 		}, want: `["d1","2026-01-02T03:04:05.000000000Z"]`},
 		{name: "NaN", types: []core.TypeInfo{f64}, keys: []core.Key{{math.NaN()}, {math.Inf(1)}}, wantErr: "number must be finite"},
 		{name: "a document", types: []core.TypeInfo{{Type: core.FieldTypeJSON}}, keys: []core.Key{{"{}"}}, wantErr: "a json value is no key value"},
-		{name: "a value short", types: []core.TypeInfo{str, at}, keys: []core.Key{{"d1"}}, wantErr: "key has 1 values for 2 columns"},
+		{name: "a value short", types: []core.TypeInfo{str, at}, keys: []core.Key{{"d1"}}, wantErr: "1 values for the 2 key columns"},
 		{name: "a column named", types: []core.TypeInfo{str, at}, keys: []core.Key{{"d1", "yesterday"}}, wantErr: "key value 1: "},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -61,6 +63,49 @@ func TestKeyTextOf(t *testing.T) {
 			}
 		})
 	}
+}
+
+// One key rule: each value read as the database holds it and normalized as
+// its column's type, so two spellings of a key are one key, and a refused
+// value names its position.
+func TestNormalizeKey(t *testing.T) {
+	i64 := core.TypeInfo{Type: core.FieldTypeInt, NumberKind: reflect.Int64}
+	u64 := core.TypeInfo{Type: core.FieldTypeInt, NumberKind: reflect.Uint64}
+	id := core.TypeInfo{Type: core.FieldTypeUUID}
+	str := core.TypeInfo{Type: core.FieldTypeString}
+	ref := uuid.MustParse("0190f3c2-0000-7000-8000-000000000011")
+	for _, tt := range []struct {
+		name  string
+		types []core.TypeInfo
+		key   core.Key
+		want  core.Key
+	}{
+		{"integers of any kind", []core.TypeInfo{i64, u64}, core.Key{int32(7), uint8(9)}, core.Key{int64(7), uint64(9)}},
+		{"a UUID in either case or type", []core.TypeInfo{id, id}, core.Key{"0190F3C2-0000-7000-8000-000000000011", ref}, core.Key{ref.String(), ref.String()}},
+		{"pointers followed", []core.TypeInfo{str}, core.Key{new("a")}, core.Key{"a"}},
+		{"a Valuer as the value it writes", []core.TypeInfo{str, i64}, core.Key{sql.NullString{String: "a", Valid: true}, sql.NullInt64{Int64: 3, Valid: true}}, core.Key{"a", int64(3)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := core.NormalizeKey(tt.types, tt.key)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	_, err := core.NormalizeKey([]core.TypeInfo{str, i64}, core.Key{"a"})
+	require.EqualError(t, err, "1 values for the 2 key columns")
+	for name, key := range map[string]core.Key{
+		"a value its type cannot hold": {"a", "x"},
+		"NULL":                         {"a", nil},
+		"a NULL Valuer":                {"a", sql.NullInt64{}},
+	} {
+		_, err = core.NormalizeKey([]core.TypeInfo{str, i64}, key)
+		valueErr, ok := errors.AsType[*core.KeyValueError](err)
+		require.True(t, ok, "%s: %v", name, err)
+		assert.Equal(t, 1, valueErr.Index, name)
+	}
+	_, err = core.NormalizeKey([]core.TypeInfo{{Type: core.FieldTypeJSON}}, core.Key{"{}"})
+	require.ErrorContains(t, err, "a json value is no key value")
 }
 
 // A key's text is what PostgreSQL's array_to_json(ARRAY[col::text, …])::text

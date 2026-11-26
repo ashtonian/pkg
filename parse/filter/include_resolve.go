@@ -89,14 +89,16 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 	if pairs == nil {
 		return IncludeRows{}, fmt.Errorf("resolving include %s: lookup returned no iterator", field.ExternalName)
 	}
-	orders := make([]CursorKey, len(rel.TargetTypes))
-	for i, t := range rel.TargetTypes {
-		orders[i] = CursorKey{DataType: t.Type, NumberKind: t.NumberKind}
-	}
-	// Column by column, as the statement ranks a key of several.
+	// Column by column, as the statement ranks a key of several. Targets
+	// are normalized keys (core.NormalizeKey), which their columns' types
+	// always order; the first refusal is kept and returned all the same.
+	var orderErr error
 	compare := func(a, b core.Key) int {
-		for i, order := range orders {
-			c := CompareKeyValues(order, a[i], b[i])
+		for i, t := range rel.TargetTypes {
+			c, err := core.CompareCanonical(t, a[i], b[i])
+			if err != nil && orderErr == nil {
+				orderErr = err
+			}
 			if c != 0 {
 				return c
 			}
@@ -120,18 +122,19 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 		if err != nil {
 			return IncludeRows{}, fmt.Errorf("resolving include %s owner: %w", field.ExternalName, err)
 		}
-		target, err := pairKey(pair.Target, len(rel.TargetColumns))
+		stored, err := pairKey(pair.Target, len(rel.TargetColumns))
 		if err != nil {
 			return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, err)
 		}
-		for i, t := range rel.TargetTypes {
-			target[i], err = core.NormalizeScalar(t.Type, t.NumberKind, target[i])
-			if err != nil {
-				return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, err)
-			}
+		target, err := core.NormalizeKey(rel.TargetTypes, stored)
+		if err != nil {
+			return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, err)
 		}
 		keys := byOwner[name]
 		at, found := slices.BinarySearchFunc(keys, target, compare)
+		if orderErr != nil {
+			return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, orderErr)
+		}
 		if found || at > cfg.maxPerOwner {
 			continue
 		}
@@ -176,10 +179,15 @@ func ownersIn(columns []string, keys []core.Key) *LookupCond {
 
 // pairKey is an include pair's owner or target as the key of n columns it
 // names: the value of the one column, or a core.Key of a value per column,
-// each as normalization reads it (projectedValue).
+// each as the database holds it (core.StoredValue), nil for NULL, and as
+// normalization reads it (projectedValue).
 func pairKey(v any, n int) (core.Key, error) {
 	if n == 1 {
-		key := core.Key{projectedValue(v)}
+		value, err := pairValue(v)
+		if err != nil {
+			return nil, err
+		}
+		key := core.Key{value}
 		return key, nil
 	}
 	var k []any
@@ -196,7 +204,20 @@ func pairKey(v any, n int) (core.Key, error) {
 	}
 	out := make(core.Key, n)
 	for i, value := range k {
-		out[i] = projectedValue(value)
+		v, err := pairValue(value)
+		if err != nil {
+			return nil, fmt.Errorf("key value %d: %w", i, err)
+		}
+		out[i] = v
 	}
 	return out, nil
+}
+
+// pairValue is one value of a pair key (pairKey).
+func pairValue(v any) (any, error) {
+	stored, _, err := core.StoredValue(v)
+	if err != nil {
+		return nil, err
+	}
+	return projectedValue(stored), nil
 }

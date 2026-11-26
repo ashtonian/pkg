@@ -2,6 +2,7 @@ package filter
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -53,7 +54,7 @@ func (d SQLiteDialect) KeyOperand(expr string, t core.TypeInfo) string {
 }
 
 // keyValueText renders a key column, read as expr and typed t, as its
-// canonical text (core.KeyValueText): a string, UUID or integer column's
+// canonical text (core.CanonicalText): a string, UUID or integer column's
 // text, a network value's display form (ReadColumn), and otherwise the text
 // a terms facet keys the value by (termsKeyExpr).
 func keyValueText(d Dialect, expr string, t core.TypeInfo) string {
@@ -96,7 +97,7 @@ func correlation(d Dialect, leftAlias string, left []string, rightAlias string, 
 }
 
 // keySetOn is a key set's columns, each read as read renders it, and its keys
-// with each value normalized as its column's type.
+// with each value normalized as its column's type (core.NormalizeKey).
 type keySetOn struct {
 	table  string
 	fields []*FieldSchema
@@ -121,17 +122,15 @@ func newKeySet(table string, read func(column string) string, columns []string, 
 	}
 	normalized := make([]core.Key, len(keys))
 	for i, k := range keys {
-		if len(k) != len(columns) {
-			return keySetOn{}, fmt.Errorf("key set on %s: key %d has %d values for %d columns", table, i, len(k), len(columns))
-		}
-		normalized[i] = make(core.Key, len(k))
-		for j, f := range fields {
-			v, err := core.NormalizeScalar(f.DataType, f.NumberKind, k[j])
-			if err != nil {
-				return keySetOn{}, fmt.Errorf("key set on %s: key %d: column %s: %w", table, i, f.ExternalName, err)
+		n, err := core.NormalizeKey(types, k)
+		if err != nil {
+			valueErr, ok := errors.AsType[*core.KeyValueError](err)
+			if !ok {
+				return keySetOn{}, fmt.Errorf("key set on %s: key %d: %w", table, i, err)
 			}
-			normalized[i][j] = v
+			return keySetOn{}, fmt.Errorf("key set on %s: key %d: column %s: %w", table, i, columns[valueErr.Index], valueErr.Err)
 		}
+		normalized[i] = n
 	}
 	set := keySetOn{table: table, fields: fields, keys: normalized}
 	return set, nil

@@ -249,17 +249,14 @@ func includeOwners(field *FieldSchema, dialect Dialect, ownerKeys []core.Key, bi
 	if len(rel.SourceColumns) == 1 {
 		values := make([]any, len(ownerKeys))
 		for i, k := range ownerKeys {
-			if len(k) != 1 {
-				return "", fmt.Errorf("owner key %d has %d values for the one key column", i, len(k))
+			n, err := core.NormalizeKey(rel.SourceTypes, k)
+			if err != nil {
+				return "", fmt.Errorf("owner key %d: %w", i, err)
 			}
-			values[i] = k[0]
+			values[i] = n[0]
 		}
 		source := keyField(rel.SourceColumns[0], "", rel.SourceTypes[0])
 		source.Table, source.Expr = junctionAlias, ""
-		values, err := normalizeKeyValues(source, values)
-		if err != nil {
-			return "", fmt.Errorf("owner keys: %w", err)
-		}
 		in, err := dialect.Condition(source, OpIn, values, bind)
 		if err != nil {
 			return "", fmt.Errorf("owner keys: %w", err)
@@ -271,19 +268,6 @@ func includeOwners(field *FieldSchema, dialect Dialect, ownerKeys []core.Key, bi
 		return "", fmt.Errorf("owner keys: %w", err)
 	}
 	return in, nil
-}
-
-// normalizeKeyValues is values, each normalized as key column f's type.
-func normalizeKeyValues(f *FieldSchema, values []any) ([]any, error) {
-	out := make([]any, len(values))
-	for i, v := range values {
-		n, err := core.NormalizeScalar(f.DataType, f.NumberKind, v)
-		if err != nil {
-			return nil, fmt.Errorf("key %v: %w", v, err)
-		}
-		out[i] = n
-	}
-	return out, nil
 }
 
 func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQueryConfig, error) {

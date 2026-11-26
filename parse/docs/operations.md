@@ -82,8 +82,9 @@ the first error.
 of 999 for SQLite or 65535 for PostgreSQL. Positive overrides configure these
 bounds; negative values refuse. Chunks contain batched statements, not one
 UPDATE per item. A single item exceeding the parameter budget refuses the whole
-plan. Empty input has no statements. Keys normalize through the resource's
-canonical UUID/string/integer scalar type; duplicate normalized keys refuse.
+plan. Empty input has no statements. Keys normalize by the one key rule
+(`core.NormalizeKey`), each value as its column's type; duplicate normalized
+keys refuse.
 Database collation aliases must also be rejected by the caller's exact Current
 key check. All validation finishes before returning an executable plan.
 

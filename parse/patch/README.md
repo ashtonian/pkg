@@ -41,7 +41,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `validators.go` | Path validators from value tags: `enum`, `minlen` / `maxlen`, `min` / `max`, per element on an array path (`minitems` / `maxitems` count an array set whole: `checkItems` in `patch.go`) |
 | `sql.go` | `BuildPatchSQL` — per-column fold, merge and append compilation; the change predicate (`WithChangePredicate`) |
 | `sql_member.go` | Document-member add/replace/remove compiled against the stored document (`jsonb_set`/`#-`, `json_set`/`json_remove`); their RFC 6902 preconditions, settled from the patch's own operations or left to the row (`Precondition`, `RenderPreconditions`) |
-| `relation_sql.go` | Relation statements: one delete and one insert builder, owners and values each one set parameter compared by type (`RelationDialect.KeyIn`), the held-pair guard for columns whose stored form is not their value, junction tenancy and target visibility |
+| `relation_sql.go` | Relation statements: one delete and one insert builder, owners and values each one set parameter compared by type (`RelationDialect.KeyIn`) and normalized by the one key rule (`core.NormalizeKey`), the held-pair guard for columns whose stored form is not their value, junction tenancy and target visibility |
 | `policy.go` | Patch policy and value constraints, judged by what operations write (`writes.go`) |
 | `pattern.go` | Path patterns: token check, matching (`*` one token, `**` zero or more), specificity order |
 | `typed_json.go` | A merge patch's document values checked and normalized against the Go type of the member they write, map keys decoded and named as encoding/json does; a JSON Patch member's name and value held to that type (`checkDocumentMember`) |

@@ -288,25 +288,46 @@ func TestPaths_SortWithPaths(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// An int path may hold a decimal member, so its cursor carries either kind.
+// A number path's cursor carries the member's canonical decimal text,
+// exactly as the document holds it: an int path may hold a decimal member,
+// and a member may lie beyond float64 precision.
 func TestPaths_NumericCursorValues(t *testing.T) {
 	s, err := filter.GenerateSortSchema[filtertest.PathRecord](core.NewSchemaGenerator())
 	require.NoError(t, err)
 	sr, err := filter.ParseSort(s, "attrs.size")
 	require.NoError(t, err)
 	keys := filter.Keyset(sr, filter.CursorKey{Name: "id", Table: "path_records", Column: "id", DataType: core.FieldTypeString})
-	for _, v := range []any{int64(3), 3.5, nil} {
-		tok := &filter.PageToken{Fields: []filter.CursorField{{Name: "attrs.size", Value: v, Direction: filter.SortAsc}, {Name: "id", Value: "a", Direction: filter.SortAsc}}}
-		assert.NoError(t, filter.ValidateCursor(tok, keys), "%v", v)
+	for _, tc := range []struct {
+		value, want any
+	}{
+		{"3.5", "3.5"},
+		{"0.10000000000000001", "0.10000000000000001"},
+		{int64(3), "3"}, // an earlier release's token
+		{3.5, "3.5"},
+		{nil, nil},
+	} {
+		tok := &filter.PageToken{Fields: []filter.CursorField{{Name: "attrs.size", Value: tc.value, Direction: filter.SortAsc}, {Name: "id", Value: "a", Direction: filter.SortAsc}}}
+		require.NoError(t, filter.ValidateCursor(tok, keys), "%v", tc.value)
+		assert.Equal(t, tc.want, tok.Fields[0].Value)
 	}
-	tok := &filter.PageToken{Fields: []filter.CursorField{{Name: "attrs.size", Value: "3", Direction: filter.SortAsc}, {Name: "id", Value: "a", Direction: filter.SortAsc}}}
-	assert.Error(t, filter.ValidateCursor(tok, keys))
+	for _, v := range []any{"3.5x", true} {
+		tok := &filter.PageToken{Fields: []filter.CursorField{{Name: "attrs.size", Value: v, Direction: filter.SortAsc}, {Name: "id", Value: "a", Direction: filter.SortAsc}}}
+		require.Error(t, filter.ValidateCursor(tok, keys), "%v", v)
+	}
 
-	got, err := filter.CursorPlan{Keys: keys}.Token(false, func(col string) (any, error) {
-		return map[string]any{"attrs": json.RawMessage(`{"size":3.5}`), "id": "g"}[col], nil
-	})
-	require.NoError(t, err)
-	assert.Equal(t, 3.5, got.Fields[0].Value, "a cursor reads the member with the path rule")
+	for doc, want := range map[string]any{
+		`{"size":3.5}`:                 "3.5",
+		`{"size":0.10000000000000001}`: "0.10000000000000001",
+		`{"size":1e1}`:                 "10",
+		`{"size":"3.5"}`:               nil,
+		`{}`:                           nil,
+	} {
+		got, err := filter.CursorPlan{Keys: keys}.Token(false, func(col string) (any, error) {
+			return map[string]any{"attrs": json.RawMessage(doc), "id": "g"}[col], nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, want, got.Fields[0].Value, "a cursor carries %s's member exactly, as its canonical decimal text", doc)
+	}
 }
 
 func TestPaths_Facets(t *testing.T) {

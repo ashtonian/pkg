@@ -38,18 +38,18 @@ func (r *Resource[T]) ParseKey(texts ...string) (Key, error) {
 	key := make(Key, len(texts))
 	for i, text := range texts {
 		err := core.CheckText(text)
-		var v any
 		if err == nil {
-			v, err = scalarText(kc.types[i], text)
-		}
-		if err == nil {
-			key[i], err = kc.normalizeColumn(i, v)
+			key[i], err = scalarText(kc.types[i], text)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("parse: %s: %w: key column %s: %w", r.table, ErrNoSuchKey, kc.names[i], err)
 		}
 	}
-	return key, nil
+	normalized, err := core.NormalizeKey(kc.types, key)
+	if err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", r.table, kc.columnError(ErrNoSuchKey, err))
+	}
+	return normalized, nil
 }
 
 // scalarText is text as a column of type info holds it.

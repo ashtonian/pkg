@@ -3,7 +3,6 @@ package parse
 import (
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -444,11 +443,7 @@ func (r *Resource[T]) rowKey(row T) (any, error) {
 		return nil, err
 	}
 	for i, v := range k {
-		rv := reflect.ValueOf(v)
-		for rv.Kind() == reflect.Pointer && !rv.IsNil() {
-			rv = rv.Elem()
-		}
-		if !rv.IsValid() || rv.Kind() == reflect.Pointer {
+		if core.Deref(v) == nil {
 			return nil, fmt.Errorf("parse: %s: a row has no key: key column %s holds no value", r.table, r.pk[i])
 		}
 	}

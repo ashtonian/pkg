@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"time"
@@ -83,7 +84,8 @@ func checkElementsText(elements []any) error {
 //   - FieldTypeUUID      → canonical lowercase UUID string
 //   - FieldTypeBool      → bool
 //   - FieldTypeTimestamp → RFC 3339 UTC string with nanosecond precision, of fixed width (TimestampLayout); a UTC year outside 0001 to 9999 is an error (time.Time accepted)
-//   - FieldTypeDate      → YYYY-MM-DD (Date accepted)
+//   - FieldTypeDate      → YYYY-MM-DD (Date accepted, and a time.Time at
+//     midnight, as a driver scans a SQL DATE)
 //   - FieldTypeTime, FieldTypeInterval, FieldTypeInet, FieldTypeCIDR,
 //     FieldTypeMACAddr   → the canonical text of LocalTime, Interval, Inet,
 //     CIDR and MACAddr (each type accepted, and netip.Addr, netip.Prefix
@@ -95,7 +97,7 @@ func checkElementsText(elements []any) error {
 // normalizes as its kind's value does. A nil value is an error; callers decide separately whether a
 // field admits null.
 func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
-	v = deref(v)
+	v = Deref(v)
 	if v == nil {
 		switch dt {
 		case FieldTypeString, FieldTypeUUID, FieldTypeInt, FieldTypeFloat, FieldTypeDecimal, FieldTypeBool, FieldTypeTimestamp, FieldTypeDate,
@@ -145,6 +147,10 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 			date, err := ParseDate(text)
 			return string(date), err
 		}
+		if t, ok := v.(time.Time); ok {
+			date, err := dateOf(t)
+			return string(date), err
+		}
 		return nil, fmt.Errorf("expected civil date string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 	case FieldTypeTimestamp:
 		t, err := toTime(v)
@@ -167,6 +173,25 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 		return normalizeMACAddr(v)
 	}
 	return v, nil
+}
+
+// NormalizeStored is NormalizeScalar for v, a value a column of type dt
+// holds rather than a request value: a float column's NaN or infinity is
+// kept, as a float64, where NormalizeScalar refuses one. A request value
+// is finite; a stored one need not be, since a table written outside parse
+// may hold NaN and both infinities (PostgreSQL's float8; SQLite stores the
+// infinities and holds NaN as NULL). Rows Evaluate reads and the values a
+// cursor carries normalize through it.
+func NormalizeStored(dt FieldType, kind reflect.Kind, v any) (any, error) {
+	rv := reflect.ValueOf(Deref(v))
+	isFloat := rv.Kind() == reflect.Float32 || rv.Kind() == reflect.Float64
+	if dt == FieldTypeFloat && isFloat {
+		f := rv.Float()
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return f, nil
+		}
+	}
+	return NormalizeScalar(dt, kind, v)
 }
 
 // TimestampLayout is the canonical timestamp text: RFC 3339 in UTC with
@@ -295,18 +320,4 @@ func boolean(v any) (bool, bool) {
 		return rv.Bool(), true
 	}
 	return false, false
-}
-
-func deref(v any) any {
-	rv := reflect.ValueOf(v)
-	if !rv.IsValid() {
-		return nil
-	}
-	for rv.Kind() == reflect.Pointer {
-		if rv.IsNil() {
-			return nil
-		}
-		rv = rv.Elem()
-	}
-	return rv.Interface()
 }

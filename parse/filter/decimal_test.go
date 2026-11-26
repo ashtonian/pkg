@@ -125,7 +125,9 @@ func TestDecimal_CompareKeyValues(t *testing.T) {
 			case i > j:
 				want = 1
 			}
-			assert.Equal(t, want, filter.CompareKeyValues(key, a, b), "%v vs %v", a, b)
+			got, err := filter.CompareKeyValues(key, a, b)
+			require.NoError(t, err)
+			assert.Equal(t, want, got, "%v vs %v", a, b)
 		}
 	}
 }

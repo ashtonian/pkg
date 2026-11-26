@@ -65,7 +65,9 @@ func TestKeysetWalk_LinguisticCollationWalksByCodePoint(t *testing.T) {
 				cursor = string(page.PageInfo.EndCursor)
 			}
 			assert.Equal(t, []string{"A", "B", "a", "b", "z", "é"}, walked)
-			assert.Negative(t, filter.CompareKeyValues(filter.CursorKey{DataType: core.FieldTypeString}, "B", "a"), "memory orders the same way")
+			memory, err := filter.CompareKeyValues(filter.CursorKey{DataType: core.FieldTypeString}, "B", "a")
+			require.NoError(t, err)
+			assert.Negative(t, memory, "memory orders the same way")
 
 			q, err := lq.Build(filter.ListFilter(`{"name":{"$gt":"b"}}`), filter.ListSort("name"))
 			require.NoError(t, err)
