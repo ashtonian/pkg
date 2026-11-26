@@ -2,12 +2,24 @@ package dialect
 
 import "strings"
 
-// StringLiteral is s as an SQL string literal, its single quotes doubled.
-// That is the whole escape where a backslash is an ordinary character in a
-// literal: SQLite always, PostgreSQL under standard_conforming_strings =
-// on, its default since 9.1. A PostgreSQL session that turns it off is not
-// supported.
-func StringLiteral(s string) string {
+// QuoteLiteral is s as a string literal that reads as s whatever the
+// session sets: its single quotes doubled and, when it holds a backslash,
+// an escape string (E'…') with its backslashes doubled. A plain literal
+// reads a backslash as itself only under standard_conforming_strings = on,
+// the default since 9.1, and an escape string under either setting. A
+// string without a backslash is the plain literal, which both read alike.
+func (Postgres) QuoteLiteral(s string) string {
+	quoted := strings.ReplaceAll(s, "'", "''")
+	if !strings.Contains(s, `\`) {
+		return "'" + quoted + "'"
+	}
+	return "E'" + strings.ReplaceAll(quoted, `\`, `\\`) + "'"
+}
+
+// QuoteLiteral is s as a string literal, its single quotes doubled: the
+// whole escape, since a backslash is an ordinary character in SQLite's
+// literals.
+func (SQLite) QuoteLiteral(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
@@ -16,7 +28,7 @@ func StringLiteral(s string) string {
 // backslashes and double quotes escaped, so it reads as itself whatever it
 // holds. A "." or "[" in a label starts no other step, and a quoted label
 // never indexes an array. Bound, the path is complete; written into a
-// statement, it goes through StringLiteral.
+// statement, it goes through SQLite.QuoteLiteral.
 func SQLiteJSONPath(labels []string) string {
 	var b strings.Builder
 	b.WriteString("$")

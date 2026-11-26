@@ -34,6 +34,10 @@ type Dialect interface {
 	// QuoteIdent quotes an identifier with double quotes, doubling any
 	// quote inside it.
 	QuoteIdent(name string) string
+	// QuoteLiteral quotes s as a string literal that reads as s whatever
+	// the session's settings, for text a statement writes rather than
+	// binds: a JSON path's member names.
+	QuoteLiteral(s string) string
 	// MaxParams is the most parameters one statement binds.
 	MaxParams() int
 
