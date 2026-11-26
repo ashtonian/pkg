@@ -86,9 +86,9 @@ type Field struct {
 	tags     Tags
 	enum     []string
 	bounds   Bounds
-	// unexportedEmbed is the first unexported embedded pointer on route,
-	// nil when there is none (CheckWritable).
-	unexportedEmbed reflect.Type
+	// unwritable is CheckWritable's answer, from gowalker's
+	// UnallocatableParent when the walk is built.
+	unwritable error
 }
 
 // GoName returns the Go field name.
@@ -130,12 +130,7 @@ func (f *Field) Hidden() bool { return f.external == "" }
 // copy of its parent, so neither a reader filling a fresh value, where the
 // pointer is nil, nor a writer that must not write the parent it shares with
 // the caller, as a patch must not, can set the field.
-func (f *Field) CheckWritable() error {
-	if f.unexportedEmbed == nil {
-		return nil
-	}
-	return unwritableField(f.goName, f.unexportedEmbed)
-}
+func (f *Field) CheckWritable() error { return f.unwritable }
 
 // CheckWritableField is CheckWritable for a field of a gowalker shape, such
 // as a struct JSONDocumentOf reaches.
@@ -144,11 +139,7 @@ func CheckWritableField(f *gowalker.Field) error {
 	if !ok {
 		return nil
 	}
-	return unwritableField(f.GoField().Name, parent.Type)
-}
-
-func unwritableField(goName string, embed reflect.Type) error {
-	return fmt.Errorf("field %s: a write reaches it through the unexported embedded %s, which reflection can neither allocate nor copy; export the type or embed it by value", goName, gowalker.TypeText(embed))
+	return fmt.Errorf("field %s: a write reaches it through the unexported embedded %s, which reflection can neither allocate nor copy; export the type or embed it by value", f.GoField().Name, gowalker.TypeText(parent.Type))
 }
 
 // Value reads the field from v, a value of the walked struct type. A nil
@@ -454,7 +445,7 @@ func buildStructFields(s *gowalker.Schema, k fieldsKey) (*StructFields, error) {
 			return nil, fmt.Errorf("field %s: %w", sf.Name, err)
 		}
 		out.misspelt = append(out.misspelt, misspeltTagKeys(d, k)...)
-		f := &Field{goName: sf.Name, typ: sf.Type, route: d.Index, tags: tags, enum: enum, bounds: bounds, unexportedEmbed: unexportedEmbed(out.typ, d.Index)}
+		f := &Field{goName: sf.Name, typ: sf.Type, route: d.Index, tags: tags, enum: enum, bounds: bounds, unwritable: CheckWritableField(d.Field)}
 		if d.State == gowalker.Named {
 			f.external = d.Field.Name()
 			out.external[f.external] = f
@@ -468,24 +459,6 @@ func buildStructFields(s *gowalker.Schema, k fieldsKey) (*StructFields, error) {
 		out.fields = append(out.fields, f)
 	}
 	return out, nil
-}
-
-// unexportedEmbed returns the first unexported embedded pointer on route, a
-// field's index path through the struct type t, or nil when there is none.
-// An unexported embedded struct held by value is no obstacle: reflection
-// sets the exported fields promoted from it, as encoding/json does.
-func unexportedEmbed(t reflect.Type, route []int) reflect.Type {
-	for _, x := range route[:len(route)-1] {
-		if t.Kind() == reflect.Pointer {
-			t = t.Elem()
-		}
-		sf := t.Field(x)
-		if sf.Type.Kind() == reflect.Pointer && !sf.IsExported() {
-			return sf.Type
-		}
-		t = sf.Type
-	}
-	return nil
 }
 
 // A taggedText is a tag key readTags reads as text, with the field of Tags
