@@ -447,7 +447,11 @@ func compareLeaf(f *FieldSchema, op FilterOperator, lit, v any, present bool) (T
 	}
 	switch op {
 	case OpEq, OpNe, OpGt, OpGte, OpLt, OpLte:
-		c, err := compareScalar(f, f.DataType, v, lit)
+		operand, null, err := storedOperand(f, lit)
+		if err != nil || null {
+			return Unknown, err
+		}
+		c, err := compareScalar(f, f.DataType, v, operand)
 		if err != nil {
 			return False, err
 		}
@@ -477,11 +481,15 @@ func membershipTruth(f *FieldSchema, op FilterOperator, lit, v any) (Truth, erro
 	}
 	in, null := False, false
 	for _, m := range set {
-		if m == nil {
+		member, isNull, err := storedOperand(f, m)
+		if err != nil {
+			return False, err
+		}
+		if isNull {
 			null = true
 			continue
 		}
-		c, err := compareScalar(f, f.DataType, v, m)
+		c, err := compareScalar(f, f.DataType, v, member)
 		if err != nil {
 			return False, err
 		}
@@ -497,6 +505,17 @@ func membershipTruth(f *FieldSchema, op FilterOperator, lit, v any) (Truth, erro
 		return truthOf(in == False), nil
 	}
 	return in, nil
+}
+
+// storedOperand is a filter value as the statement binds it
+// (core.StoredValue), and whether it is SQL NULL: nil, a nil pointer or a
+// NULL Valuer, which no comparison holds for or against.
+func storedOperand(f *FieldSchema, lit any) (any, bool, error) {
+	operand, null, err := core.StoredValue(lit)
+	if err != nil {
+		return nil, false, fmt.Errorf("field %s: %w", f.ExternalName, err)
+	}
+	return operand, null, nil
 }
 
 // compareScalar orders a row value against a filter value of type t, both in
