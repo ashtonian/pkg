@@ -91,31 +91,15 @@ func scoreList(t *testing.T, s scoreDB, nullable bool, ids []int64) *filter.List
 func runNonFiniteWalks(t *testing.T, s scoreDB, nullable bool, want []int64) {
 	t.Helper()
 	lq := scoreList(t, s, nullable, want)
-
+	w := listWalk[scoreRow]{
+		lq:    lq,
+		query: func(t *testing.T, res *filter.ListResult) []scoreRow { return queryScores(t, s.db, res) },
+		id:    func(r scoreRow) int64 { return r.ID },
+	}
+	w.check(t, "score", want)
 	descending := slices.Clone(want)
 	slices.Reverse(descending)
-	for _, tc := range []struct {
-		sort string
-		want []int64
-	}{{"score", want}, {"-score", descending}} {
-		for limit := 1; limit <= len(want); limit++ {
-			forward, lastStart := walkScores(t, s.db, lq, tc.sort, limit, "", false)
-			assert.Equal(t, tc.want, forward, "sort=%s, %d a page, forwards", tc.sort, limit)
-
-			// The rows before the last page, walked back from its start
-			// cursor, then the last page, are the forward walk. A single
-			// page has no start cursor: nothing is before it.
-			last := len(tc.want) % limit
-			if last == 0 {
-				last = limit
-			}
-			var backward []int64
-			if lastStart != "" {
-				backward, _ = walkScores(t, s.db, lq, tc.sort, limit, lastStart, true)
-			}
-			assert.Equal(t, tc.want, append(backward, tc.want[len(tc.want)-last:]...), "sort=%s, %d a page, backwards", tc.sort, limit)
-		}
-	}
+	w.check(t, "-score", descending)
 }
 
 // runNonFiniteFilters holds filter.Evaluate to the database over a float
@@ -157,48 +141,6 @@ func runNonFiniteFilters(t *testing.T, s scoreDB) {
 		require.NotEmpty(t, selected, "$%s %v", node.Op, node.Value)
 		assert.Equal(t, selected, evaluated, "$%s %v", node.Op, node.Value)
 	}
-}
-
-// walkScores pages from cursor, following end cursors forwards or start
-// cursors backwards, and returns the ids in presentation order and,
-// forwards, the last page's start cursor.
-func walkScores(t *testing.T, db *sql.DB, lq *filter.ListQuery, sort string, limit int, cursor string, backward bool) ([]int64, string) {
-	t.Helper()
-	var pages [][]int64
-	var lastStart string
-	for n := 0; ; n++ {
-		require.Less(t, n, len(scoreSeeds)+2, "the walk does not end")
-		opts := []filter.ListOption{filter.ListSort(sort), filter.ListLimit(limit)}
-		if cursor != "" {
-			opts = append(opts, filter.ListCursor(cursor))
-		}
-		res, err := lq.Build(opts...)
-		require.NoError(t, err)
-		items := queryScores(t, db, res)
-		page, err := filter.NewPage(items, res.Limit, res.Cursor, func(r scoreRow, column string) (any, error) {
-			return filter.CursorValueByTag(r, "db", column)
-		})
-		require.NoError(t, err, "sort=%s, %d a page", sort, limit)
-		ids := make([]int64, len(page.Items))
-		for i, r := range page.Items {
-			ids[i] = r.ID
-		}
-		pages = append(pages, ids)
-		lastStart = string(page.PageInfo.StartCursor)
-		next := page.PageInfo.EndCursor
-		more := page.PageInfo.HasNextPage
-		if backward {
-			next, more = page.PageInfo.StartCursor, page.PageInfo.HasPrevPage
-		}
-		if !more {
-			break
-		}
-		cursor = string(next)
-	}
-	if backward {
-		slices.Reverse(pages)
-	}
-	return slices.Concat(pages...), lastStart
 }
 
 func queryScores(t *testing.T, db *sql.DB, res *filter.ListResult) []scoreRow {

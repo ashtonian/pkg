@@ -123,13 +123,18 @@ func (p CursorPlan) Token(reverse bool, get func(column string) (any, error)) (*
 // at k.Column: CursorValue of it, or for a path key the member the path rule
 // extracts from the column's document, read as PathValue reads it (nil when
 // absent). A decimal key's value is its canonical text
-// (core.DecimalText), whatever form its column scans to. Cursors and a
-// memory backend's ordering read keys through it alike.
+// (core.DecimalText), whatever form its column scans to, and so is an int
+// or float path's member, exactly as its JSON number holds it, since
+// PostgreSQL orders the member as numeric. Cursors and a memory backend's
+// ordering read keys through it alike.
 func KeyValue(k CursorKey, raw any) (any, error) {
 	if k.Path != nil {
 		root, err := decodeDocument(raw)
 		if err != nil {
 			return nil, err
+		}
+		if k.numberPath() {
+			return pathNumberText(root, k.Path.Segments)
 		}
 		member, present, err := decodedPathValue(root, k.Path.Segments, k.DataType, "")
 		if err != nil || !present {
@@ -233,11 +238,26 @@ func cursorTextValue(v encoding.TextMarshaler) (any, error) {
 // by code point, false before true. Direction is not applied. Two values
 // k's type cannot compare are an error, never ordered by their text.
 func CompareKeyValues(k CursorKey, a, b any) (int, error) {
-	c, err := core.CompareCanonical(core.TypeInfo{Type: k.DataType, NumberKind: k.NumberKind}, a, b)
+	c, err := core.CompareCanonical(k.valueType(), a, b)
 	if err != nil {
 		return 0, fmt.Errorf("comparing values of key %q: %w", k.Name, err)
 	}
 	return c, nil
+}
+
+// numberPath reports an int or float path key, whose values are its
+// members' canonical decimal text (KeyValue).
+func (k CursorKey) numberPath() bool {
+	return k.Path != nil && (k.DataType == core.FieldTypeInt || k.DataType == core.FieldTypeFloat)
+}
+
+// valueType is the type k's values (KeyValue) are of: a decimal for a
+// number path, otherwise k's own.
+func (k CursorKey) valueType() core.TypeInfo {
+	if k.numberPath() {
+		return core.TypeInfo{Type: core.FieldTypeDecimal}
+	}
+	return core.TypeInfo{Type: k.DataType, NumberKind: k.NumberKind}
 }
 
 // effectiveDirection is the direction a key is walked in: flipped for a
@@ -341,7 +361,9 @@ func SeekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 // placeholder; every non-null token value is bound once and its placeholder
 // reused across depths. A native row-value comparison is used when the
 // dialect supports it and no key or value involves NULL. A float key's NaN
-// is a NULL boundary on a dialect that stores NaN as NULL (storesNaN).
+// is a NULL boundary on a dialect that stores NaN as NULL (storesNaN); a
+// number path's decimal text is read as the dialect compares the member
+// (pathNumberBound).
 func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any) string) string {
 	values := make([]any, len(keys))
 	phs := make([]string, len(keys))
@@ -355,8 +377,11 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 		values[i] = v
 		if v != nil {
 			phs[i] = bind(v)
-			if k.DataType == core.FieldTypeDecimal {
+			switch {
+			case k.DataType == core.FieldTypeDecimal:
 				phs[i] = d.DecimalOrder(DecimalParam(phs[i]))
+			case k.numberPath():
+				phs[i] = d.pathNumberBound(phs[i])
 			}
 		}
 		if k.Nullable || v == nil || effectiveDirection(k, token.Reverse) != effectiveDirection(keys[0], token.Reverse) {
@@ -404,6 +429,15 @@ func (PostgresDialect) storesNaN() bool { return true }
 
 // storesNaN reports false: SQLite stores a NaN it is given as NULL.
 func (SQLiteDialect) storesNaN() bool { return false }
+
+// pathNumberBound reads the bound through DecimalOrder: a number member
+// orders as numeric, exactly.
+func (d PostgresDialect) pathNumberBound(ph string) string { return d.DecimalOrder(DecimalParam(ph)) }
+
+// pathNumberBound casts the bound AS NUMERIC: an INTEGER where its text is
+// one within 64 bits, otherwise the REAL nearest it, as json_extract reads
+// a number member.
+func (SQLiteDialect) pathNumberBound(ph string) string { return "CAST(" + ph + " AS NUMERIC)" }
 
 // afterExpr is "expr orders strictly after v" in direction dir, with NULL
 // greatest; "" means no value orders after v.
@@ -478,8 +512,9 @@ func cursorKeyValue(k CursorKey, raw any) (any, error) {
 			return nil, errors.New("null is not allowed")
 		}
 		return nil, nil
-	case k.Path != nil && (k.DataType == core.FieldTypeInt || k.DataType == core.FieldTypeFloat):
-		return pathNumber(v)
+	case k.numberPath():
+		// An earlier release's token carries an int64 or float64: it resumes.
+		return core.NormalizeScalar(core.FieldTypeDecimal, reflect.Invalid, v)
 	}
 	v, err = core.NormalizeStored(k.DataType, k.NumberKind, v)
 	if err != nil {
@@ -527,11 +562,13 @@ type PageToken struct {
 // either is therefore a format change and takes a new generation. Without
 // one, during a rolling deploy a replica on the older release refuses the
 // newer release's cursors as malformed, or misreads them. A member's value
-// an older release refuses, such as a float key's NaN or infinity before
-// releases carried them, changes no member: that release answers the token
-// with E2082 "invalid cursor data" and the client starts again, as it
-// would from a generation the release does not read, while every other
-// token still resumes.
+// an older release refuses changes no member: that release answers the
+// token with E2082 and the client starts again, as it would from a
+// generation the release does not read, while every other token still
+// resumes. A float key's NaN or infinity, which a release that predates
+// carrying them refuses to decode, is "invalid cursor data"; a number
+// path's decimal text, which a release that predates it refuses for the
+// key, is "invalid cursor value for field".
 const cursorGeneration uint32 = 3
 
 // maxCursorLen bounds a cursor both ways: DecodeCursor rejects a longer

@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/decimals"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
@@ -206,24 +204,25 @@ func arrayMember(v any, elem core.FieldType) (any, bool, error) {
 	return out, len(out) > 0, nil
 }
 
-// pathNumber validates a numeric path key's cursor value: an int path may
-// hold a decimal member, so either kind resumes a page.
-func pathNumber(v any) (any, error) {
-	switch n := v.(type) {
-	case int64:
-		return n, nil
-	case uint64:
-		if n > math.MaxInt64 {
-			return nil, fmt.Errorf("%d is outside the portable integer range", n)
-		}
-		return int64(n), nil
-	case float64:
-		if math.IsNaN(n) || math.IsInf(n, 0) {
-			return nil, fmt.Errorf("%v is not a finite number", n)
-		}
-		return n, nil
+// pathNumberText is the number member of root at segs, present as an int
+// or float path reads it (pathMember), as its canonical decimal text: the
+// exact value PostgreSQL orders the member by (::numeric), which the
+// float64 pathMember reads may round. It is nil when absent.
+func pathNumberText(root any, segs []string) (any, error) {
+	v, ok := memberAt(root, segs)
+	if !ok {
+		return nil, nil
 	}
-	return nil, fmt.Errorf("expected a number, got %s", gowalker.TypeText(reflect.TypeOf(v)))
+	_, present, err := pathMember(v, core.FieldTypeFloat)
+	if err != nil || !present {
+		return nil, err
+	}
+	n, _ := jsonNumber(v)
+	text, err := core.DecimalText(n)
+	if err != nil {
+		return nil, fmt.Errorf("cursor: number member: %w", err)
+	}
+	return text, nil
 }
 
 func decodeDocument(doc any) (any, error) {

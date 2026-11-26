@@ -149,6 +149,10 @@ type Dialect interface {
 	// after +Infinity; a database that does not stores it as NULL, so a
 	// NaN page boundary seeks as a NULL one.
 	storesNaN() bool
+	// pathNumberBound renders a seek's bound for an int or float path key,
+	// bound at ph as the member's canonical decimal text (KeyValue), as the
+	// dialect compares the member the key orders by.
+	pathNumberBound(ph string) string
 
 	// numberKey renders an int, float or decimal field's value as its
 	// terms facet key: the canonical decimal text (core.DecimalText)
