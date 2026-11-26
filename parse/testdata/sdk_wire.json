@@ -1229,7 +1229,8 @@
                       "gte",
                       "lte",
                       "in"
-                    ]
+                    ],
+                    "indexed": true
                   },
                   "warehouse_id": {
                     "name": "warehouse_id",
@@ -1241,7 +1242,8 @@
                       "gte",
                       "lte",
                       "in"
-                    ]
+                    ],
+                    "indexed": true
                   }
                 }
               },

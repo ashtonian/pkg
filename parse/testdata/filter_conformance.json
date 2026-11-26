@@ -18,7 +18,8 @@
               "gte",
               "lte",
               "in"
-            ]
+            ],
+            "indexed": true
           }
         }
       },

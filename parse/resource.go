@@ -897,7 +897,8 @@ func (r *Resource[T]) checkIdentityWrite(column string) error {
 // systemFields are the columns policies constrain without the request
 // filtering on them: the key, the tenant and the soft-delete column, typed
 // from T's fields, in the wire form their fields travel in (a json:",string"
-// key's filter operands are JSON strings).
+// key's filter operands are JSON strings). A key column is Indexed, since a
+// primary key is an index by construction, so a filter on it costs as one.
 func systemFields(table string, cfg resourceConfig, columns map[string]reflect.Type, byColumn map[string]*core.Field) map[string]*filter.FieldSchema {
 	field := func(column string, ops ...filter.FilterOperator) *filter.FieldSchema {
 		info := core.TypeOf(columns[column])
@@ -912,7 +913,9 @@ func systemFields(table string, cfg resourceConfig, columns map[string]reflect.T
 	}
 	fields := make(map[string]*filter.FieldSchema, len(cfg.pk)+2)
 	for _, column := range cfg.pk {
-		fields[column] = field(column, filter.OpEq, filter.OpGt, filter.OpLt, filter.OpGte, filter.OpLte, filter.OpIn)
+		key := field(column, filter.OpEq, filter.OpGt, filter.OpLt, filter.OpGte, filter.OpLte, filter.OpIn)
+		key.Indexed = true
+		fields[column] = key
 	}
 	if cfg.tenant != "" && !slices.Contains(cfg.pk, cfg.tenant) {
 		fields[cfg.tenant] = field(cfg.tenant, filter.OpEq, filter.OpIn)
