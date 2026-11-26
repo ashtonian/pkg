@@ -2,7 +2,9 @@ package filter
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"iter"
 	"maps"
 	"net/url"
 	"slices"
@@ -37,7 +39,9 @@ type queryParamConfig struct {
 
 // QueryParamAccept names parameters the endpoint reads itself. The parser
 // leaves them alone, as it does the list parameters (Param*); any other
-// parameter that names no filterable field is E2071.
+// parameter that names no filterable field is E2071. A name the parser
+// would read itself, a list parameter or a flat filter on a field, is
+// refused by NewQueryParamParser (CheckAcceptedParam).
 func QueryParamAccept(names ...string) QueryParamOption {
 	return func(c *queryParamConfig) { c.accepted = append(c.accepted, names...) }
 }
@@ -81,20 +85,64 @@ type QueryParamParser struct {
 // NewQueryParamParser creates a QueryParamParser for the given schema. A
 // parameter that is neither a list parameter (Param*), a name QueryParamAccept
 // lists, nor a filterable field is E2071, so a misspelt filter cannot widen a
-// list; QueryParamLenient ignores it instead.
-func NewQueryParamParser(schema *ResourceSchema, opts ...QueryParamOption) *QueryParamParser {
+// list; QueryParamLenient ignores it instead. It refuses a nil schema, and an
+// accepted name the parser would otherwise read (CheckAcceptedParam): the
+// parser would skip a filter the schema says the parameter applies.
+func NewQueryParamParser(schema *ResourceSchema, opts ...QueryParamOption) (*QueryParamParser, error) {
+	if schema == nil {
+		return nil, errors.New("filter: NewQueryParamParser: nil schema")
+	}
 	cfg := &queryParamConfig{}
 	for _, o := range opts {
 		o(cfg)
 	}
 	accepted := make(map[string]bool, len(cfg.accepted))
 	for _, name := range cfg.accepted {
+		err := CheckAcceptedParam(schema, name)
+		if err != nil {
+			return nil, fmt.Errorf("filter: QueryParamAccept: %w", err)
+		}
 		accepted[name] = true
 	}
-	return &QueryParamParser{
+	p := &QueryParamParser{
 		schema: schema, lenient: cfg.lenient, fieldsOnly: cfg.fieldsOnly,
 		accepted: accepted, parser: NewFilterParser(schema, cfg.parser),
 	}
+	return p, nil
+}
+
+// CheckAcceptedParam refuses name as a parameter an endpoint reads itself
+// (QueryParamAccept, parse.AcceptParams, a resource's search parameter)
+// with an *AcceptedParamError when the list grammar reads it already: a
+// list parameter (IsListParam), or a flat filter on a request field of
+// schema, suffix forms included (FlatParamField: price_gte filters price).
+// Skipped, such a parameter would drop the filter it carries and widen the
+// list without a word.
+func CheckAcceptedParam(schema *ResourceSchema, name string) error {
+	if IsListParam(name) {
+		return &AcceptedParamError{Param: name}
+	}
+	field, _, ok := schema.FlatParamField(name)
+	if ok {
+		return &AcceptedParamError{Param: name, Field: field}
+	}
+	return nil
+}
+
+// AcceptedParamError is a parameter an endpoint would read itself that a
+// list request already gives a meaning (CheckAcceptedParam).
+type AcceptedParamError struct {
+	Param string
+	// Field is the request field Param filters, or "" when Param is a list
+	// parameter.
+	Field string
+}
+
+func (e *AcceptedParamError) Error() string {
+	if e.Field == "" {
+		return fmt.Sprintf("%q is a list parameter", e.Param)
+	}
+	return fmt.Sprintf("%q is a flat filter on field %q", e.Param, e.Field)
 }
 
 // At returns a copy of p whose relative-time tokens resolve against now,
@@ -196,14 +244,43 @@ func (o flatOperands) operatorMap() map[string]any {
 // filters the first that names a request field (ResourceSchema.RequestField),
 // so a parameter the endpoint reads itself must name none of them.
 func FlatParamFields(key string) []string {
-	names := []string{key}
-	for _, s := range querySuffixes {
-		field, ok := suffixField(key, s.suffix)
-		if ok {
-			names = append(names, field)
-		}
+	var names []string
+	for name := range flatReadings(key) {
+		names = append(names, name)
 	}
 	return names
+}
+
+// FlatParamField is the request field a flat query parameter filters and
+// the operator it applies, as QueryParamParser reads it: the first of
+// FlatParamFields that names a request field (RequestField), with $eq for
+// the parameter itself and its suffix's operator otherwise (price_gte:
+// price, $gte). ok is false when it filters none.
+func (s *ResourceSchema) FlatParamField(param string) (field string, op FilterOperator, ok bool) {
+	for name, op := range flatReadings(param) {
+		_, isField := s.RequestField(name)
+		if isField {
+			return name, op, true
+		}
+	}
+	return "", "", false
+}
+
+// flatReadings are the field and operator pairs a flat parameter key may
+// mean, in the order they are tried: the key itself as $eq, then the key
+// less each operator suffix it ends with, longest suffix first.
+func flatReadings(key string) iter.Seq2[string, FilterOperator] {
+	return func(yield func(string, FilterOperator) bool) {
+		if !yield(key, OpEq) {
+			return
+		}
+		for _, s := range querySuffixes {
+			field, ok := suffixField(key, s.suffix)
+			if ok && !yield(field, s.op) {
+				return
+			}
+		}
+	}
 }
 
 // suffixField is the field name key holds before operator suffix suffix,
@@ -213,29 +290,21 @@ func suffixField(key, suffix string) (string, bool) {
 	return field, ok && field != ""
 }
 
+// splitFieldOp is the field and operator key filters (FlatParamField): a
+// field named like a suffix form ("email_like") is that field, and
+// "a_not_null" is (a, not_null) when a exists, (a_not, null) when only
+// a_not does. A key that filters no field names its first suffix split, or
+// itself, as the unknown field.
 func (p *QueryParamParser) splitFieldOp(key string) (string, FilterOperator) {
-	// A real field named e.g. "email_like" must not be split into
-	// (email, $like) — exact schema match takes precedence.
-	if _, ok := p.schema.RequestField(key); ok {
-		return key, OpEq
+	field, op, ok := p.schema.FlatParamField(key)
+	if ok {
+		return field, op
 	}
-	// Prefer the split that names a real field: "a_not_null" is (a, not_null)
-	// when a exists, (a_not, null) when only a_not does.
-	first, firstOp := "", OpEq
 	for _, s := range querySuffixes {
-		fieldName, ok := suffixField(key, s.suffix)
-		if !ok {
-			continue
+		name, cut := suffixField(key, s.suffix)
+		if cut {
+			return name, s.op
 		}
-		if _, ok := p.schema.RequestField(fieldName); ok {
-			return fieldName, s.op
-		}
-		if first == "" {
-			first, firstOp = fieldName, s.op
-		}
-	}
-	if first != "" {
-		return first, firstOp
 	}
 	return key, OpEq
 }

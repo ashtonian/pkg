@@ -22,10 +22,14 @@ func TestKeysetWalk_SQLite(t *testing.T) {
 			runTrackWalks(t, trackDB{
 				db:      dbtest.SQLite(t),
 				dialect: filter.SQLiteDialect{},
-				schema:  `CREATE TABLE track_items (id TEXT PRIMARY KEY, rank INTEGER, name TEXT NOT NULL, created_at TEXT NOT NULL, price ` + priceType + `)`,
+				schema:  `CREATE TABLE track_items (id TEXT PRIMARY KEY, rank INTEGER, score INTEGER, name TEXT NOT NULL, created_at TEXT NOT NULL, seen_at DATETIME, price ` + priceType + `)`,
 				insert: func(db *sql.DB, s trackSeed) error {
-					_, err := db.Exec(`INSERT INTO track_items (id, rank, name, created_at, price) VALUES (?, ?, ?, ?, ?)`,
-						trackID(s.id).String(), s.rank, s.name, core.FormatTimestamp(trackTime(s)), s.price)
+					var seen any
+					if at := trackSeen(s); at.Valid {
+						seen = core.FormatTimestamp(at.Time)
+					}
+					_, err := db.Exec(`INSERT INTO track_items (id, rank, score, name, created_at, seen_at, price) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+						trackID(s.id).String(), s.rank, s.rank, s.name, core.FormatTimestamp(trackTime(s)), seen, s.price)
 					return err
 				},
 			})

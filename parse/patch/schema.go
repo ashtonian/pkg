@@ -337,8 +337,9 @@ func (p *PathSchema) Nullable() bool {
 }
 
 // clearedValue is what removing the path, or setting it to null, stores:
-// nil (SQL NULL) for pointers, interfaces and untyped paths, and the empty
-// value for a slice or map. Slice and map columns are usually NOT NULL with
+// nil (SQL NULL) for pointers, interfaces, types such as sql.NullInt64 whose
+// zero value is NULL, and untyped paths, and the empty value for a slice or
+// map. Slice and map columns are usually NOT NULL with
 // an empty default, where NULL fails the write, and empty is a valid cleared
 // value for a nullable one too — so clearing empties them on every backend.
 func (p *PathSchema) clearedValue() any {
@@ -375,7 +376,7 @@ func clearsToEmptySlice(t reflect.Type) bool {
 // acceptsNull reports whether a path of Go type t bounded by b accepts null:
 // t can hold null, and null does not clear it to an empty array b refuses.
 func acceptsNull(t reflect.Type, b core.Bounds) bool {
-	return isNullableType(t) && !mustHoldElement(t, b)
+	return core.IsNullableType(t) && !mustHoldElement(t, b)
 }
 
 // mustHoldElement reports a slice path, which a clear empties, whose least

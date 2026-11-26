@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 )
@@ -64,9 +67,11 @@ func TestPostgresNativeRowCompare(t *testing.T) {
 	}
 }
 
-// TestSQLiteExpansion asserts the lexicographic OR-expansion with
-// numbered (reusable) placeholders and one bound arg per key.
-func TestSQLiteExpansion(t *testing.T) {
+// TestSQLiteNativeRowCompare: SQLite, like PostgreSQL, seeks a
+// uniform-direction composite keyset with a row-value comparison, its text
+// keys compared by code point through the operand's collation, which
+// leaves the columns bare for the planner.
+func TestSQLiteNativeRowCompare(t *testing.T) {
 	cur := mintCursor(t, false,
 		filter.CursorField{Name: "created_at", Value: "2026-01-15T10:30:00Z", Direction: filter.SortDesc},
 		filter.CursorField{Name: "id", Value: "01HF3K", Direction: filter.SortDesc},
@@ -76,16 +81,30 @@ func TestSQLiteExpansion(t *testing.T) {
 		filter.ListSort("-created_at"),
 		filter.ListCursor(cur),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := `(("items"."created_at" < ?1) OR ("items"."created_at" = ?1 AND "items"."id" COLLATE BINARY < ?2))`
-	if !strings.Contains(result.Where, want) {
-		t.Errorf("expected expansion %q, got %q", want, result.Where)
-	}
-	if len(result.Args) != 2 {
-		t.Errorf("expected 2 cursor args (placeholders reuse, args don't duplicate), got %d", len(result.Args))
-	}
+	require.NoError(t, err)
+	assert.Contains(t, result.Where, `("items"."created_at", "items"."id") < (?1, ?2 COLLATE BINARY)`, "the operand carries the collation")
+	assert.Equal(t, `ORDER BY "items"."created_at" DESC, "items"."id" COLLATE BINARY DESC`, result.OrderBy)
+	assert.Len(t, result.Args, 2)
+}
+
+// TestSQLiteExpansion asserts the lexicographic OR-expansion a keyset of
+// mixed directions takes, with numbered (reusable) placeholders and one
+// bound arg per key.
+func TestSQLiteExpansion(t *testing.T) {
+	cur := mintCursor(t, false,
+		filter.CursorField{Name: "name", Value: "m", Direction: filter.SortAsc},
+		filter.CursorField{Name: "created_at", Value: "2026-01-15T10:30:00Z", Direction: filter.SortDesc},
+		filter.CursorField{Name: "id", Value: "01HF3K", Direction: filter.SortAsc},
+	)
+	lq := mustListQuery(t, testSchema(), testSortSchema(), filter.SQLiteDialect{})
+	result, err := lq.Build(
+		filter.ListSort("name,-created_at"),
+		filter.ListCursor(cur),
+	)
+	require.NoError(t, err)
+	want := `(("items"."name" > ?1) OR ("items"."name" = ?1 AND "items"."created_at" < ?2) OR ("items"."name" = ?1 AND "items"."created_at" = ?2 AND "items"."id" COLLATE BINARY > ?3))`
+	assert.Contains(t, result.Where, want)
+	assert.Len(t, result.Args, 3, "placeholders reuse, args don't duplicate")
 }
 
 // TestMixedDirectionsExpandOnPostgres: mixed per-field directions cannot

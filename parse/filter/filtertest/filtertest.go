@@ -30,7 +30,7 @@ type Record struct {
 	Amount *decimal.Decimal   `json:"amount" db:"amount" parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin,null,not_null,exists"`
 	Active *bool              `json:"active" db:"active" parse:"filter" filter_ops:"eq,ne,in,nin,null,not_null,exists"`
 	At     *time.Time         `json:"at"     db:"at"     parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin,null,not_null,exists"`
-	Ref    *uuid.UUID         `json:"ref"    db:"ref"    parse:"filter" filter_ops:"eq,ne,in,nin,null,not_null,exists"`
+	Ref    *uuid.UUID         `json:"ref"    db:"ref"    parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin,null,not_null,exists"`
 	Doc    json.RawMessage    `json:"doc"    db:"doc"    parse:"filter" filter_ops:"eq,ne,contains,null,not_null,exists"`
 	Tags   []string           `json:"tags"   db:"tags"   parse:"filter" filter_ops:"contains,null,not_null,exists"`
 	Loc    map[string]float64 `json:"loc"    db:"loc"    parse:"filter" filter_ops:"near,within,intersects,null,not_null,exists" geo:"jsonb"`

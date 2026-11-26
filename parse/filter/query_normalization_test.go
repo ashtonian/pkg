@@ -123,7 +123,7 @@ func TestDeterministicSQLText(t *testing.T) {
 
 // TestRepeatedQueryParamsBecomeIn: ?tag=a&tag=b silently dropped b.
 func TestRepeatedQueryParamsBecomeIn(t *testing.T) {
-	p := filter.NewQueryParamParser(testSchema())
+	p := queryParams(t, testSchema())
 	ast, err := p.Parse(url.Values{"status": {"active", "inactive"}})
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +152,7 @@ func TestFieldNamedLikeSuffixNotSplit(t *testing.T) {
 			},
 		},
 	}
-	p := filter.NewQueryParamParser(schema)
+	p := queryParams(t, schema)
 	ast, err := p.Parse(url.Values{"email_like": {"x@y.z"}})
 	if err != nil {
 		t.Fatalf("exact field name split as suffix: %v", err)

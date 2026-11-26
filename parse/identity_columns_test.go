@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -31,11 +33,13 @@ func TestNewResource_RefusesIdentityDeclarations(t *testing.T) {
 		Name string `json:"name" db:"name" parse:"patch"`
 	}
 	type softDeleted struct {
-		ID        string     `json:"id"         db:"id"`
-		TenantID  string     `json:"tenant_id"  db:"tenant_id"`
-		Deleted   bool       `json:"deleted"    db:"deleted"`
-		N         int        `json:"n"          db:"n"`
-		DeletedAt *time.Time `json:"deleted_at" db:"deleted_at"`
+		ID        string          `json:"id"         db:"id"`
+		TenantID  string          `json:"tenant_id"  db:"tenant_id"`
+		Deleted   bool            `json:"deleted"    db:"deleted"`
+		N         int             `json:"n"          db:"n"`
+		DeletedAt *time.Time      `json:"deleted_at" db:"deleted_at"`
+		Ref       uuid.UUID       `json:"ref"        db:"ref"`
+		Amount    decimal.Decimal `json:"amount"     db:"amount"`
 	}
 	type immutablePatch struct {
 		ID   string `json:"id"   db:"id"`
@@ -70,6 +74,16 @@ func TestNewResource_RefusesIdentityDeclarations(t *testing.T) {
 			_, err := parse.NewResource[softDeleted]("odds", parse.DeletedColumn("n"))
 			return err
 		}, `parse: odds: deleted column "n" is int, which cannot hold NULL`},
+		// Each is an sql.Scanner that never holds NULL: the UUID scans NULL
+		// as the nil UUID it writes back, and the decimal refuses it.
+		{"a UUID deleted column", func() error {
+			_, err := parse.NewResource[softDeleted]("odds", parse.DeletedColumn("ref"))
+			return err
+		}, `parse: odds: deleted column "ref" is uuid.UUID, which cannot hold NULL`},
+		{"a decimal deleted column", func() error {
+			_, err := parse.NewResource[softDeleted]("odds", parse.DeletedColumn("amount"))
+			return err
+		}, `parse: odds: deleted column "amount" is decimal.Decimal, which cannot hold NULL`},
 		{"an immutable patched field", func() error { _, err := parse.NewResource[immutablePatch]("imms"); return err },
 			`field Slug: an immutable field cannot have the patch capability`},
 	} {

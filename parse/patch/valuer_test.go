@@ -3,6 +3,7 @@
 package patch_test
 
 import (
+	"database/sql"
 	"database/sql/driver"
 	"strings"
 	"testing"
@@ -53,5 +54,39 @@ func TestPatch_ADatabaseValueColumnBindsTheValue(t *testing.T) {
 		v, err := valuer.Value()
 		require.NoError(t, err)
 		assert.Equal(t, "200", v, dialect.Name())
+	}
+}
+
+// A column of an sql.Null type holds NULL as the type's zero value: its path
+// accepts null and remove, SQL writes NULL, and Apply stores the zero value,
+// so a row cleared in Go reads as one cleared in the database.
+func TestPatch_AnSQLNullColumnClearsToNull(t *testing.T) {
+	type Ranked struct {
+		ID    string        `json:"id"`
+		Score sql.NullInt64 `json:"score" db:"score" parse:"patch" patch_ops:"replace,remove"`
+	}
+	gen := core.NewSchemaGenerator()
+	schema, err := patch.GeneratePatchSchema[Ranked](gen)
+	require.NoError(t, err)
+	path, ok := schema.Path("/score")
+	require.True(t, ok)
+	assert.True(t, path.Nullable())
+
+	applier, err := patch.NewApplier[Ranked](gen, nil)
+	require.NoError(t, err)
+	merge, err := patch.ParseMergePatch([]byte(`{"score":null}`), schema, nil)
+	require.NoError(t, err)
+	remove, err := patch.NewParser(schema, nil).Parse([]byte(`[{"op":"remove","path":"/score"}]`))
+	require.NoError(t, err)
+	for body, parsed := range map[string]*patch.ParsedPatch{"merge null": merge, "remove": remove} {
+		for _, dialect := range []patch.SQLDialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
+			built, err := patch.BuildPatchSQL(parsed, dialect)
+			require.NoError(t, err, body)
+			assert.Equal(t, `"score" = NULL`, built.SetClause, "%s %s", dialect.Name(), body)
+			assert.Empty(t, built.Args, "%s %s", dialect.Name(), body)
+		}
+		got, err := applier.Apply(parsed, Ranked{ID: "a", Score: sql.NullInt64{Int64: 3, Valid: true}})
+		require.NoError(t, err, body)
+		assert.Equal(t, sql.NullInt64{}, got.Score, body)
 	}
 }

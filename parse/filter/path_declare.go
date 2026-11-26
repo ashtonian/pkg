@@ -151,7 +151,7 @@ func newPathField(doc *FieldSchema, segs []string, d PathDecl, kind reflect.Kind
 		f.Elem = d.Elem
 		f.Element = newElement(f)
 	}
-	if err := checkOperators(f); err != nil {
+	if err := CheckOperators(f); err != nil {
 		return nil, err
 	}
 	if err := setPathFacet(f, d.Facet); err != nil {

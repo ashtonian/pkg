@@ -126,7 +126,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 					if mustHoldElement(field.Type(), bounds) {
 						return nil, fmt.Errorf("field %s: patch operation remove empties the array, which minitems %d refuses", field.GoName(), *bounds.MinItems)
 					}
-					return nil, fmt.Errorf("field %s: patch operation remove requires a nullable Go type (pointer, slice, map), got %s", field.GoName(), gowalker.TypeText(field.Type()))
+					return nil, fmt.Errorf("field %s: patch operation remove requires a type that holds null (a pointer, slice, map or sql.Null type: core.IsNullableType), got %s", field.GoName(), gowalker.TypeText(field.Type()))
 				}
 				if op == PatchOpArrayAppend && isFixedArray(field.Type()) {
 					return nil, fmt.Errorf("field %s: array_append cannot grow a fixed-size array (%s)", field.GoName(), gowalker.TypeText(field.Type()))
@@ -262,15 +262,6 @@ func isFixedArray(t reflect.Type) bool {
 	return t.Kind() == reflect.Array
 }
 
-// isNullableType reports whether a Go type can represent null.
-func isNullableType(t reflect.Type) bool {
-	switch t.Kind() {
-	case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Interface:
-		return true
-	}
-	return false
-}
-
 // defaultPatchOps maps FieldType to standard patch operators. It is
 // unexported so no caller can change another's defaults; DefaultPatchOps
 // returns a copy.
@@ -380,8 +371,8 @@ func checkRelationKeyType(t reflect.Type) error {
 	if t.Kind() != reflect.Slice {
 		return fmt.Errorf("a relation's membership is a slice of keys, not %s", gowalker.TypeText(t))
 	}
-	if isNullableType(t.Elem()) {
-		return fmt.Errorf("a relation's keys are never null; declare them as %s's element without a pointer", gowalker.TypeText(t))
+	if core.IsNullableType(t.Elem()) {
+		return fmt.Errorf("a relation's keys are never null, and %s's element %s can hold null; declare a key type without one", gowalker.TypeText(t), gowalker.TypeText(t.Elem()))
 	}
 	return nil
 }
