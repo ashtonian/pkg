@@ -441,8 +441,10 @@ func checkSQLCompilable(op *PatchOperation) error {
 // returns its placeholder; a method binds in the order its SQL reads, so
 // SQL text and arguments are built together and cannot disagree. A member
 // is a JSON Pointer's tokens below the column, each an object member's
-// name, never an array index; doc is the expression MemberDocument
-// renders, or one SetMember or RemoveMember returned for it.
+// name, never an array index, and valid UTF-8 without U+0000, which
+// neither database holds in text: ParsePatch refuses a path holding it as
+// E2075 (core.CheckText). doc is the expression MemberDocument renders, or
+// one SetMember or RemoveMember returned for it.
 //
 // A method refuses what its database cannot write or test with a
 // *core.ParseError whose Code is core.CodeOpNotSQLCompilable and whose

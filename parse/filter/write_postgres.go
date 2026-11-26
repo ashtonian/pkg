@@ -167,6 +167,8 @@ func (PostgresDialect) IsObject(doc string, member []string, bind func(any) stri
 }
 
 // pgMemberPath binds member as the text[] path #>, #- and jsonb_set take.
+// No token holds U+0000, which a text element cannot: patch refuses one
+// where it parses the path.
 func pgMemberPath(member []string, bind func(any) string) string {
 	return bind(slices.Clone(member)) + "::text[]"
 }

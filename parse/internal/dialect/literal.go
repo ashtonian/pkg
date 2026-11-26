@@ -27,7 +27,10 @@ func (SQLite) QuoteLiteral(s string) string {
 // members' names from the document down: each label quoted, its
 // backslashes and double quotes escaped, so it reads as itself whatever it
 // holds. A "." or "[" in a label starts no other step, and a quoted label
-// never indexes an array. Bound, the path is complete; written into a
+// never indexes an array. No label holds U+0000, at which SQLite ends the
+// path, so `$.a` + U+0000 + `b` reads member a: patch refuses a path
+// holding it where it parses one (core.CheckText), and a declared filter
+// path is an identifier. Bound, the path is complete; written into a
 // statement, it goes through SQLite.QuoteLiteral.
 func SQLiteJSONPath(labels []string) string {
 	var b strings.Builder
