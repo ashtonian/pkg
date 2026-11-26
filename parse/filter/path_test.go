@@ -218,6 +218,30 @@ func TestPaths_WithPathsIsARequestView(t *testing.T) {
 	}
 }
 
+// A declared path keeps its own copy of the declaration's operators and
+// facet ranges: changing the declaration after WithPaths, or reusing its
+// slices for another path, leaves the schema as it was declared.
+func TestPaths_WithPathsCopiesTheDeclaration(t *testing.T) {
+	base, err := filter.GenerateFilterSchema[pathItem](core.NewSchemaGenerator())
+	require.NoError(t, err)
+	minPrice := 10.0
+	ops := []filter.FilterOperator{filter.OpEq, filter.OpGt}
+	facet := &filter.FacetSchema{Type: filter.FacetTypeRange, Ranges: []filter.FacetRange{{Key: "cheap", Max: &minPrice}, {Key: "dear", Min: &minPrice}}}
+	view, err := base.WithPaths(filter.PathDecl{Path: "attrs.price", Type: core.FieldTypeFloat, Ops: ops, Facet: facet})
+	require.NoError(t, err)
+
+	ops[1] = filter.OpLt
+	minPrice = 99
+	facet.Ranges[0].Key = "changed"
+
+	f := view.Fields["attrs.price"]
+	assert.Equal(t, []filter.FilterOperator{filter.OpEq, filter.OpGt}, f.AllowedOperators)
+	assert.Equal(t, "cheap", f.FacetSchema.Ranges[0].Key)
+	assert.InDelta(t, 10.0, *f.FacetSchema.Ranges[0].Max, 0)
+	assert.InDelta(t, 10.0, *f.FacetSchema.Ranges[1].Min, 0)
+	assert.Empty(t, facet.Field, "the caller's facet is not written to")
+}
+
 func TestPaths_SQLiteRendering(t *testing.T) {
 	s, err := filter.GenerateFilterSchema[pathItem](core.NewSchemaGenerator())
 	require.NoError(t, err)
