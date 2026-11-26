@@ -94,7 +94,7 @@ func TestCompositeKey_UpdateTargets(t *testing.T) {
 
 	plan, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByKey(parse.Key{"w1", "a"}), scope)
 	require.NoError(t, err)
-	assert.Contains(t, plan.Owner.SQL, `WHERE ("stock_rows"."tenant_id" = $2 AND "stock_rows"."deleted_at" IS NULL AND ("stock_rows"."warehouse_id" = $3 AND "stock_rows"."sku" = $4))`)
+	assert.Contains(t, plan.Owner.SQL, `WHERE (("stock_rows"."tenant_id" = $2 AND "stock_rows"."deleted_at" IS NULL) AND ("stock_rows"."warehouse_id" = $3 AND "stock_rows"."sku" = $4))`)
 	assert.Equal(t, []any{int64(7), "t1", "w1", "a"}, plan.Owner.Args)
 
 	plan, err = r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByKeys(parse.Key{"w1", "a"}, parse.Key{"w2", "b"}), scope)

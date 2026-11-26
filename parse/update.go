@@ -206,10 +206,10 @@ func (p *UpdatePlan) ConflictError(op int64) error {
 func (p *UpdatePlan) HasRelations() bool { return len(p.relations) > 0 }
 
 // BuildUpdate compiles a patch into the statement that applies it to target
-// under scope s: the patch's SET clause, then a WHERE of the target, the
-// tenant floor, live rows only and s.Policy, then RETURNING the resource's
-// Columns; SkipUnchanged also ANDs the patch's change predicate into the
-// WHERE. A patch that writes members of a JSON document ANDs in the
+// under scope s: the patch's SET clause, then a WHERE of the floor a list in
+// s reads (the tenant, live rows only, s.Policy) and the target, then
+// RETURNING the resource's Columns; SkipUnchanged also ANDs the patch's
+// change predicate into the WHERE. A patch that writes members of a JSON document ANDs in the
 // precondition RFC 6902 sets those operations as well, and is planned with
 // Current and Conflict, so a target row it does not apply to fails the
 // update, as ApplyValidatedPatch fails it, rather than being skipped. A
@@ -236,12 +236,9 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 	if target.keys, err = r.targetKeys(target.keys); err != nil {
 		return nil, err
 	}
-	tenant, err := r.bindTenant(s.Tenant)
+	scope, err := r.bindUpdateScope(s)
 	if err != nil {
 		return nil, err
-	}
-	if s.Governance != nil || s.IncludeDeleted {
-		return nil, fmt.Errorf("parse: %s: %w", r.table, ErrUpdateScope)
 	}
 	cfg, patchOpts, err := r.updateOptions(opts)
 	if err != nil {
@@ -255,10 +252,6 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		return nil, err
 	}
 
-	// One instant for every statement: Owner and Current split one set of
-	// rows, so a policy token (`now-1h`) must admit the same rows in each.
-	now := r.cfg.Now()
-	scope := updateScope{tenant: tenant, policy: s.Policy, related: s.Related, now: now}
 	where, args, err := r.updateWhere(d, target, scope, set.ParamCount)
 	if err != nil {
 		return nil, err
@@ -282,7 +275,7 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 	if err := r.checkTargets(d, changed...); err != nil {
 		return nil, err
 	}
-	plan := &UpdatePlan{relations: set.RelationOps, dialect: d, fields: r.filterSchema, table: r.table, tenant: tenant, related: s.Related, now: now}
+	plan := &UpdatePlan{relations: set.RelationOps, dialect: d, fields: r.filterSchema, table: r.table, tenant: scope.tenant, related: scope.related, now: scope.now}
 	switch {
 	case set.SetClause != "":
 		// where's root is a group, which renders parenthesized, or one
@@ -461,18 +454,41 @@ type updateScope struct {
 	now     time.Time
 }
 
+// bindUpdateScope is the updateScope every statement of one plan binds,
+// BuildUpdate's and BuildUpdateBatch's alike. An update writes live rows of
+// one tenant, so Governance or IncludeDeleted is ErrUpdateScope; the tenant
+// is bound as bindTenant binds it. The clock is read once: Owner and
+// Current split one set of rows, so a policy token (`now-1h`) must admit
+// the same rows in each.
+func (r *Resource[T]) bindUpdateScope(s Scope) (updateScope, error) {
+	if s.Governance != nil || s.IncludeDeleted {
+		return updateScope{}, fmt.Errorf("parse: %s: %w", r.table, ErrUpdateScope)
+	}
+	tenant, err := r.bindTenant(s.Tenant)
+	if err != nil {
+		return updateScope{}, err
+	}
+	scope := updateScope{tenant: tenant, policy: s.Policy, related: s.Related, now: r.cfg.Now()}
+	return scope, nil
+}
+
 // updateWhere is the WHERE every update statement carries, its placeholders
-// after the SET clause's offset ones, compiled for d.
+// after the SET clause's offset ones, compiled for d: the floor a list in
+// the same scope reads (filter.ComposeConstraints: the tenant, live rows,
+// the policy), ANDed with the target.
 func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s updateScope, offset int) (string, []any, error) {
-	pc := filter.BuildBaseConstraints(r.tenant, s.tenant, r.deleted, false)
+	pc := filter.ComposeConstraints(filter.RepositoryScope{TenantColumn: r.tenant, TenantID: s.tenant, DeleteColumn: r.deleted}, nil, s.policy)
+	var key *filter.PolicyConstraint
 	switch {
 	case len(target.keys) == 1:
-		pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Fields: r.pk, Operator: filter.OpEq, Value: target.keys[0]})
+		key = &filter.PolicyConstraint{Fields: r.pk, Operator: filter.OpEq, Value: target.keys[0]}
 	case len(target.keys) > 1:
-		pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Fields: r.pk, Operator: filter.OpIn, Value: target.keys})
+		key = &filter.PolicyConstraint{Fields: r.pk, Operator: filter.OpIn, Value: target.keys}
 	}
-	if s.policy != nil && !s.policy.IsEmpty() {
-		pc.And = append(pc.And, s.policy)
+	if key != nil {
+		// ComposeConstraints returns a new root, so the target extends no
+		// caller's policy tree.
+		pc.And = append(pc.And, &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{key}})
 	}
 	var userAST *filter.FilterAST
 	if len(target.keys) == 0 {
