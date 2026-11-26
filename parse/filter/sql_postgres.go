@@ -533,12 +533,12 @@ func pgGeography(d dialect.Dialect, field *FieldSchema) string {
 	return field.sql(d) + "::geography"
 }
 
-// pgJSONBPoint builds the point geometry of a JSONB {lat, lon} column. The
-// keys were validated as identifiers at schema generation.
+// pgJSONBPoint builds the point geometry of a JSONB {lat, lon} column, each
+// key a string literal (dialect.StringLiteral).
 func pgJSONBPoint(d dialect.Dialect, field *FieldSchema) string {
 	latKey, lonKey := geoKeys(field)
-	return fmt.Sprintf("ST_SetSRID(ST_MakePoint((%s->>'%s')::float8, (%s->>'%s')::float8), 4326)",
-		field.sql(d), lonKey, field.sql(d), latKey)
+	return fmt.Sprintf("ST_SetSRID(ST_MakePoint((%s->>%s)::float8, (%s->>%s)::float8), 4326)",
+		field.sql(d), dialect.StringLiteral(lonKey), field.sql(d), dialect.StringLiteral(latKey))
 }
 
 // MarshalValue serializes a value for PostgreSQL parameter binding.
@@ -588,6 +588,10 @@ func (d PostgresDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
 		return value, nil
 	}
 }
+
+// StoresAsText reports false: PostgreSQL stores every value in a type of
+// its own, which the driver scans.
+func (PostgresDialect) StoresAsText(core.FieldType) bool { return false }
 
 // CTEMaterializeHint returns " MATERIALIZED" so PG ≥ 12 doesn't inline a
 // multi-referenced CTE. Critical for BuildFacetQuery so the policy-merged

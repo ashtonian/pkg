@@ -7,7 +7,6 @@ import (
 	jsonpatch "github.com/evanphx/json-patch/v5"
 
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/internal/rfc6902"
 )
 
 // jsonPatchRun applies runs of RFC 6902 operations to a document with
@@ -29,7 +28,7 @@ func (r *jsonPatchRun) apply(doc map[string]any, ops []map[string]any, indexes [
 	// Copies are applied individually, so charge their source size rather than
 	// document growth (overwriting an existing value may not grow it at all).
 	for k, op := range ops {
-		if from, hasFrom := op[rfc6902.From].(string); hasFrom && op[rfc6902.Op] == string(PatchOpCopy) {
+		if from, hasFrom := op[memberFrom].(string); hasFrom && op[memberOp] == string(PatchOpCopy) {
 			if value, ok := pointerValue(doc, from); ok {
 				encoded, err := r.codec.Encode(value)
 				if err != nil {
@@ -111,7 +110,7 @@ func (r *jsonPatchRun) escapeEmptyKeys(doc map[string]any, ops []map[string]any)
 	needsEscape := false
 	used := make(map[string]bool)
 	for _, op := range ops {
-		for _, key := range []string{rfc6902.Path, rfc6902.From} {
+		for _, key := range []string{memberPath, memberFrom} {
 			if pointer, ok := op[key].(string); ok {
 				tokens, err := core.ParsePointer(pointer)
 				if err != nil {
@@ -153,14 +152,14 @@ func (r *jsonPatchRun) escapeEmptyKeys(doc map[string]any, ops []map[string]any)
 	}
 	collect(doc)
 	for _, op := range wire {
-		collect(op[rfc6902.Value])
+		collect(op[memberValue])
 	}
 	sentinel := "\x00"
 	for used[sentinel] {
 		sentinel += "\x00"
 	}
 	for _, op := range wire {
-		for _, key := range []string{rfc6902.Path, rfc6902.From} {
+		for _, key := range []string{memberPath, memberFrom} {
 			if pointer, ok := op[key].(string); ok {
 				// Split the encoded pointer so escaped slashes and tildes stay intact.
 				tokens := strings.Split(pointer, "/")
@@ -172,8 +171,8 @@ func (r *jsonPatchRun) escapeEmptyKeys(doc map[string]any, ops []map[string]any)
 				op[key] = strings.Join(tokens, "/")
 			}
 		}
-		if value, ok := op[rfc6902.Value]; ok {
-			op[rfc6902.Value] = renameKey(value, "", sentinel)
+		if value, ok := op[memberValue]; ok {
+			op[memberValue] = renameKey(value, "", sentinel)
 		}
 	}
 	restore := func(v map[string]any) map[string]any { return renameMapKey(v, sentinel, "") }

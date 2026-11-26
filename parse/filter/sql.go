@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -19,7 +20,13 @@ import (
 // renumber of `$1` never substring-corrupts a multi-digit `$10` / `$11`.
 var rawPlaceholderRe = regexp.MustCompile(`\$(\d+)`)
 
-// Dialect generates database-specific SQL.
+// Dialect generates database-specific SQL: every piece of SQL parse writes
+// whose form differs between databases is one of its methods, for filters,
+// lists, facets and includes here, for patches (the methods
+// patch.SQLDialect and patch.RelationDialect name), and for a row scan
+// (StoresAsText). Nothing chooses SQL by which dialect it has, so a SQL
+// provider is one type implementing Dialect; PostgresDialect and
+// SQLiteDialect are the two there are.
 type Dialect interface {
 	dialect.Dialect
 
@@ -178,6 +185,28 @@ type Dialect interface {
 	// search renders a free-text search of schema's fields for query, its
 	// parameters numbered after startIdx.
 	search(schema *SearchSchema, query string, startIdx int) (*searchCondition, error)
+
+	// The SQL a patch writes, documented method by method where patch
+	// consumes it (patch.SQLDialect, patch.RelationDialect): a changed
+	// column's condition, an RFC 7396 merge, a native array append, a JSON
+	// document member's read, set, removal and preconditions, and the rows
+	// a pair table's insert reads when no target table holds its values.
+	ChangedCondition(column, expr string, t core.TypeInfo) string
+	MergePatch(doc string, storage core.SQLType, patch map[string]any, bind func(any) string) (string, error)
+	ArrayAppend(array string, element any, bind func(any) string) (string, error)
+	MemberDocument(expr string) string
+	SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) string
+	RemoveMember(doc string, member []string, bind func(any) string) string
+	HasMember(doc string, member []string, bind func(any) string) string
+	IsObject(doc string, member []string, bind func(any) string) string
+	RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *dialect.PairTenant, bind func(any) string) (dialect.PairRows, error)
+
+	// StoresAsText reports whether the database stores a value of type t,
+	// in a column declared no JSON type, as text a row scan decodes rather
+	// than the driver's own value: on SQLite a timestamp as its canonical
+	// text (core.FormatTimestamp), a document or an array as JSON.
+	// parse.RowScanner decodes what it reports; MarshalValue writes it.
+	StoresAsText(t core.FieldType) bool
 }
 
 // ErrUnknownDSN is returned by DialectFromDSN for a DSN that names no

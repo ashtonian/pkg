@@ -15,7 +15,6 @@ import (
 	"github.com/ashtonian/pkg/jsonvalue"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/jsonmerge"
-	"github.com/ashtonian/pkg/parse/internal/rfc6902"
 )
 
 // ErrUnparsed is returned for a ParsedPatch no parser produced: one assembled
@@ -916,13 +915,13 @@ func wireOp(op *PatchOperation) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	w := map[string]any{rfc6902.Op: string(op.Op), rfc6902.Path: op.Path}
+	w := map[string]any{memberOp: string(op.Op), memberPath: op.Path}
 	switch op.Op {
 	case PatchOpMove, PatchOpCopy:
-		w[rfc6902.From] = op.From
+		w[memberFrom] = op.From
 	case PatchOpRemove:
 	default:
-		w[rfc6902.Value] = value
+		w[memberValue] = value
 	}
 	return w, nil
 }
@@ -940,7 +939,7 @@ func wireValue(op *PatchOperation) (any, error) {
 
 // addOp is the RFC 6902 operation adding value at path.
 func addOp(path string, value any) map[string]any {
-	return map[string]any{rfc6902.Op: string(PatchOpAdd), rfc6902.Path: path, rfc6902.Value: value}
+	return map[string]any{memberOp: string(PatchOpAdd), memberPath: path, memberValue: value}
 }
 
 // pointerValue reads the value at a JSON Pointer in a decoded document,

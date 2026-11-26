@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"cmp"
 	"database/sql/driver"
 	"encoding"
 	"fmt"
@@ -66,13 +65,8 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			}
 		}
 		fieldName := field.External()
-		if tags.Parse.Filter && fieldName == "" && tags.Relation != "" {
-			// A virtual relation field conventionally carries `json:"-"`
-			// to hide it from response payloads, and still needs an
-			// addressable name. Generators can preserve their
-			// declared name with relation_name; otherwise use snake_case
-			// of the struct field name.
-			fieldName = cmp.Or(tags.RelationName, core.SnakeCase(field.GoName()))
+		if tags.Relation != "" {
+			fieldName = field.RelationName()
 		}
 		if !tags.Parse.Filter || fieldName == "" {
 			if c, ok := policyColumn(g, tableName, field); ok {

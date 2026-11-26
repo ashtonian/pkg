@@ -12,7 +12,6 @@ import (
 	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/jsonvalue"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/internal/dialect"
 	"github.com/ashtonian/pkg/parse/internal/jsonkeys"
 )
 
@@ -36,7 +35,8 @@ import (
 // declared JSON or JSONB (ColumnType), for the columns ScanJSON names, and
 // on SQLite, which stores them as JSON text, for every document and array
 // field (core.TypeOf) whose type is not an sql.Scanner. A timestamp on
-// SQLite is its text (core.FormatTimestamp) and is parsed. The driver scans
+// SQLite is its text (core.FormatTimestamp) and is parsed. The dialect says
+// which values it stores as text (Dialect.StoresAsText). The driver scans
 // every other column into its field.
 type RowScanner[T any] struct {
 	table   string
@@ -100,12 +100,11 @@ func (r *Resource[T]) RowScanner(d Dialect, opts ...ScanOption) (*RowScanner[T],
 			return nil, fmt.Errorf("parse: %s: ScanJSON names %q: %w", r.table, name, err)
 		}
 	}
-	sqlite := dialect.KindOf(d) == dialect.KindSQLite
 	scanner := &RowScanner[T]{table: r.table, columns: make([]rowColumn, len(r.read))}
 	for i, name := range r.read {
 		f := r.columnFields[name]
 		storage, declared := r.sqlTypes[name]
-		c := rowColumn{name: name, field: f, decode: rowDecodeOf(f.Type(), declared && storage.IsJSON() || slices.Contains(cfg.json, name), sqlite)}
+		c := rowColumn{name: name, field: f, decode: rowDecodeOf(f.Type(), declared && storage.IsJSON() || slices.Contains(cfg.json, name), d)}
 		if c.decode == decodeJSON {
 			scanner.documents++
 		}
@@ -115,16 +114,20 @@ func (r *Resource[T]) RowScanner(d Dialect, opts ...ScanOption) (*RowScanner[T],
 }
 
 // rowDecodeOf is the rule for a field of type t: json when the column holds
-// JSON by declaration or by the result's own type; otherwise what SQLite
-// stores as text and the driver cannot scan into t.
-func rowDecodeOf(t reflect.Type, json, sqlite bool) rowDecode {
+// JSON by declaration or by the result's own type; otherwise what d stores
+// as text (Dialect.StoresAsText) and the driver cannot scan into t.
+func rowDecodeOf(t reflect.Type, json bool, d Dialect) rowDecode {
 	switch {
 	case json:
 		return decodeJSON
-	case !sqlite || scans(t):
+	case scans(t):
 		return decodeDriver
 	}
-	switch info := core.TypeOf(t); {
+	info := core.TypeOf(t)
+	if !d.StoresAsText(info.Type) {
+		return decodeDriver
+	}
+	switch {
 	case info.Type == core.FieldTypeTimestamp:
 		return decodeTimestamp
 	case core.IsDocument(info.Type) || info.Type == core.FieldTypeArray:
