@@ -290,7 +290,7 @@ func (r *memberResolver) ask(ctx context.Context, l *Lookup) ([]any, bool, error
 	if l.Filter != nil {
 		rl, ok := r.lookup.(RelationLookup)
 		if !ok {
-			return nil, false, invalidLookup(fmt.Sprintf("lookup on %s filters its rows; the membership lookup cannot evaluate filters (RelationLookup)", l.Table))
+			return nil, false, fmt.Errorf("lookup on %s filters its rows; the membership lookup cannot evaluate filters (RelationLookup): %w", l.Table, ErrRelationUnresolvable)
 		}
 		values, err = rl.LookupFilteredValues(ctx, l)
 	} else {

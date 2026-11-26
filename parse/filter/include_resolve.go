@@ -57,7 +57,7 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 		return out, nil
 	}
 	if lookup == nil {
-		return IncludeRows{}, invalidRelation(field, "needs an include lookup to be evaluated outside SQL")
+		return IncludeRows{}, unresolvableRelation(field, "needs an include lookup to be evaluated outside SQL")
 	}
 	for i, k := range ownerKeys {
 		if len(k) != len(rel.SourceColumns) {

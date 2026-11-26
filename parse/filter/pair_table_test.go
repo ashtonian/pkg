@@ -34,8 +34,8 @@ func TestPairTable_OperatorsBeyondEquality(t *testing.T) {
 	assert.Equal(t, []any{int64(3)}, res.Args)
 
 	_, err = filter.ResolveMemberships(context.Background(), filter.NewParsedFilter(parsed), noLookup{})
-	assert.Equal(t, filter.ECodeInvalidRelation.String(), errorCode(t, err))
-	assert.ErrorContains(t, err, "relation 'ranks' compares its key with $gt, which only SQL evaluates")
+	require.ErrorIs(t, err, filter.ErrRelationUnresolvable, "the server's backend cannot evaluate what its schema offers")
+	require.ErrorContains(t, err, "relation ranks compares its key with $gt, which only SQL evaluates")
 
 	for filterJSON, want := range map[string]string{
 		`{"ranks":{"$in":[]}}`:      "1=0",

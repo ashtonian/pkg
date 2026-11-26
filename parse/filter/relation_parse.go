@@ -26,7 +26,7 @@ func (p *FilterParser) parseRelated(field *FieldSchema, op FilterOperator, value
 		return p.parseElements(field, op, value, depth)
 	}
 	if field.Relation == nil || field.Related == nil {
-		return nil, invalidRelation(field, "has no target resource to filter")
+		return nil, unresolvableRelation(field, "has no target resource to filter")
 	}
 	if err := p.nestRelation(field); err != nil {
 		return nil, err
@@ -118,7 +118,7 @@ func relatedShorthand(n *FilterNode) (*FilterNode, error) {
 func relatedKeyField(f *FieldSchema, i int) (*FieldSchema, error) {
 	rel := f.Relation
 	if f.Related == nil {
-		return nil, invalidRelation(f, "has no target resource to type its key")
+		return nil, unresolvableRelation(f, "has no target resource to type its key")
 	}
 	name := rel.TargetColumns[i]
 	if rel.TargetTable != "" {
@@ -130,7 +130,7 @@ func relatedKeyField(f *FieldSchema, i int) (*FieldSchema, error) {
 	if k, ok := f.Related.Fields[name]; ok && k.Relation == nil {
 		return k, nil
 	}
-	return nil, invalidRelation(f, fmt.Sprintf("target %s declares no key field %q", rel.RelatedTable(), name))
+	return nil, unresolvableRelation(f, fmt.Sprintf("has a target, %s, that declares no key field %q", rel.RelatedTable(), name))
 }
 
 // parseElements parses `$some` / `$none` on a JSON array document: the
