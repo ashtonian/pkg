@@ -66,6 +66,11 @@ func TestApplier_AgreesWithSQLite(t *testing.T) {
 		{"replace a struct document member", false, `[{"op":"replace","path":"/dims/w","value":9}]`},
 		{"add and remove typed map members", false, `[{"op":"add","path":"/labels/new","value":"x"},{"op":"remove","path":"/labels/old"}]`},
 		{"members of a document the patch wrote whole", false, `[{"op":"replace","path":"/meta","value":{"a":1}},{"op":"add","path":"/meta/b","value":2}]`},
+		{"members of a removed map", false, `[{"op":"remove","path":"/meta"},{"op":"add","path":"/meta/x","value":1}]`},
+		{"members of a map cleared with null", false, `[{"op":"replace","path":"/meta","value":null},{"op":"add","path":"/meta/x","value":1}]`},
+		{"members of a removed typed map", false, `[{"op":"remove","path":"/labels"},{"op":"add","path":"/labels/a","value":"b"}]`},
+		{"a member, then the map cleared with null", false, `[{"op":"add","path":"/meta/x","value":1},{"op":"replace","path":"/meta","value":null}]`},
+		{"a member, then the map removed", false, `[{"op":"add","path":"/meta/x","value":1},{"op":"remove","path":"/meta"}]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var parsed *patch.ParsedPatch

@@ -297,30 +297,30 @@ func (a *Applier[T]) applyDirect(parsed *ParsedPatch, target T) (T, error) {
 		if err != nil {
 			return zero, err
 		}
+		value, cleared := wholeValue(op)
 		if op.Schema.SQLType.IsJSON() {
-			value := op.Value
-			if op.Op == PatchOpRemove || value == nil {
-				value = op.Schema.clearedValue()
-			}
 			if err := assignStoredJSON(fv, value); err != nil {
 				return zero, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("setting JSON field %s: %v", fieldName, err), Path: op.Path, Cause: err}
 			}
 			continue
 		}
-		if op.Op == PatchOpRemove || op.Value == nil {
-			if cleared := op.Schema.clearedValue(); cleared != nil {
-				fv.Set(reflect.ValueOf(cleared))
-			} else {
+		if cleared {
+			if value == nil {
 				fv.SetZero()
+			} else {
+				// clearedValue is a fresh value on every call: the result's own.
+				fv.Set(reflect.ValueOf(value))
 			}
 			continue
 		}
-		if err := assignValue(fv, op.Value, a.codec); err != nil {
-			return zero, &core.ParseError{
+		err = assignValue(fv, value, a.codec)
+		if err != nil {
+			invalid := &core.ParseError{
 				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
 				Message: fmt.Sprintf("setting field %s: %v", fieldName, err),
 				Path:    op.Path, Cause: err,
 			}
+			return zero, invalid
 		}
 	}
 	return out.value, nil
@@ -778,27 +778,24 @@ func wireOp(op *PatchOperation) (map[string]any, error) {
 	if tokens, err := core.ParsePointer(op.Path); err == nil && len(tokens) == 1 {
 		topLevel = true
 	}
-	// Clearing a top-level slice or map empties it (clearedValue); add also
-	// covers a member the encoding omitted.
-	if topLevel && (op.Op == PatchOpRemove || op.Value == nil) && op.Op != PatchOpMove && op.Op != PatchOpCopy && op.Op != PatchOpTest {
-		if cleared := op.Schema.clearedValue(); cleared != nil {
-			return addOp(op.Path, cleared), nil
+	// Top-level schema fields exist even when omitempty omits their current
+	// value, so writing or clearing one adds the value it leaves
+	// (wholeValue), as the direct path sets it; nested JSON members keep
+	// RFC 6902's existence requirements.
+	if topLevel && (op.Op == PatchOpAdd || op.Op == PatchOpReplace || op.Op == PatchOpRemove) {
+		value, cleared := wholeValue(op)
+		if cleared {
+			return addOp(op.Path, value), nil
 		}
+		wire, err := wireValue(op)
+		if err != nil {
+			return nil, err
+		}
+		return addOp(op.Path, wire), nil
 	}
 	value, err := wireValue(op)
 	if err != nil {
 		return nil, err
-	}
-	// Top-level schema fields exist even when omitempty omits their current
-	// value, so replacing or clearing one adds it, as the direct path sets it;
-	// nested JSON members keep RFC 6902's existence requirements.
-	if topLevel {
-		switch op.Op {
-		case PatchOpReplace:
-			return addOp(op.Path, value), nil
-		case PatchOpRemove:
-			return addOp(op.Path, nil), nil
-		}
 	}
 	w := map[string]any{rfc6902.Op: string(op.Op), rfc6902.Path: op.Path}
 	switch op.Op {

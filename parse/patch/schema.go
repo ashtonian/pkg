@@ -301,6 +301,18 @@ func (p *PathSchema) clearedValue() any {
 	return nil
 }
 
+// wholeValue is what op, an add, replace or remove of its whole field,
+// leaves there, and whether op cleared the field: op's value, or for a
+// remove or a null the path's clearedValue, nil where it clears to SQL
+// NULL. Apply and every SQL path start from it, so members written after a
+// clear, or a clear after members, leave one value on every backend.
+func wholeValue(op *PatchOperation) (value any, cleared bool) {
+	if op.Op == PatchOpRemove || op.Value == nil {
+		return op.Schema.clearedValue(), true
+	}
+	return op.Value, false
+}
+
 // clearsToEmptySlice reports a slice type a clear empties; []byte and
 // json.RawMessage clear to NULL.
 func clearsToEmptySlice(t reflect.Type) bool {
