@@ -214,6 +214,9 @@ func (s *Shape) Key() *Shape { return s.key }
 // read them, and [Schema.At] reports the conflict.
 func (s *Shape) Fields() []*Field { return append([]*Field(nil), s.fields...) }
 
+// NumFields returns the number of fields Fields returns, without copying them.
+func (s *Shape) NumFields() int { return len(s.fields) }
+
 // DeclaredView returns selected fields before inline expansion. Inline owners,
 // including empty ones, remain available for consumer validation and annotations.
 // It uses the same resolver decisions as Fields; skipped fields are absent.
@@ -439,6 +442,9 @@ type Field struct {
 	// caseStrict fields match only exactly in Shape.Match (FieldRule).
 	caseStrict bool
 	keys       []string
+	// ordinal is one more than the field's place in its struct's fields, so
+	// a handle no view lists keeps zero (Ordinal).
+	ordinal int
 }
 
 // Name returns the canonical visible name, or "" for a field kept without a
@@ -477,6 +483,13 @@ func (f *Field) Tag(key string) (Tag, bool) { return LookupTag(f.goField.Tag, ke
 
 // Shape returns the declared field type with its field-specific leaf rule.
 func (f *Field) Shape() *Shape { return f.shape }
+
+// Ordinal returns the field's place in [Shape.Fields] of the struct whose view
+// lists it, so a library can keep per-field state in a slice of
+// [Shape.NumFields] indexed alike, such as which members a decoder has met,
+// without a map. It is -1 for a handle no view lists: an inline owner, a
+// field kept without a name, and a shadowed or tied field's handle.
+func (f *Field) Ordinal() int { return f.ordinal - 1 }
 
 // DeclaringType is the struct that originally declared the Go field, even when
 // Fields exposes the handle through an inlined owner.
@@ -703,6 +716,9 @@ func (b *builder) resolve(s *Shape) error {
 				s.declarations[i].state = state
 			}
 		}
+	}
+	for i, f := range s.fields {
+		f.ordinal = i + 1
 	}
 	s.indexFolds()
 	return nil

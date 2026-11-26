@@ -292,6 +292,12 @@ Leaves retain raw type structure and its compilation-budget cost.
 `Shape.Fields()` returns visible handles in declaration/inline order. Each field
 provides its declared `Type`, raw `Tags`, Go `StructField`, declared `Shape`, copied physical `Index`,
 original `DeclaringType`, and copied `InlineParents` for inherited consumer metadata.
+`Shape.NumFields()` counts them without copying the list, and `Field.Ordinal()`
+is a handle's place in it, so a library keeps per-field state in a slice of
+`NumFields` entries instead of a map: a decoder marks the members it has met
+by the `Ordinal` of the field `MatchBytes` returns, and refuses one met twice.
+A handle no view lists has `Ordinal` -1: an inline owner, a field kept without
+a name, and a shadowed or tied field's handle from `Declarations`.
 `Field.GoSelector()` is the Go selector from the listing's struct, through
 those parents: `Audit.ID` for an `ID` promoted from an embedded `Audit`, the
 label every gowalker error gives a field, for an adapter's own diagnostics.
