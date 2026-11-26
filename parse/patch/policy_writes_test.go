@@ -172,6 +172,60 @@ func TestPolicy_ArrayElementsAndUnjudgeableValues(t *testing.T) {
 	}
 }
 
+// A constraint on an array path judges each element whichever operation
+// writes it: an element added or replaced by its own path included, and a
+// declared array inside a document written whole with its document. A write
+// it cannot judge as an element — a move or copy into one, a write inside
+// one — is refused; removing an element writes nothing.
+func TestPolicy_ArrayConstraintJudgesElementWrites(t *testing.T) {
+	transfer := []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpRemove, patch.PatchOpMove, patch.PatchOpCopy}
+	schema := newSchema("items", 20, map[string]*patch.PathSchema{
+		"/tags":        {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpArrayAppend}, DataType: core.FieldTypeArray, SQLColumn: "tags"},
+		"/tags/*":      {AllowedOps: transfer, DataType: core.FieldTypeAny},
+		"/tags/*/**":   {AllowedOps: transfer, DataType: core.FieldTypeAny},
+		"/doc":         {AllowedOps: transfer, DataType: core.FieldTypeJSON, SQLColumn: "doc"},
+		"/doc/**":      {AllowedOps: transfer, DataType: core.FieldTypeAny},
+		"/doc/roles":   {AllowedOps: transfer, DataType: core.FieldTypeArray},
+		"/doc/roles/*": {AllowedOps: transfer, DataType: core.FieldTypeAny},
+		"/other":       {AllowedOps: transfer, DataType: core.FieldTypeJSON, SQLColumn: "other"},
+	})
+	deny := patch.ValueConstraint{DeniedValues: []any{"admin", nil}}
+	pc := mustPolicy(t, patch.ConstrainValues("/tags", deny), patch.ConstrainValues("/doc/roles", deny))
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"add appended element", `[{"op":"add","path":"/tags/-","value":"admin"}]`, "E2085"},
+		{"add element at an index", `[{"op":"add","path":"/tags/0","value":"admin"}]`, "E2085"},
+		{"replace element", `[{"op":"replace","path":"/tags/0","value":"admin"}]`, "E2085"},
+		{"replace element with null", `[{"op":"replace","path":"/tags/0","value":null}]`, "E2085"},
+		{"add allowed element", `[{"op":"add","path":"/tags/-","value":"ok"}]`, ""},
+		{"remove element", `[{"op":"remove","path":"/tags/0"}]`, ""},
+		{"move element out", `[{"op":"move","from":"/tags/0","path":"/other"}]`, ""},
+		{"copy into element", `[{"op":"copy","from":"/other","path":"/tags/-"}]`, "E2085"},
+		{"move into element", `[{"op":"move","from":"/other","path":"/tags/0"}]`, "E2085"},
+		{"write inside element", `[{"op":"add","path":"/tags/0/name","value":"x"}]`, "E2085"},
+		{"remove inside element", `[{"op":"remove","path":"/tags/0/name"}]`, "E2085"},
+		{"declared array in a document set whole", `[{"op":"replace","path":"/doc","value":{"roles":["ok","admin"]}}]`, "E2085"},
+		{"declared array member set whole", `[{"op":"replace","path":"/doc/roles","value":["admin"]}]`, "E2085"},
+		{"declared array element", `[{"op":"add","path":"/doc/roles/-","value":"admin"}]`, "E2085"},
+		{"declared array allowed", `[{"op":"replace","path":"/doc","value":{"roles":["ok"]}}]`, ""},
+		{"declared array absent", `[{"op":"replace","path":"/doc","value":{}}]`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := patch.NewParser(schema, nil).Parse([]byte(tc.body))
+			require.NoError(t, err)
+			err = patch.ApplyPatchPolicyConstraints(parsed, pc, nil)
+			if tc.want == "" {
+				assert.NoError(t, err)
+				return
+			}
+			requireCode(t, err, tc.want)
+		})
+	}
+}
+
 // An operation carries only what it writes: remove, move and copy no value,
 // whatever a client attached, and the paths it writes are the affected ones.
 func TestOperations_CarryWhatTheyWrite(t *testing.T) {
