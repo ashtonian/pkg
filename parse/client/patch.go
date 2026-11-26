@@ -126,10 +126,11 @@ func (o Operation) Err() error { return o.err }
 
 func valueOperation(op, path string, value any) Operation {
 	raw, err := json.Marshal(value)
+	operation := Operation{op: op, path: path, value: string(raw)}
 	if err != nil {
-		return Operation{err: fmt.Errorf("%w: %s %s: %w", ErrOperand, op, path, err)}
+		operation.err = fmt.Errorf("%w: %s %s: %w", ErrOperand, op, path, err)
 	}
-	return Operation{op: op, path: path, value: string(raw)}
+	return operation
 }
 
 // Add adds value at path.
