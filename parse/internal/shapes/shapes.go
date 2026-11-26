@@ -7,6 +7,7 @@
 package shapes
 
 import (
+	"encoding"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
@@ -52,8 +53,8 @@ func NewJSONEngine(tagOptions []gowalker.TagOption, options ...gowalker.Option) 
 // NewJSONEngine does, and every struct, map value, element and pointer
 // target it reaches has its own shape; a map's Key carries encoding/json's
 // rule for its member names (gowalker's Shape.JSONKey). A type that codes
-// itself as JSON, json.RawMessage included, is a leaf: what its document
-// holds is its own business. A struct that embeds two such types, whose
+// itself as JSON, json.RawMessage included, or decodes itself from text
+// (UnmarshalText) is a leaf: what its document holds is its own business. A struct that embeds two such types, whose
 // methods collide, inherits neither and is no leaf; encoding/json writes
 // it by its fields, the embedded types' promoted. A tag reflect cannot read
 // whole, on any struct the shape reaches, is refused, and the refusal is
@@ -75,10 +76,14 @@ var documents = gowalker.NewTypeCache( //nolint:gochecknoglobals // the process-
 	func(s *gowalker.Schema) (*gowalker.Shape, error) { return s.Root(), nil },
 )
 
-// documentLeaves are the interfaces of the types Document stops at.
+// documentLeaves are the interfaces of the types Document stops at: those
+// that code themselves as JSON, and encoding.TextUnmarshaler, which
+// encoding/json decodes only from a JSON string, through UnmarshalText,
+// never reading the type's fields.
 func documentLeaves() []reflect.Type {
 	marshalers, unmarshalers := JSONMarshalers(), JSONUnmarshalers()
-	return append(marshalers[:], unmarshalers[:]...)
+	leaves := append(marshalers[:], unmarshalers[:]...)
+	return append(leaves, reflect.TypeFor[encoding.TextUnmarshaler]())
 }
 
 // CheckWritable refuses a field promoted through an unexported embedded

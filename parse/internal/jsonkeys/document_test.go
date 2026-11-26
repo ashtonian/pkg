@@ -67,3 +67,36 @@ func TestValidate_InvalidUTF8MemberNames(t *testing.T) {
 		})
 	}
 }
+
+// textInner reaches textDecoded's field V only through an unexported
+// embedded pointer, which decoding into a fresh value cannot allocate.
+type textInner struct {
+	V string `json:"v"`
+}
+
+// textDecoded decodes itself from a JSON string through UnmarshalText, so
+// encoding/json never reads its fields.
+type textDecoded struct {
+	*textInner
+}
+
+func (d *textDecoded) UnmarshalText(text []byte) error {
+	d.textInner = &textInner{V: string(text)}
+	return nil
+}
+
+type textDoc struct {
+	T textDecoded `json:"t"`
+	N int         `json:"n"`
+}
+
+// A type that decodes itself through UnmarshalText is opaque, as one with
+// JSON methods is: encoding/json reads it from a string and never sets the
+// field the unexported pointer hides.
+func TestCheckDecodable_TextUnmarshalerDecodesItself(t *testing.T) {
+	var decoded textDoc
+	require.NoError(t, json.Unmarshal([]byte(`{"t":"x","n":1}`), &decoded))
+	assert.Equal(t, "x", decoded.T.V)
+	require.NoError(t, CheckDecodable(reflect.TypeFor[textDoc]()))
+	require.NoError(t, Validate([]byte(`{"t":"x","n":1}`), &decoded))
+}

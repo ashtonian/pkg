@@ -111,7 +111,7 @@ func decodedShape(shape *gowalker.Shape) *gowalker.Shape {
 // promoted through an unexported embedded pointer (shapes.CheckWritable).
 // encoding/json writes that member while the pointer is set, and decoding
 // into a fresh value, where the pointer is nil, fails on it. Self-decoding
-// subtrees are opaque, as Validate reads them.
+// subtrees, UnmarshalText's included, are opaque, as Validate reads them.
 func CheckDecodable(t reflect.Type) error {
 	switch t.Kind() {
 	case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array, reflect.Pointer:
