@@ -94,20 +94,22 @@ func checkElementsText(elements []any) error {
 // Other data types pass through unchanged. Non-nil pointers are
 // dereferenced first, so typed Go input (*int64, *time.Time) normalizes like
 // its value, and a value of a named string, integer, float or bool type
-// normalizes as its kind's value does. A nil value is an error; callers decide separately whether a
+// normalizes as its kind's value does: a named string as the string it
+// holds, for every type a string spells. A nil value is an error; callers decide separately whether a
 // field admits null.
 func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	v, err := Deref(v)
 	if err != nil {
 		return nil, err
 	}
+	if !normalizedType(dt) {
+		return v, nil
+	}
 	if v == nil {
-		switch dt {
-		case FieldTypeString, FieldTypeUUID, FieldTypeInt, FieldTypeFloat, FieldTypeDecimal, FieldTypeBool, FieldTypeTimestamp, FieldTypeDate,
-			FieldTypeTime, FieldTypeInterval, FieldTypeInet, FieldTypeCIDR, FieldTypeMACAddr:
-			return nil, fmt.Errorf("expected %s, got null", dt)
-		}
-		return nil, nil
+		return nil, fmt.Errorf("expected %s, got null", dt)
+	}
+	if dt != FieldTypeInt && dt != FieldTypeFloat && dt != FieldTypeBool {
+		v = plainString(v)
 	}
 	switch dt {
 	case FieldTypeString:
@@ -142,10 +144,6 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 		}
 		return b, nil
 	case FieldTypeDate:
-		if date, ok := v.(Date); ok {
-			parsed, err := ParseDate(string(date))
-			return string(parsed), err
-		}
 		if text, ok := v.(string); ok {
 			date, err := ParseDate(text)
 			return string(date), err
@@ -176,6 +174,33 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 		return normalizeMACAddr(v)
 	}
 	return v, nil
+}
+
+// normalizedType reports a type NormalizeScalar gives a canonical value;
+// a value of any other type passes through.
+func normalizedType(dt FieldType) bool {
+	switch dt {
+	case FieldTypeString, FieldTypeUUID, FieldTypeInt, FieldTypeFloat, FieldTypeDecimal, FieldTypeBool, FieldTypeTimestamp, FieldTypeDate,
+		FieldTypeTime, FieldTypeInterval, FieldTypeInet, FieldTypeCIDR, FieldTypeMACAddr:
+		return true
+	}
+	return false
+}
+
+// plainString is v as a string when it is of a named string type (Date,
+// LocalTime, an application's `type Stamp string`), so the reader of every
+// type a string spells takes it as it takes the string it holds, which is
+// what a driver binds for it. A json.Number is a number, and any other
+// value is itself.
+func plainString(v any) any {
+	if _, ok := v.(json.Number); ok {
+		return v
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.String {
+		return v
+	}
+	return rv.String()
 }
 
 // NormalizeStored is NormalizeScalar for v, a value a column of type dt
