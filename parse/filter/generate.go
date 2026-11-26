@@ -318,7 +318,7 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
-		kind := core.NumericKind(ft)
+		kind := info.NumberKind
 		if core.IsDocument(fieldType) {
 			// A struct the database holds as a scalar orders as that scalar,
 			// as it filters (applyStorage).

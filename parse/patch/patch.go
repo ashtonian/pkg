@@ -462,10 +462,7 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 	if err != nil {
 		return nil, err
 	}
-	target := ps.GoType
-	for target != nil && target.Kind() == reflect.Pointer {
-		target = target.Elem()
-	}
+	target := columnType(ps.GoType)
 	if op == PatchOpArrayAppend {
 		switch {
 		case target == nil:
@@ -557,7 +554,7 @@ func normalizeCompositeKeys(columns []RelationKey, v any, codec core.Codec) (any
 		for j, c := range columns {
 			value, err := core.FromWire(c.Wire, core.TypeOf(c.Type).Type, values[j])
 			if err == nil {
-				value, err = normalizeTyped(c.Type, value, codec)
+				value, err = normalizeTyped(columnType(c.Type), value, codec)
 			}
 			if err != nil {
 				return nil, fmt.Errorf("element %d, key column %d: %w", i, j, err)
@@ -567,6 +564,23 @@ func normalizeCompositeKeys(columns []RelationKey, v any, codec core.Codec) (any
 		keys[i] = key
 	}
 	return keys, nil
+}
+
+// columnType is the Go type a column of field type t holds a value of:
+// t's pointers stripped, and a nullable wrapper's value (core.NullWrapperOf),
+// which the column holds while the wrapper is Valid. nil for nil.
+func columnType(t reflect.Type) reflect.Type {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil {
+		return nil
+	}
+	w, wrapped := core.NullWrapperOf(t)
+	if wrapped {
+		return columnType(w.ValueType())
+	}
+	return t
 }
 
 // normalizeTyped normalizes v for the Go type t: scalars, decimals included,
@@ -650,9 +664,11 @@ func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
 var valuerType = reflect.TypeFor[driver.Valuer]()
 
 // scalarFieldType maps a Go type to the DataType core.NormalizeScalar
-// handles, or reports false for composite and unknown types.
+// handles, or reports false for composite and unknown types. A nullable
+// wrapper is composite: the type is a column's value's (columnType) or a
+// document's member, which holds the wrapper's JSON (core.MemberTypeOf).
 func scalarFieldType(t reflect.Type) (core.FieldType, bool) {
-	switch ft := core.TypeOf(t).Type; ft {
+	switch ft := core.MemberTypeOf(t).Type; ft {
 	case core.FieldTypeString, core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeDecimal, core.FieldTypeBool,
 		core.FieldTypeTimestamp, core.FieldTypeDate, core.FieldTypeUUID,
 		core.FieldTypeTime, core.FieldTypeInterval, core.FieldTypeInet, core.FieldTypeCIDR, core.FieldTypeMACAddr:

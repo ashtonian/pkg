@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
+	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 )
 
@@ -125,6 +126,38 @@ func TestNewResource_AcceptsWhatARowCanBeServedBy(t *testing.T) {
 	assert.Contains(t, doc.Patch.Paths, "/deleted_at", "a request may soft-delete a row the patch schema lists")
 	_, err = r.ParseServerMergePatch([]byte(`{"slug":"rotated"}`))
 	assert.NoError(t, err, "the server may write an immutable field")
+}
+
+// A soft-delete column of a nullable wrapper holds the wrapper's value: its
+// system field is a timestamp, and Evaluate admits a row under the floor
+// while its sql.NullTime is NULL, as SQL's IS NULL does.
+func TestDeletedColumn_AWrapperRowIsLiveWhileNull(t *testing.T) {
+	type note struct {
+		ID        string       `json:"id"         db:"id"`
+		DeletedAt sql.NullTime `json:"deleted_at" db:"deleted_at"`
+	}
+	r, err := parse.NewResource[note]("notes", parse.DeletedColumn("deleted_at"))
+	require.NoError(t, err)
+	schema := r.FilterSchema()
+	assert.Equal(t, core.FieldTypeTimestamp, schema.SystemFields["deleted_at"].DataType)
+	floor, err := filter.ApplyPolicyConstraints(schema, nil, filter.ComposeConstraints(filter.RepositoryScope{DeleteColumn: r.DeletedColumnName()}, nil, nil))
+	require.NoError(t, err)
+	for _, tt := range []struct {
+		name      string
+		deletedAt sql.NullTime
+		want      filter.Truth
+	}{
+		{"live", sql.NullTime{}, filter.True},
+		{"deleted", sql.NullTime{Time: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), Valid: true}, filter.False},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			truth, err := filter.Evaluate(floor.Root, filter.ColumnRow(func(column string) (any, bool) {
+				return tt.deletedAt, column == "notes.deleted_at"
+			}))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, truth)
+		})
+	}
 }
 
 // Both update builders hold a write to the key or the tenant column to one

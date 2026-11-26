@@ -13,6 +13,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -88,5 +89,54 @@ func TestPatch_AnSQLNullColumnClearsToNull(t *testing.T) {
 		got, err := applier.Apply(parsed, Ranked{ID: "a", Score: sql.NullInt64{Int64: 3, Valid: true}})
 		require.NoError(t, err, body)
 		assert.Equal(t, sql.NullInt64{}, got.Score, body)
+	}
+}
+
+// SQLite stores a timestamp as its canonical text.
+func TestPatch_NullableWrapperColumnsSQLite(t *testing.T) {
+	runNullableWrapperPatches(t, wrapperDB{db: dbtest.SQLite(t), dialect: filter.SQLiteDialect{}, timestampType: "DATETIME", stamp: func(at sql.NullTime) any {
+		if !at.Valid {
+			return nil
+		}
+		return core.FormatTimestamp(at.Time)
+	}})
+}
+
+// A test reads a nullable wrapper column as the column holds it, its value
+// or null, as the replace after it writes it.
+func TestPatch_ATestReadsAWrapperColumnsValue(t *testing.T) {
+	gen := core.NewSchemaGenerator()
+	schema, err := patch.GeneratePatchSchema[rankedVisit](gen)
+	require.NoError(t, err)
+	applier, err := patch.NewApplier[rankedVisit](gen, nil)
+	require.NoError(t, err)
+	seen := rankedVisit{ID: 1, Score: sql.NullInt64{Int64: 3, Valid: true}, SeenAt: sql.NullTime{Time: rankedSeen, Valid: true}}
+	unseen := rankedVisit{ID: 1, Score: sql.NullInt64{Int64: 3, Valid: true}}
+	rescored := sql.NullInt64{Int64: 8, Valid: true}
+	for _, tt := range []struct {
+		name   string
+		target rankedVisit
+		test   string
+		holds  bool
+	}{
+		{"a score that holds", seen, `{"op":"test","path":"/score","value":3}`, true},
+		{"a score that does not", seen, `{"op":"test","path":"/score","value":4}`, false},
+		{"a time that holds", seen, `{"op":"test","path":"/seen_at","value":"2026-03-04T05:06:07Z"}`, true},
+		{"a NULL time", unseen, `{"op":"test","path":"/seen_at","value":null}`, true},
+		{"a time that is not NULL", seen, `{"op":"test","path":"/seen_at","value":null}`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := patch.NewParser(schema, nil).Parse([]byte(`[` + tt.test + `,{"op":"replace","path":"/score","value":8}]`))
+			require.NoError(t, err)
+			got, err := applier.Apply(parsed, tt.target)
+			if !tt.holds {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			want := tt.target
+			want.Score = rescored
+			assert.Equal(t, want, got)
+		})
 	}
 }

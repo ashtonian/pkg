@@ -69,3 +69,64 @@ func writesNull(v driver.Valuer) bool {
 	value, err := v.Value()
 	return err == nil && value == nil
 }
+
+// NullWrapper is the layout of a nullable wrapper: a struct of exactly two
+// exported fields, a value and a bool named Valid, whose zero value is NULL
+// (IsNullableType) and which writes a value once Valid is set, as
+// database/sql's Null types, sql.Null[T], uuid.NullUUID,
+// decimal.NullDecimal and pgx's two-field pgtype types are. Its column
+// holds the value, NULL while Valid is false, so the column is typed as the
+// value's type (TypeOf).
+type NullWrapper struct {
+	t            reflect.Type
+	value, valid int
+}
+
+// NullWrapperOf is t's layout when t is a nullable wrapper.
+func NullWrapperOf(t reflect.Type) (NullWrapper, bool) {
+	if t.Kind() != reflect.Struct || t.NumField() != 2 || !IsNullableType(t) {
+		return NullWrapper{}, false
+	}
+	w := NullWrapper{t: t, value: 0, valid: 1}
+	if t.Field(0).Name == "Valid" {
+		w.value, w.valid = 1, 0
+	}
+	value, valid := t.Field(w.value), t.Field(w.valid)
+	if !value.IsExported() || valid.Name != "Valid" || valid.Type.Kind() != reflect.Bool || !w.writesValue() {
+		return NullWrapper{}, false
+	}
+	return w, true
+}
+
+// writesValue reports whether a wrapper with Valid set writes no NULL, so
+// that Valid is the flag its NULL hangs on: it writes its zero value, or
+// refuses it as one no column holds (core.Date's). A Value that panics is
+// one database/sql would panic in too.
+func (w NullWrapper) writesValue() (writes bool) {
+	defer func() {
+		if recover() != nil {
+			writes = false
+		}
+	}()
+	held := reflect.New(w.t)
+	held.Elem().Field(w.valid).SetBool(true)
+	valuer, _ := held.Interface().(driver.Valuer) // the wrapper is nullable: its pointer is a Valuer
+	value, err := valuer.Value()
+	return err != nil || value != nil
+}
+
+// ValueType is the type of the value the wrapper holds.
+func (w NullWrapper) ValueType() reflect.Type { return w.t.Field(w.value).Type }
+
+// Held is the field of v, a wrapper, that holds its value, and false while
+// v is NULL.
+func (w NullWrapper) Held(v reflect.Value) (reflect.Value, bool) {
+	return v.Field(w.value), v.Field(w.valid).Bool()
+}
+
+// Set marks v, a settable wrapper, as holding a value, and returns the field
+// that holds it.
+func (w NullWrapper) Set(v reflect.Value) reflect.Value {
+	v.Field(w.valid).SetBool(true)
+	return v.Field(w.value)
+}
