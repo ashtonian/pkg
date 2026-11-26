@@ -24,15 +24,22 @@ type pathPattern struct {
 	tokens []string
 }
 
-// parsePattern checks a path pattern: a JSON Pointer (the leading slash may
-// be left out) whose tokens are each a literal, `*` or `**`. A token that only
+// parsePattern checks a path pattern: a JSON Pointer, its leading slash
+// included, whose tokens are each a literal, `*` or `**`. A token that only
 // contains `*` would be compared literally and match nothing a glob would,
 // so it is refused rather than left to match silently.
 func parsePattern(text string) (pathPattern, error) {
 	if text == "" {
 		return pathPattern{}, fmt.Errorf("pattern %q names no path", text)
 	}
-	if _, err := core.ParsePointer("/" + strings.TrimPrefix(text, "/")); err != nil {
+	// Request paths are pointers, looked up by their text: a key without
+	// the slash would never match, and a policy would hold two keys for one
+	// path.
+	if !strings.HasPrefix(text, "/") {
+		return pathPattern{}, fmt.Errorf("pattern %q is not a JSON Pointer: it must begin with /", text)
+	}
+	_, err := core.ParsePointer(text)
+	if err != nil {
 		return pathPattern{}, fmt.Errorf("pattern %q: %w", text, err)
 	}
 	tokens := pointerTokens(text)
