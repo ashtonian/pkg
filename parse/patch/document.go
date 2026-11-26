@@ -16,38 +16,60 @@ import (
 // and nil, as decodeJSONDocument reads the encoding SQL stores. Policy, SQL
 // and apply read that one form, so a typed Go value (a map[string]string, a
 // struct) cannot hide members from a constraint that SQL then writes.
+//
+// Either way the value is the operation's own: no map or slice of it is the
+// caller's, so a caller changing what it parsed changes nothing the patch
+// holds, and Apply gives each result its own copy (assignValue). The one
+// exception is a field typed as an interface with methods, which no
+// document decodes into: it holds the value it was given.
 
-// documentValue is v in the decoded JSON document form: v itself when it
-// already is one, else v read back through its JSON encoding. A value JSON
-// cannot hold (NaN, a channel) is an error.
+// maxDocumentDepth is the nesting the JSON decoder reads a request body to
+// (encoding/json/jsontext's limit); a Go value nested deeper, or holding
+// itself, is read back through its encoding, which refuses it.
+const maxDocumentDepth = 10000
+
+// documentValue is v in the decoded JSON document form, the operation's
+// own: a copy of v when it already is one, else v read back through its
+// JSON encoding. A value JSON cannot hold (NaN, a channel, a map holding
+// itself) is an error.
 func documentValue(v any) (any, error) {
-	if isDocument(v) {
-		return v, nil
+	if doc, ok := copyDocument(v, 0); ok {
+		return doc, nil
 	}
 	return documentOf(v)
 }
 
-// isDocument reports whether v is a decoded JSON document all the way down.
-func isDocument(v any) bool {
+// copyDocument is a copy of v when v is a decoded JSON document all the way
+// down, within maxDocumentDepth, and false otherwise.
+func copyDocument(v any, depth int) (any, bool) {
+	if depth > maxDocumentDepth {
+		return nil, false
+	}
 	switch x := v.(type) {
 	case nil, string, bool, json.Number:
-		return true
+		return v, true
 	case map[string]any:
-		for _, e := range x {
-			if !isDocument(e) {
-				return false
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			c, ok := copyDocument(e, depth+1)
+			if !ok {
+				return nil, false
 			}
+			out[k] = c
 		}
-		return true
+		return out, true
 	case []any:
-		for _, e := range x {
-			if !isDocument(e) {
-				return false
+		out := make([]any, len(x))
+		for i, e := range x {
+			c, ok := copyDocument(e, depth+1)
+			if !ok {
+				return nil, false
 			}
+			out[i] = c
 		}
-		return true
+		return out, true
 	}
-	return false
+	return nil, false
 }
 
 // untypedElements is the value of an array path with no Go type: a scalar
@@ -79,7 +101,13 @@ func untypedElement(v any) (any, error) {
 	switch k.Kind() {
 	case reflect.Map, reflect.Struct, reflect.Slice, reflect.Array:
 		if k.Kind() == reflect.Slice && k.Type().Elem().Kind() == reflect.Uint8 {
-			return v, nil
+			// Bound as the bytes it holds, a copy the operation owns.
+			if k.IsNil() {
+				return v, nil
+			}
+			c := reflect.MakeSlice(k.Type(), k.Len(), k.Len())
+			reflect.Copy(c, k)
+			return c.Interface(), nil
 		}
 		return documentValue(v)
 	}

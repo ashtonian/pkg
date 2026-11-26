@@ -60,14 +60,14 @@ func TestPatchTransferDestinationValidation(t *testing.T) {
 func TestPatchTransferUsesCurrentValueAndCustomValidator(t *testing.T) {
 	sentinel := errors.New("destination validator")
 	p, err := parse.NewResource[transferRow]("transfer_rows", parse.CustomizeSchemas(func(s parse.Schemas) error {
-		status := pathOf(s.Patch, "/status")
-		status.Validators = append(status.Validators, func(value any) error {
-			if value == "offline" {
-				return sentinel
-			}
-			return nil
+		return s.Patch.UpdatePath("/status", func(status *patch.PathSchema) {
+			status.Validators = append(status.Validators, func(value any) error {
+				if value == "offline" {
+					return sentinel
+				}
+				return nil
+			})
 		})
-		return nil
 	}))
 	require.NoError(t, err)
 	for _, tc := range []struct {

@@ -286,17 +286,12 @@ func (b *setBuilder) documentExpr(col string, ops []*PatchOperation) (string, *P
 		storedDocument := &PathSchema{DataType: core.FieldTypeJSON, SQLType: core.SQLJSON}
 		return f.expr, storedDocument, nil
 	}
-	var value any
-	switch {
-	case f.folded:
-		value = f.doc
-	case f.base.Op == PatchOpRemove:
-		value = f.base.Schema.clearedValue()
-		if value == nil {
-			return "NULL", f.base.Schema, nil
-		}
-	default:
-		value = f.base.Value
+	value := f.doc
+	if !f.folded {
+		value, _ = wholeValue(f.base)
+	}
+	if value == nil {
+		return "NULL", f.base.Schema, nil
 	}
 	val, err := marshalIfComplex(value, f.base.Schema, f.b.dialect)
 	if err != nil {
@@ -308,18 +303,17 @@ func (b *setBuilder) documentExpr(col string, ops []*PatchOperation) (string, *P
 func (f *documentFold) apply(op *PatchOperation) error {
 	member := memberTokens(op)
 	if len(member) == 0 {
-		switch op.Op {
-		case PatchOpReplace, PatchOpAdd:
-			doc, err := documentOf(op.Value)
-			if err != nil {
-				return fmt.Errorf("%s for %s: %w", op.Op, op.Path, err)
-			}
-			f.known, f.doc, f.base, f.folded = true, doc, op, false
-		case PatchOpRemove:
-			f.known, f.doc, f.base, f.folded = true, nil, op, false
-		default:
+		if op.Op != PatchOpReplace && op.Op != PatchOpAdd && op.Op != PatchOpRemove {
 			return notCompilable(op, fmt.Sprintf("%s on %s compiles to SQL only for a native array column", op.Op, op.Path))
 		}
+		// Members written next start from what the write leaves: a
+		// cleared map is an empty object they are added to.
+		value, _ := wholeValue(op)
+		doc, err := documentOf(value)
+		if err != nil {
+			return fmt.Errorf("%s for %s: %w", op.Op, op.Path, err)
+		}
+		f.known, f.doc, f.base, f.folded = true, doc, op, false
 		clear(f.facts)
 		return nil
 	}

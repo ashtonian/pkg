@@ -587,6 +587,15 @@ func ParseEnumTag(tag string) ([]string, error) {
 	}
 }
 
+// EnumAllows reports whether value is one of values, an enum tag's values
+// as ParseEnumTag gives them, compared exactly: nothing is trimmed or
+// folded, so a quoted value keeps its edge spaces. The filter and patch
+// grammars decide membership by it, so each accepts what the other does
+// and what the schema document lists.
+func EnumAllows(values []string, value string) bool {
+	return slices.Contains(values, value)
+}
+
 // boolTag reads a tag that is "true", "false" or absent, so a misspelt
 // value fails schema generation instead of reading as false.
 func boolTag(tag reflect.StructTag, key string) (bool, error) {

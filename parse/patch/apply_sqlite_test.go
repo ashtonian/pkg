@@ -19,8 +19,10 @@ import (
 )
 
 type applyDims struct {
-	W int `json:"w"`
-	H int `json:"h"`
+	W    int    `json:"w"`
+	H    int    `json:"h"`
+	Note string `json:"note,omitempty"`
+	At   *int   `json:"at,omitzero"`
 }
 
 type applyRow struct {
@@ -66,6 +68,12 @@ func TestApplier_AgreesWithSQLite(t *testing.T) {
 		{"replace a struct document member", false, `[{"op":"replace","path":"/dims/w","value":9}]`},
 		{"add and remove typed map members", false, `[{"op":"add","path":"/labels/new","value":"x"},{"op":"remove","path":"/labels/old"}]`},
 		{"members of a document the patch wrote whole", false, `[{"op":"replace","path":"/meta","value":{"a":1}},{"op":"add","path":"/meta/b","value":2}]`},
+		{"members of a removed map", false, `[{"op":"remove","path":"/meta"},{"op":"add","path":"/meta/x","value":1}]`},
+		{"members of a map cleared with null", false, `[{"op":"replace","path":"/meta","value":null},{"op":"add","path":"/meta/x","value":1}]`},
+		{"members of a removed typed map", false, `[{"op":"remove","path":"/labels"},{"op":"add","path":"/labels/a","value":"b"}]`},
+		{"a member, then the map cleared with null", false, `[{"op":"add","path":"/meta/x","value":1},{"op":"replace","path":"/meta","value":null}]`},
+		{"a member, then the map removed", false, `[{"op":"add","path":"/meta/x","value":1},{"op":"remove","path":"/meta"}]`},
+		{"remove struct members the type omits when zero", false, `[{"op":"add","path":"/dims/note","value":"x"},{"op":"add","path":"/dims/at","value":3},{"op":"remove","path":"/dims/note"},{"op":"remove","path":"/dims/at"}]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var parsed *patch.ParsedPatch
@@ -95,6 +103,24 @@ func TestApplier_AgreesWithSQLite(t *testing.T) {
 
 			assert.Equal(t, goRow, storedDocument(t, db, seed.ID))
 		})
+	}
+}
+
+// Removing a struct member encoding/json writes whatever it holds leaves a
+// document the type never writes, which SQL would store and Apply would
+// not: JSON Patch refuses it, as a merge patch does. A member the type
+// omits when zero is removed.
+func TestParse_RefusesRemovingAMemberTheTypeWrites(t *testing.T) {
+	gen := core.NewSchemaGenerator()
+	schema := memberPatchSchema(t, gen)
+	parser := patch.NewParser(schema, nil)
+	_, err := parser.Parse([]byte(`[{"op":"remove","path":"/dims/w"}]`))
+	requireCode(t, err, patch.ECodePatchValueInvalid.String())
+	_, err = patch.ParseMergePatch([]byte(`{"dims":{"w":null}}`), schema, nil)
+	requireCode(t, err, patch.ECodePatchValueInvalid.String())
+	for _, member := range []string{"note", "at"} {
+		_, err = parser.Parse([]byte(`[{"op":"remove","path":"/dims/` + member + `"}]`))
+		require.NoError(t, err, member)
 	}
 }
 

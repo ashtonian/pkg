@@ -483,7 +483,7 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 			err = checkNullability(ps, op, normalized, depth)
 		}
 		if err == nil && op == PatchOpTest && normalized != nil {
-			return v, nil
+			return documentValue(v)
 		}
 		return normalized, err
 	}
@@ -502,7 +502,7 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 		// with missing struct members filled or omitted by Go encoding. A
 		// quoted field's test compares its canonical wire text instead, so
 		// "5.0" tests equal to a stored 5 as it replaces one.
-		return supplied, nil
+		return documentValue(supplied)
 	}
 	return normalized, err
 }
