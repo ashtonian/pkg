@@ -145,13 +145,13 @@ func queryPage[T any](ctx context.Context, db Queryer, r *parse.Resource[T], pla
 // split into the rows whose columns it wrote and the rows it left
 // (parse.Resource.UpdatedRows), and how many junction rows its membership
 // changes touched; neither split holding a row means the target is not
-// found. A plan that reads before it writes (SkipUnchanged or a patch of
-// document members: plan.Current set) or changes relation memberships runs
-// in one transaction — a savepoint when db is a *sql.Tx — so its rows and
-// memberships change together: Current, then Conflict, whose row fails the
-// update before anything is written (UpdatePlan.ConflictError), the owner
-// statement, the membership changes for the
-// keys of the rows it returned (changed, then unchanged), never the
+// found. The update runs in one transaction — a savepoint when db is a
+// *sql.Tx (transact) — so its rows and memberships change together and an
+// error means nothing it wrote is kept, a row that fails to scan included:
+// Current (SkipUnchanged or a patch of document members), then Conflict,
+// whose row fails the update before anything is written
+// (UpdatePlan.ConflictError), the owner statement, the membership changes
+// for the keys of the rows it returned (changed, then unchanged), never the
 // requested keys, then, for a resource with computed columns
 // (parse.ReadExpr), those rows again (Resource.Reread).
 func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse.UpdatePlan) (parse.UpdateResult[T], error) {
@@ -162,17 +162,11 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 		return parse.UpdateResult[T]{}, err
 	}
 	var res parse.UpdateResult[T]
-	apply := func(db DB) error {
+	err := transact(ctx, db, func(db DB) error {
 		var err error
 		res, err = update(ctx, db, r, plan)
 		return err
-	}
-	var err error
-	if plan.Current == nil && !plan.HasRelations() {
-		err = apply(db)
-	} else {
-		err = transact(ctx, db, apply)
-	}
+	})
 	if err != nil {
 		return parse.UpdateResult[T]{}, fmt.Errorf("parsesql: %s: %w", r.Table(), err)
 	}
@@ -316,16 +310,24 @@ func updateBatch[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *
 }
 
 // transact runs apply in a transaction of its own when db opens them, and
-// under a savepoint of the caller's transaction otherwise, so a failure
-// undoes everything apply wrote and leaves the caller's transaction usable.
+// under a savepoint of the caller's transaction otherwise, and settles it
+// only once apply has returned, every row read and scanned. Its contract is
+// parsepgx's: an error means nothing apply wrote is kept and the caller's
+// transaction is still usable; once apply succeeds the update is finished
+// whatever ctx does since, so a reported error never hides an applied
+// update. Settling — the commit, the release or the undo — therefore runs
+// without ctx's cancellation: the transaction is begun under it too, so
+// database/sql does not roll back on cancellation what is already done.
 func transact(ctx context.Context, db DB, apply func(DB) error) error {
+	settle := context.WithoutCancel(ctx)
 	if b, ok := db.(beginner); ok {
-		tx, err := b.BeginTx(ctx, nil)
+		tx, err := b.BeginTx(settle, nil)
 		if err != nil {
 			return wrap("begin", err)
 		}
 		if err := apply(tx); err != nil {
-			// A cancelled context has already rolled the transaction back.
+			// A transaction database/sql already ended (a bad connection) kept
+			// nothing to roll back.
 			if rollback := tx.Rollback(); !errors.Is(rollback, sql.ErrTxDone) {
 				err = errors.Join(err, wrap("rollback", rollback))
 			}
@@ -337,15 +339,21 @@ func transact(ctx context.Context, db DB, apply func(DB) error) error {
 		return wrap("savepoint", err)
 	}
 	if err := apply(db); err != nil {
-		// The undo runs even when ctx is what failed: the caller's
-		// transaction outlives this call and must not keep a partial update.
-		undo := context.WithoutCancel(ctx)
-		_, rollback := db.ExecContext(undo, "ROLLBACK TO SAVEPOINT "+savepoint)
-		_, release := db.ExecContext(undo, "RELEASE SAVEPOINT "+savepoint)
-		return errors.Join(err, wrap("rollback to savepoint", errors.Join(rollback, release)))
+		return errors.Join(err, undoSavepoint(settle, db))
 	}
-	_, err := db.ExecContext(ctx, "RELEASE SAVEPOINT "+savepoint)
-	return wrap("release savepoint", err)
+	if _, err := db.ExecContext(settle, "RELEASE SAVEPOINT "+savepoint); err != nil {
+		return errors.Join(wrap("release savepoint", err), undoSavepoint(settle, db))
+	}
+	return nil
+}
+
+// undoSavepoint rolls the caller's transaction back to the update's
+// savepoint and releases it, so the transaction keeps nothing the update
+// wrote and stays usable.
+func undoSavepoint(ctx context.Context, db DB) error {
+	_, rollback := db.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+savepoint)
+	_, release := db.ExecContext(ctx, "RELEASE SAVEPOINT "+savepoint)
+	return wrap("rollback to savepoint", errors.Join(rollback, release))
 }
 
 func query[T any](ctx context.Context, db Queryer, r *parse.Resource[T], st parse.Statement) ([]T, error) {

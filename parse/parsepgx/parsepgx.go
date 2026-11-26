@@ -26,8 +26,9 @@ type Querier interface {
 	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
 }
 
-// DB sends batches and opens transactions: *pgxpool.Pool and *pgx.Conn
-// begin a transaction, pgx.Tx a savepoint.
+// DB sends batches and opens transactions: on *pgxpool.Pool and *pgx.Conn
+// an update begins its own transaction, and in a pgx.Tx it takes a
+// savepoint the caller's rollback undoes.
 type DB interface {
 	Querier
 	Begin(ctx context.Context) (pgx.Tx, error)
@@ -35,6 +36,10 @@ type DB interface {
 
 // ErrDialect is a plan compiled for a dialect other than PostgreSQL.
 var ErrDialect = errors.New("parsepgx: plan is not compiled for PostgreSQL")
+
+// savepoint names the savepoint Update and UpdateBatch take in a caller's
+// transaction.
+const savepoint = "parsepgx_update"
 
 // QueryPage reads the page plan selects, scanned into T through r's row
 // contract (parse.RowScanner), and returns it as r.Page builds it: with its
@@ -144,20 +149,19 @@ func queryIncludes[T any](ctx context.Context, db Querier, r *parse.Resource[T],
 // split into the rows whose columns it wrote and the rows it left
 // (parse.Resource.UpdatedRows), and how many junction rows its membership
 // changes touched; neither split holding a row means the target is not
-// found. A guarded plan (SkipUnchanged: plan.Current set) sends Current
-// before Owner in one batch, which runs in one transaction, so Current's
+// found. The update runs in one transaction — a savepoint when db is a
+// pgx.Tx (transact) — settled only once every row has scanned, so an error
+// means nothing it wrote is kept. A guarded plan (SkipUnchanged:
+// plan.Current set) sends Current before Owner in one batch, so Current's
 // lock holds every target while Owner compares them. A patch of document
-// members (plan.Conflict set) runs in a transaction: Current and Conflict,
-// whose row fails the update before Owner is sent
-// (UpdatePlan.ConflictError), then Owner.
+// members (plan.Conflict set) sends Current and Conflict, whose row fails
+// the update before Owner is sent (UpdatePlan.ConflictError), then Owner.
 //
-// A plan that changes relation memberships runs in a transaction — a
-// savepoint when db is one — so its rows and memberships change together:
-// the owner statement, then the membership changes for the keys of the
-// rows it returned (changed, then unchanged), never the requested keys,
-// then, for a resource with computed columns (parse.ReadExpr), those rows
-// again (Resource.Reread), so a column over a relation's pairs reads them as
-// the update left them.
+// A plan that changes relation memberships then changes them for the keys
+// of the rows the owner statement returned (changed, then unchanged), never
+// the requested keys, then, for a resource with computed columns
+// (parse.ReadExpr), reads those rows again (Resource.Reread), so a column
+// over a relation's pairs reads them as the update left them.
 func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse.UpdatePlan) (parse.UpdateResult[T], error) {
 	if plan == nil {
 		return parse.UpdateResult[T]{}, fmt.Errorf("parsepgx: %s: nil update plan", r.Table())
@@ -166,15 +170,7 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 		return parse.UpdateResult[T]{}, err
 	}
 	var res parse.UpdateResult[T]
-	if !plan.HasRelations() && plan.Conflict == nil {
-		changed, unchanged, err := queryTargets(ctx, db, r, plan)
-		if err != nil {
-			return parse.UpdateResult[T]{}, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
-		}
-		res.Changed, res.Unchanged = changed, unchanged
-		return res, nil
-	}
-	err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+	err := transact(ctx, db, func(tx pgx.Tx) error {
 		changed, unchanged, err := queryTargets(ctx, tx, r, plan)
 		if err != nil {
 			return err
@@ -228,11 +224,9 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 
 // queryTargets runs plan's owner statement and returns the target rows as
 // it left them, split by parse.Resource.UpdatedRows. A plan's Current goes
-// first in the same batch, which runs in one transaction (db's own when db
-// is a pgx.Tx): its lock holds every target while the guarded update
-// compares them, so the rows it read and the update did not return are
-// exactly the unchanged ones. A statement-mode pooler, which may send the
-// two statements on different connections, breaks that split.
+// first in the same batch of the update's transaction: its lock holds every
+// target while the guarded update compares them, so the rows it read and
+// the update did not return are exactly the unchanged ones.
 func queryTargets[T any](ctx context.Context, db Querier, resource *parse.Resource[T], plan *parse.UpdatePlan) (changed, unchanged []T, err error) {
 	var current, owner []T
 	b := &pgx.Batch{}
@@ -296,7 +290,7 @@ func UpdateBatch[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *
 		return parse.UpdateResult[T]{}, nil
 	}
 	var res parse.UpdateResult[T]
-	err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+	err := transact(ctx, db, func(tx pgx.Tx) error {
 		current := make([][]T, len(plan.Chunks))
 		b := &pgx.Batch{}
 		for i, chunk := range plan.Chunks {
@@ -361,6 +355,55 @@ func ownerKeys[T any](r *parse.Resource[T], items []T) ([]parse.Key, error) {
 		keys[i] = k
 	}
 	return keys, nil
+}
+
+// transact runs apply in a transaction of its own when db is no
+// transaction, and under a savepoint of the caller's pgx.Tx otherwise, and
+// settles it only once apply has returned, every row read and scanned. Its
+// contract is parsesql's: an error means nothing apply wrote is kept and the
+// caller's transaction is still usable; once apply succeeds the update is
+// finished whatever ctx does since, so a reported error never hides an
+// applied update. Settling — the commit, the release or the undo —
+// therefore runs without ctx's cancellation: pgx sends nothing on a done
+// context, which would leave a savepoint's writes in the caller's
+// transaction. The savepoint is taken by hand rather than through pgx's
+// nested Begin, whose failed release can no longer be rolled back.
+func transact(ctx context.Context, db DB, apply func(pgx.Tx) error) error {
+	settle := context.WithoutCancel(ctx)
+	if tx, ok := db.(pgx.Tx); ok {
+		if _, err := tx.Exec(ctx, "SAVEPOINT "+savepoint); err != nil {
+			return wrap("savepoint", err)
+		}
+		if err := apply(tx); err != nil {
+			return errors.Join(err, undoSavepoint(settle, tx))
+		}
+		if _, err := tx.Exec(settle, "RELEASE SAVEPOINT "+savepoint); err != nil {
+			return errors.Join(wrap("release savepoint", err), undoSavepoint(settle, tx))
+		}
+		return nil
+	}
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return wrap("begin", err)
+	}
+	if err := apply(tx); err != nil {
+		// A transaction pgx already closed (its connection lost) kept
+		// nothing to roll back.
+		if rollback := tx.Rollback(settle); !errors.Is(rollback, pgx.ErrTxClosed) {
+			err = errors.Join(err, wrap("rollback", rollback))
+		}
+		return err
+	}
+	return wrap("commit", tx.Commit(settle))
+}
+
+// undoSavepoint rolls the caller's transaction back to the update's
+// savepoint and releases it, so the transaction keeps nothing the update
+// wrote and stays usable, a failed statement's abort included.
+func undoSavepoint(ctx context.Context, tx pgx.Tx) error {
+	_, rollback := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+savepoint)
+	_, release := tx.Exec(ctx, "RELEASE SAVEPOINT "+savepoint)
+	return wrap("rollback to savepoint", errors.Join(rollback, release))
 }
 
 func postgres(table string, d filter.Dialect) error {

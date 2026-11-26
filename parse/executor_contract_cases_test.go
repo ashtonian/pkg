@@ -3,14 +3,18 @@
 package parse_test
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -51,6 +55,62 @@ func execIDs(items []execItem) []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// execDoc's counts decode into a map of integers, so a stored document of
+// another shape is a row that fails to scan.
+type execDoc struct {
+	ID     string         `json:"id"     db:"id"     parse:"filter,sort"`
+	Name   string         `json:"name"   db:"name"   parse:"filter,patch"`
+	Counts map[string]int `json:"counts" db:"counts"`
+}
+
+var execDocs = parse.MustResource[execDoc]("exec_docs")
+
+// sqlCancelOn is a caller's transaction whose context is cancelled as the
+// first statement holding trigger is sent.
+type sqlCancelOn struct {
+	parsesql.DB
+	trigger string
+	cancel  context.CancelFunc
+}
+
+func (c sqlCancelOn) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	if strings.Contains(query, c.trigger) {
+		c.cancel()
+	}
+	return c.DB.ExecContext(ctx, query, args...)
+}
+
+func (c sqlCancelOn) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if strings.Contains(query, c.trigger) {
+		c.cancel()
+	}
+	return c.DB.QueryContext(ctx, query, args...)
+}
+
+// pgxCancelOn is sqlCancelOn for a caller's pgx.Tx: the context is cancelled
+// as a batch or statement holding trigger is sent.
+type pgxCancelOn struct {
+	pgx.Tx
+	trigger string
+	cancel  context.CancelFunc
+}
+
+func (c pgxCancelOn) SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults {
+	for _, q := range b.QueuedQueries {
+		if strings.Contains(q.SQL, c.trigger) {
+			c.cancel()
+		}
+	}
+	return c.Tx.SendBatch(ctx, b)
+}
+
+func (c pgxCancelOn) Exec(ctx context.Context, query string, args ...any) (pgconn.CommandTag, error) {
+	if strings.Contains(query, c.trigger) {
+		c.cancel()
+	}
+	return c.Tx.Exec(ctx, query, args...)
 }
 
 // runExecutorContract holds the dialect's executor to one contract: what
@@ -169,6 +229,112 @@ func runExecutorContract(t *testing.T, open func(*testing.T) *sql.DB, d filter.D
 		assert.Equal(t, "two", stored(t, db, "e2").Name, "the caller rolled back")
 		assert.Empty(t, tags(t, db, "e2"))
 		assert.Equal(t, "one", stored(t, db, "e1").Name)
+	})
+
+	// An error means nothing the update wrote is kept: a returned row that
+	// fails to scan comes after the database applied the statement, so only
+	// the transaction the executor settles after scanning can undo it.
+	t.Run("a row that fails to scan writes nothing", func(t *testing.T) {
+		db := setup(t)
+		document := "TEXT"
+		if isPostgres(d) {
+			document = "JSONB"
+		}
+		for _, stmt := range []string{
+			`CREATE TABLE exec_docs (id TEXT PRIMARY KEY, name TEXT NOT NULL, counts ` + document + `)`,
+			`INSERT INTO exec_docs VALUES ('d1', 'one', '{"x":"not a number"}')`,
+		} {
+			_, err := db.Exec(stmt)
+			require.NoError(t, err, stmt)
+		}
+		p, err := execDocs.ParseMergePatch([]byte(`{"name":"renamed"}`))
+		require.NoError(t, err)
+		renaming, err := execDocs.BuildUpdate(d, p, parse.ByID("d1"), parse.Scope{})
+		require.NoError(t, err)
+		for _, inTx := range []bool{false, true} {
+			_, err = applyUpdate(t, db, execDocs, d, renaming, inTx)
+			require.Error(t, err, "in the caller's transaction: %v", inTx)
+			var name string
+			require.NoError(t, db.QueryRow(`SELECT name FROM exec_docs WHERE id = 'd1'`).Scan(&name))
+			assert.Equal(t, "one", name, "in the caller's transaction: %v", inTx)
+		}
+		require.NoError(t, onExecutor(t, db, d, true, func(tx parsesql.DB) error {
+			_, err := parsesql.Update(t.Context(), tx, execDocs, renaming)
+			require.Error(t, err)
+			var n string
+			require.NoError(t, tx.(*sql.Tx).QueryRowContext(t.Context(), `SELECT name FROM exec_docs WHERE id = 'd1'`).Scan(&n), "the caller's transaction is usable")
+			assert.Equal(t, "one", n, "the caller's transaction keeps nothing")
+			return nil
+		}, func(tx parsepgx.DB) error {
+			_, err := parsepgx.Update(t.Context(), tx, execDocs, renaming)
+			require.Error(t, err)
+			var n string
+			require.NoError(t, tx.(pgx.Tx).QueryRow(t.Context(), `SELECT name FROM exec_docs WHERE id = 'd1'`).Scan(&n), "the caller's transaction is usable")
+			assert.Equal(t, "one", n, "the caller's transaction keeps nothing")
+			return nil
+		}))
+	})
+
+	// A context that ends while the update runs undoes it in the caller's
+	// transaction, which stays usable; one that ends once every statement has
+	// run leaves the update finished and reported so.
+	t.Run("a cancellation in the caller's transaction is reported as what it left", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			trigger string
+			applied bool
+		}{
+			{"as the membership changes are sent", "exec_tags", false},
+			{"as the savepoint is released", "RELEASE SAVEPOINT", true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				db := setup(t)
+				renaming := plan(t, `{"name":"renamed","tags":["blue"]}`, parse.ByID("e1"))
+				check := func(t *testing.T, err error, name string, tags []string) {
+					t.Helper()
+					if tc.applied {
+						require.NoError(t, err)
+						assert.Equal(t, "renamed", name)
+						assert.Equal(t, []string{"blue"}, tags)
+						return
+					}
+					require.ErrorIs(t, err, context.Canceled)
+					assert.Equal(t, "one", name)
+					assert.Equal(t, []string{"red"}, tags)
+				}
+				require.NoError(t, onExecutor(t, db, d, true, func(tx parsesql.DB) error {
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					_, err := parsesql.Update(ctx, sqlCancelOn{DB: tx, trigger: tc.trigger, cancel: cancel}, execItems, renaming)
+					var name string
+					require.NoError(t, tx.(*sql.Tx).QueryRowContext(t.Context(), `SELECT name FROM exec_items WHERE id = 'e1'`).Scan(&name), "the caller's transaction is usable")
+					var tags []string
+					rows, qerr := tx.QueryContext(t.Context(), `SELECT tag_id FROM exec_tags WHERE item_id = 'e1' ORDER BY tag_id`)
+					require.NoError(t, qerr)
+					for rows.Next() {
+						var tag string
+						require.NoError(t, rows.Scan(&tag))
+						tags = append(tags, tag)
+					}
+					require.NoError(t, rows.Close())
+					check(t, err, name, tags)
+					return nil
+				}, func(tx parsepgx.DB) error {
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					_, err := parsepgx.Update(ctx, pgxCancelOn{Tx: tx.(pgx.Tx), trigger: tc.trigger, cancel: cancel}, execItems, renaming)
+					var name string
+					require.NoError(t, tx.(pgx.Tx).QueryRow(t.Context(), `SELECT name FROM exec_items WHERE id = 'e1'`).Scan(&name), "the caller's transaction is usable")
+					tags, qerr := pgx.CollectRows(func() pgx.Rows {
+						rows, _ := tx.(pgx.Tx).Query(t.Context(), `SELECT tag_id FROM exec_tags WHERE item_id = 'e1' ORDER BY tag_id`)
+						return rows
+					}(), pgx.RowTo[string])
+					require.NoError(t, qerr)
+					check(t, err, name, tags)
+					return nil
+				}))
+			})
+		}
 	})
 
 	t.Run("a batch reports changed and unchanged rows and writes nothing when a target is missing", func(t *testing.T) {
