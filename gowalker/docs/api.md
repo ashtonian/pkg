@@ -373,15 +373,19 @@ keys and the name `null`, which these rules read.
 `Shape.JSONKey(name)` returns the key `encoding/json` reads `name` into, the
 member name it writes for that key (the key's canonical text), and whether it
 reads one and writes one. `Shape.IsCanonicalJSONKey(name)` reports whether
-`name`, held as bytes such as a decoder's, is the canonical text of the key it
-reads into, so a document that spells a key another way (`07` for an int key,
-`0:0:0:0:0:0:0:1` for a `netip.Addr`) can be refused. `Shape.CheckJSONKey()`
+`name`, a member name as a decoder reads it (unescaped, each byte of invalid
+UTF-8 replaced by U+FFFD, as `jsontext.AppendUnquote` and `encoding/json`
+give it), is the canonical text of the key it reads into, so a document that
+spells a key another way (`07` for an int key, `0:0:0:0:0:0:0:1` for a
+`netip.Addr`) can be refused. Every such name is a string key's canonical
+text; a name passed with invalid UTF-8 still in it is judged as decoding
+would replace it. `Shape.CheckJSONKey()`
 returns an error matching `ErrKey` when `encoding/json` refuses the type as a
 map key; its text names the type and never a member name.
 
 | Key type | `JSONKey` reads | Canonical text |
 |---|---|---|
-| String kind without text methods | Every name; each byte of invalid UTF-8 becomes U+FFFD | The name, when it is valid UTF-8 |
+| String kind without text methods | Every name; each byte of invalid UTF-8 becomes U+FFFD | The name as decoded |
 | Integer kind without text methods | Base-10 text within the type's range, leading zeros included; a signed kind's may carry a `+` or `-`; `null`, read as zero as `encoding/json` reads a JSON null into an integer | Without a `+`, leading zeros or `-0`: `+7` and `07` read as `7`, `null` as `0` |
 | A type with `UnmarshalText`, or with `AppendText` or `MarshalText` on its value | What `encoding/json` reads through the method or the kind | What `encoding/json` writes: `AppendText`, else `MarshalText`, of a value that has it (a string kind's own text whatever its methods), otherwise the kind's text |
 | Float kind | Numbers `encoding/json` reads | Their shortest form: `1.50` reads as `1.5` |

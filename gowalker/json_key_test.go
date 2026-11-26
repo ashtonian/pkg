@@ -195,13 +195,32 @@ func TestShapeJSONKey_AgreesWithEncodingJSON(t *testing.T) {
 			if ok && key.Type() != typ {
 				t.Errorf("%v.JSONKey(%q) is a %v", typ, name, key.Type())
 			}
-			canonical := shape.IsCanonicalJSONKey([]byte(name))
-			want := wantOK && wantText == name
-			if canonical != want {
-				t.Errorf("%v.IsCanonicalJSONKey(%q) = %t, want %t", typ, name, canonical, want)
+			// IsCanonicalJSONKey judges a name as a decoder reads it,
+			// invalid UTF-8 replaced, whether or not it is passed so.
+			read := decodedName(name)
+			want := wantOK && wantText == read
+			for _, given := range []string{read, name} {
+				canonical := shape.IsCanonicalJSONKey([]byte(given))
+				if canonical != want {
+					t.Errorf("%v.IsCanonicalJSONKey(%q) = %t, want %t", typ, given, canonical, want)
+				}
 			}
 		}
 	}
+}
+
+// decodedName is name as encoding/json decodes a member name: each byte of
+// invalid UTF-8 replaced by U+FFFD.
+func decodedName(name string) string {
+	var read string
+	raw, err := json.Marshal(name)
+	if err == nil {
+		err = json.Unmarshal(raw, &read)
+	}
+	if err != nil {
+		panic(err)
+	}
+	return read
 }
 
 // CheckJSONKey refuses a type exactly when no name reads into a key of it

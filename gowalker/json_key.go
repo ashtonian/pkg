@@ -96,24 +96,23 @@ func implementsText(t, iface reflect.Type) bool {
 	return t.Implements(iface) || t.Kind() != reflect.Interface && reflect.PointerTo(t).Implements(iface)
 }
 
-// JSONKey reads name, a JSON object member name, into a key of a map whose
-// key type is s's type, as encoding/json reads one (Go 1.27's, on
+// JSONKey reads name, a member name as a decoder reads it, into a key of a
+// map whose key type is s's type, as encoding/json reads one (Go 1.27's, on
 // encoding/json/v2: see the JSON map keys section of docs/api.md), and
-// returns the key and
-// its canonical text: the member name encoding/json writes for that key. ok
-// is false when encoding/json reads no key from name or writes no name for
-// the key it reads: for a type it refuses ([Shape.CheckJSONKey]), or a name
-// such as "x" or "300" for an int8 key.
+// returns the key and its canonical text: the member name encoding/json
+// writes for that key. ok is false when encoding/json reads no key from
+// name or writes no name for the key it reads: for a type it refuses
+// ([Shape.CheckJSONKey]), or a name such as "x" or "300" for an int8 key.
 //
-// A string kind is its own text, each byte of invalid UTF-8 replaced by
-// U+FFFD as encoding/json replaces it. An integer kind reads base-10 text,
-// leading zeros included and, for a signed kind, a sign, and "null" as its
-// zero, as encoding/json reads a JSON null into an integer, and writes it
-// without either. Any other key
-// type, a string or integer with AppendText, MarshalText or UnmarshalText
-// included, is read and written by encoding/json itself, which allocates on
-// each call.
-// JSON methods play no part: encoding/json does not call them on a key.
+// A string kind is its own text; a name that still holds invalid UTF-8 is
+// read as decoding replaces it, each invalid byte with U+FFFD. An integer
+// kind reads base-10 text, leading zeros and, for a signed kind, a sign
+// included, and "null" as its zero, as encoding/json reads a JSON null into
+// an integer; it writes the key without any of them. Any other key type, a
+// string or integer with AppendText, MarshalText or UnmarshalText included,
+// is read and written by encoding/json itself, which allocates on each
+// call. JSON methods play no part: encoding/json does not call them on a
+// key.
 func (s *Shape) JSONKey(name string) (key reflect.Value, canonical string, ok bool) {
 	switch s.jsonKey {
 	case jsonKeyRefused:
@@ -152,17 +151,21 @@ func (s *Shape) JSONKey(name string) (key reflect.Value, canonical string, ok bo
 	return codecJSONKey(s.typ, name)
 }
 
-// IsCanonicalJSONKey reports whether name is the canonical text of the key it
-// reads into: JSONKey reads a key from it and returns name as that key's
-// text, so "7" is canonical for an int key and "07" and "+7" are not, nor a
-// name holding invalid UTF-8 for a string key. For a string or integer kind
+// IsCanonicalJSONKey reports whether name, a member name as a decoder reads
+// it, is the canonical text of the key it reads into: JSONKey reads a key
+// from it and returns name as that key's text. So "7" is canonical for an
+// int key and "07", "+7" and "null" are not. A decoder's name is unescaped,
+// each byte of invalid UTF-8 replaced by U+FFFD, as jsontext.AppendUnquote
+// and encoding/json give it, so every name is a string kind's canonical
+// text and that rule reads nothing. A name that still holds invalid UTF-8
+// is judged as decoding would replace it. For a string or integer kind
 // without text methods it allocates nothing; it keeps no reference to name.
 func (s *Shape) IsCanonicalJSONKey(name []byte) bool {
 	switch s.jsonKey {
 	case jsonKeyRefused:
 		return false
 	case jsonKeyString:
-		return utf8.Valid(name)
+		return true
 	case jsonKeySigned:
 		negative := len(name) > 0 && name[0] == '-'
 		digits := name
@@ -182,8 +185,13 @@ func (s *Shape) IsCanonicalJSONKey(name []byte) bool {
 		n, ok := canonicalDigits(name)
 		return ok && n <= math.MaxUint64>>(64-s.typ.Bits())
 	}
-	_, canonical, ok := codecJSONKey(s.typ, string(name))
-	return ok && canonical == string(name)
+	read := string(name)
+	if !utf8.ValidString(read) {
+		// Each invalid byte decodes as one RuneError.
+		read = string([]rune(read))
+	}
+	_, canonical, ok := codecJSONKey(s.typ, read)
+	return ok && canonical == read
 }
 
 // canonicalDigits reads base-10 digits without a leading zero, or "0", and
