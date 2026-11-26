@@ -19,7 +19,9 @@ import (
 //     integer of any kind, a float, a json.Number, a decimal's text or
 //     type), the infinities before and after every finite value; a float
 //     column's NaN after +Infinity and equal to every NaN, as PostgreSQL
-//     orders float8 (SQLite stores NaN as NULL);
+//     orders float8 (SQLite stores NaN as NULL); a float32 column's
+//     finite values at float32 precision, as its column holds them, so
+//     0.1 and float32(0.1) are equal there;
 //   - string: by code point;
 //   - uuid, timestamp, date, time, interval, inet, cidr, macaddr: by
 //     canonical text (NormalizeScalar), which orders a UUID as its bytes, a
@@ -59,7 +61,7 @@ func CompareCanonical(t TypeInfo, a, b any) (int, error) {
 	case FieldTypeInt:
 		return compareNumbers(t.Type, x, y)
 	case FieldTypeFloat:
-		return compareFloatValues(x, y)
+		return compareFloatValues(t.NumberKind, x, y)
 	case FieldTypeDecimal:
 		c, ok := CompareDecimals(x, y)
 		if !ok {
@@ -99,10 +101,23 @@ func compareNumbers(t FieldType, x, y any) (int, error) {
 	return c, nil
 }
 
-// compareFloatValues orders two values of a float column by value, NaN
-// after every number and equal to NaN. A stored value may be NaN, though
-// no request value is.
-func compareFloatValues(x, y any) (int, error) {
+// compareFloatValues orders two values of a float column of number kind
+// kind by value, NaN after every number and equal to NaN. A stored value
+// may be NaN, though no request value is. A float32 column holds a finite
+// value at float32 precision, so each is read at it first: 0.1 and
+// float32(0.1) are one value there.
+func compareFloatValues(kind reflect.Kind, x, y any) (int, error) {
+	if kind == reflect.Float32 {
+		var err error
+		x, err = float32Precision(x)
+		if err != nil {
+			return 0, err
+		}
+		y, err = float32Precision(y)
+		if err != nil {
+			return 0, err
+		}
+	}
 	xnan, ynan := isNaN(x), isNaN(y)
 	if !xnan && !ynan {
 		return compareNumbers(FieldTypeFloat, x, y)
@@ -122,6 +137,23 @@ func compareFloatValues(x, y any) (int, error) {
 		return 1, nil
 	}
 	return -1, nil
+}
+
+// float32Precision is v as a float32 column holds it: a finite number
+// rounded to the nearest float32 (NormalizeFloat). NaN, the infinities and
+// a value that is no number are kept, for compareFloatValues to order or
+// refuse.
+func float32Precision(v any) (any, error) {
+	if !IsNumber(v) || isNaN(v) || isInf(v) {
+		return v, nil
+	}
+	return NormalizeFloat(v, reflect.Float32)
+}
+
+func isInf(v any) bool {
+	rv := reflect.ValueOf(v)
+	kind := rv.Kind()
+	return (kind == reflect.Float32 || kind == reflect.Float64) && math.IsInf(rv.Float(), 0)
 }
 
 func isNaN(v any) bool {

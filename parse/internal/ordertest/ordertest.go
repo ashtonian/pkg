@@ -103,6 +103,21 @@ func Cases() []Case {
 			},
 		},
 		{
+			Name: "float32", Type: core.TypeInfo{Type: core.FieldTypeFloat, NumberKind: reflect.Float32},
+			Ordered: true, Sortable: true, Faceted: true, SQLite: "REAL", Postgres: "real",
+			// At float32 precision: 0.1 is the float32 nearest it, so a
+			// float64 0.1 and float32(0.1) are one value, as are 2^24 and
+			// 2^24+1, which no float32 tells apart.
+			Values: []Value{
+				{"-2.5", []any{-2.5, float32(-2.5)}},
+				{"0", []any{0.0, float32(0), int64(0)}},
+				{"0.1", []any{0.1, float32(0.1), json.Number("0.1"), float64(float32(0.1))}},
+				{"0.3", []any{0.3, float32(0.3)}},
+				{"2.5", []any{2.5, float32(2.5), sql.NullFloat64{Float64: 2.5, Valid: true}}},
+				{"16777216", []any{16777216.0, int64(16777217), json.Number("16777217")}},
+			},
+		},
+		{
 			Name: "decimal", Type: core.TypeInfo{Type: core.FieldTypeDecimal},
 			Ordered: true, Sortable: true, Faceted: true, SQLite: "TEXT", Postgres: "numeric",
 			// By value, never by text: "10" after "9.5", 20 digits one apart.

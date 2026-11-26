@@ -54,19 +54,20 @@ func TestCompareCanonical_Conformance(t *testing.T) {
 }
 
 // A float column orders as PostgreSQL's float8 does: -Infinity, the
-// finite values, +Infinity, then NaN, every NaN equal, NULL after all.
+// finite values, +Infinity, then NaN, every NaN equal, NULL after all; a
+// float32 column alike, its greatest finite value float32's.
 func TestCompareCanonical_NonFiniteFloats(t *testing.T) {
 	payload := math.Float64frombits(0x7ff8000000000001)
-	ascending := [][]any{
-		{math.Inf(-1), float32(math.Inf(-1))},
-		{-1.5, json.Number("-1.5")},
-		{0.0, int64(0)},
-		{math.MaxFloat64},
-		{math.Inf(1), float32(math.Inf(1))},
-		{math.NaN(), payload, float32(math.NaN()), sql.NullFloat64{Float64: math.NaN(), Valid: true}},
-		{nil, sql.NullFloat64{}},
-	}
-	for _, kind := range []reflect.Kind{reflect.Float64, reflect.Float32} {
+	for kind, greatest := range map[reflect.Kind]float64{reflect.Float64: math.MaxFloat64, reflect.Float32: math.MaxFloat32} {
+		ascending := [][]any{
+			{math.Inf(-1), float32(math.Inf(-1))},
+			{-1.5, json.Number("-1.5")},
+			{0.0, int64(0)},
+			{greatest},
+			{math.Inf(1), float32(math.Inf(1))},
+			{math.NaN(), payload, float32(math.NaN()), sql.NullFloat64{Float64: math.NaN(), Valid: true}},
+			{nil, sql.NullFloat64{}},
+		}
 		f := core.TypeInfo{Type: core.FieldTypeFloat, NumberKind: kind}
 		for i, xs := range ascending {
 			for j, ys := range ascending {
@@ -94,6 +95,7 @@ func TestCompareCanonical_Refuses(t *testing.T) {
 		"text as an integer":       {core.TypeInfo{Type: core.FieldTypeInt}, "7", int64(7), "cannot compare int values string and int64"},
 		"NaN as an integer":        {core.TypeInfo{Type: core.FieldTypeInt}, math.NaN(), int64(1), "cannot compare int values float64 and int64"},
 		"NaN as a decimal":         {core.TypeInfo{Type: core.FieldTypeDecimal}, math.NaN(), "1", "cannot compare decimal values float64 and string"},
+		"a float no float32 holds": {core.TypeInfo{Type: core.FieldTypeFloat, NumberKind: reflect.Float32}, math.MaxFloat64, 0.0, "overflows float32"},
 		"an untyped NaN":           {core.TypeInfo{}, math.NaN(), 1.0, "cannot compare float64 with float64"},
 		"not a UUID":               {core.TypeInfo{Type: core.FieldTypeUUID}, "nope", "00000000-0000-0000-0000-000000000001", `invalid UUID "nope"`},
 		"a document":               {core.TypeInfo{Type: core.FieldTypeJSON}, "a", "b", "a json value has no order"},
