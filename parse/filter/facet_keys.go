@@ -33,7 +33,10 @@ func FacetKeys(v any, f *FieldSchema) ([]string, error) {
 		}
 		return []string{key}, nil
 	}
-	v = core.Deref(v)
+	v, err := core.Deref(v)
+	if err != nil {
+		return nil, facetKeyError(f, err)
+	}
 	if v == nil {
 		return nil, nil
 	}

@@ -443,7 +443,11 @@ func (r *Resource[T]) rowKey(row T) (any, error) {
 		return nil, err
 	}
 	for i, v := range k {
-		if core.Deref(v) == nil {
+		held, err := core.Deref(v)
+		if err != nil {
+			return nil, fmt.Errorf("parse: %s: row key: key column %s: %w", r.table, r.pk[i], err)
+		}
+		if held == nil {
 			return nil, fmt.Errorf("parse: %s: a row has no key: key column %s holds no value", r.table, r.pk[i])
 		}
 	}

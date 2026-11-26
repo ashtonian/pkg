@@ -94,3 +94,34 @@ func inetOf(t *testing.T, s string) Inet {
 	require.NoError(t, err)
 	return v
 }
+
+// A pointer or interface that holds itself is refused by everything that
+// follows one, past a bounded depth, instead of following it forever.
+func TestDeref_RefusesASelfReference(t *testing.T) {
+	self := new(any)
+	*self = self
+	for name, read := range map[string]func() error{
+		"Deref":           func() error { _, err := Deref(self); return err },
+		"StoredValue":     func() error { _, _, err := StoredValue(self); return err },
+		"NormalizeScalar": func() error { _, err := NormalizeScalar(FieldTypeString, 0, self); return err },
+		"NormalizeStored": func() error { _, err := NormalizeStored(FieldTypeFloat, 0, self); return err },
+		"DecimalText":     func() error { _, err := DecimalText(self); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.ErrorContains(t, read(), "more than 32 pointers and interfaces")
+		})
+	}
+}
+
+// Deref follows a chain up to its bound.
+func TestDeref_FollowsAChain(t *testing.T) {
+	text := "a"
+	v := any(&text)
+	for range 15 {
+		held := v
+		v = &held
+	}
+	got, err := Deref(v)
+	require.NoError(t, err)
+	assert.Equal(t, "a", got)
+}

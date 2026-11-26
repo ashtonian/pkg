@@ -434,9 +434,9 @@ func timestampText(value any) (any, error) {
 // offset, and an element reads as a timestamp only in UTC (PathExpr). A
 // nil list, or a value that is no list, is unchanged.
 func timestampTexts(value any) (any, error) {
-	list := core.Deref(value)
-	if list == nil {
-		return value, nil
+	list, err := core.Deref(value)
+	if err != nil || list == nil {
+		return value, err
 	}
 	if rv := reflect.ValueOf(list); rv.Kind() == reflect.Slice && rv.IsNil() {
 		return value, nil

@@ -14,20 +14,28 @@ var valuerType = reflect.TypeFor[driver.Valuer]()
 // returning the next, so a Valuer that returns itself cannot loop.
 const maxValuerDepth = 8
 
-// Deref follows pointers and interfaces to the value they hold, at any
-// depth; it is nil for a nil value, pointer or interface.
-func Deref(v any) any {
+// maxDerefDepth bounds how many pointers and interfaces Deref follows, so
+// one that holds itself (p := new(any); *p = p) cannot loop.
+const maxDerefDepth = 32
+
+// Deref follows pointers and interfaces to the value they hold; it is nil
+// for a nil value, pointer or interface. More than maxDerefDepth of them
+// in a chain is an error.
+func Deref(v any) (any, error) {
 	rv := reflect.ValueOf(v)
-	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+	for depth := 0; rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface; depth++ {
 		if rv.IsNil() {
-			return nil
+			return nil, nil
+		}
+		if depth == maxDerefDepth {
+			return nil, fmt.Errorf("dereferencing %s: more than %d pointers and interfaces", gowalker.TypeText(reflect.TypeOf(v)), maxDerefDepth)
 		}
 		rv = rv.Elem()
 	}
 	if !rv.IsValid() {
-		return nil
+		return nil, nil
 	}
-	return rv.Interface()
+	return rv.Interface(), nil
 }
 
 // StoredValue is the value the database holds for v, as a driver binds it:
@@ -48,7 +56,10 @@ func Deref(v any) any {
 // values through this one rule.
 func StoredValue(v any) (value any, null bool, err error) {
 	for depth := 0; ; depth++ {
-		v = Deref(v)
+		v, err = Deref(v)
+		if err != nil {
+			return nil, false, err
+		}
 		if v == nil {
 			return nil, true, nil
 		}

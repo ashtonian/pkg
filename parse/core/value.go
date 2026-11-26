@@ -97,7 +97,10 @@ func checkElementsText(elements []any) error {
 // normalizes as its kind's value does. A nil value is an error; callers decide separately whether a
 // field admits null.
 func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
-	v = Deref(v)
+	v, err := Deref(v)
+	if err != nil {
+		return nil, err
+	}
 	if v == nil {
 		switch dt {
 		case FieldTypeString, FieldTypeUUID, FieldTypeInt, FieldTypeFloat, FieldTypeDecimal, FieldTypeBool, FieldTypeTimestamp, FieldTypeDate,
@@ -183,7 +186,11 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 // infinities and holds NaN as NULL). Rows Evaluate reads and the values a
 // cursor carries normalize through it.
 func NormalizeStored(dt FieldType, kind reflect.Kind, v any) (any, error) {
-	rv := reflect.ValueOf(Deref(v))
+	held, err := Deref(v)
+	if err != nil {
+		return nil, err
+	}
+	rv := reflect.ValueOf(held)
 	isFloat := rv.Kind() == reflect.Float32 || rv.Kind() == reflect.Float64
 	if dt == FieldTypeFloat && isFloat {
 		f := rv.Float()

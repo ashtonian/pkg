@@ -119,7 +119,10 @@ func (r ColumnRow) Value(f *FieldSchema) (any, bool, error) {
 // (core.NormalizeStored), so it compares as SQL compares it: a time.Time a
 // driver scans a DATE into as its day, a float's NaN after +Infinity.
 func ColumnValue(f *FieldSchema, v any) (any, bool, error) {
-	v = core.Deref(v)
+	v, err := core.Deref(v)
+	if err != nil {
+		return nil, false, fmt.Errorf("field %s: %w", f.ExternalName, err)
+	}
 	if v == nil || isNilReference(v) {
 		return nil, false, nil
 	}
