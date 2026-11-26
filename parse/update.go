@@ -179,6 +179,10 @@ type UpdatePlan struct {
 	// tenant is Scope.Tenant in the tenant key's type; nil without one.
 	tenant  any
 	related map[string]*filter.PolicyConstraints
+	// now is the instant the plan's policies' relative-time tokens resolve
+	// against, read once when it was built: its relation statements admit
+	// the targets its Owner and Current did.
+	now time.Time
 }
 
 // Dialect is the dialect the plan's statements are written for.
@@ -251,7 +255,10 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		return nil, err
 	}
 
-	scope := updateScope{tenant: tenant, policy: s.Policy, related: s.Related}
+	// One instant for every statement: Owner and Current split one set of
+	// rows, so a policy token (`now-1h`) must admit the same rows in each.
+	now := r.cfg.Now()
+	scope := updateScope{tenant: tenant, policy: s.Policy, related: s.Related, now: now}
 	where, args, err := r.updateWhere(d, target, scope, set.ParamCount)
 	if err != nil {
 		return nil, err
@@ -266,7 +273,7 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 	if err := r.checkTargets(d, changed...); err != nil {
 		return nil, err
 	}
-	plan := &UpdatePlan{relations: set.RelationOps, dialect: d, fields: r.filterSchema, table: r.table, tenant: tenant, related: s.Related}
+	plan := &UpdatePlan{relations: set.RelationOps, dialect: d, fields: r.filterSchema, table: r.table, tenant: tenant, related: s.Related, now: now}
 	switch {
 	case set.SetClause != "":
 		// where's root is a group, which renders parenthesized, or one
@@ -440,11 +447,14 @@ func (r *Resource[T]) rowKey(row T) (any, error) {
 }
 
 // updateScope is what an update statement's WHERE binds: the scope's
-// tenant as bindTenant returned it, and its policies.
+// tenant as bindTenant returned it, its policies, and the instant their
+// relative-time tokens resolve against (the resource clock, read once per
+// plan).
 type updateScope struct {
 	tenant  any
 	policy  *filter.PolicyConstraints
 	related map[string]*filter.PolicyConstraints
+	now     time.Time
 }
 
 // updateWhere is the WHERE every update statement carries, its placeholders
@@ -464,12 +474,12 @@ func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s updateScope
 	if len(target.keys) == 0 {
 		userAST = target.filter.AST()
 	}
-	ast, err := filter.ApplyPolicyConstraints(r.filterSchema, userAST, pc)
+	ast, err := filter.ApplyPolicyConstraintsAt(r.filterSchema, userAST, pc, s.now)
 	if err != nil {
 		return "", nil, err
 	}
 	res, err := filter.NewSQLBuilder(r.filterSchema, d, filter.WithStartParam(offset),
-		filter.WithRelationScope(filter.RelationScope{Tenant: s.tenant, Related: s.related})).Build(ast)
+		filter.WithRelationScope(filter.RelationScope{Tenant: s.tenant, Related: s.related, Now: s.now})).Build(ast)
 	if err != nil {
 		return "", nil, err
 	}
@@ -503,7 +513,7 @@ func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []Key) ([]p
 		if op.Schema.TargetTable != "" {
 			field := plan.fields.Fields[op.Field]
 			opts.TargetVisible = func(alias string, bind func(any) string) (string, error) {
-				return filter.VisibleRelated(field, plan.dialect, alias, plan.tenant, plan.related, bind)
+				return filter.VisibleRelated(field, plan.dialect, alias, filter.RelationScope{Tenant: plan.tenant, Related: plan.related, Now: plan.now}, bind)
 			}
 		}
 		stmts, err := patch.RenderRelationOp(op, plan.dialect, owners, opts)

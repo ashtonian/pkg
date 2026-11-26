@@ -141,6 +141,14 @@ func ApplyPolicyConstraints(schema *ResourceSchema, userAST *FilterAST, pc *Poli
 	return applyPolicyConstraints(schema, userAST, pc, time.Now().UTC())
 }
 
+// ApplyPolicyConstraintsAt is ApplyPolicyConstraints with every
+// relative-time token (`now-30d`) resolved against now: the instant a
+// caller compiling several statements for one request reads once, so they
+// admit the same rows.
+func ApplyPolicyConstraintsAt(schema *ResourceSchema, userAST *FilterAST, pc *PolicyConstraints, now time.Time) (*FilterAST, error) {
+	return applyPolicyConstraints(schema, userAST, pc, now)
+}
+
 // applyPolicyConstraints is ApplyPolicyConstraints with every relative-time
 // token resolved against now.
 func applyPolicyConstraints(schema *ResourceSchema, userAST *FilterAST, pc *PolicyConstraints, now time.Time) (*FilterAST, error) {

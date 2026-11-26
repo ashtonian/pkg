@@ -93,7 +93,8 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 	if err != nil {
 		return nil, err
 	}
-	common := updateScope{tenant: tenant, policy: scope.Policy, related: scope.Related}
+	// One instant for every row's statements, as BuildUpdate reads one.
+	common := updateScope{tenant: tenant, policy: scope.Policy, related: scope.Related, now: r.cfg.Now()}
 	limits, err = updateBatchLimits(d, limits)
 	if err != nil {
 		return nil, err
