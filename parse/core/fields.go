@@ -134,7 +134,21 @@ func (f *Field) CheckWritable() error {
 	if f.unexportedEmbed == nil {
 		return nil
 	}
-	return fmt.Errorf("field %s: a write reaches it through the unexported embedded %s, which reflection can neither allocate nor copy; export the type or embed it by value", f.goName, gowalker.TypeText(f.unexportedEmbed))
+	return unwritableField(f.goName, f.unexportedEmbed)
+}
+
+// CheckWritableField is CheckWritable for a field of a gowalker shape, such
+// as a struct JSONDocumentOf reaches.
+func CheckWritableField(f *gowalker.Field) error {
+	parent, ok := f.UnallocatableParent()
+	if !ok {
+		return nil
+	}
+	return unwritableField(f.GoField().Name, parent.Type)
+}
+
+func unwritableField(goName string, embed reflect.Type) error {
+	return fmt.Errorf("field %s: a write reaches it through the unexported embedded %s, which reflection can neither allocate nor copy; export the type or embed it by value", goName, gowalker.TypeText(embed))
 }
 
 // Value reads the field from v, a value of the walked struct type. A nil
