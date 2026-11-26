@@ -365,6 +365,11 @@ back. It is decided once per node when the type is compiled, so a library
 walking a compiled graph reads each map's keys from its `Key()` shape without
 compiling the key type or reflecting on its methods again.
 
+The reference is Go 1.27's `encoding/json` as Go builds it by default, on
+`encoding/json/v2`, and each rule is tested against it. Under
+`GOEXPERIMENT=nojsonv2` the older implementation refuses float and pointer
+keys and the name `null`, which these rules read.
+
 `Shape.JSONKey(name)` returns the key `encoding/json` reads `name` into, the
 member name it writes for that key (the key's canonical text), and whether it
 reads one and writes one. `Shape.IsCanonicalJSONKey(name)` reports whether
@@ -377,7 +382,7 @@ map key; its text names the type and never a member name.
 | Key type | `JSONKey` reads | Canonical text |
 |---|---|---|
 | String kind without text methods | Every name; each byte of invalid UTF-8 becomes U+FFFD | The name, when it is valid UTF-8 |
-| Integer kind without text methods | Base-10 text within the type's range, leading zeros included; a signed kind's may carry a `+` or `-` | Without a `+`, leading zeros or `-0`: `+7` and `07` read as `7` |
+| Integer kind without text methods | Base-10 text within the type's range, leading zeros included; a signed kind's may carry a `+` or `-`; `null`, read as zero as `encoding/json` reads a JSON null into an integer | Without a `+`, leading zeros or `-0`: `+7` and `07` read as `7`, `null` as `0` |
 | A type with `UnmarshalText`, or with `AppendText` or `MarshalText` on its value | What `encoding/json` reads through the method or the kind | What `encoding/json` writes: `AppendText`, else `MarshalText`, of a value that has it (a string kind's own text whatever its methods), otherwise the kind's text |
 | Float kind | Numbers `encoding/json` reads | Their shortest form: `1.50` reads as `1.5` |
 | `any` | Every name, as a string | The name |

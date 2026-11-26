@@ -13,6 +13,10 @@ import (
 
 // jsonKeyRule is how encoding/json reads a member name into a map key of one
 // type and writes the key back, decided when the type's shape is built.
+// encoding/json is Go 1.27's as Go builds it by default, on
+// encoding/json/v2: under GOEXPERIMENT=nojsonv2 the older implementation
+// refuses float and pointer keys and the name "null", which these rules
+// read.
 type jsonKeyRule uint8
 
 const (
@@ -93,7 +97,9 @@ func implementsText(t, iface reflect.Type) bool {
 }
 
 // JSONKey reads name, a JSON object member name, into a key of a map whose
-// key type is s's type, as encoding/json reads one, and returns the key and
+// key type is s's type, as encoding/json reads one (Go 1.27's, on
+// encoding/json/v2: see the JSON map keys section of docs/api.md), and
+// returns the key and
 // its canonical text: the member name encoding/json writes for that key. ok
 // is false when encoding/json reads no key from name or writes no name for
 // the key it reads: for a type it refuses ([Shape.CheckJSONKey]), or a name
@@ -101,7 +107,8 @@ func implementsText(t, iface reflect.Type) bool {
 //
 // A string kind is its own text, each byte of invalid UTF-8 replaced by
 // U+FFFD as encoding/json replaces it. An integer kind reads base-10 text,
-// leading zeros included and, for a signed kind, a sign, and writes it
+// leading zeros included and, for a signed kind, a sign, and "null" as its
+// zero, as encoding/json reads a JSON null into an integer, and writes it
 // without either. Any other key
 // type, a string or integer with AppendText, MarshalText or UnmarshalText
 // included, is read and written by encoding/json itself, which allocates on
@@ -120,16 +127,22 @@ func (s *Shape) JSONKey(name string) (key reflect.Value, canonical string, ok bo
 		key.SetString(name)
 		return key, name, true
 	case jsonKeySigned:
-		n, err := strconv.ParseInt(name, 10, 64)
 		key = reflect.New(s.typ).Elem()
+		if name == "null" {
+			return key, "0", true
+		}
+		n, err := strconv.ParseInt(name, 10, 64)
 		if err != nil || key.OverflowInt(n) {
 			return reflect.Value{}, "", false
 		}
 		key.SetInt(n)
 		return key, strconv.FormatInt(n, 10), true
 	case jsonKeyUnsigned:
-		n, err := strconv.ParseUint(name, 10, 64)
 		key = reflect.New(s.typ).Elem()
+		if name == "null" {
+			return key, "0", true
+		}
+		n, err := strconv.ParseUint(name, 10, 64)
 		if err != nil || key.OverflowUint(n) {
 			return reflect.Value{}, "", false
 		}

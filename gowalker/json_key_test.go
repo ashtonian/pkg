@@ -149,8 +149,8 @@ func jsonKeyTypes() []reflect.Type {
 }
 
 // jsonKeyNames are member names around each rule's edges: signs, leading
-// zeros, every integer kind's bounds, numbers that are not integers, text
-// that is no number, and invalid UTF-8.
+// zeros, every integer kind's bounds, numbers that are not integers, JSON
+// literals, text that is no number, and invalid UTF-8.
 func jsonKeyNames() []string {
 	names := []string{
 		"", "0", "-0", "+0", "1", "+1", "01", "-01", "-1", " 1", "1 ", "1e2", "0x10", "1_000", "1.5", "1.50", "-0.0",
@@ -160,6 +160,7 @@ func jsonKeyNames() []string {
 		"18446744073709551615", "18446744073709551616", "99999999999999999999999",
 		"a", "Ab", "true", "false", "NaN", "Infinity", "::1", "0:0:0:0:0:0:0:1", "192.0.2.1", "1,2", "01,2",
 		"x07", "x7", "p3", "p03",
+		"null", "Null", "nul", "00", "-", "+", "1.0", "1e0", "0e0", "-0e0",
 		"\xff", "a\xff\xfeb", "\xed\xa0\x80", "é", "<&>",
 	}
 	return names
