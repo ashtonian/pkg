@@ -416,6 +416,12 @@ func (d SQLiteDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
 	}
 }
 
+// StoresAsText reports the values MarshalValue writes as text: a
+// timestamp's canonical text, a document's or an array's JSON.
+func (SQLiteDialect) StoresAsText(t core.FieldType) bool {
+	return t == core.FieldTypeTimestamp || core.IsDocument(t) || t == core.FieldTypeArray
+}
+
 // timestampText is a timestamp's canonical text, from a time.Time, a
 // pointer to one, a driver.Valuer holding one (sql.NullTime) or RFC 3339
 // text; nil and NULL are NULL. The driver would store a time.Time as its

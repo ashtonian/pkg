@@ -405,7 +405,7 @@ A relation that declares a `tenant_col` fails the build unless a tenant is bound
 
 A flat parameter that is neither a list parameter (`filter.Param*`), an accepted name nor a filterable field is E2071 on every entry point — `Resource.ParseList` (`AcceptParams`), `Resource.ParseRequestFilter` and `filter.NewQueryParamParser` (`QueryParamAccept`) — so a misspelt filter cannot return every row.
 
-The dialects are `filter.PostgresDialect` and `filter.SQLiteDialect`, and the set is closed: `filter.Dialect` has unexported methods, so no type outside the module implements it, and every dialect-specific choice is made on which of the two a dialect is. `filter.DialectFromDSN` picks one from a connection string. Application code can still type-switch on the two types, as the computed-column example below does.
+The dialects are `filter.PostgresDialect` and `filter.SQLiteDialect`, and the set is closed: `filter.Dialect` has unexported methods, so a type outside the module implements it only by embedding one of the two. Every dialect-specific choice is a method of the dialect, never a test of which dialect it is: `filter.Dialect`'s for filters, lists, facets and includes, the methods `patch.SQLDialect` and `patch.RelationDialect` name for the SQL a patch writes, and `StoresAsText` for what a row scan decodes. A new SQL provider is one type in `filter` implementing `filter.Dialect`, over a type of `internal/dialect` that gives its name, placeholders, identifier quoting and parameter limit; `filter.DialectFromDSN`, which picks a dialect from a connection string, is the one place that maps a provider's kind to its type. Application code can still type-switch on the two types, as the computed-column example below does.
 
 PostgreSQL dialect:
 

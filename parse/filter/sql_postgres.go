@@ -589,6 +589,10 @@ func (d PostgresDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
 	}
 }
 
+// StoresAsText reports false: PostgreSQL stores every value in a type of
+// its own, which the driver scans.
+func (PostgresDialect) StoresAsText(core.FieldType) bool { return false }
+
 // CTEMaterializeHint returns " MATERIALIZED" so PG ≥ 12 doesn't inline a
 // multi-referenced CTE. Critical for BuildFacetQuery so the policy-merged
 // filter scan happens exactly once for the whole facet response.
