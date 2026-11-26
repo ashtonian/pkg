@@ -88,7 +88,8 @@ func checkElementsText(elements []any) error {
 //
 // Other data types pass through unchanged. Non-nil pointers are
 // dereferenced first, so typed Go input (*int64, *time.Time) normalizes like
-// its value. A nil value is an error; callers decide separately whether a
+// its value, and a value of a named string, integer, float or bool type
+// normalizes as its kind's value does. A nil value is an error; callers decide separately whether a
 // field admits null.
 func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	v = deref(v)
@@ -127,7 +128,7 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	case FieldTypeDecimal:
 		return DecimalText(v)
 	case FieldTypeBool:
-		b, ok := v.(bool)
+		b, ok := boolean(v)
 		if !ok {
 			return nil, fmt.Errorf("expected boolean, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 		}
@@ -277,6 +278,20 @@ func text(v any) (string, bool) {
 		return rv.String(), true
 	}
 	return "", false
+}
+
+// boolean returns v as a bool when it is one, named bool types included, as
+// text and nativeInt read named strings and integers.
+func boolean(v any) (bool, bool) {
+	b, ok := v.(bool)
+	if ok {
+		return b, true
+	}
+	rv := reflect.ValueOf(v)
+	if rv.IsValid() && rv.Kind() == reflect.Bool {
+		return rv.Bool(), true
+	}
+	return false, false
 }
 
 func deref(v any) any {

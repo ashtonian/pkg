@@ -64,7 +64,15 @@ type server struct {
 	report parsehttp.Option
 }
 
-func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http.Handler, error) {
+// Schema discovery's routes, logged at trace: clients poll them.
+const (
+	schemaRoute  = "GET /api/{resource}/schema"
+	schemasRoute = "GET /api/schemas"
+)
+
+// newServer serves the routes, each request under requestTimeout and logged
+// once; newRequestID mints the ID of a request that arrives without one.
+func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration, newRequestID func() string) (http.Handler, error) {
 	if requestTimeout <= 0 {
 		return nil, fmt.Errorf("request timeout must be positive")
 	}
@@ -85,14 +93,15 @@ func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http
 	s := &server{db: db, products: products, log: log, requestTimeout: requestTimeout}
 	s.report = parsehttp.WithErrorHandler(s.responseFailed)
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/{resource}/schema", parsehttp.SchemaHandler(reg, s.report))
-	mux.HandleFunc("GET /api/schemas", parsehttp.SchemaListHandler(reg, s.report))
+	mux.HandleFunc(schemaRoute, parsehttp.SchemaHandler(reg, s.report))
+	mux.HandleFunc(schemasRoute, parsehttp.SchemaListHandler(reg, s.report))
 	mux.HandleFunc("GET "+productsPath, s.list)
 	mux.HandleFunc("POST "+productsPath, s.list)
 	mux.HandleFunc("OPTIONS "+productsPath, s.facets)
 	mux.HandleFunc("PATCH "+productsPath, s.patchMany)
 	mux.HandleFunc("PATCH "+productsPath+"/"+item, s.patch)
-	return s.withDeadline(mux), nil
+	logged := requestLog{log: log, newID: newRequestID, routes: mux, traceRoutes: map[string]bool{schemaRoute: true, schemasRoute: true}}
+	return logged.wrap(s.withDeadline(mux)), nil
 }
 
 // withDeadline serves each request under the request timeout. The deadline

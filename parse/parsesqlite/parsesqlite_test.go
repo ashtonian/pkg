@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"modernc.org/sqlite"
 
+	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/geo"
 	"github.com/ashtonian/pkg/parse/parsesqlite"
 )
@@ -190,6 +191,32 @@ func TestDecimalFloat32(t *testing.T) {
 				var got any
 				require.NoError(t, d.db.QueryRow("SELECT "+tt.expr).Scan(&got))
 				assert.Equal(t, tt.want, got)
+			})
+		}
+	}
+}
+
+// The function's float32 is the one database/sql scans the same value into,
+// so a float32 field's facet key names the value its rows read back as:
+// a REAL at a float32 rounding midpoint, and an INTEGER a double cannot
+// hold, which rounding through a double first would round twice.
+func TestDecimalFloat32_IsTheScannedFloat32(t *testing.T) {
+	for _, d := range databases(t) {
+		for _, v := range []any{
+			float64(float32(0.1)),
+			1 + 0x1p-24, // between 1 and float32's next value, exactly halfway
+			1 + 0x1p-24 + 0x1p-40,
+			int64(16777217),            // 2^24 + 1
+			int64(1152921573326323713), // 2^60 + 2^36 + 1
+		} {
+			t.Run(d.name, func(t *testing.T) {
+				var scanned float32
+				require.NoError(t, d.db.QueryRowContext(t.Context(), "SELECT ?", v).Scan(&scanned))
+				var key string
+				require.NoError(t, d.db.QueryRowContext(t.Context(), "SELECT parse_decimal_float32(?)", v).Scan(&key))
+				want, err := core.DecimalText(scanned)
+				require.NoError(t, err)
+				assert.Equal(t, want, key, "%v", v)
 			})
 		}
 	}

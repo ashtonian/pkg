@@ -4,6 +4,7 @@ package core_test
 
 import (
 	"encoding/json"
+	"encoding/json/jsontext"
 	"math"
 	"reflect"
 	"strconv"
@@ -24,20 +25,29 @@ type jsonCount int64
 
 func (c jsonCount) MarshalJSON() ([]byte, error) { return []byte(strconv.FormatInt(int64(c), 10)), nil }
 
+// jsonToCount marshals itself through encoding/json/v2's method, which
+// encoding/json honours as it does MarshalJSON.
+type jsonToCount int64
+
+func (c jsonToCount) MarshalJSONTo(enc *jsontext.Encoder) error {
+	return enc.WriteToken(jsontext.Int(int64(c)))
+}
+
 type countPtr *int64
 
 type wired struct {
-	ID    int64     `json:"id,string"`
-	Big   uint64    `json:"big,string,omitempty"`
-	Ratio float64   `json:"ratio,string"`
-	Small float32   `json:"small,string"`
-	On    bool      `json:"on,string"`
-	Opt   *int64    `json:"opt,string"`
-	Named textCount `json:"named,string"`
-	Self  jsonCount `json:"self,string"`
-	Name  string    `json:"name,string"`
-	Plain int64     `json:"plain"`
-	Omit  int64     `json:"omit,omitempty"`
+	ID     int64       `json:"id,string"`
+	Big    uint64      `json:"big,string,omitempty"`
+	Ratio  float64     `json:"ratio,string"`
+	Small  float32     `json:"small,string"`
+	On     bool        `json:"on,string"`
+	Opt    *int64      `json:"opt,string"`
+	Named  textCount   `json:"named,string"`
+	Self   jsonCount   `json:"self,string"`
+	SelfTo jsonToCount `json:"self_to,string"`
+	Name   string      `json:"name,string"`
+	Plain  int64       `json:"plain"`
+	Omit   int64       `json:"omit,omitempty"`
 	//lint:ignore SA5008 encoding/json ignores the option on a slice; so must Wire
 	Tags     []int64  `json:"tags,string"`
 	Indirect countPtr `json:"indirect,string"`
@@ -51,7 +61,7 @@ func TestFieldWire(t *testing.T) {
 	want := map[string]core.Wire{
 		"id": core.WireString, "big": core.WireString, "ratio": core.WireString, "small": core.WireString,
 		"on": core.WireString, "opt": core.WireString,
-		"named": "", "self": "", "name": "", "plain": "", "omit": "", "tags": "", "indirect": "",
+		"named": "", "self": "", "self_to": "", "name": "", "plain": "", "omit": "", "tags": "", "indirect": "",
 	}
 	quoted := map[string]bool{"id": true, "big": true, "ratio": true, "small": true, "on": true, "opt": true, "name": true}
 	for f := range walk.Fields() {

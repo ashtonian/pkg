@@ -135,7 +135,7 @@ func checkMemberPath(schema *PatchSchema, op *PatchOperation) error {
 	}
 	for _, token := range tokens[1:] {
 		declared := derefType(t)
-		if declared != nil && customJSONType(declared) {
+		if declared != nil && core.CustomJSON(declared) {
 			return notCompilable(op, fmt.Sprintf("%s is a member of %s, which decodes itself, so SQL cannot hold the stored document to it", op.Path, gowalker.TypeText(declared)))
 		}
 		switch shapeOf(t) {
@@ -186,7 +186,7 @@ func shapeOf(t reflect.Type) memberShape {
 	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	if t == nil || untypedDocument(t) || customJSONType(t) {
+	if t == nil || untypedDocument(t) || core.CustomJSON(t) {
 		return shapeUnknown
 	}
 	switch t.Kind() {

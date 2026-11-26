@@ -26,14 +26,18 @@
 //
 // Table name: [WithSQLTableName] → [TableConvention] → plural snake_case.
 //
-// Field name: configured tag (default "json") → skip if empty.
+// Field name: the configured tag (default "json") under encoding/json's
+// rules: an untagged exported field is named by its Go name, and "-" hides
+// a field.
 //
 // # Error Types
 //
-// [ParseError] is the single error type returned by all parse operations. It
-// carries an E-code, a message, and
-// the offending path or operation index; errors.Is matches it against any
-// error with the same code.
+// A request is refused with a [ParseError]: it carries an E-code, a message
+// written for the client, and the offending path or operation index;
+// errors.Is matches it against a [Code] or any error with the same code.
+// Schema generation and [ParserConfig.Validate] return plain errors naming
+// the field or option to fix: they are the server's configuration, raised
+// at startup.
 //
 // # Values
 //

@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,7 +34,7 @@ func testServer(t *testing.T) *httptest.Server {
 	db, err := openDB(t.Context())
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
-	h, err := newServer(db, slog.New(slog.NewTextHandler(io.Discard, nil)), 5*time.Second)
+	h, err := newServer(db, slog.New(slog.NewTextHandler(io.Discard, nil)), 5*time.Second, rand.Text)
 	require.NoError(t, err)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
@@ -488,7 +489,7 @@ func TestServer_RequestBodies(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
 	var logs bytes.Buffer
-	h, err := newServer(db, slog.New(slog.NewJSONHandler(&logs, nil)), 5*time.Second)
+	h, err := newServer(db, slog.New(slog.NewJSONHandler(&logs, nil)), 5*time.Second, rand.Text)
 	require.NoError(t, err)
 	for _, tt := range []struct{ method, path string }{
 		{http.MethodPatch, "/api/products/p03"},
@@ -528,7 +529,7 @@ func TestServer_DeadlinesAndCancellationsAreNoServerFaults(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
 	var logs bytes.Buffer
-	h, err := newServer(db, slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})), 5*time.Second)
+	h, err := newServer(db, slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})), 5*time.Second, rand.Text)
 	require.NoError(t, err)
 	expired, cancelExpired := context.WithDeadline(t.Context(), time.Unix(0, 0))
 	t.Cleanup(cancelExpired)

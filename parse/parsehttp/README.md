@@ -115,7 +115,7 @@ The tests are unit tests over `httptest`; they need no database.
 | `parsehttp.go` | `Body`, `Option`, `WithErrorHandler`, `WriteError`, `WriteJSON`, `ErrUnencodableDetails` |
 | `schema.go` | `SchemaHandler`, `SchemaListHandler`: discovery routes, 500/E2120 for a document that cannot be encoded |
 | `list.go` | `ParseList`: GET query strings and POST bodies; `ParseFacets`: a facets request; `Query`: the query string decoded whole or refused |
-| `patch.go` | `ParsePatch`: a patch body by its media type, bounded by `MaxInputSize` |
+| `patch.go` | `ParsePatch`: a patch body by its media type, bounded by `MaxInputSize`, or 1 MiB when it is unlimited |
 | `item.go` | `ItemPattern`, `ItemKey`, `Keyed`, `ErrNoKeyValue`: an item route with a path segment per key column, and the key it names |
 | `answers.go` | `PatchAnswer`, `PatchFailure`, `FacetsAnswer`: the answers the SDK reads |
 | `page.go` | `WriteList`, `MaskPage`: a list page under its field mask, each item narrowed to the masked members as its encoder wrote them |

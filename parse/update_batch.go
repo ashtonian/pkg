@@ -86,15 +86,11 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 	if err != nil {
 		return nil, err
 	}
-	if scope.Governance != nil || scope.IncludeDeleted {
-		return nil, fmt.Errorf("parse: %s: %w", r.table, ErrUpdateScope)
-	}
-	tenant, err := r.bindTenant(scope.Tenant)
+	// One scope, and one instant, for every row's statements.
+	common, err := r.bindUpdateScope(scope)
 	if err != nil {
 		return nil, err
 	}
-	// One instant for every row's statements, as BuildUpdate reads one.
-	common := updateScope{tenant: tenant, policy: scope.Policy, related: scope.Related, now: r.cfg.Now()}
 	limits, err = updateBatchLimits(d, limits)
 	if err != nil {
 		return nil, err

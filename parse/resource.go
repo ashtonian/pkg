@@ -2,7 +2,6 @@ package parse
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -196,7 +195,10 @@ func ParserOptions(opts ...core.Option) ResourceOption {
 
 // AcceptParams names query parameters the endpoint reads itself. ParseList
 // leaves them alone; any other parameter that is neither a list parameter
-// (filter.Param*) nor a filterable field is an error (E2071).
+// (filter.Param*) nor a filterable field is an error (E2071). A name that is
+// a list parameter, the search parameter, or a flat filter on a field
+// (filter.FlatParamFields) is refused by NewResource, and by Relate and
+// WithPaths for the fields they add: ParseList would skip that filter.
 func AcceptParams(names ...string) ResourceOption {
 	return func(c *resourceConfig) { c.accepted = append(c.accepted, names...) }
 }
@@ -315,7 +317,8 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	}
 	r.filterSchema.SystemFields = systemFields(table, cfg, columns, fieldsByColumn)
 	r.filterSchema.PrimaryKey = slices.Clone(cfg.pk)
-	err = r.setSearchParam()
+	r.setSearchParam()
+	err = r.checkQueryParams(r.filterSchema)
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
 	}
@@ -547,8 +550,7 @@ func sqlTypes(table string, cfg resourceConfig, columns map[string]reflect.Type)
 // Values such as interfaces and nested structs are checked by the JSON encoder
 // at the write boundary; construction must not invoke user encoding hooks.
 func jsonRepresentableType(t reflect.Type) bool {
-	marshaler := reflect.TypeFor[json.Marshaler]()
-	if t.Implements(marshaler) || reflect.PointerTo(t).Implements(marshaler) {
+	if core.MarshalsJSON(t) {
 		return true
 	}
 	switch t.Kind() {
@@ -748,8 +750,12 @@ func (r *Resource[T]) TenantColumnName() string { return r.tenant }
 // DeletedColumnName is the soft-delete column; "" without soft delete.
 func (r *Resource[T]) DeletedColumnName() string { return r.deleted }
 
-// ColumnSQLType returns a column's explicit storage declaration. The returned
-// value cannot mutate the resource's metadata; false means no declaration.
+// ColumnSQLType returns the SQL type a column is read and written as: its
+// declaration (ColumnType), or, for a value type that declares none, the
+// type its Go type implies (core.ImpliedSQLType: a civil date, an interval,
+// an array of intervals). false means neither: the column holds its Go
+// type's own representation. The returned value cannot mutate the
+// resource's metadata.
 func (r *Resource[T]) ColumnSQLType(column string) (core.SQLType, bool) {
 	t, ok := r.sqlTypes[column]
 	return t, ok
@@ -980,7 +986,7 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
 	}
-	err = r.checkSearchParam(fs)
+	err = r.checkQueryParams(fs)
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
 	}

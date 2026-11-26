@@ -48,9 +48,10 @@ func (e *BodyReadError) Unwrap() error { return e.Err }
 // other media type, or none, is E2086, so a body is never read in a grammar
 // its sender did not name.
 //
-// The body is read no further than MaxInputSize, the size the patch parsers
-// hold a body to, and a longer one is E2063; a MaxInputSize of zero or less
-// reads it whole. A read that fails is a *BodyReadError.
+// The body is read no further than its limit (core.ParserConfig's
+// PatchBodyLimit): MaxInputSize, the size the patch parsers hold a body to,
+// or 1 MiB when MaxInputSize is unlimited, and a longer one is E2063. A
+// read that fails is a *BodyReadError.
 func (r *Resource[T]) ParsePatchRequest(contentType string, body io.Reader, opts ...PatchOption) (*patch.ParsedPatch, error) {
 	var grammar func([]byte, ...PatchOption) (*patch.ParsedPatch, error)
 	if media, _, err := mime.ParseMediaType(contentType); err == nil {
@@ -68,29 +69,27 @@ func (r *Resource[T]) ParsePatchRequest(contentType string, body io.Reader, opts
 			Details: map[string]any{core.DetailParameter: "content-type"},
 		}
 	}
-	data, err := r.readBody(body, r.cfg.MaxInputSize, "patch", core.ParseErrorKindPatch)
+	data, err := r.readBody(body, r.cfg.PatchBodyLimit(), "patch", core.ParseErrorKindPatch)
 	if err != nil {
 		return nil, err
 	}
 	return grammar(data, opts...)
 }
 
-// readBody reads body up to limit bytes, limit zero or less being none: one
-// byte more tells a body that is too large without reading the rest of it,
-// so the limit is held below MaxInt for that byte. A body over limit is
-// E2063; a read that fails is a *BodyReadError.
+// readBody reads body up to limit bytes, which is positive (a request body
+// is always bounded: ListBodyLimit, PatchBodyLimit). One byte more tells a
+// body that is too large without reading the rest of it, so the limit is
+// held below MaxInt for that byte. A body over limit is E2063; a read that
+// fails is a *BodyReadError.
 func (r *Resource[T]) readBody(body io.Reader, limit int, request string, kind core.ParseErrorKind) ([]byte, error) {
 	if body == nil {
 		return nil, nil
 	}
-	if limit > 0 {
-		body = io.LimitReader(body, int64(min(limit, math.MaxInt-1))+1)
-	}
-	data, err := io.ReadAll(body)
+	data, err := io.ReadAll(io.LimitReader(body, int64(min(limit, math.MaxInt-1))+1))
 	if err != nil {
 		return nil, &BodyReadError{Table: r.table, Request: request, Err: err}
 	}
-	if limit > 0 && len(data) > limit {
+	if len(data) > limit {
 		return nil, &core.ParseError{
 			Kind: kind, Code: filter.ECodeInputTooLarge.String(),
 			Message: fmt.Sprintf("%s body exceeds maximum %d bytes", request, limit),

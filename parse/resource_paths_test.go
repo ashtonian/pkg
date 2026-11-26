@@ -83,7 +83,7 @@ func TestResource_WithPathsViewRelatesNothing(t *testing.T) {
 // A request declares its tenant's custom fields as paths on a view of the
 // resource; the shared resource never learns them.
 func TestResource_WithPathsIsARequestView(t *testing.T) {
-	r, err := parse.NewResource[customItem]("custom_items", parse.PageSize(10, 10), parse.AcceptParams("facets"))
+	r, err := parse.NewResource[customItem]("custom_items", parse.PageSize(10, 10))
 	require.NoError(t, err)
 	view, err := r.WithPaths(filter.PathDecl{Path: "custom.tier", Type: core.FieldTypeString, Sort: true, Facet: &filter.FacetSchema{Type: filter.FacetTerms}})
 	require.NoError(t, err)
