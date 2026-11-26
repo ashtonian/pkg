@@ -131,7 +131,9 @@ retain metadata only, never the values you pass them. Synchronize your own value
   not descend into it. Each `WithTaggedFields` field is a leaf unless
   `NestedFields` is set; `WithAtomicType` and `WithAtomicImplementers` make
   whole types leaves. `WithJSONFields` still promotes an embedded leaf's
-  fields, as `encoding/json` writes them.
+  fields, as `encoding/json` writes them, and names an unexported one a tag
+  names unless its type has a JSON or text method, which `encoding/json`
+  cannot call through an unexported field.
 - **Inline** / **promote**: expose an embedded struct's fields as if they were
   declared on the outer struct.
 - **Present**, **Nil**, **Missing**: a read reached a value (zero included), reached
@@ -224,6 +226,7 @@ The standard library only, Go 1.27 or later. There are no external services.
 | `tag_spelling.go` | `MisspeltTagKey`: the known tag key a misspelt one means; `Shape.MisspeltTagKeys` and `TagMisspelling`: every misspelling a struct's declarations carry |
 | `shape.go` | Compilation: the raw type graph, field rules, inlining, name resolution, the view pass and `Declarations` |
 | `json_key.go` | JSON map-key rules: `Shape.JSONKey`, `IsCanonicalJSONKey` and `CheckJSONKey` |
+| `json_methods.go` | The methods `encoding/json` calls on a type that codes itself, matched without importing `encoding/json/v2`, and the unexported embedded structs `WithJSONFields` drops for them |
 | `schema.go` | `Schema`, `At`, path resolution and cached root-field accessors |
 | `route.go` | Static routes for paths of struct fields and pointers |
 | `access.go` | Reads and value states |

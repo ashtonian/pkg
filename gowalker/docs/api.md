@@ -168,7 +168,7 @@ Options relax those defaults:
 | `json:"-"` | Excluded |
 | `json:"-,"` | `-` |
 | Embedded struct or pointer to one without a tag name, exported or not | Its fields, promoted, a leaf type's included: leaf rules decide where paths and walks stop, not which members `encoding/json` writes, and paths, writes and walks cross the leaf to the fields it promotes |
-| Unexported embedded struct with a tag name, a leaf type included | A field under that name, as `encoding/json` writes it as a member. Its `GoField` is unexported: reading or writing its value whole, or walking a value into it, returns ErrAccess; with `NestedFields()`, paths to its exported fields read and write |
+| Unexported embedded struct with a tag name, a leaf type included | A field under that name, as `encoding/json` writes it as a member, unless its type or a pointer to it has a method `encoding/json` would call on it (`MarshalJSON`, `UnmarshalJSON`, `AppendText`, `MarshalText`, `UnmarshalText`, `MarshalJSONTo`, `UnmarshalJSONFrom`, or `IsZero` under `omitzero`): `encoding/json` cannot call a method through an unexported field and drops it, and so does the option. Its `GoField` is unexported: reading or writing its value whole, or walking a value into it, returns ErrAccess; with `NestedFields()`, paths to its exported fields read and write |
 | A struct embedded inside itself, directly or through others | Its fields once, at the shallowest depth, as `encoding/json` explores each embedded struct once |
 | A name two fields claim | Settled as with `ResolveByDepth()`, which the option implies; a remaining tie fails, or with `DropTies()` drops every field claiming the name |
 | An embedded struct whose own fields tie, in a struct whose own field settles the name | The struct compiles, with the settling field, as `encoding/json` writes it; the embedded struct compiled alone, or as a named section, still fails |
@@ -212,7 +212,8 @@ Embedding does not imply promotion. A resolver returns a `FieldRule` with a name
 aliases, skip, inline or leaf behavior. An empty name falls back to the Go name.
 Private fields remain excluded; an explicitly inlined anonymous struct can expose
 its exported descendants when safe reflection permits access, and
-`WithJSONFields` names an unexported embedded struct a tag names. Inline pointers
+`WithJSONFields` names an unexported embedded struct a tag names, unless its
+type has a method `encoding/json` would call on it. Inline pointers
 are followed for reads. Writes can allocate exported inline pointers when
 requested; safe reflection cannot allocate an unexported embedded pointer.
 
