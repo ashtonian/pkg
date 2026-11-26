@@ -60,3 +60,10 @@ func TestItemPath(t *testing.T) {
 		})
 	}
 }
+
+func TestItemPath_RejectsInterfacePointers(t *testing.T) {
+	for _, key := range []any{new(time.Time), (*time.Time)(nil), new(Quoted[int]), (*Quoted[int])(nil)} {
+		_, err := ItemPath(key)
+		checkErrorIs(t, err, ErrKeyValue)
+	}
+}

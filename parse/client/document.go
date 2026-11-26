@@ -67,7 +67,7 @@ func (r Relation[K]) Add(keys ...K) Operation { return Add(Pointer(r.name), list
 // Remove removes keys from the relation's members, as a JSON Patch
 // operation. Unlike Remove of a path, it carries the keys.
 func (r Relation[K]) Remove(keys ...K) Operation {
-	return Operation{op: patchRemove, path: Pointer(r.name), value: list(keys), hasValue: true}
+	return valueOperation(patchRemove, Pointer(r.name), list(keys))
 }
 
 // Reference is a to-one (belongs-to) relation whose target key has type K.

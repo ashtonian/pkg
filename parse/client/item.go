@@ -54,6 +54,10 @@ type quoted interface{ quotedValue() any }
 func (q Quoted[T]) quotedValue() any { return q.Value }
 
 func keyText(v any) (string, error) {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Pointer {
+		return "", fmt.Errorf("%w: a %s value has no key text", ErrKeyValue, rv.Kind())
+	}
 	switch v := v.(type) {
 	case quoted:
 		return keyText(v.quotedValue())
@@ -64,7 +68,6 @@ func keyText(v any) (string, error) {
 		}
 		return string(text), nil
 	}
-	rv := reflect.ValueOf(v)
 	switch rv.Kind() {
 	case reflect.String:
 		return rv.String(), nil

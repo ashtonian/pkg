@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 )
@@ -113,16 +114,28 @@ const (
 // Patch document. Build one with Add, Remove, Replace, Move, Copy, Test,
 // Append, an Array's Append or a Relation's membership methods.
 type Operation struct {
-	op       string
-	path     string
-	from     string
-	value    any
-	hasValue bool
+	op    string
+	path  string
+	from  string
+	value string // encoded JSON; empty for operations without a value
+	err   error
+}
+
+// Err reports an operand encoding failure encountered while building the operation.
+func (o Operation) Err() error { return o.err }
+
+func valueOperation(op, path string, value any) Operation {
+	raw, err := json.Marshal(value)
+	operation := Operation{op: op, path: path, value: string(raw)}
+	if err != nil {
+		operation.err = fmt.Errorf("%w: %s %s: %w", ErrOperand, op, path, err)
+	}
+	return operation
 }
 
 // Add adds value at path.
 func Add(path string, value any) Operation {
-	return Operation{op: patchAdd, path: path, value: value, hasValue: true}
+	return valueOperation(patchAdd, path, value)
 }
 
 // Remove removes the value at path.
@@ -130,7 +143,7 @@ func Remove(path string) Operation { return Operation{op: patchRemove, path: pat
 
 // Replace replaces the value at path with value.
 func Replace(path string, value any) Operation {
-	return Operation{op: patchReplace, path: path, value: value, hasValue: true}
+	return valueOperation(patchReplace, path, value)
 }
 
 // Move moves the value at from to path.
@@ -141,33 +154,29 @@ func Copy(from, path string) Operation { return Operation{op: patchCopy, path: p
 
 // Test checks that the value at path equals value.
 func Test(path string, value any) Operation {
-	return Operation{op: patchTest, path: path, value: value, hasValue: true}
+	return valueOperation(patchTest, path, value)
 }
 
 // Append appends element to the array at path, creating the array when it
 // is missing or null: parse's array_append extension, which a server
 // compiles to one atomic SQL expression on an array column.
 func Append(path string, element any) Operation {
-	return Operation{op: patchArrayAppend, path: path, value: element, hasValue: true}
+	return valueOperation(patchArrayAppend, path, element)
 }
 
 // MarshalJSON encodes the operation with the members its op takes: value
 // for add, replace, test and array_append (null included) and for a
 // relation's remove, from for move and copy.
 func (o Operation) MarshalJSON() ([]byte, error) {
+	if o.err != nil {
+		return nil, o.err
+	}
 	w := struct {
 		Op    string          `json:"op"`
 		Path  string          `json:"path"`
 		From  string          `json:"from,omitempty"`
 		Value json.RawMessage `json:"value,omitempty"`
-	}{Op: o.op, Path: o.path, From: o.from}
-	if o.hasValue {
-		v, err := json.Marshal(o.value)
-		if err != nil {
-			return nil, err
-		}
-		w.Value = v
-	}
+	}{Op: o.op, Path: o.path, From: o.from, Value: json.RawMessage(o.value)}
 	return json.Marshal(w)
 }
 
