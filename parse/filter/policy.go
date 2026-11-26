@@ -103,15 +103,32 @@ type PolicyConstraints struct {
 	Not bool
 }
 
-// IsEmpty reports whether pc constrains nothing: no constraints, no groups
-// and no negation. A negated group is never empty, so it always reaches
-// compilation, which refuses one with nothing to negate (E2072) rather than
-// let it admit every row.
+// IsEmpty reports whether pc constrains nothing: no constraint anywhere in
+// it, no negation, and every nested group empty in turn — the trees
+// compilation turns into no predicate. Every caller that decides whether a
+// policy is present asks this, so a governance tree of empty groups is no
+// governance and keeps the tenant floor rather than replacing it with
+// nothing. A negated group is never empty, so it always reaches compilation,
+// which refuses one with nothing to negate rather than let it admit every
+// row.
 func (pc *PolicyConstraints) IsEmpty() bool {
 	if pc == nil {
 		return true
 	}
-	return !pc.Not && len(pc.Constraints) == 0 && len(pc.Or) == 0 && len(pc.And) == 0
+	if pc.Not || len(pc.Constraints) > 0 {
+		return false
+	}
+	for _, g := range pc.And {
+		if !g.IsEmpty() {
+			return false
+		}
+	}
+	for _, g := range pc.Or {
+		if !g.IsEmpty() {
+			return false
+		}
+	}
+	return true
 }
 
 // ApplyPolicyConstraints merges policy constraints into the filter AST.
@@ -153,9 +170,15 @@ func applyPolicyConstraints(schema *ResourceSchema, userAST *FilterAST, pc *Poli
 }
 
 func constraintsToNode(norm *FilterParser, schema *ResourceSchema, pc *PolicyConstraints) (*FilterNode, error) {
+	if pc == nil { // a nil nested group, as IsEmpty reads it
+		return nil, nil
+	}
 	var children []*FilterNode
 
 	for _, c := range pc.Constraints {
+		if c == nil {
+			return nil, fmt.Errorf("%w: a nil constraint", ErrPolicyInvalid)
+		}
 		node, err := constraintToNode(norm, schema, c)
 		if err != nil {
 			return nil, err

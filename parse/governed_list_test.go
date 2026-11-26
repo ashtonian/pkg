@@ -93,15 +93,28 @@ func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {
 		assert.Equal(t, governed.Page, withTenant.Page)
 	})
 
+	// A tree with no constraint anywhere in it constrains nothing, however
+	// it nests, so it is no governance: it must never stand in for the
+	// tenant floor and admit every tenant's rows.
 	t.Run("empty governance is the tenant floor", func(t *testing.T) {
-		_, err := build(t, parse.Scope{Governance: &filter.PolicyConstraints{}})
-		require.ErrorIs(t, err, parse.ErrTenantRequired)
-		plan, err := build(t, parse.Scope{Governance: &filter.PolicyConstraints{}, Tenant: "A"})
-		require.NoError(t, err)
 		floor, err := build(t, parse.Scope{Tenant: "A"})
 		require.NoError(t, err)
-		assert.Equal(t, floor.Page, plan.Page)
-		assert.NotContains(t, plan.Page.SQL, `= "documents"."tenant_id"`)
+		for name, empty := range map[string]*filter.PolicyConstraints{
+			"no groups":           {},
+			"an empty And group":  {And: []*filter.PolicyConstraints{{}}},
+			"an empty Or group":   {Or: []*filter.PolicyConstraints{{}}},
+			"nested empty groups": {And: []*filter.PolicyConstraints{{Or: []*filter.PolicyConstraints{{}, nil}}, nil}},
+		} {
+			t.Run(name, func(t *testing.T) {
+				_, err := build(t, parse.Scope{Governance: empty})
+				require.ErrorIs(t, err, parse.ErrTenantRequired)
+				plan, err := build(t, parse.Scope{Governance: empty, Tenant: "A"})
+				require.NoError(t, err)
+				assert.Equal(t, floor.Page, plan.Page)
+				assert.Contains(t, plan.Page.Args, "A")
+				assert.NotContains(t, plan.Page.SQL, `= "documents"."tenant_id"`)
+			})
+		}
 	})
 
 	t.Run("a resource without a tenant column holds relations to Scope.Tenant", func(t *testing.T) {

@@ -167,6 +167,47 @@ func TestPolicyConstraints_NegatedEmptyGroupIsRefused(t *testing.T) {
 	}
 }
 
+// A tree with no constraint anywhere in it is empty however it nests, so
+// composing it as governance keeps the tenant floor rather than replacing it
+// with no predicate; one constraint at any depth makes it non-empty.
+func TestPolicyConstraints_EmptyTreesAreEmpty(t *testing.T) {
+	name := &PolicyConstraint{Field: "name", Operator: OpEq, Value: "x"}
+	schema := policySchema()
+	schema.SystemFields["tenant_id"] = &FieldSchema{ExternalName: "tenant_id", Column: "tenant_id", DataType: core.FieldTypeString}
+	floor := RepositoryScope{TenantColumn: "tenant_id", TenantID: "t1"}
+	for label, tc := range map[string]struct {
+		pc    *PolicyConstraints
+		empty bool
+	}{
+		"nil":                  {nil, true},
+		"no groups":            {&PolicyConstraints{}, true},
+		"an empty And":         {&PolicyConstraints{And: []*PolicyConstraints{{}}}, true},
+		"an empty Or":          {&PolicyConstraints{Or: []*PolicyConstraints{{}}}, true},
+		"nil groups":           {&PolicyConstraints{And: []*PolicyConstraints{nil}, Or: []*PolicyConstraints{nil}}, true},
+		"nested empty groups":  {&PolicyConstraints{Or: []*PolicyConstraints{{And: []*PolicyConstraints{{}, {Or: []*PolicyConstraints{{}}}}}}}, true},
+		"a deep constraint":    {&PolicyConstraints{Or: []*PolicyConstraints{{And: []*PolicyConstraints{{}, {Constraints: []*PolicyConstraint{name}}}}}}, false},
+		"a deep negated group": {&PolicyConstraints{And: []*PolicyConstraints{{Or: []*PolicyConstraints{{Not: true}}}}}, false},
+	} {
+		t.Run(label, func(t *testing.T) {
+			assert.Equal(t, tc.empty, tc.pc.IsEmpty())
+			composed := ComposeConstraints(floor, tc.pc, nil)
+			ast, err := ApplyPolicyConstraints(schema, nil, composed)
+			if label == "a deep negated group" {
+				require.ErrorIs(t, err, ErrPolicyInvalid)
+				return
+			}
+			require.NoError(t, err)
+			if tc.empty {
+				require.NotNil(t, ast)
+				require.NotNil(t, ast.Root.Field, "the tenant floor alone")
+				assert.Equal(t, OpEq, ast.Root.Op)
+				assert.Equal(t, "tenant_id", ast.Root.Field.Column)
+				assert.Equal(t, "t1", ast.Root.Value)
+			}
+		})
+	}
+}
+
 // A policy fault carries a ParseError's message and cause, never the
 // ParseError itself, even when the cause holds one.
 func TestPolicyFault_HoldsNoParseError(t *testing.T) {

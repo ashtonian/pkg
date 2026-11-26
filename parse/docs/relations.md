@@ -58,7 +58,7 @@ A pair table's `Tenant` column has no Go type. It holds the request's one tenant
 
 ### Governed lists
 
-`Scope.Governance` replaces the tenant floor: the list reads the rows the governance tree admits, of any tenant — a grant of another tenant's row, a parent tenant's view of its children's. A row's relations are its own tenant's. Every tenant-scoped related row, at every depth — a target's `TenantColumn`, a pair table's `Tenant` — is compared with the tenant column of the listed row it hangs from (`filter.RelationScope.RowTenant`) instead of being bound to one tenant. Documents governed to tenant A's rows and B's `b1`, filtered by `{"notes":{"$some":{"body":"urgent"}}}`:
+`Scope.Governance` replaces the tenant floor: the list reads the rows the governance tree admits, of any tenant — a grant of another tenant's row, a parent tenant's view of its children's. A tree with no constraint anywhere in it (`{}`, `{Or: [{}]}`, empty groups at any depth) constrains nothing and is no governance: the list keeps the tenant floor, and without `Scope.Tenant` is `ErrTenantRequired`, so a user whose grants compile to nothing reads their own tenant's rows, never every tenant's. A row's relations are its own tenant's. Every tenant-scoped related row, at every depth — a target's `TenantColumn`, a pair table's `Tenant` — is compared with the tenant column of the listed row it hangs from (`filter.RelationScope.RowTenant`) instead of being bound to one tenant. Documents governed to tenant A's rows and B's `b1`, filtered by `{"notes":{"$some":{"body":"urgent"}}}`:
 
 <!-- output of ExampleResource_BuildList_governed -->
 ```text

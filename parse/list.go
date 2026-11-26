@@ -437,7 +437,8 @@ type Scope struct {
 	// a UUID's canonical text, or an integer's decimal digits ("44"). Text
 	// one of them cannot hold is ErrTenantInvalid.
 	Tenant string
-	// Governance, when set and not empty, replaces the tenant floor: it
+	// Governance, when set and not empty (filter.PolicyConstraints.IsEmpty:
+	// no constraint at any depth), replaces the tenant floor: it
 	// decides which rows of which tenants the list reads, grants included
 	// (filter.ComposeConstraints). A row's relations are its own tenant's:
 	// relation predicates, counts, facets and includes hold every
