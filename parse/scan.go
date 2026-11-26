@@ -36,7 +36,8 @@ import (
 // on SQLite, which stores them as JSON text, for every document and array
 // field (core.TypeOf) whose type is not an sql.Scanner. A timestamp on
 // SQLite is its text (core.FormatTimestamp) and is parsed. The dialect says
-// which values it stores as text (Dialect.StoresAsText). The driver scans
+// which values it stores as text (Dialect.StoresAsText); RowScanner refuses
+// one that stores a value of another type so. The driver scans
 // every other column into its field.
 type RowScanner[T any] struct {
 	table   string
@@ -104,7 +105,11 @@ func (r *Resource[T]) RowScanner(d Dialect, opts ...ScanOption) (*RowScanner[T],
 	for i, name := range r.read {
 		f := r.columnFields[name]
 		storage, declared := r.sqlTypes[name]
-		c := rowColumn{name: name, field: f, decode: rowDecodeOf(f.Type(), declared && storage.IsJSON() || slices.Contains(cfg.json, name), d)}
+		decode, err := rowDecodeOf(f.Type(), declared && storage.IsJSON() || slices.Contains(cfg.json, name), d)
+		if err != nil {
+			return nil, fmt.Errorf("parse: %s: column %s: %w", r.table, name, err)
+		}
+		c := rowColumn{name: name, field: f, decode: decode}
 		if c.decode == decodeJSON {
 			scanner.documents++
 		}
@@ -113,27 +118,36 @@ func (r *Resource[T]) RowScanner(d Dialect, opts ...ScanOption) (*RowScanner[T],
 	return scanner, nil
 }
 
+// textStorage is what a row scan asks of a dialect: which values it stores
+// as text the scan decodes (Dialect.StoresAsText).
+type textStorage interface {
+	Name() string
+	StoresAsText(t core.FieldType) bool
+}
+
 // rowDecodeOf is the rule for a field of type t: json when the column holds
-// JSON by declaration or by the result's own type; otherwise what d stores
-// as text (Dialect.StoresAsText) and the driver cannot scan into t.
-func rowDecodeOf(t reflect.Type, json bool, d Dialect) rowDecode {
+// JSON by declaration or by the result's own type; otherwise the driver's,
+// unless d stores t's values as text (Dialect.StoresAsText) and the driver
+// cannot scan into t. A scan decodes such text for a timestamp, a document
+// and an array alone, and refuses a dialect that stores another type so,
+// rather than hand its text to a driver that cannot read it into t.
+func rowDecodeOf(t reflect.Type, json bool, d textStorage) (rowDecode, error) {
 	switch {
 	case json:
-		return decodeJSON
+		return decodeJSON, nil
 	case scans(t):
-		return decodeDriver
+		return decodeDriver, nil
 	}
 	info := core.TypeOf(t)
-	if !d.StoresAsText(info.Type) {
-		return decodeDriver
-	}
 	switch {
+	case !d.StoresAsText(info.Type):
+		return decodeDriver, nil
 	case info.Type == core.FieldTypeTimestamp:
-		return decodeTimestamp
+		return decodeTimestamp, nil
 	case core.IsDocument(info.Type) || info.Type == core.FieldTypeArray:
-		return decodeJSON
+		return decodeJSON, nil
 	}
-	return decodeDriver
+	return 0, fmt.Errorf("dialect %s stores %s values as text, which a row scan decodes only for timestamps, documents and arrays", d.Name(), info.Type)
 }
 
 // checkScannable refuses a read column no row scan can fill, so that no

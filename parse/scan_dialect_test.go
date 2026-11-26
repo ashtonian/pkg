@@ -11,15 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 )
-
-// textlessDialect is a SQL provider that stores every value in a type of
-// its own, as PostgreSQL does, though it embeds SQLite's dialect.
-type textlessDialect struct{ filter.SQLiteDialect }
-
-func (textlessDialect) StoresAsText(core.FieldType) bool { return false }
 
 var errStopScan = errors.New("stop")
 
@@ -41,7 +34,6 @@ func TestRowScanner_DecodesWhatTheDialectStoresAsText(t *testing.T) {
 	}{
 		{"sqlite", filter.SQLiteDialect{}, []string{"at", "until", "counts", "settings", "tags", "spans", "raw", "dynamic"}},
 		{"postgres", filter.PostgresDialect{}, nil},
-		{"a provider storing nothing as text", textlessDialect{}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			scanner, err := r.RowScanner(tc.d)

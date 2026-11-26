@@ -205,9 +205,11 @@ type Dialect interface {
 
 	// StoresAsText reports whether the database stores a value of type t,
 	// in a column declared no JSON type, as text a row scan decodes rather
-	// than the driver's own value: on SQLite a timestamp as its canonical
-	// text (core.FormatTimestamp), a document or an array as JSON.
-	// parse.RowScanner decodes what it reports; MarshalValue writes it.
+	// than the driver's own value. A scan decodes two such texts: a
+	// timestamp's canonical text (core.FormatTimestamp) and a document's or
+	// an array's JSON, as SQLite stores them and MarshalValue writes them.
+	// parse.RowScanner refuses a dialect reporting true for any other type
+	// a field the driver cannot scan itself holds.
 	StoresAsText(t core.FieldType) bool
 }
 
