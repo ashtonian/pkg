@@ -438,11 +438,13 @@ func checkItems(ps *PathSchema, op PatchOp, value any, depth int) error {
 //   - arrays of scalars normalize element-wise (array_append's value is one element);
 //   - other composite values (structs, maps) must decode into GoType.
 //
-// Nested paths address members inside a JSON value and pass through.
-// Relation paths carry arrays of target IDs, normalized element-wise.
+// Nested paths address members inside a JSON value, and a path with no Go
+// type to shape its document holds one: their values are documents
+// (documentValue). Relation paths carry arrays of target IDs, normalized
+// element-wise.
 func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.Codec) (any, error) {
 	if depth != 1 {
-		return v, nil
+		return documentValue(v)
 	}
 	if v == nil && op != PatchOpArrayAppend {
 		return nil, nil
@@ -460,11 +462,13 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 		target = target.Elem()
 	}
 	if op == PatchOpArrayAppend {
-		if target == nil || target.Kind() != reflect.Slice {
-			if target != nil && target.Kind() == reflect.Array {
-				return nil, fmt.Errorf("array_append cannot grow a fixed-size array (%s)", gowalker.TypeText(target))
-			}
-			return v, nil
+		switch {
+		case target == nil:
+			return untypedElement(v)
+		case target.Kind() == reflect.Array:
+			return nil, fmt.Errorf("array_append cannot grow a fixed-size array (%s)", gowalker.TypeText(target))
+		case target.Kind() != reflect.Slice:
+			return documentValue(v)
 		}
 		return normalizeTyped(target.Elem(), v, codec)
 	}
@@ -479,6 +483,12 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 		return normalized, err
 	}
 	if target == nil {
+		switch {
+		case documentType(ps.DataType):
+			return documentValue(v)
+		case ps.DataType == core.FieldTypeArray:
+			return untypedElements(v)
+		}
 		return core.NormalizeScalar(ps.DataType, reflect.Invalid, v)
 	}
 	normalized, err := normalizeTyped(target, v, codec)
@@ -597,7 +607,10 @@ func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
 		}
 		return out, nil
 	case reflect.Interface:
-		return v, nil
+		if t.NumMethod() > 0 {
+			return v, nil // no document decodes into it; the decoder decides
+		}
+		return documentValue(v)
 	}
 	data, err := codec.Encode(v)
 	if err != nil {

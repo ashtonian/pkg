@@ -50,7 +50,7 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 		t = t.Elem()
 	}
 	if untypedDocument(t) {
-		return obj, nil
+		return documentValue(obj)
 	}
 	if customJSONType(t) {
 		return nil, fmt.Errorf("object merge for custom JSON type %s is not supported; use JSON Patch replace", gowalker.TypeText(t))
@@ -297,12 +297,6 @@ func jsonMember(t reflect.Type, name string) *core.Field {
 	}
 	f, _ := walk.External(name)
 	return f
-}
-
-func decodeJSONDocument(raw []byte, dst any) error {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	return dec.Decode(dst)
 }
 
 func jsonNil(v reflect.Value) bool {

@@ -524,18 +524,3 @@ func documentMember(v any, tokens []string) (any, bool) {
 	}
 	return v, true
 }
-
-// documentOf is v as encoding/json decodes its encoding, numbers kept as
-// written: a value the fold owns and may change.
-func documentOf(v any) (any, error) {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return nil, err
-	}
-	var doc any
-	err = decodeJSONDocument(raw, &doc)
-	if err != nil {
-		return nil, err
-	}
-	return doc, nil
-}

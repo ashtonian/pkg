@@ -537,7 +537,7 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 			if pointerErr != nil || len(tokens) != 1 {
 				return zero, fmt.Errorf("patch: merge path %q is not a top-level field", op.Path)
 			}
-			value, err := documentValue(op)
+			value, err := wireValue(op)
 			if err != nil {
 				return zero, err
 			}
@@ -733,7 +733,7 @@ func testValue(doc map[string]any, op *PatchOperation, index int) error {
 	if err != nil {
 		return fail(fmt.Sprintf("value at %s: %v", op.Path, err))
 	}
-	value, err := documentValue(op)
+	value, err := wireValue(op)
 	if err != nil {
 		return err
 	}
@@ -760,7 +760,7 @@ func wireOp(op *PatchOperation) (map[string]any, error) {
 			return addOp(op.Path, cleared), nil
 		}
 	}
-	value, err := documentValue(op)
+	value, err := wireValue(op)
 	if err != nil {
 		return nil, err
 	}
@@ -786,10 +786,10 @@ func wireOp(op *PatchOperation) (map[string]any, error) {
 	return w, nil
 }
 
-// documentValue is op's value as the target's JSON document holds it: a
+// wireValue is op's value as the target's JSON document holds it: a
 // quoted field's (PathSchema.Wire) in its wire form, which the document
 // decodes back into the field from.
-func documentValue(op *PatchOperation) (any, error) {
+func wireValue(op *PatchOperation) (any, error) {
 	v, err := core.ToWire(op.Schema.Wire, op.Value)
 	if err != nil {
 		return nil, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("value for path %s: %v", op.Path, err), Path: op.Path, Cause: err}
