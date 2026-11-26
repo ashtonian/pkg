@@ -11,5 +11,5 @@ import (
 )
 
 func TestCanonicalOrder_Postgres(t *testing.T) {
-	runCanonicalOrderSQL(t, dbtest.Postgres(t), filter.PostgresDialect{}, func(c ordertest.Case) string { return c.Postgres })
+	runCanonicalOrderSQL(t, dbtest.Postgres(t), filter.PostgresDialect{}, ordertest.Cases(), func(c ordertest.Case) string { return c.Postgres })
 }

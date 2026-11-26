@@ -113,11 +113,10 @@ func (r ColumnRow) Value(f *FieldSchema) (any, bool, error) {
 // or a driver.Valuer whose value is nil. A document is a Document's decoded
 // value, or decoded from its JSON text (string, []byte, json.RawMessage) or
 // encoding; an array's elements
-// normalize to f.Elem; a scalar is read as the database holds it
-// (core.StoredValue: drivers' Valuers read, decimals, times, dates and UUIDs
-// kept as their types) and normalized to f's type as a stored value
-// (core.NormalizeStored), so it compares as SQL compares it: a time.Time a
-// driver scans a DATE into as its day, a float's NaN after +Infinity.
+// normalize to f.Elem; a scalar is f's type's stored value
+// (core.StoredScalar: read as the database holds it, then normalized as a
+// stored value), so it compares as SQL compares it: a time.Time a driver
+// scans a DATE into as its day, a float's NaN after +Infinity.
 func ColumnValue(f *FieldSchema, v any) (any, bool, error) {
 	v, err := core.Deref(v)
 	if err != nil {
@@ -157,23 +156,11 @@ func ColumnValue(f *FieldSchema, v any) (any, bool, error) {
 	case f.DataType == core.FieldTypeGeo || f.DataType == core.FieldTypeAny:
 		return v, true, nil
 	}
-	raw, null, err := core.StoredValue(v)
+	scalar, present, err := core.StoredScalar(f.DataType, f.NumberKind, v)
 	if err != nil {
 		return nil, false, fmt.Errorf("field %s: %w", f.ExternalName, err)
 	}
-	if null {
-		return nil, false, nil
-	}
-	// A Valuer may hold a number as its text.
-	rv := reflect.ValueOf(raw)
-	if rv.Kind() == reflect.String && (f.DataType == core.FieldTypeInt || f.DataType == core.FieldTypeFloat) {
-		raw = json.Number(rv.String())
-	}
-	scalar, err := core.NormalizeStored(f.DataType, f.NumberKind, raw)
-	if err != nil {
-		return nil, false, fmt.Errorf("field %s: %w", f.ExternalName, err)
-	}
-	return scalar, true, nil
+	return scalar, present, nil
 }
 
 // jsonArray decodes an array held as JSON text, as SQLite stores one.

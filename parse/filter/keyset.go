@@ -120,13 +120,16 @@ func (p CursorPlan) Token(reverse bool, get func(column string) (any, error)) (*
 }
 
 // KeyValue is a row's canonical value for key k, given raw, the row's value
-// at k.Column: CursorValue of it, or for a path key the member the path rule
-// extracts from the column's document, read as PathValue reads it (nil when
-// absent). A decimal key's value is its canonical text
-// (core.DecimalText), whatever form its column scans to, and so is an int
-// or float path's member, exactly as its JSON number holds it, since
-// PostgreSQL orders the member as numeric. Cursors and a memory backend's
-// ordering read keys through it alike.
+// at k.Column, or for a path key the member the path rule extracts from the
+// column's document, read as PathValue reads it (nil when absent). A key of
+// a scalar type (core.IsKeyType) reads it as its type's stored value
+// (core.StoredScalar), whatever its column scans to — a date key's
+// time.Time as its day, a decimal key's text, INTEGER or REAL as its
+// canonical text — so ValidateCursor accepts the value it mints; a key of
+// no scalar type (a codec's) reads it through CursorValue. An int or float
+// path's member is its canonical decimal text, exactly as its JSON number
+// holds it, since PostgreSQL orders the member as numeric. Cursors and a
+// memory backend's ordering read keys through it alike.
 func KeyValue(k CursorKey, raw any) (any, error) {
 	if k.Path != nil {
 		root, err := decodeDocument(raw)
@@ -142,20 +145,20 @@ func KeyValue(k CursorKey, raw any) (any, error) {
 		}
 		raw = member
 	}
-	v, err := CursorValue(raw)
-	if err != nil || v == nil || k.DataType != core.FieldTypeDecimal {
-		return v, err
+	if !core.IsKeyType(k.DataType) {
+		return CursorValue(raw)
 	}
-	text, err := core.DecimalText(v)
+	v, _, err := core.StoredScalar(k.DataType, k.NumberKind, raw)
 	if err != nil {
-		return nil, fmt.Errorf("cursor: decimal key: %w", err)
+		return nil, fmt.Errorf("cursor: %s key: %w", k.DataType, err)
 	}
-	return text, nil
+	return v, nil
 }
 
-// CursorValue reduces a row value to the canonical form a token carries and
-// SQL binds: nil, string, bool, int64, uint64 or float64, NaN and the
-// infinities included, which a float column may hold. The value is read
+// CursorValue reduces a value of a key of no scalar type (KeyValue) to the
+// canonical form a token carries and SQL binds: nil, string, bool, int64,
+// uint64 or float64, NaN and the infinities included, which a float column
+// may hold. The value is read
 // as the database holds it first (core.StoredValue: pointers followed, a
 // driver.Valuer read, NULL as nil); then decimals (core.IsDecimalType)
 // become their canonical text, times RFC 3339 UTC strings (the form SQLite

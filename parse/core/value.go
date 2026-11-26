@@ -88,8 +88,9 @@ func checkElementsText(elements []any) error {
 //     midnight, as a driver scans a SQL DATE)
 //   - FieldTypeTime, FieldTypeInterval, FieldTypeInet, FieldTypeCIDR,
 //     FieldTypeMACAddr   → the canonical text of LocalTime, Interval, Inet,
-//     CIDR and MACAddr (each type accepted, and netip.Addr, netip.Prefix
-//     and net.HardwareAddr where they hold the value)
+//     CIDR and MACAddr (each type accepted, a time.Time's wall clock for a
+//     time of day, and netip.Addr, netip.Prefix and net.HardwareAddr where
+//     they hold the value)
 //
 // Other data types pass through unchanged. Non-nil pointers are
 // dereferenced first, so typed Go input (*int64, *time.Time) normalizes like
@@ -205,25 +206,69 @@ func plainString(v any) any {
 
 // NormalizeStored is NormalizeScalar for v, a value a column of type dt
 // holds rather than a request value: a float column's NaN or infinity is
-// kept, as a float64, where NormalizeScalar refuses one. A request value
-// is finite; a stored one need not be, since a table written outside parse
-// may hold NaN and both infinities (PostgreSQL's float8; SQLite stores the
-// infinities and holds NaN as NULL). Rows Evaluate reads and the values a
-// cursor carries normalize through it.
+// kept, as a float64, where NormalizeScalar refuses one, and a bool
+// column's integer 0 or 1 is false or true, as SQLite stores a boolean. A
+// request value is finite; a stored one need not be, since a table written
+// outside parse may hold NaN and both infinities (PostgreSQL's float8;
+// SQLite stores the infinities and holds NaN as NULL). Rows Evaluate reads
+// and the values a cursor carries normalize through it.
 func NormalizeStored(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	held, err := Deref(v)
 	if err != nil {
 		return nil, err
 	}
 	rv := reflect.ValueOf(held)
-	isFloat := rv.Kind() == reflect.Float32 || rv.Kind() == reflect.Float64
-	if dt == FieldTypeFloat && isFloat {
+	switch {
+	case dt == FieldTypeFloat && (rv.Kind() == reflect.Float32 || rv.Kind() == reflect.Float64):
 		f := rv.Float()
 		if math.IsNaN(f) || math.IsInf(f, 0) {
 			return f, nil
 		}
+	case dt == FieldTypeBool:
+		b, ok := storedBool(rv)
+		if ok {
+			return b, nil
+		}
 	}
 	return NormalizeScalar(dt, kind, v)
+}
+
+// storedBool is the boolean an integer 0 or 1 stores; ok is false for any
+// other value.
+func storedBool(rv reflect.Value) (bool, bool) {
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		n := rv.Int()
+		return n == 1, n == 0 || n == 1
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		n := rv.Uint()
+		return n == 1, n == 0 || n == 1
+	}
+	return false, false
+}
+
+// StoredScalar is v, the value a row holds for a column of type dt — what a
+// driver scans it into, or an application's row field — in its canonical
+// form (NormalizeStored), and false for SQL NULL. v is read as the database
+// holds it first (StoredValue), so a time.Time a driver scans a DATE into is
+// its day and a Valuer's value is what it writes, and a number a driver or
+// Valuer gives as text (a numeric's) is read as that number. Evaluate's rows
+// and a keyset's cursors are read through it, so both hold a row's value as
+// the statement that reads it compares it.
+func StoredScalar(dt FieldType, kind reflect.Kind, v any) (any, bool, error) {
+	held, null, err := StoredValue(v)
+	if err != nil || null {
+		return nil, false, err
+	}
+	rv := reflect.ValueOf(held)
+	if rv.Kind() == reflect.String && (dt == FieldTypeInt || dt == FieldTypeFloat) {
+		held = json.Number(rv.String())
+	}
+	scalar, err := NormalizeStored(dt, kind, held)
+	if err != nil {
+		return nil, false, err
+	}
+	return scalar, true, nil
 }
 
 // TimestampLayout is the canonical timestamp text: RFC 3339 in UTC with

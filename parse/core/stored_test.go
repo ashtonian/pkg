@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 	"uuid"
@@ -124,4 +125,37 @@ func TestDeref_FollowsAChain(t *testing.T) {
 	got, err := Deref(v)
 	require.NoError(t, err)
 	assert.Equal(t, "a", got)
+}
+
+// A row's value reads as its column's stored value: a driver's spelling of
+// it (a DATE's time.Time, a numeric's text, SQLite's 0 and 1 for a
+// boolean) as the value, NULL as absent, and a value the column cannot
+// hold as an error.
+func TestStoredScalar(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		t    FieldType
+		kind reflect.Kind
+		v    any
+		want any
+	}{
+		{"a DATE's time.Time", FieldTypeDate, reflect.Invalid, time.Date(2026, time.January, 2, 0, 0, 0, 0, time.UTC), "2026-01-02"},
+		{"a TIME's time.Time", FieldTypeTime, reflect.Invalid, time.Date(0, time.January, 1, 3, 4, 5, 500000000, time.UTC), "03:04:05.5"},
+		{"a numeric's text", FieldTypeInt, reflect.Int64, "42", int64(42)},
+		{"SQLite's true", FieldTypeBool, reflect.Invalid, int64(1), true},
+		{"SQLite's false", FieldTypeBool, reflect.Invalid, int64(0), false},
+		{"a Valuer", FieldTypeString, reflect.Invalid, sql.NullString{String: "a", Valid: true}, "a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, present, err := StoredScalar(tc.t, tc.kind, tc.v)
+			require.NoError(t, err)
+			assert.True(t, present)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+	_, present, err := StoredScalar(FieldTypeDate, reflect.Invalid, sql.NullTime{})
+	require.NoError(t, err)
+	assert.False(t, present, "NULL")
+	_, _, err = StoredScalar(FieldTypeBool, reflect.Invalid, int64(2))
+	require.ErrorContains(t, err, "expected boolean, got int64")
 }

@@ -171,9 +171,9 @@ func Cases() []Case {
 			Ordered: true, Sortable: true, Faceted: true, SQLite: "TEXT", Postgres: "time",
 			Values: []Value{
 				{"00:00:00", []any{"00:00:00"}},
-				{"03:04:05", []any{"03:04:05", core.LocalTime("03:04:05")}},
+				{"03:04:05", []any{"03:04:05", core.LocalTime("03:04:05"), "03:04:05.000000", time.Date(0, time.January, 1, 3, 4, 5, 0, time.UTC)}},
 				{"03:04:05.25", []any{"03:04:05.25"}},
-				{"03:04:05.5", []any{"03:04:05.5", core.LocalTime("03:04:05.5")}},
+				{"03:04:05.5", []any{"03:04:05.5", core.LocalTime("03:04:05.5"), time.Date(0, time.January, 1, 3, 4, 5, 500000000, time.UTC)}},
 				{"23:59:59.999999", []any{"23:59:59.999999"}},
 			},
 		},
