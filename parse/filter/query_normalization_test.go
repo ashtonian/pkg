@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 )
@@ -160,6 +163,22 @@ func TestFieldNamedLikeSuffixNotSplit(t *testing.T) {
 	if ast.Root.Op != filter.OpEq {
 		t.Errorf("op = %s; want eq (exact field match takes precedence over _like suffix)", ast.Root.Op)
 	}
+}
+
+// An empty WHERE fragment is no condition: the search stands alone and its
+// placeholders follow the arguments before it.
+func TestAndSearch_AnEmptyFragmentIsNoCondition(t *testing.T) {
+	schema := &filter.SearchSchema{Fields: []filter.SearchField{{Name: "name", Table: "items", Column: "name"}}}
+	for _, where := range []string{"", "  "} {
+		got, args, err := filter.AndSearch(schema, filter.SQLiteDialect{}, where, nil, 2, "x")
+		require.NoError(t, err)
+		assert.NotContains(t, got, "()", "fragment %q", where)
+		assert.Contains(t, got, "?3", "the search's placeholder follows the offset")
+		assert.Len(t, args, 1)
+	}
+	got, _, err := filter.AndSearch(schema, filter.SQLiteDialect{}, "a = 1 OR b = 2", nil, 0, "x")
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(got, "((a = 1 OR b = 2) AND "), got)
 }
 
 // TestSearchFallbackEscapesLike: LIKE fallback didn't escape % / _ in
