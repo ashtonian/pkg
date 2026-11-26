@@ -662,8 +662,12 @@ type Page[T any] struct {
 // rows but carries no cursor strands the client. An empty page, from nil
 // rows or none, has empty non-nil Items and reports neither direction: it
 // has no row to mint a cursor from, so a client whose cursor outlived its
-// rows starts again from the first page.
+// rows starts again from the first page. A limit below 1 is an error: a
+// page holds at least one row, and the query fetched limit+1.
 func NewPage[T any](items []T, limit int, plan CursorPlan, value func(item T, column string) (any, error)) (*Page[T], error) {
+	if limit < 1 {
+		return nil, fmt.Errorf("building page: limit %d is below 1", limit)
+	}
 	if len(items) == 0 {
 		// A query that matches nothing leaves its rows nil.
 		empty := &Page[T]{Items: []T{}}
