@@ -423,7 +423,10 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 	if native {
 		exprs := make([]string, len(keys))
 		for i, k := range keys {
-			if codePointKey(k) {
+			// Only a bare column can be seeked on, and only it is left for
+			// the dialect to place the collation: an expression may carry
+			// its own, which on SQLite outranks the operand's.
+			if codePointKey(k) && k.Expr == "" && k.Path == nil {
 				exprs[i], phs[i] = d.codePointPair(keyValue(d, k), phs[i])
 				continue
 			}

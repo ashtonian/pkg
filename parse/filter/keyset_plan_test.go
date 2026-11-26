@@ -133,6 +133,74 @@ func TestKeysetSeek_SQLiteNoCaseKeyWalksByCodePoint(t *testing.T) {
 	}
 }
 
+// noCaseNames reads the name column through an expression of its own
+// collation, as a mapper serving case-insensitive lookups might.
+type noCaseNames struct{}
+
+func (noCaseNames) MapColumn(table, column string, _ core.FieldType) string {
+	expr := `"` + table + `"."` + column + `"`
+	if column == "name" {
+		return expr + " COLLATE NOCASE"
+	}
+	return expr
+}
+
+// A key whose expression carries its own collation still walks by code
+// point, every row once in each direction: the seek collates the
+// expression, where an explicit collation on the operand would lose to the
+// expression's.
+func TestKeysetSeek_SQLiteCollatedExpressionWalksByCodePoint(t *testing.T) {
+	db := dbtest.SQLite(t)
+	for _, stmt := range []string{
+		`CREATE TABLE walk_items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)`,
+		`INSERT INTO walk_items VALUES (1, 'B'), (2, 'a'), (3, 'C')`,
+	} {
+		_, err := db.ExecContext(t.Context(), stmt)
+		require.NoError(t, err)
+	}
+	g := core.NewSchemaGenerator(core.WithColumnMapper(noCaseNames{}), core.WithSQLTableName("walk_items"))
+	fs, err := filter.GenerateFilterSchema[walkItem](g)
+	require.NoError(t, err)
+	fs.PrimaryKey = []string{"id"}
+	ss, err := filter.GenerateSortSchema[walkItem](g)
+	require.NoError(t, err)
+	require.Equal(t, `"walk_items"."name" COLLATE NOCASE`, ss.Fields["name"].Expr)
+	lq := mustListQuery(t, fs, ss, filter.SQLiteDialect{})
+
+	for _, tt := range []struct {
+		sort string
+		want []int64
+	}{
+		{"name", []int64{1, 3, 2}},
+		{"-name", []int64{2, 3, 1}},
+	} {
+		t.Run(tt.sort, func(t *testing.T) {
+			var seen []int64
+			cursor := ""
+			for range len(tt.want) + 1 {
+				opts := []filter.ListOption{filter.ListSort(tt.sort), filter.ListLimit(1)}
+				if cursor != "" {
+					opts = append(opts, filter.ListCursor(cursor))
+				}
+				res, err := lq.Build(opts...)
+				require.NoError(t, err)
+				page, err := filter.NewPage(walkItems(t, db, res), res.Limit, res.Cursor, func(it walkItem, col string) (any, error) {
+					return filter.CursorValueByTag(it, "db", col)
+				})
+				require.NoError(t, err)
+				for _, it := range page.Items {
+					seen = append(seen, it.ID)
+				}
+				if !page.PageInfo.HasNextPage {
+					break
+				}
+				cursor = string(page.PageInfo.EndCursor)
+			}
+			assert.Equal(t, tt.want, seen)
+		})
+	}
+}
+
 // walkItems are the walk_items rows res selects.
 func walkItems(t *testing.T, db *sql.DB, res *filter.ListResult) []walkItem {
 	t.Helper()

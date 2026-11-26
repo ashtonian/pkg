@@ -114,11 +114,13 @@ type Dialect interface {
 	// one of a set, by containment, which an index on the document serves;
 	// ok is false where the dialect reads the element table instead.
 	containsElement(f *FieldSchema, cond *FilterNode, bind func(any) string) (sql string, ok bool, err error)
-	// codePointPair is expr and operand, an element pair of a row-value
-	// comparison, compared by code point (CodePointOrder). Either side may
-	// carry the collation, since an explicit one decides the comparison;
-	// the dialect puts it where its planner still seeks an index on expr.
-	codePointPair(expr, operand string) (string, string)
+	// codePointPair is column and operand, an element pair of a row-value
+	// comparison, compared by code point (CodePointOrder). column is a bare
+	// column, which declares at most an implicit collation, so either side
+	// may carry the explicit one; the dialect puts it where its planner
+	// still seeks an index on the column. A key read through an expression
+	// is collated on the expression instead (keyExpr).
+	codePointPair(column, operand string) (string, string)
 	// setRows binds a set's members as one parameter and reads them back
 	// as rows of one column, v, of the type FieldExpr reads field as.
 	setRows(field *FieldSchema, members []any, bind func(any) string) (string, error)

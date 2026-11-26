@@ -668,8 +668,8 @@ func (PostgresDialect) NativeRowCompare() bool { return true }
 
 // codePointPair collates the column, which an index in the same collation
 // serves.
-func (d PostgresDialect) codePointPair(expr, operand string) (string, string) {
-	return d.CodePointOrder(expr), operand
+func (d PostgresDialect) codePointPair(column, operand string) (string, string) {
+	return d.CodePointOrder(column), operand
 }
 
 // CodePointOrder applies the dialect's Collation. A column declared with the

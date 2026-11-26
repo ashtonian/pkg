@@ -517,8 +517,9 @@ func (SQLiteDialect) NativeRowCompare() bool { return true }
 // codePointPair collates the operand: SQLite seeks an index only on a row
 // value's bare columns, and BINARY on the operand still overrides a column
 // declared NOCASE or RTRIM, an explicit collation outranking a column's.
-func (d SQLiteDialect) codePointPair(expr, operand string) (string, string) {
-	return expr, d.CodePointOrder(operand)
+// The index must be BINARY-collated to serve the seek.
+func (d SQLiteDialect) codePointPair(column, operand string) (string, string) {
+	return column, d.CodePointOrder(operand)
 }
 
 // CodePointOrder applies BINARY collation, overriding a column declared
