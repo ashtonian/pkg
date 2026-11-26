@@ -5,6 +5,7 @@ package parse_test
 import (
 	"database/sql"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -267,6 +268,48 @@ func TestSkipUnchanged_SQL(t *testing.T) {
 			assert.Equal(t, []any{"t1", "n1"}, plan.Current.Args)
 		})
 	}
+}
+
+// A statement that locks the rows of a target that can hold several takes
+// them in key order, so two updates over overlapping rows lock in one order
+// and cannot deadlock on each other: Current, and a relation-only patch's
+// Owner. One row needs no order, and SQLite locks no rows.
+func TestBuildUpdate_LocksSeveralRowsInKeyOrder(t *testing.T) {
+	r := notes(t)
+	byTitle, err := r.ParseFilterMap(map[string]any{"title": "one"})
+	require.NoError(t, err)
+	const ordered = ` ORDER BY "notes"."id" COLLATE pg_c_utf8 FOR UPDATE`
+	build := func(t *testing.T, d parse.Dialect, body string, target parse.Target, opts ...parse.UpdateOption) *parse.UpdatePlan {
+		t.Helper()
+		p, err := r.ParseMergePatch([]byte(body))
+		require.NoError(t, err)
+		plan, err := r.BuildUpdate(d, p, target, parse.Scope{Tenant: "t1"}, opts...)
+		require.NoError(t, err)
+		return plan
+	}
+	pg := filter.PostgresDialect{}
+	for _, tc := range []struct {
+		name   string
+		target parse.Target
+		suffix string
+	}{
+		{"several keys", parse.ByIDs("n2", "n1"), ordered},
+		{"a filter", parse.ByFilter(byTitle), ordered},
+		{"one key", parse.ByID("n1"), ") FOR UPDATE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := build(t, pg, `{"title":"x"}`, tc.target, parse.SkipUnchanged()).Current
+			require.NotNil(t, current)
+			assert.True(t, strings.HasSuffix(current.SQL, tc.suffix), current.SQL)
+			owner := build(t, pg, `{"tags":["blue"]}`, tc.target).Owner
+			assert.True(t, strings.HasSuffix(owner.SQL, tc.suffix), owner.SQL)
+		})
+	}
+	t.Run("sqlite", func(t *testing.T) {
+		current := build(t, filter.SQLiteDialect{}, `{"title":"x"}`, parse.ByIDs("n2", "n1"), parse.SkipUnchanged()).Current
+		require.NotNil(t, current)
+		assert.NotContains(t, current.SQL, "ORDER BY")
+	})
 }
 
 func TestSkipUnchanged_LeavesTheDefaultAlone(t *testing.T) {

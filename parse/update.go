@@ -264,6 +264,15 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		return nil, err
 	}
 	columns := strings.Join(r.columns(d, exprs), ", ")
+	// A statement that locks rows of a target that can hold several takes
+	// them in key order, as a batch's Current does, so two updates over
+	// overlapping rows lock in one order and neither holds a row the other
+	// waits for while it waits for one the other holds. A dialect without
+	// row locks serializes writers in their transaction instead.
+	locked := d.RowLock()
+	if locked != "" && len(target.keys) != 1 {
+		locked = " ORDER BY " + r.keyColumns().order(d, r.table) + locked
+	}
 	// The membership changes hold pairs to targets the request may see,
 	// compiled with the targets' schemas for d.
 	changed := make([]string, len(set.RelationOps))
@@ -290,7 +299,7 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 			if err != nil {
 				return nil, err
 			}
-			plan.Current = &Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + current + d.RowLock(), Args: currentArgs}
+			plan.Current = &Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + current + locked, Args: currentArgs}
 		}
 		if set.Precondition != "" {
 			plan.Conflict, err = r.conflictStatement(d, target, scope, set.Preconditions)
@@ -307,7 +316,7 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 	case len(set.RelationOps) > 0:
 		// No column changes: lock the owners so concurrent replacements of
 		// one relation cannot interleave their DELETE and INSERT.
-		plan.Owner = Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + where + d.RowLock(), Args: args}
+		plan.Owner = Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + where + locked, Args: args}
 		plan.Writes = true
 	default:
 		plan.Owner = Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + where, Args: args}
