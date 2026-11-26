@@ -555,7 +555,7 @@ func pgJSONBPoint(d dialect.Dialect, field *FieldSchema) string {
 // JSONB for those.
 func (d PostgresDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
 	if t.Type == core.FieldTypeDate {
-		normalized, err := nullableDateValue(value)
+		normalized, err := boundScalar(core.FieldTypeDate, value)
 		if err != nil || normalized == nil {
 			return normalized, err
 		}

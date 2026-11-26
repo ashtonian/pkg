@@ -103,7 +103,7 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !normalizedType(dt) {
+	if !IsKeyType(dt) {
 		return v, nil
 	}
 	if v == nil {
@@ -175,17 +175,6 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 		return normalizeMACAddr(v)
 	}
 	return v, nil
-}
-
-// normalizedType reports a type NormalizeScalar gives a canonical value;
-// a value of any other type passes through.
-func normalizedType(dt FieldType) bool {
-	switch dt {
-	case FieldTypeString, FieldTypeUUID, FieldTypeInt, FieldTypeFloat, FieldTypeDecimal, FieldTypeBool, FieldTypeTimestamp, FieldTypeDate,
-		FieldTypeTime, FieldTypeInterval, FieldTypeInet, FieldTypeCIDR, FieldTypeMACAddr:
-		return true
-	}
-	return false
 }
 
 // plainString is v as a string when it is of a named string type (Date,

@@ -871,18 +871,11 @@ func checkPairKeyOp(f *FieldSchema, op FilterOperator) error {
 	return invalidRelation(f, fmt.Sprintf("compares a key of several columns, which $%s cannot name; it takes $null", op))
 }
 
-// nullableDateValue is the SQL boundary: typed nil pointers are SQL NULL,
-// while request normalization separately refuses null scalar operands.
-func nullableDateValue(value any) (any, error) {
-	if value == nil {
-		return nil, nil
-	}
-	rv := reflect.ValueOf(value)
-	for rv.Kind() == reflect.Pointer {
-		if rv.IsNil() {
-			return nil, nil
-		}
-		rv = rv.Elem()
-	}
-	return core.NormalizeScalar(core.FieldTypeDate, reflect.Invalid, rv.Interface())
+// boundScalar is value, bound to a column of type t, as the column holds
+// it (core.StoredScalar): a pointer followed, a Valuer read as the value it
+// writes, then the type's canonical value; nil for SQL NULL, which request
+// normalization refuses for a scalar operand on its own.
+func boundScalar(t core.FieldType, value any) (any, error) {
+	v, _, err := core.StoredScalar(t, reflect.Invalid, value)
+	return v, err
 }

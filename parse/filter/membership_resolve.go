@@ -468,46 +468,35 @@ func equalAs(types []core.TypeInfo, i int, stored, want any) bool {
 }
 
 // lookupEqual is SQL equality of a stored value and a lookup's value, as
-// the lookup's statement compares them (lookupCondSQL): typed by the
-// lookup value's Go type (core.TypeOf), each side read as that type's
-// canonical value (core.NormalizeScalar), so a timestamp compares at its
-// instant whether stored as a time or as its text, a UUID in either case,
-// and a date by its day. Numbers compare by value, a decimal beyond
-// float64's precision ("1.50" is 1.5).
+// the lookup's statement compares them (lookupCondSQL): equal in the one
+// order of the type both are compared as (lookupType, core.CompareCanonical),
+// so a timestamp compares at its instant whether stored as a time or as its
+// text, a UUID in either case, a date by its day, and numbers by value, a
+// decimal beyond float64's precision ("1.50" is 1.5).
 func lookupEqual(stored, want any) bool {
 	if stored == nil || want == nil {
 		return false
 	}
+	c, err := core.CompareCanonical(lookupType(stored, want), stored, want)
+	return err == nil && c == 0
+}
+
+// lookupType is the type an untyped lookup compares a stored value and its
+// value as: a decimal when either is one; no type, whose values compare as
+// the scalars both are, for two numbers; otherwise the lookup value's Go
+// type (core.TypeOf), or no type when it names no scalar.
+func lookupType(stored, want any) core.TypeInfo {
 	if isLookupDecimal(stored) || isLookupDecimal(want) {
-		c, ok := core.CompareDecimals(stored, want)
-		return ok && c == 0
+		return core.TypeInfo{Type: core.FieldTypeDecimal}
 	}
-	c, ok := core.CompareNumbers(stored, want)
-	if ok {
-		return c == 0
+	if core.IsNumber(stored) && core.IsNumber(want) {
+		return core.TypeInfo{}
 	}
 	info := core.TypeOf(reflect.TypeOf(want))
 	if !core.IsKeyType(info.Type) {
-		x, xok := lookupText(stored)
-		y, yok := lookupText(want)
-		return xok && yok && x == y
+		return core.TypeInfo{}
 	}
-	x, err := core.NormalizeScalar(info.Type, info.NumberKind, stored)
-	if err != nil {
-		return false
-	}
-	y, err := core.NormalizeScalar(info.Type, info.NumberKind, want)
-	return err == nil && x == y
-}
-
-func lookupText(v any) (string, bool) {
-	if u, ok := core.UUIDText(v); ok {
-		return u, true
-	}
-	if rv := reflect.ValueOf(v); rv.Kind() == reflect.String {
-		return rv.String(), true
-	}
-	return "", false
+	return info
 }
 
 // matchKey reports whether a row's key columns equal one of a WhereKeyIn's
