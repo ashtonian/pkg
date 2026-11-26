@@ -4,6 +4,7 @@ package parse_test
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"testing"
 	"time"
 
@@ -16,6 +17,35 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 )
+
+// scanOnly scans a NULL but has no Value: whatever a write stores for it,
+// it is not the NULL a live row needs.
+type scanOnly struct{ at time.Time }
+
+func (s *scanOnly) Scan(src any) error {
+	s.at, _ = src.(time.Time)
+	return nil
+}
+
+// markedNull's zero value writes the zero time, and only a NULL scan marks
+// it NULL: a row written from its zero value is deleted.
+type markedNull struct {
+	at   time.Time
+	null bool
+}
+
+func (m *markedNull) Scan(src any) error {
+	m.null = src == nil
+	m.at, _ = src.(time.Time)
+	return nil
+}
+
+func (m markedNull) Value() (driver.Value, error) {
+	if m.null {
+		return nil, nil
+	}
+	return m.at, nil
+}
 
 // Each declaration below compiles statements no row can be served by, or
 // that move a row out of its tenant; NewResource refuses it, naming the
@@ -41,6 +71,8 @@ func TestNewResource_RefusesIdentityDeclarations(t *testing.T) {
 		DeletedAt *time.Time      `json:"deleted_at" db:"deleted_at"`
 		Ref       uuid.UUID       `json:"ref"        db:"ref"`
 		Amount    decimal.Decimal `json:"amount"     db:"amount"`
+		Scanned   scanOnly        `json:"scanned"    db:"scanned"`
+		Marked    markedNull      `json:"marked"     db:"marked"`
 	}
 	type immutablePatch struct {
 		ID   string `json:"id"   db:"id"`
@@ -85,6 +117,14 @@ func TestNewResource_RefusesIdentityDeclarations(t *testing.T) {
 			_, err := parse.NewResource[softDeleted]("odds", parse.DeletedColumn("amount"))
 			return err
 		}, `parse: odds: deleted column "amount" is decimal.Decimal, which cannot hold NULL`},
+		{"a Scanner that writes nothing", func() error {
+			_, err := parse.NewResource[softDeleted]("odds", parse.DeletedColumn("scanned"))
+			return err
+		}, `parse: odds: deleted column "scanned" is parse_test.scanOnly, which cannot hold NULL`},
+		{"a Scanner whose zero value writes a value", func() error {
+			_, err := parse.NewResource[softDeleted]("odds", parse.DeletedColumn("marked"))
+			return err
+		}, `parse: odds: deleted column "marked" is parse_test.markedNull, which cannot hold NULL`},
 		{"an immutable patched field", func() error { _, err := parse.NewResource[immutablePatch]("imms"); return err },
 			`field Slug: an immutable field cannot have the patch capability`},
 	} {
