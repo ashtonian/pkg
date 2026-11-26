@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -340,7 +339,7 @@ func validateEnum(allowed []string, value any) error {
 	if !ok {
 		return nil
 	}
-	if slices.Contains(allowed, s) {
+	if core.EnumAllows(allowed, s) {
 		return nil
 	}
 	return fmt.Errorf("value '%s' not in allowed values %v", s, allowed)

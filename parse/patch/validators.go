@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -37,21 +38,18 @@ func eachValue(check func(any) error) Validator {
 	return walk
 }
 
-// enumValidator admits a value in the enum set.
+// enumValidator admits a value in the enum set, by core.EnumAllows.
 func enumValidator(values []string) Validator {
-	allowed := make(map[string]struct{}, len(values))
-	names := make([]string, len(values))
-	for i, v := range values {
-		names[i] = strings.TrimSpace(v)
-		allowed[names[i]] = struct{}{}
-	}
+	values = slices.Clone(values)
+	limit := strings.Join(values, ",")
+	listed := strings.Join(values, ", ")
 	return eachValue(func(value any) error {
 		s, ok := value.(string)
 		if !ok {
 			return fmt.Errorf("expected string for enum validation, got %s", gowalker.TypeText(reflect.TypeOf(value)))
 		}
-		if _, found := allowed[s]; !found {
-			return constraintFailure(core.ConstraintEnum, strings.Join(names, ","), "value %q is not one of: %s", s, strings.Join(names, ", "))
+		if !core.EnumAllows(values, s) {
+			return constraintFailure(core.ConstraintEnum, limit, "value %q is not one of: %s", s, listed)
 		}
 		return nil
 	})
