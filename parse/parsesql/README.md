@@ -29,11 +29,13 @@ flowchart LR
     scanner --> out["filter.Page[T] / parse.UpdateResult[T]"]
 ```
 
-**Lists.** `QueryPage` runs the page statement, builds the page (`Resource.Page`: cursors and has-next), then the count and the facet union when the plan has them, then the include statements for the page's keys, each through `filter.Page.SetInclude`, which omits empty projections. Each statement sees its own snapshot unless `db` is a transaction.
+**Lists.** `QueryPage` runs the page statement, then the count and the facet union when the plan has them, builds the page from them (`Resource.ListPage`: cursors, has-next, total and facets), then runs the include statements it returns for the page's keys, each through `filter.Page.SetInclude`, which omits empty projections. Each statement sees its own snapshot unless `db` is a transaction.
 
-**Updates.** `Update` runs `Current` (a `SkipUnchanged` plan's read of every target), then `Owner`, and splits the target rows with `parse.Resource.UpdatedRows`: `Changed` are the rows whose columns `Owner` wrote, `Unchanged` the rows it left — every row of an empty or relation-only patch. The relation statements then run for the keys of those rows (changed, then unchanged), never for the requested keys, and their affected rows sum into `RelationRows`. For a resource with computed columns (`parse.ReadExpr`), the changed and the unchanged rows are read again apart (`Resource.Reread`), so a column over a relation's pairs reads them as the update left them. Every update runs in one transaction: its own on a `*sql.DB` or `*sql.Conn`, a savepoint (`parsesql_update`) on a `*sql.Tx`. It is settled only once every returned row has scanned, so an error — a failed statement, a row that fails to scan, a cancellation — means nothing the update wrote is kept, and the caller's transaction stays usable and its rollback undoes the update. Once every statement has run, the update commits (or releases its savepoint) whatever its context does since and reports success, so an error never hides an applied update and a retry never applies it twice. The contract is `parsepgx`'s.
+**Updates.** `Update` runs `Current` (a `SkipUnchanged` plan's read of every target), then `Owner`, and splits the target rows with `parse.Resource.FollowUp`, which also renders the relation statements and rereads: `Changed` are the rows whose columns `Owner` wrote, `Unchanged` the rows it left — every row of an empty or relation-only patch. The relation statements then run for the keys of those rows (changed, then unchanged), never for the requested keys, and their affected rows sum into `RelationRows`. For a resource with computed columns (`parse.ReadExpr`), the changed and the unchanged rows are read again apart (`Resource.Reread`), so a column over a relation's pairs reads them as the update left them. Every update runs in one transaction: its own on a `*sql.DB` or `*sql.Conn`, a savepoint (`parsesql_update`) on a `*sql.Tx`. It is settled only once every returned row has scanned, so an error — a failed statement, a row that fails to scan, a cancellation — means nothing the update wrote is kept, and the caller's transaction stays usable and its rollback undoes the update. Once every statement has run, the update commits (or releases its savepoint) whatever its context does since and reports success, so an error never hides an applied update and a retry never applies it twice. The contract is `parsepgx`'s.
 
-**Batches.** `UpdateBatch` runs in one transaction (or savepoint): every chunk's `Current`, each checked against its keys (`UpdateBatchChunk.CheckCurrent`: `parse.ErrUpdateBatchTargets` and nothing written when a target is missing, stale, another tenant's or outside the policy), then every `Owner` in chunk order. `Changed` are the rows the owners wrote; `Unchanged` the read rows a `SkipUnchanged` owner left.
+**Batches.** `UpdateBatch` runs in one transaction (or savepoint): every chunk's `Current`, each checked against its keys (`Resource.CheckBatchCurrent`: `parse.ErrUpdateBatchTargets` and nothing written when a target is missing, stale, another tenant's or outside the policy), then every `Owner` in chunk order. `Changed` are the rows the owners wrote; `Unchanged` the read rows a `SkipUnchanged` owner left (`Resource.BatchResult`).
+
+**Shared steps.** What runs, in what order, and what the result holds is the root package's, shared with `parsepgx`: `Resource.CheckPlan` before any statement, then the steps above. This package holds only what is `database/sql`'s: running the statements one after another, scanning, and the transaction or savepoint.
 
 **Write transactions.** SQLite has no row lock: an update that reads before it writes holds its targets only in a write transaction, so no other writer commits between `Current` and `Owner`. `database/sql` begins transactions in the mode the connection string names; open the database with `_txlock=immediate`, and a `*sql.Tx` you pass in is then begun as a write transaction too.
 
@@ -46,7 +48,7 @@ flowchart LR
 
 A row that fails to scan fails its statement, and the call returns no rows; in an update it rolls the update back.
 
-PostgreSQL runs through [`parsepgx`](../parsepgx/README.md): `database/sql` hands its native arrays to a scanner as text that only pgx's codecs read. Every call refuses a plan compiled for another dialect (`ErrDialect`) before any statement.
+PostgreSQL runs through [`parsepgx`](../parsepgx/README.md): `database/sql` hands its native arrays to a scanner as text that only pgx's codecs read. Every call refuses a nil plan, a plan another resource built, and a plan compiled for another dialect (`parse.ErrDialect`) before any statement (`Resource.CheckPlan`).
 
 ## Configuration
 
@@ -71,9 +73,7 @@ Both are read by `modernc.org/sqlite` and `mattn/go-sqlite3`.
 - `Query[T](ctx, db Queryer, r *parse.Resource[T], st parse.Statement) ([]T, error)` — the rows of one statement over `r.Columns` compiled for SQLite: a repository's own read of the table, or one of a plan's statements run by hand.
 - `Queryer` — `QueryContext`: `*sql.DB`, `*sql.Conn`, `*sql.Tx`.
 - `DB` — `Queryer` and `ExecContext`. On a `*sql.DB` or `*sql.Conn` (which have `BeginTx`) an update begins its own transaction; on a `*sql.Tx` it takes a savepoint.
-- `ErrDialect` — the plan was compiled for another dialect.
-
-Errors carry the table and the statement's role: `parsesql: devices: owner: …`, `… current: …`, `… relations: …`, `… reread: …`, `… page: …`, `… count: …`, `… facets: …`, `… include tags: …`.
+A statement's failure is a `*parse.StatementError` naming it, wrapped once with the table: `parsesql: devices: owner: …`, `… current: …`, `… conflict: …`, `… relations: …`, `… reread: …`, `… page: …`, `… count: …`, `… facets: …`, `… include tags: …`, and the transaction's `begin`, `savepoint`, `release savepoint`, `rollback to savepoint`, `rollback` and `commit`. `errors.As` reaches it and the driver's error under it; `parsepgx` names its statements the same way.
 
 ## Build and test
 
@@ -94,6 +94,7 @@ The executor contract (`executor_contract_cases_test.go` in the root package: ch
   - `cannot start a transaction within a transaction`: a `DB` that is not a `*sql.Tx` is already inside a transaction (a `*sql.Conn` after `BEGIN`); pass the `*sql.Tx` instead.
   - `no such savepoint: parsesql_update`: the caller's transaction ended under the update (a `COMMIT` or `ROLLBACK` from another goroutine on the same `*sql.Tx`).
   - `parse.ErrUpdateBatchTargets`: a batch named a key that is missing, deleted, another tenant's, outside the policy or at another revision; nothing was written.
+  - `parse.ErrDialect`: the plan was built with another dialect; build it with `filter.SQLiteDialect{}`. `plan built for "…"`: the plan came from another resource than the one passed with it. Nothing ran in either case.
   - `no such column` means the table and the columns `T`'s fields compile to disagree. `JSON scan source must be string or []byte` means a document column holds a number or a blob: store JSON text. `timestamp text` errors mean a timestamp column holds text parse did not write; write `core.FormatTimestamp` or declare the column `DATETIME` for a driver that parses it. `no such function: parse_decimal` means `parsesqlite.Register` ran after the database opened a connection, or not at all.
 
 ## Security
@@ -104,4 +105,4 @@ SQL text comes from the plan, never from request strings, and every value is a b
 
 | File | Responsibility |
 |------|----------------|
-| `parsesql.go` | `Queryer`, `DB`, `ErrDialect`, `QueryPage`, `Update`, `UpdateBatch`, `Query`; the transaction-or-savepoint wrapper |
+| `parsesql.go` | `Queryer`, `DB`, `QueryPage`, `Update`, `UpdateBatch`, `Query`: the root package's executor steps run one statement at a time; the transaction-or-savepoint wrapper |

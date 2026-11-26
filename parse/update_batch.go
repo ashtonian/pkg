@@ -35,6 +35,7 @@ type UpdateBatchPlan struct {
 	Chunks []UpdateBatchChunk
 
 	dialect Dialect
+	table   string
 }
 
 // Dialect is the dialect the plan's statements are written for.
@@ -135,7 +136,7 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 	// Rows lock in key order, as Current's ORDER BY reads them, so two
 	// batches over the same rows cannot each hold a lock the other waits on.
 	slices.SortFunc(ordered, func(a, b RowUpdate) int { return key.compare(a.Key, b.Key) })
-	plan := &UpdateBatchPlan{Chunks: []UpdateBatchChunk{}, dialect: d}
+	plan := &UpdateBatchPlan{Chunks: []UpdateBatchChunk{}, dialect: d, table: r.table}
 	var compiled []compiledRowUpdate
 	var offset int
 	for _, row := range ordered {

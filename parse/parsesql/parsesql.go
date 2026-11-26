@@ -22,7 +22,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"slices"
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
@@ -45,9 +44,6 @@ type DB interface {
 type beginner interface {
 	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
 }
-
-// ErrDialect is a plan compiled for a dialect other than SQLite.
-var ErrDialect = errors.New("parsesql: plan is not compiled for SQLite")
 
 // savepoint names the savepoint Update and UpdateBatch take in a caller's
 // transaction.
@@ -73,10 +69,8 @@ func Query[T any](ctx context.Context, db Queryer, r *parse.Resource[T], st pars
 // when the total and facets must describe exactly the page's rows under
 // concurrent writes.
 func QueryPage[T any](ctx context.Context, db Queryer, r *parse.Resource[T], plan *parse.ListPlan) (*filter.Page[T], error) {
-	if plan == nil {
-		return nil, fmt.Errorf("parsesql: %s: nil list plan", r.Table())
-	}
-	if err := sqlite(r.Table(), plan.Dialect()); err != nil {
+	err := r.CheckPlan(plan, filter.SQLiteDialect{})
+	if err != nil {
 		return nil, err
 	}
 	page, err := queryPage(ctx, db, r, plan)
@@ -87,41 +81,31 @@ func QueryPage[T any](ctx context.Context, db Queryer, r *parse.Resource[T], pla
 }
 
 func queryPage[T any](ctx context.Context, db Queryer, r *parse.Resource[T], plan *parse.ListPlan) (*filter.Page[T], error) {
-	items, err := query(ctx, db, r, plan.Page)
+	var (
+		read parse.ListRows[T]
+		err  error
+	)
+	read.Items, err = query(ctx, db, r, plan.Page)
 	if err != nil {
-		return nil, wrap("page", err)
-	}
-	page, err := r.Page(items, plan)
-	if err != nil {
-		return nil, err
+		return nil, parse.StatementFailed("page", err)
 	}
 	if plan.Count != nil {
-		var total int64
-		if err := scanOne(ctx, db, *plan.Count, &total); err != nil {
-			return nil, wrap("count", err)
+		err = scanOne(ctx, db, *plan.Count, &read.Total)
+		if err != nil {
+			return nil, parse.StatementFailed("count", err)
 		}
-		page.PageInfo.TotalCount = &total
 	}
-	var facets []filter.FacetResult
 	if plan.Facets != nil {
 		err := each(ctx, db, plan.Facets.SQL, plan.Facets.Args, func(rows *sql.Rows) error {
 			var err error
-			facets, err = filter.ScanFacetUnion(rows)
+			read.Facets, err = filter.ScanFacetUnion(rows)
 			return err
 		})
 		if err != nil {
-			return nil, wrap("facets", err)
+			return nil, parse.StatementFailed("facets", err)
 		}
 	}
-	page.Facets = filter.FacetMap(facets)
-	if len(plan.Include) == 0 || len(page.Items) == 0 {
-		return page, nil
-	}
-	keys, err := ownerKeys(r, page.Items)
-	if err != nil {
-		return nil, err
-	}
-	queries, err := r.IncludeQueries(plan, keys)
+	page, queries, err := r.ListPage(plan, read)
 	if err != nil {
 		return nil, err
 	}
@@ -135,19 +119,19 @@ func queryPage[T any](ctx context.Context, db Queryer, r *parse.Resource[T], pla
 			return nil
 		})
 		if err != nil {
-			return nil, wrap("include "+q.Field, err)
+			return nil, parse.StatementFailed("include "+q.Field, err)
 		}
 	}
 	return page, nil
 }
 
 // Update applies plan and reports its target rows as the update left them,
-// split into the rows whose columns it wrote and the rows it left
-// (parse.Resource.UpdatedRows), and how many junction rows its membership
-// changes touched; neither split holding a row means the target is not
-// found. The update runs in one transaction — a savepoint when db is a
-// *sql.Tx (transact) — so its rows and memberships change together and an
-// error means nothing it wrote is kept, a row that fails to scan included:
+// split into the rows whose columns it wrote and the rows it left, and how
+// many junction rows its membership changes touched (parse.Resource.FollowUp);
+// neither split holding a row means the target is not found. The update
+// runs in one transaction — a savepoint when db is a *sql.Tx (transact) —
+// so its rows and memberships change together and an error means nothing
+// it wrote is kept, a row that fails to scan included:
 // Current (SkipUnchanged or a patch of document members), then Conflict,
 // whose row fails the update before anything is written
 // (UpdatePlan.ConflictError), the owner statement, the membership changes
@@ -155,14 +139,12 @@ func queryPage[T any](ctx context.Context, db Queryer, r *parse.Resource[T], pla
 // requested keys, then, for a resource with computed columns
 // (parse.ReadExpr), those rows again (Resource.Reread).
 func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse.UpdatePlan) (parse.UpdateResult[T], error) {
-	if plan == nil {
-		return parse.UpdateResult[T]{}, fmt.Errorf("parsesql: %s: nil update plan", r.Table())
-	}
-	if err := sqlite(r.Table(), plan.Dialect()); err != nil {
+	err := r.CheckPlan(plan, filter.SQLiteDialect{})
+	if err != nil {
 		return parse.UpdateResult[T]{}, err
 	}
 	var res parse.UpdateResult[T]
-	err := transact(ctx, db, func(db DB) error {
+	err = transact(ctx, db, func(db DB) error {
 		var err error
 		res, err = update(ctx, db, r, plan)
 		return err
@@ -178,7 +160,7 @@ func update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 	if plan.Current != nil {
 		rows, err := query(ctx, db, r, *plan.Current)
 		if err != nil {
-			return parse.UpdateResult[T]{}, wrap("current", err)
+			return parse.UpdateResult[T]{}, parse.StatementFailed("current", err)
 		}
 		current = rows
 	}
@@ -188,81 +170,70 @@ func update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 		case err == nil:
 			return parse.UpdateResult[T]{}, plan.ConflictError(op)
 		case !errors.Is(err, sql.ErrNoRows):
-			return parse.UpdateResult[T]{}, wrap("conflict", err)
+			return parse.UpdateResult[T]{}, parse.StatementFailed("conflict", err)
 		}
 	}
 	owner, err := query(ctx, db, r, plan.Owner)
 	if err != nil {
-		return parse.UpdateResult[T]{}, wrap("owner", err)
+		return parse.UpdateResult[T]{}, parse.StatementFailed("owner", err)
 	}
-	changed, unchanged, err := r.UpdatedRows(plan, owner, current)
+	follow, err := r.FollowUp(plan, owner, current)
 	if err != nil {
 		return parse.UpdateResult[T]{}, err
 	}
-	res := parse.UpdateResult[T]{Changed: changed, Unchanged: unchanged}
-	if !plan.HasRelations() {
-		return res, nil
-	}
-	keys, err := ownerKeys(r, slices.Concat(changed, unchanged))
-	if err != nil {
-		return parse.UpdateResult[T]{}, err
-	}
-	stmts, err := r.RelationStatements(plan, keys)
-	if err != nil {
-		return parse.UpdateResult[T]{}, err
-	}
-	for _, s := range stmts {
+	res := follow.Result
+	for _, s := range follow.Relations {
 		result, err := db.ExecContext(ctx, s.SQL, s.Args...)
 		if err != nil {
-			return parse.UpdateResult[T]{}, wrap("relations", err)
+			return parse.UpdateResult[T]{}, parse.StatementFailed("relations", err)
 		}
 		affected, err := result.RowsAffected()
 		if err != nil {
-			return parse.UpdateResult[T]{}, wrap("relations", err)
+			return parse.UpdateResult[T]{}, parse.StatementFailed("relations", err)
 		}
 		res.RelationRows += affected
 	}
-	// The changed and the unchanged rows are read again apart, so each keeps
-	// its side of the split.
-	for i, part := range [2][]parse.Key{keys[:len(changed)], keys[len(changed):]} {
-		stmt, err := r.Reread(plan, part)
-		if err != nil {
-			return parse.UpdateResult[T]{}, err
-		}
-		if stmt == nil {
-			continue
-		}
-		rows, err := query(ctx, db, r, *stmt)
-		if err != nil {
-			return parse.UpdateResult[T]{}, wrap("reread", err)
-		}
-		if i == 0 {
-			res.Changed = rows
-		} else {
-			res.Unchanged = rows
-		}
+	res.Changed, err = reread(ctx, db, r, follow.RereadChanged, res.Changed)
+	if err != nil {
+		return parse.UpdateResult[T]{}, err
+	}
+	res.Unchanged, err = reread(ctx, db, r, follow.RereadUnchanged, res.Unchanged)
+	if err != nil {
+		return parse.UpdateResult[T]{}, err
 	}
 	return res, nil
 }
 
+// reread is rows as stmt, one of the update's rereads, reads them again
+// once the relation statements have run; rows as they are when stmt is nil.
+func reread[T any](ctx context.Context, db Queryer, r *parse.Resource[T], stmt *parse.Statement, rows []T) ([]T, error) {
+	if stmt == nil {
+		return rows, nil
+	}
+	again, err := query(ctx, db, r, *stmt)
+	if err != nil {
+		return nil, parse.StatementFailed("reread", err)
+	}
+	return again, nil
+}
+
 // UpdateBatch applies plan in one transaction — a savepoint when db is a
-// *sql.Tx. Every chunk's Current runs first, and each chunk's rows must be
-// exactly its keys (UpdateBatchChunk.CheckCurrent: parse.ErrUpdateBatchTargets
-// otherwise, and nothing is written); every Owner then runs, in chunk order.
-// The result's Changed are the rows the owners wrote, chunk by chunk; its
+// *sql.Tx. Every chunk's Current runs first, then each chunk's rows must be
+// exactly its keys (parse.Resource.CheckBatchCurrent:
+// parse.ErrUpdateBatchTargets otherwise, and nothing is written); every
+// Owner then runs, in chunk order. The result (parse.Resource.BatchResult)
+// holds as Changed the rows the owners wrote, chunk by chunk, and as
 // Unchanged the read rows a SkipUnchanged owner left as they were.
 func UpdateBatch[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse.UpdateBatchPlan) (parse.UpdateResult[T], error) {
-	if plan == nil {
-		return parse.UpdateResult[T]{}, fmt.Errorf("parsesql: %s: nil update batch plan", r.Table())
-	}
-	if err := sqlite(r.Table(), plan.Dialect()); err != nil {
+	err := r.CheckPlan(plan, filter.SQLiteDialect{})
+	if err != nil {
 		return parse.UpdateResult[T]{}, err
 	}
 	if len(plan.Chunks) == 0 {
 		return parse.UpdateResult[T]{}, nil
 	}
 	var res parse.UpdateResult[T]
-	err := transact(ctx, db, func(db DB) error {
+	err = transact(ctx, db, func(db DB) error {
 		var err error
 		res, err = updateBatch(ctx, db, r, plan)
 		return err
@@ -278,35 +249,26 @@ func updateBatch[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *
 	for i, chunk := range plan.Chunks {
 		rows, err := query(ctx, db, r, chunk.Current)
 		if err != nil {
-			return parse.UpdateResult[T]{}, wrap("current", err)
-		}
-		keys, err := ownerKeys(r, rows)
-		if err != nil {
-			return parse.UpdateResult[T]{}, err
-		}
-		if err := chunk.CheckCurrent(keys); err != nil {
-			return parse.UpdateResult[T]{}, err
+			return parse.UpdateResult[T]{}, parse.StatementFailed("current", err)
 		}
 		current[i] = rows
 	}
-	var res parse.UpdateResult[T]
-	for i, chunk := range plan.Chunks {
-		var owner []T
-		if chunk.Owner != nil {
-			rows, err := query(ctx, db, r, *chunk.Owner)
-			if err != nil {
-				return parse.UpdateResult[T]{}, wrap("owner", err)
-			}
-			owner = rows
-		}
-		unchanged, err := r.Unchanged(owner, current[i])
-		if err != nil {
-			return parse.UpdateResult[T]{}, err
-		}
-		res.Changed = append(res.Changed, owner...)
-		res.Unchanged = append(res.Unchanged, unchanged...)
+	err := r.CheckBatchCurrent(plan, current)
+	if err != nil {
+		return parse.UpdateResult[T]{}, err
 	}
-	return res, nil
+	owner := make([][]T, len(plan.Chunks))
+	for i, chunk := range plan.Chunks {
+		if chunk.Owner == nil {
+			continue
+		}
+		rows, err := query(ctx, db, r, *chunk.Owner)
+		if err != nil {
+			return parse.UpdateResult[T]{}, parse.StatementFailed("owner", err)
+		}
+		owner[i] = rows
+	}
+	return r.BatchResult(plan, current, owner)
 }
 
 // transact runs apply in a transaction of its own when db opens them, and
@@ -320,29 +282,42 @@ func updateBatch[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *
 // database/sql does not roll back on cancellation what is already done.
 func transact(ctx context.Context, db DB, apply func(DB) error) error {
 	settle := context.WithoutCancel(ctx)
-	if b, ok := db.(beginner); ok {
-		tx, err := b.BeginTx(settle, nil)
-		if err != nil {
-			return wrap("begin", err)
-		}
-		if err := apply(tx); err != nil {
-			// A transaction database/sql already ended (a bad connection) kept
-			// nothing to roll back.
-			if rollback := tx.Rollback(); !errors.Is(rollback, sql.ErrTxDone) {
-				err = errors.Join(err, wrap("rollback", rollback))
-			}
-			return err
-		}
-		return wrap("commit", tx.Commit())
+	b, opens := db.(beginner)
+	if !opens {
+		return underSavepoint(ctx, settle, db, apply)
 	}
-	if _, err := db.ExecContext(ctx, "SAVEPOINT "+savepoint); err != nil {
-		return wrap("savepoint", err)
+	tx, err := b.BeginTx(settle, nil)
+	if err != nil {
+		return parse.StatementFailed("begin", err)
 	}
-	if err := apply(db); err != nil {
+	err = apply(tx)
+	if err != nil {
+		// A transaction database/sql already ended (a bad connection) kept
+		// nothing to roll back.
+		rollback := tx.Rollback()
+		if !errors.Is(rollback, sql.ErrTxDone) {
+			err = errors.Join(err, parse.StatementFailed("rollback", rollback))
+		}
+		return err
+	}
+	return parse.StatementFailed("commit", tx.Commit())
+}
+
+// underSavepoint is transact in the caller's transaction db: apply runs
+// after a savepoint, released once apply succeeds and rolled back to
+// otherwise, settling under settle.
+func underSavepoint(ctx, settle context.Context, db DB, apply func(DB) error) error {
+	_, err := db.ExecContext(ctx, "SAVEPOINT "+savepoint)
+	if err != nil {
+		return parse.StatementFailed("savepoint", err)
+	}
+	err = apply(db)
+	if err != nil {
 		return errors.Join(err, undoSavepoint(settle, db))
 	}
-	if _, err := db.ExecContext(settle, "RELEASE SAVEPOINT "+savepoint); err != nil {
-		return errors.Join(wrap("release savepoint", err), undoSavepoint(settle, db))
+	_, err = db.ExecContext(settle, "RELEASE SAVEPOINT "+savepoint)
+	if err != nil {
+		return errors.Join(parse.StatementFailed("release savepoint", err), undoSavepoint(settle, db))
 	}
 	return nil
 }
@@ -353,7 +328,7 @@ func transact(ctx context.Context, db DB, apply func(DB) error) error {
 func undoSavepoint(ctx context.Context, db DB) error {
 	_, rollback := db.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+savepoint)
 	_, release := db.ExecContext(ctx, "RELEASE SAVEPOINT "+savepoint)
-	return wrap("rollback to savepoint", errors.Join(rollback, release))
+	return parse.StatementFailed("rollback to savepoint", errors.Join(rollback, release))
 }
 
 func query[T any](ctx context.Context, db Queryer, r *parse.Resource[T], st parse.Statement) ([]T, error) {
@@ -402,30 +377,4 @@ func scanOne(ctx context.Context, db Queryer, st parse.Statement, dest ...any) e
 		}
 		return rows.Scan(dest...)
 	})
-}
-
-func ownerKeys[T any](r *parse.Resource[T], items []T) ([]parse.Key, error) {
-	keys := make([]parse.Key, len(items))
-	for i, item := range items {
-		k, err := r.Key(item)
-		if err != nil {
-			return nil, err
-		}
-		keys[i] = k
-	}
-	return keys, nil
-}
-
-func sqlite(table string, d filter.Dialect) error {
-	if d == nil || d.Name() != (filter.SQLiteDialect{}).Name() {
-		return fmt.Errorf("parsesql: %s: %w", table, ErrDialect)
-	}
-	return nil
-}
-
-func wrap(stmt string, err error) error {
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("%s: %w", stmt, err)
 }

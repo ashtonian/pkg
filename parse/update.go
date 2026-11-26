@@ -569,15 +569,7 @@ func (r *Resource[T]) Reread(plan *UpdatePlan, ownerKeys []Key) (*Statement, err
 
 // ownsUpdatePlan refuses a plan r did not build: its relation changes name
 // another table's fields.
-func (r *Resource[T]) ownsUpdatePlan(plan *UpdatePlan) error {
-	if plan == nil {
-		return fmt.Errorf("parse: %s: nil update plan", r.table)
-	}
-	if plan.table != r.table {
-		return fmt.Errorf("parse: %s: update plan built for %q", r.table, plan.table)
-	}
-	return nil
-}
+func (r *Resource[T]) ownsUpdatePlan(plan *UpdatePlan) error { return r.owns(plan.header()) }
 
 func (r *Resource[T]) updateOptions(opts []UpdateOption) (updateConfig, []patch.PatchSQLOption, error) {
 	var cfg updateConfig

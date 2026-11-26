@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -199,7 +200,9 @@ func runExecutorContract(t *testing.T, open func(*testing.T) *sql.DB, d filter.D
 	t.Run("a membership change that fails undoes the row change", func(t *testing.T) {
 		db := setup(t)
 		res, err := applyUpdate(t, db, execItems, d, plan(t, `{"name":"renamed","tags":["forbidden"]}`, parse.ByID("e1")), false)
-		require.Error(t, err)
+		var failed *parse.StatementError
+		require.ErrorAs(t, err, &failed)
+		assert.Equal(t, "relations", failed.Statement, "both executors name the statement that failed")
 		assert.Zero(t, res)
 		assert.Equal(t, "one", stored(t, db, "e1").Name)
 		assert.Equal(t, []string{"red"}, tags(t, db, "e1"))
@@ -253,7 +256,9 @@ func runExecutorContract(t *testing.T, open func(*testing.T) *sql.DB, d filter.D
 		require.NoError(t, err)
 		for _, inTx := range []bool{false, true} {
 			_, err = applyUpdate(t, db, execDocs, d, renaming, inTx)
-			require.Error(t, err, "in the caller's transaction: %v", inTx)
+			var failed *parse.StatementError
+			require.ErrorAs(t, err, &failed, "in the caller's transaction: %v", inTx)
+			assert.Equal(t, "owner", failed.Statement, "in the caller's transaction: %v", inTx)
 			var name string
 			require.NoError(t, db.QueryRow(`SELECT name FROM exec_docs WHERE id = 'd1'`).Scan(&name))
 			assert.Equal(t, "one", name, "in the caller's transaction: %v", inTx)
@@ -409,18 +414,52 @@ func runExecutorContract(t *testing.T, open func(*testing.T) *sql.DB, d filter.D
 		require.NoError(t, err)
 		db := setup(t)
 		_, err = applyUpdate(t, db, execItems, d, foreign, false)
-		require.Error(t, err)
-		if isPostgres(d) {
-			assert.ErrorIs(t, err, parsepgx.ErrDialect)
-		} else {
-			assert.ErrorIs(t, err, parsesql.ErrDialect)
-		}
+		require.ErrorIs(t, err, parse.ErrDialect)
 		_, err = queryPage(t, db, execItems, d, func() *parse.ListPlan {
 			list, err := execItems.BuildList(other, nil, execScope)
 			require.NoError(t, err)
 			return list
 		}())
 		require.Error(t, err)
+		assert.Equal(t, "one", stored(t, db, "e1").Name)
+	})
+
+	// The other resource's table does not exist: had any statement run, the
+	// error would be that statement's.
+	t.Run("a plan another resource built is refused before any statement", func(t *testing.T) {
+		elsewhere := parse.MustResource[execItem]("exec_items_elsewhere", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+		p, err := elsewhere.ParseMergePatch([]byte(`{"name":"x"}`))
+		require.NoError(t, err)
+		update, err := elsewhere.BuildUpdate(d, p, parse.ByID("e1"), execScope)
+		require.NoError(t, err)
+		batch, err := elsewhere.BuildUpdateBatch(d, []parse.RowUpdate{{Key: parse.Key{"e1"}, Patch: p}}, execScope, parse.UpdateBatchLimits{})
+		require.NoError(t, err)
+		list, err := elsewhere.BuildList(d, nil, execScope)
+		require.NoError(t, err)
+
+		db := setup(t)
+		for _, run := range []struct {
+			kind string
+			run  func() error
+		}{
+			{"update", func() error {
+				_, err := applyUpdate(t, db, execItems, d, update, false)
+				return err
+			}},
+			{"update batch", func() error {
+				_, err := applyUpdateBatch(t, db, execItems, d, batch)
+				return err
+			}},
+			{"list", func() error {
+				_, err := queryPage(t, db, execItems, d, list)
+				return err
+			}},
+		} {
+			err := run.run()
+			require.ErrorContains(t, err, `parse: exec_items: `+run.kind+` plan built for "exec_items_elsewhere"`)
+			_, ran := errors.AsType[*parse.StatementError](err)
+			assert.False(t, ran, run.kind)
+		}
 		assert.Equal(t, "one", stored(t, db, "e1").Name)
 	})
 }
