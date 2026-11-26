@@ -132,15 +132,28 @@ func (c pgxAnnounced) Exec(ctx context.Context, query string, args ...any) (pgco
 }
 
 // pgxUpdateAlone runs plan through parsepgx on a connection of db's its
-// own, sending the connection's backend PID to pids before the update (0
-// when it has none), so a test can watch the update wait for a lock.
-func pgxUpdateAlone(ctx context.Context, db *sql.DB, plan *parse.UpdatePlan, pids chan<- uint32) (err error) {
+// own, under the settings scan holds (the planner's scan methods), sending
+// the connection's backend PID to pids before the update (0 when it has
+// none), so a test can watch the update wait for a lock.
+func pgxUpdateAlone(ctx context.Context, db *sql.DB, plan *parse.UpdatePlan, scan []string, pids chan<- uint32) (err error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		pids <- 0
 		return err
 	}
 	defer func() { err = errors.Join(err, conn.Close()) }()
+	// The connection goes back to the pool, so no setting outlives the call.
+	defer func() {
+		_, reset := conn.ExecContext(context.WithoutCancel(ctx), "RESET ALL")
+		err = errors.Join(err, reset)
+	}()
+	for _, setting := range scan {
+		_, err = conn.ExecContext(ctx, setting)
+		if err != nil {
+			pids <- 0
+			return err
+		}
+	}
 	err = conn.Raw(func(driverConn any) error {
 		c, ok := driverConn.(*stdlib.Conn)
 		if !ok {
@@ -484,11 +497,16 @@ func runExecutorContract(t *testing.T, open func(*testing.T) *sql.DB, d filter.D
 		}
 	})
 
-	// Two updates naming the same rows in opposite orders lock them in one
-	// order, so whichever takes the first row takes them all and the other
-	// waits for it, rather than each holding a row the other waits for
-	// (40P01). A third transaction holds the rows until both updates wait
-	// behind it, so neither has locked a row when the two start.
+	// Two updates naming the same rows lock them in one order, so whichever
+	// takes the first row takes them all and the other waits for it, rather
+	// than each holding a row the other waits for (40P01). PostgreSQL locks
+	// rows in the order its plan reads them, so the two are given plans that
+	// read in opposite orders over rows written in descending key order: one
+	// scans the heap, the other the key's index. A third transaction holds
+	// the rows until both updates wait behind it, so neither has locked a row
+	// when the two start. From opposite ends of 1000 rows the two meet before
+	// either finishes, which 100 rows, locked faster than the other wakes,
+	// do not ensure.
 	t.Run("updates naming the same rows in opposite orders do not deadlock", func(t *testing.T) {
 		if !isPostgres(d) {
 			t.Skip("SQLite has no row locks: its write transactions serialize")
@@ -498,26 +516,42 @@ func runExecutorContract(t *testing.T, open func(*testing.T) *sql.DB, d filter.D
 			body string
 			opts []parse.UpdateOption
 		}{
+			{"columns alone", `{"name":"x"}`, nil},
 			{"columns and relations", `{"name":"x","tags":["blue"]}`, nil},
 			{"guarded", `{"name":"x"}`, []parse.UpdateOption{parse.SkipUnchanged()}},
 			{"relations alone", `{"tags":["blue"]}`, nil},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				db := setup(t)
+				keys := make([]any, 1000)
+				values := make([]string, len(keys))
+				for i := range keys {
+					id := fmt.Sprintf("n%04d", len(keys)-i)
+					keys[i] = id
+					values[i] = "('" + id + "', 't1', 'n', NULL)"
+				}
+				_, err := db.ExecContext(t.Context(), `INSERT INTO exec_items (id, tenant_id, name, deleted_at) VALUES `+strings.Join(values, ", "))
+				require.NoError(t, err)
+				reversed := slices.Clone(keys)
+				slices.Reverse(reversed)
 				plans := []*parse.UpdatePlan{
-					plan(t, tc.body, parse.ByIDs("e1", "e2"), tc.opts...),
-					plan(t, tc.body, parse.ByIDs("e2", "e1"), tc.opts...),
+					plan(t, tc.body, parse.ByIDs(keys...), tc.opts...),
+					plan(t, tc.body, parse.ByIDs(reversed...), tc.opts...),
+				}
+				scans := [][]string{
+					{"SET enable_indexscan = off", "SET enable_bitmapscan = off", "SET enable_indexonlyscan = off"},
+					{"SET enable_seqscan = off", "SET enable_bitmapscan = off"},
 				}
 				holder, err := db.BeginTx(t.Context(), nil)
 				require.NoError(t, err)
 				defer func() { _ = holder.Rollback() }()
-				_, err = holder.ExecContext(t.Context(), `SELECT id FROM exec_items WHERE id IN ('e1', 'e2') FOR UPDATE`)
+				_, err = holder.ExecContext(t.Context(), `SELECT id FROM exec_items WHERE id LIKE 'n%' FOR UPDATE`)
 				require.NoError(t, err)
 
 				pids := make(chan uint32, len(plans))
 				results := make(chan error, len(plans))
-				for _, p := range plans {
-					go func() { results <- pgxUpdateAlone(t.Context(), db, p, pids) }()
+				for i, p := range plans {
+					go func() { results <- pgxUpdateAlone(t.Context(), db, p, scans[i], pids) }()
 				}
 				first, second := <-pids, <-pids
 				require.NotZero(t, first, "the first update has a connection")

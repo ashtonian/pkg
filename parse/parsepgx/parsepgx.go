@@ -138,6 +138,9 @@ func queryIncludes[T any](ctx context.Context, db Querier, page *filter.Page[T],
 // lock holds every target while Owner compares them. A patch of document
 // members (plan.Conflict set) sends Current and Conflict, whose row fails
 // the update before Owner is sent (UpdatePlan.ConflictError), then Owner.
+// A plain update of a target that can hold several rows (plan.Lock set)
+// sends Lock before Owner in one batch, so its rows lock in key order before
+// the UPDATE would take them in the order its plan reads them.
 //
 // A plan that changes relation memberships then changes them for the keys
 // of the rows the owner statement returned (changed, then unchanged), never
@@ -230,6 +233,12 @@ func queryTargets[T any](ctx context.Context, db Querier, resource *parse.Resour
 			return nil, plan.ConflictError(*unmet)
 		}
 		b = &pgx.Batch{}
+	}
+	if plan.Lock != nil {
+		b.Queue(plan.Lock.SQL, plan.Lock.Args...).Query(func(r pgx.Rows) error {
+			r.Close()
+			return parse.StatementFailed("lock", r.Err())
+		})
 	}
 	b.Queue(plan.Owner.SQL, plan.Owner.Args...).Query(func(r pgx.Rows) error {
 		var err error

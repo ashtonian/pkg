@@ -152,6 +152,14 @@ type UpdatePlan struct {
 	// (Unchanged); neither returning a row means the target is not found.
 	// Nil when Owner returns every target row.
 	Current *Statement
+	// Lock, set when Owner's UPDATE can write several target rows on a
+	// dialect with row locks and no Current locks them first, locks every
+	// target row the scope admits in key order and returns nothing an
+	// executor reads. Run it just before Owner, in one transaction: an
+	// UPDATE locks rows in the order its plan reads them, and two updates of
+	// overlapping rows whose plans read them in opposite orders would each
+	// hold a row the other waits for (40P01).
+	Lock *Statement
 	// Conflict, set when the patch writes members of a JSON document (an
 	// add, replace or remove below a field), selects the index of the first
 	// operation RFC 6902 cannot apply to a target row's stored document:
@@ -201,8 +209,8 @@ func (p *UpdatePlan) ConflictError(op int64) error {
 }
 
 // HasRelations reports whether the patch changes relation memberships:
-// run Current and Conflict when set, Owner, RelationStatements, then Reread
-// when it returns a statement, in one transaction.
+// run Current, Conflict and Lock when set, Owner, RelationStatements, then
+// Reread when it returns a statement, in one transaction.
 func (p *UpdatePlan) HasRelations() bool { return len(p.relations) > 0 }
 
 // BuildUpdate compiles a patch into the statement that applies it to target
@@ -287,12 +295,20 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		if cfg.skipUnchanged {
 			guarded += " AND " + set.ChangePredicate
 		}
-		if cfg.skipUnchanged || set.Precondition != "" {
-			current, currentArgs, err := r.updateWhere(d, target, scope, 0)
+		guardedByCurrent := cfg.skipUnchanged || set.Precondition != ""
+		// Without Current, the UPDATE would take its own locks in the order
+		// its plan reads the rows, so Lock takes them in key order first.
+		ordersLocks := d.RowLock() != "" && len(target.keys) != 1
+		if guardedByCurrent || ordersLocks {
+			bare, bareArgs, err := r.updateWhere(d, target, scope, 0)
 			if err != nil {
 				return nil, err
 			}
-			plan.Current = &Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + current + locked, Args: currentArgs}
+			if guardedByCurrent {
+				plan.Current = &Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + bare + locked, Args: bareArgs}
+			} else {
+				plan.Lock = &Statement{SQL: "SELECT 1 FROM " + d.QuoteIdent(r.table) + " WHERE " + bare + locked, Args: bareArgs}
+			}
 		}
 		if set.Precondition != "" {
 			plan.Conflict, err = r.conflictStatement(d, target, scope, set.Preconditions)

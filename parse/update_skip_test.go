@@ -272,8 +272,11 @@ func TestSkipUnchanged_SQL(t *testing.T) {
 
 // A statement that locks the rows of a target that can hold several takes
 // them in key order, so two updates over overlapping rows lock in one order
-// and cannot deadlock on each other: Current, and a relation-only patch's
-// Owner. One row needs no order, and SQLite locks no rows.
+// and cannot deadlock on each other: Current, a relation-only patch's Owner,
+// and Lock, which an unguarded UPDATE of several rows runs first, since the
+// UPDATE takes its own locks in the order its plan reads the rows. One row
+// needs no order, and SQLite locks no rows. TestExecutorContract_Postgres
+// runs the deadlock itself.
 func TestBuildUpdate_LocksSeveralRowsInKeyOrder(t *testing.T) {
 	r := notes(t)
 	byTitle, err := r.ParseFilterMap(map[string]any{"title": "one"})
@@ -303,12 +306,24 @@ func TestBuildUpdate_LocksSeveralRowsInKeyOrder(t *testing.T) {
 			assert.True(t, strings.HasSuffix(current.SQL, tc.suffix), current.SQL)
 			owner := build(t, pg, `{"tags":["blue"]}`, tc.target).Owner
 			assert.True(t, strings.HasSuffix(owner.SQL, tc.suffix), owner.SQL)
+
+			unguarded := build(t, pg, `{"title":"x"}`, tc.target)
+			assert.Nil(t, unguarded.Current)
+			if tc.suffix != ordered {
+				assert.Nil(t, unguarded.Lock, "one row's UPDATE locks it alone")
+				return
+			}
+			require.NotNil(t, unguarded.Lock)
+			assert.True(t, strings.HasPrefix(unguarded.Lock.SQL, `SELECT 1 FROM "notes" WHERE `), unguarded.Lock.SQL)
+			assert.True(t, strings.HasSuffix(unguarded.Lock.SQL, tc.suffix), unguarded.Lock.SQL)
+			assert.Nil(t, build(t, pg, `{"title":"x"}`, tc.target, parse.SkipUnchanged()).Lock, "Current locks the rows of a guarded update")
 		})
 	}
 	t.Run("sqlite", func(t *testing.T) {
 		current := build(t, filter.SQLiteDialect{}, `{"title":"x"}`, parse.ByIDs("n2", "n1"), parse.SkipUnchanged()).Current
 		require.NotNil(t, current)
 		assert.NotContains(t, current.SQL, "ORDER BY")
+		assert.Nil(t, build(t, filter.SQLiteDialect{}, `{"title":"x"}`, parse.ByIDs("n2", "n1")).Lock)
 	})
 }
 
