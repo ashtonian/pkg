@@ -85,7 +85,8 @@ type pathSet struct {
 // ** for zero or more), MaxOperations DefaultMaxOperations and
 // MaxRelationValues DefaultMaxRelationValues. It refuses a
 // key whose token holds * among other characters, a nil path schema and an
-// unknown operation.
+// unknown operation. The schema keeps copies of paths' path schemas, so
+// changing one after the call changes nothing the schema parses.
 func NewPatchSchema(resource string, paths map[string]*PathSchema) (*PatchSchema, error) {
 	s := &PatchSchema{Resource: resource, MaxOperations: DefaultMaxOperations, MaxRelationValues: DefaultMaxRelationValues}
 	set := &pathSet{byKey: make(map[string]*PathSchema, len(paths))}
@@ -103,9 +104,9 @@ func NewPatchSchema(resource string, paths map[string]*PathSchema) (*PatchSchema
 	return s, nil
 }
 
-// AddPath adds a path to the schema, checked as NewPatchSchema checks one;
-// a key the schema already has is refused. Parses that start after it see
-// the path, and none sees a partial change.
+// AddPath adds a copy of ps to the schema under key, checked as
+// NewPatchSchema checks a path; a key the schema already has is refused.
+// Parses that start after it see the path, and none sees a partial change.
 func (s *PatchSchema) AddPath(key string, ps *PathSchema) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -258,7 +259,9 @@ func (set *pathSet) add(key string, ps *PathSchema) error {
 	if err != nil {
 		return err
 	}
-	set.byKey[key] = ps
+	// The schema is safe for concurrent use only while nothing outside it
+	// can change what it parses with.
+	set.byKey[key] = ps.clone()
 	if pattern.isWildcard() {
 		set.patterns = append(set.patterns, pattern)
 	}

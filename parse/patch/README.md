@@ -29,7 +29,9 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 
 | File | Responsibility |
 |------|----------------|
+| `doc.go` | Package documentation |
 | `patch.go` | `Parser` — RFC 6902 validation and value normalization |
+| `document.go` | The two forms an operation's value is held in (normalized to its Go type, or the decoded JSON document) and their ownership: a value is the operation's own, copied from the caller's and bounded at `maxDocumentDepth`; an untyped array path's elements |
 | `merge.go` | `ParseMergePatch` — RFC 7396 |
 | `apply.go` | `Applier` — a parsed patch applied to a Go value: direct field sets, or T's JSON document, written to a working copy that copies each embedded parent before writing through it; `CheckSchema` refuses a path through an unexported embedded pointer, whose parent the copy can neither allocate nor copy; `ErrUnparsed` |
 | `apply_jsonpatch.go` | RFC 6902 runs through json-patch with one copy budget, and its empty-key escape |
