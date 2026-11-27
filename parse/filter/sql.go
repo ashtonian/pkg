@@ -184,24 +184,28 @@ type Dialect interface {
 
 	// The SQL a patch writes, documented method by method where patch
 	// consumes it (patch.SQLDialect, patch.RelationDialect): a changed
-	// column's condition, an RFC 7396 merge, a native array append, a JSON
-	// document member's read, set, removal and preconditions, and the rows
-	// a pair table's insert reads when no target table holds its values.
-	ChangedCondition(column, expr string, t core.TypeInfo) string
+	// column's condition, written whole or by its members, an RFC 7396
+	// merge, a native array append, a JSON document member's read, set,
+	// removal and preconditions, and the rows a pair table's insert reads
+	// when no target table holds its values.
+	ChangedCondition(column, expr string, t core.TypeInfo) (string, error)
+	ChangedDocumentCondition(column, doc string) (string, error)
 	MergePatch(doc string, storage core.SQLType, patch map[string]any, bind func(any) string) (string, error)
 	ArrayAppend(array string, element any, bind func(any) string) (string, error)
-	MemberDocument(expr string) string
-	SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) string
-	RemoveMember(doc string, member []string, bind func(any) string) string
-	HasMember(doc string, member []string, bind func(any) string) string
-	IsObject(doc string, member []string, bind func(any) string) string
-	RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *dialect.PairTenant, bind func(any) string) (dialect.PairRows, error)
+	MemberDocument(expr string) (string, error)
+	SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) (string, error)
+	RemoveMember(doc string, member []string, bind func(any) string) (string, error)
+	HasMember(doc string, member []string, bind func(any) string) (string, error)
+	IsObject(doc string, member []string, bind func(any) string) (string, error)
+	RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *core.PairTenant, bind func(any) string) (core.PairRows, error)
 
 	// StoresAsText reports whether the database stores a value of type t,
 	// in a column declared no JSON type, as text a row scan decodes rather
-	// than the driver's own value: on SQLite a timestamp as its canonical
-	// text (core.FormatTimestamp), a document or an array as JSON.
-	// parse.RowScanner decodes what it reports; MarshalValue writes it.
+	// than the driver's own value. A scan decodes two such texts: a
+	// timestamp's canonical text (core.FormatTimestamp) and a document's or
+	// an array's JSON, as SQLite stores them and MarshalValue writes them.
+	// parse.RowScanner refuses a dialect reporting true for any other type
+	// a field the driver cannot scan itself holds.
 	StoresAsText(t core.FieldType) bool
 }
 

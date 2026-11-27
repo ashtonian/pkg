@@ -69,7 +69,7 @@ Both are read by `modernc.org/sqlite` and `mattn/go-sqlite3`.
 
 ## External Dependencies
 
-`database/sql` and a SQLite driver the caller registers. Plans that compare decimals or decide geo predicates need the functions [`parsesqlite`](../parsesqlite/README.md) registers.
+`database/sql` and a SQLite driver the caller registers, running at least the release [supported SQLite](../parsesqlite/README.md#supported-sqlite) names. Plans that compare decimals or decide geo predicates need the functions [`parsesqlite`](../parsesqlite/README.md) registers, and its registration refuses a connection to an older SQLite; on another driver, call `parsesqlite.CheckVersion` from its connection hook.
 
 ## API Reference
 

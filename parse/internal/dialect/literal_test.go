@@ -26,17 +26,19 @@ func TestSQLiteJSONPath(t *testing.T) {
 	}
 }
 
-func TestStringLiteral(t *testing.T) {
+func TestQuoteLiteral(t *testing.T) {
 	for _, tt := range []struct {
-		name, s, want string
+		name, s, postgres, sqlite string
 	}{
-		{"empty", "", `''`},
-		{"plain", "a", `'a'`},
-		{"single quotes", "it's ''", `'it''s '''''`},
-		{"a backslash and a double quote", `a\"b`, `'a\"b'`},
+		{"empty", "", `''`, `''`},
+		{"plain", "a", `'a'`, `'a'`},
+		{"single quotes", "it's ''", `'it''s '''''`, `'it''s '''''`},
+		{"a double quote", `a"b`, `'a"b'`, `'a"b'`},
+		{"a backslash and a single quote", `a\'b\\`, `E'a\\''b\\\\'`, `'a\''b\\'`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, StringLiteral(tt.s))
+			assert.Equal(t, tt.postgres, Postgres{}.QuoteLiteral(tt.s))
+			assert.Equal(t, tt.sqlite, SQLite{}.QuoteLiteral(tt.s))
 		})
 	}
 }

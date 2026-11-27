@@ -125,7 +125,7 @@ All known codes describe permanent failures and are listed below; retry and cata
 | E2066 | 422 | Too many patch operations |
 | E2067 | 422 | Malformed or unsupported list parameter, a list parameter given twice, or a query string that does not decode |
 | E2068 | 422 | `test` cannot compile to SQL |
-| E2070 | 422 | Patch operation cannot compile to SQL (move, copy, nested path, `array_append` on a document) |
+| E2070 | 422 | Patch operation cannot compile to SQL (move, copy, nested path, `array_append` on a document, or what the dialect refuses to write, test or compare) |
 | E2071 | 422 | Unknown filter field |
 | E2072 | 422 | Operator not allowed |
 | E2073 | 422 | Value does not fit the field |

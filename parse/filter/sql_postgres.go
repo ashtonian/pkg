@@ -534,11 +534,11 @@ func pgGeography(d dialect.Dialect, field *FieldSchema) string {
 }
 
 // pgJSONBPoint builds the point geometry of a JSONB {lat, lon} column, each
-// key a string literal (dialect.StringLiteral).
+// key a string literal (QuoteLiteral).
 func pgJSONBPoint(d dialect.Dialect, field *FieldSchema) string {
 	latKey, lonKey := geoKeys(field)
 	return fmt.Sprintf("ST_SetSRID(ST_MakePoint((%s->>%s)::float8, (%s->>%s)::float8), 4326)",
-		field.sql(d), dialect.StringLiteral(lonKey), field.sql(d), dialect.StringLiteral(latKey))
+		field.sql(d), d.QuoteLiteral(lonKey), field.sql(d), d.QuoteLiteral(latKey))
 }
 
 // MarshalValue serializes a value for PostgreSQL parameter binding.
@@ -693,7 +693,7 @@ func (d PostgresDialect) elementRows(f *FieldSchema, alias string) string {
 	var array string
 	switch {
 	case f.Path != nil:
-		array = pgMember(pgPathDocument(d, f.Path), f.Path.Segments)
+		array = pgMember(d, pgPathDocument(d, f.Path), f.Path.Segments)
 	case f.DataType == core.FieldTypeArray:
 		return "unnest(" + f.sql(d) + ") AS " + alias + "(v)"
 	default:
@@ -795,7 +795,7 @@ func (d PostgresDialect) PathExpr(p *JSONPath, t core.FieldType) string {
 		return pgTypedMember(t, "jsonb_typeof("+v+")", "("+v+" #>> '{}')")
 	}
 	doc := pgPathDocument(d, p)
-	return pgTypedMember(t, "jsonb_typeof("+pgMember(doc, p.Segments)+")", "("+pgMemberText(doc, p.Segments)+")")
+	return pgTypedMember(t, "jsonb_typeof("+pgMember(d, doc, p.Segments)+")", "("+pgMemberText(d, doc, p.Segments)+")")
 }
 
 func (PostgresDialect) textKey(expr string) string { return expr + "::text" }

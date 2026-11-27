@@ -3,6 +3,7 @@ package patch
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -264,13 +265,17 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 	var changes []string
 	for _, col := range columns {
 		ops := columnOps[col]
-		expr, changeSchema, err := b.columnExpr(col, ops)
+		write, err := b.columnExpr(col, ops)
 		if err != nil {
 			return nil, err
 		}
-		b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: expr})
+		b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: write.expr})
 		if cfg.changePredicate {
-			changes = append(changes, changedSQL(dialect, dialect.QuoteIdent(col), expr, changeSchema))
+			changed, err := changedSQL(dialect, dialect.QuoteIdent(col), write)
+			if err != nil {
+				return nil, dialectError("change predicate", fieldPath(ops[0]), err)
+			}
+			changes = append(changes, changed)
 		}
 	}
 	var changePredicate string
@@ -318,17 +323,50 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 }
 
 // changedSQL is the null-safe condition, one or more terms to OR, that col
-// set to expr reads back other than it does (SQLDialect.ChangedCondition);
-// set to NULL, that col holds a value.
-func changedSQL(d SQLDialect, col, expr string, schema *PathSchema) string {
-	if expr == "NULL" {
-		return col + " IS NOT NULL"
+// written as w reads back other than it does: set to NULL, that col holds
+// a value.
+func changedSQL(d SQLDialect, col string, w columnWrite) (string, error) {
+	switch {
+	case w.members:
+		return d.ChangedDocumentCondition(col, w.expr)
+	case w.expr == "NULL":
+		return col + " IS NOT NULL", nil
 	}
 	var t core.TypeInfo
-	if schema != nil {
-		t = core.TypeInfo{Type: schema.DataType, SQLType: schema.SQLType}
+	if w.schema != nil {
+		t = core.TypeInfo{Type: w.schema.DataType, SQLType: w.schema.SQLType}
 	}
-	return d.ChangedCondition(col, expr, t)
+	return d.ChangedCondition(col, w.expr, t)
+}
+
+// dialectError is err, which the dialect returned rendering what of the
+// operation at path: a refusal (SQLDialect) as that path's E2070, anything
+// else wrapped with what and path.
+func dialectError(what, path string, err error) error {
+	if !errors.Is(err, core.CodeOpNotSQLCompilable) {
+		return fmt.Errorf("%s for %s: %w", what, path, err)
+	}
+	why := err.Error()
+	var refusal *core.ParseError
+	if errors.As(err, &refusal) {
+		why = refusal.Message
+	}
+	pe := &core.ParseError{
+		Kind: core.ParseErrorKindPatch, Code: ECodeOpNotSQLCompilable.String(),
+		Message: what + " for " + path + ": " + why + " — apply via ApplyValidatedPatch",
+		Path:    path,
+		Cause:   err,
+	}
+	return pe
+}
+
+// fieldPath is the path of the field op writes, or a member of.
+func fieldPath(op *PatchOperation) string {
+	tokens, err := core.ParsePointer(op.Path)
+	if err != nil || len(tokens) == 0 {
+		return op.Path
+	}
+	return core.FormatPointer(tokens[0])
 }
 
 // serverColumns are the columns the server writes on every update: the
@@ -403,8 +441,16 @@ func checkSQLCompilable(op *PatchOperation) error {
 // returns its placeholder; a method binds in the order its SQL reads, so
 // SQL text and arguments are built together and cannot disagree. A member
 // is a JSON Pointer's tokens below the column, each an object member's
-// name, never an array index; doc is the expression MemberDocument
-// renders, or one SetMember or RemoveMember returned for it.
+// name, never an array index, and valid UTF-8 without U+0000, which
+// neither database holds in text: ParsePatch refuses a path holding it as
+// E2075 (core.CheckText). doc is the expression MemberDocument renders, or
+// one SetMember or RemoveMember returned for it.
+//
+// A method refuses what its database cannot write or test with a
+// *core.ParseError whose Code is core.CodeOpNotSQLCompilable and whose
+// Message says why: BuildPatchSQL reports it as the operation's E2070,
+// naming its path, so the patch can be applied with ApplyValidatedPatch
+// instead. Any other error is a failure to render the statement.
 type SQLDialect interface {
 	dialect.Dialect
 
@@ -416,12 +462,18 @@ type SQLDialect interface {
 	MarshalValue(value any, t core.TypeInfo) (any, error)
 
 	// ChangedCondition is the null-safe condition, one or more terms to
-	// OR, that column set to expr reads back other than it does; t is the
-	// column's type and declared storage as the patch's path declares
-	// them. expr is never the NULL literal. A false "changed" costs a
-	// write, a false "unchanged" drops one, so a type whose equality is
-	// coarser than what a read returns compares by that.
-	ChangedCondition(column, expr string, t core.TypeInfo) string
+	// OR, that column, written whole, set to expr reads back other than it
+	// does; t is the column's type and declared storage as the patch's
+	// path declares them. expr is never the NULL literal. A false
+	// "changed" costs a write, a false "unchanged" drops one, so a type
+	// whose equality is coarser than what a read returns compares by that.
+	ChangedCondition(column, expr string, t core.TypeInfo) (string, error)
+	// ChangedDocumentCondition is ChangedCondition for a JSON document
+	// column whose members the patch writes over the stored document:
+	// doc is the document the member methods built from MemberDocument's,
+	// so it has the type MemberDocument reads the column as, whatever JSON
+	// type, or text, the column is declared.
+	ChangedDocumentCondition(column, doc string) (string, error)
 
 	// MergePatch merges the RFC 7396 patch object into the JSON document
 	// doc, stored as storage: patch members replace, nested objects merge,
@@ -436,18 +488,18 @@ type SQLDialect interface {
 
 	// MemberDocument is the JSON document column expression expr holds,
 	// as the member methods read and write it.
-	MemberDocument(expr string) string
+	MemberDocument(expr string) (string, error)
 	// SetMember sets member of doc to value, a JSON text, whether or not
 	// the member exists; its parent must be an object, which a
 	// precondition holds the row to (IsObject).
-	SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) string
+	SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) (string, error)
 	// RemoveMember removes member from doc.
-	RemoveMember(doc string, member []string, bind func(any) string) string
+	RemoveMember(doc string, member []string, bind func(any) string) (string, error)
 	// HasMember is true of a row whose doc holds member, and never NULL.
-	HasMember(doc string, member []string, bind func(any) string) string
+	HasMember(doc string, member []string, bind func(any) string) (string, error)
 	// IsObject is true of a row whose doc's member, or doc itself when
 	// member is empty, is an object, and never NULL.
-	IsObject(doc string, member []string, bind func(any) string) string
+	IsObject(doc string, member []string, bind func(any) string) (string, error)
 }
 
 // setBuilder accumulates SET clauses and their bound arguments. Placeholders
@@ -470,26 +522,38 @@ func (b *setBuilder) bind(v any) string {
 	return ph
 }
 
+// columnWrite is what one column's operations fold to: the expression the
+// SET clause assigns, and what the change predicate compares the column
+// with it as.
+type columnWrite struct {
+	expr string
+	// schema is the path schema of a column written whole, which it is
+	// compared as (SQLDialect.ChangedCondition). members marks a document
+	// whose members are written over the stored one, compared as such
+	// (SQLDialect.ChangedDocumentCondition).
+	schema  *PathSchema
+	members bool
+}
+
 // columnExpr folds one column's ordered operations into a single SQL
-// expression, and returns the path schema its change predicate compares the
-// column as. A merge patch writes a column with one operation, the only kind
+// expression. A merge patch writes a column with one operation, the only kind
 // that merges, so a merge compiles against the stored column. Operations on
 // members of a document fold in documentExpr. Other JSON Patch operations
 // fold: the last whole-value operation (replace/add/remove) sets the base
 // and earlier ones are overwritten and never bound, and appends after it
 // fold onto its value in Go, so one value is bound; appends with no base
 // compile against the stored column.
-func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, *PathSchema, error) {
+func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (columnWrite, error) {
 	last := ops[len(ops)-1].Schema
 	if slices.ContainsFunc(ops, func(op *PatchOperation) bool { return op.Merge }) {
 		if len(ops) != 1 {
-			return "", nil, fmt.Errorf("patch: column %s: a merge shares its column with another operation, which no parser produces", col)
+			return columnWrite{}, fmt.Errorf("patch: column %s: a merge shares its column with another operation, which no parser produces", col)
 		}
 		expr, err := mergeSQL(b.dialect, b.dialect.QuoteIdent(col), ops[0].Schema.SQLType, ops[0].Value, b.bind)
 		if err != nil {
-			return "", nil, fmt.Errorf("%s for %s: %w", ops[0].Op, ops[0].Path, err)
+			return columnWrite{}, dialectError(string(ops[0].Op), ops[0].Path, err)
 		}
-		return expr, last, nil
+		return columnWrite{expr: expr, schema: last}, nil
 	}
 	if slices.ContainsFunc(ops, func(op *PatchOperation) bool { return len(memberTokens(op)) > 0 }) {
 		return b.documentExpr(col, ops)
@@ -511,7 +575,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, *Pat
 				Message: fmt.Sprintf("array_append on %s (a %s field) compiles to SQL only for native array columns — apply via ApplyValidatedPatch", op.Path, op.Schema.DataType),
 				Path:    op.Path,
 			}
-			return "", nil, notNative
+			return columnWrite{}, notNative
 		}
 	}
 	if start < 0 {
@@ -519,10 +583,10 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, *Pat
 		for _, op := range later {
 			var err error
 			if expr, err = b.dialect.ArrayAppend(expr, op.Value, b.bind); err != nil {
-				return "", nil, fmt.Errorf("%s for %s: %w", op.Op, op.Path, err)
+				return columnWrite{}, dialectError(string(op.Op), op.Path, err)
 			}
 		}
-		return expr, last, nil
+		return columnWrite{expr: expr, schema: last}, nil
 	}
 
 	base := ops[start]
@@ -532,20 +596,20 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, *Pat
 		if value != nil {
 			arr, ok := core.AnySlice(value)
 			if !ok {
-				return "", nil, fmt.Errorf("array append for %s: base value is %s, not an array", base.Path, gowalker.TypeText(reflect.TypeOf(value)))
+				return columnWrite{}, fmt.Errorf("array append for %s: base value is %s, not an array", base.Path, gowalker.TypeText(reflect.TypeOf(value)))
 			}
 			elems = slices.Clone(arr)
 		}
 		value = append(elems, op.Value)
 	}
 	if value == nil {
-		return "NULL", last, nil
+		return columnWrite{expr: "NULL", schema: last}, nil
 	}
 	val, err := marshalIfComplex(value, base.Schema, b.dialect)
 	if err != nil {
-		return "", nil, fmt.Errorf("marshaling value for %s: %w", base.Path, err)
+		return columnWrite{}, fmt.Errorf("marshaling value for %s: %w", base.Path, err)
 	}
-	return b.bind(val), last, nil
+	return columnWrite{expr: b.bind(val), schema: last}, nil
 }
 
 // mergeSQL merges an RFC 7396 patch object into the JSON document expr,

@@ -8,25 +8,21 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // ChangedCondition is column IS DISTINCT FROM expr and, where a type's
 // equality is coarser than the text a read returns, their texts compared
 // under "C" collation: a document by its canonical jsonb text, a decimal
 // by value alone.
-func (PostgresDialect) ChangedCondition(column, expr string, t core.TypeInfo) string {
+func (PostgresDialect) ChangedCondition(column, expr string, t core.TypeInfo) (string, error) {
 	switch {
 	case t.SQLType == core.SQLJSON:
-		// json has no equality operator, and jsonb's text is canonical:
-		// key order and whitespace do not count, a number's written form
-		// does. The cast to json types the placeholder as the column.
-		return column + `::jsonb::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::json::jsonb::text"
+		return pgDocumentChanged(column, expr), nil
 	case t.Type == core.FieldTypeDecimal:
 		// A decimal's value has no scale (core.DecimalText binds 1.50 as
 		// 1.5), and a numeric(p,s) column pads every value to s: its text
 		// would differ from the bound value's on every write.
-		return column + " IS DISTINCT FROM " + expr
+		return column + " IS DISTINCT FROM " + expr, nil
 	}
 	// A type's equality can be coarser than the text a read returns — an
 	// interval's units, a float's zero sign, citext, a nondeterministic
@@ -34,7 +30,22 @@ func (PostgresDialect) ChangedCondition(column, expr string, t core.TypeInfo) st
 	// goes first because PostgreSQL types a placeholder at its first use and
 	// the WHERE precedes the SET clause: it types the placeholder as the
 	// column (an enum, a domain), where a first use as text would not.
-	return column + " IS DISTINCT FROM " + expr + " OR " + column + `::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::text"
+	return column + " IS DISTINCT FROM " + expr + " OR " + column + `::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::text", nil
+}
+
+// ChangedDocumentCondition compares the column and the jsonb document the
+// member methods built by their canonical jsonb text, whatever JSON type
+// the column declares.
+func (PostgresDialect) ChangedDocumentCondition(column, doc string) (string, error) {
+	return pgDocumentChanged(column, doc), nil
+}
+
+// pgDocumentChanged compares a document column with expr as documents. json
+// has no equality operator, and jsonb's text is canonical: key order and
+// whitespace do not count, a number's written form does. The cast to json
+// types a placeholder as the column.
+func pgDocumentChanged(column, expr string) string {
+	return column + `::jsonb::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::json::jsonb::text"
 }
 
 // MergePatch compiles the merge level by level over jsonb (pgMerge):
@@ -128,34 +139,36 @@ func (PostgresDialect) ArrayAppend(array string, element any, bind func(any) str
 
 // MemberDocument reads expr as jsonb, whatever JSON type its column
 // declares: jsonb_set, #- and #> take jsonb.
-func (PostgresDialect) MemberDocument(expr string) string { return expr + "::jsonb" }
+func (PostgresDialect) MemberDocument(expr string) (string, error) { return expr + "::jsonb", nil }
 
 // SetMember is jsonb_set, which creates a missing last member: the
 // member's path bound as text[], its value as jsonb.
-func (PostgresDialect) SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) string {
+func (PostgresDialect) SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) (string, error) {
 	path := pgMemberPath(member, bind)
-	return "jsonb_set(" + doc + ", " + path + ", " + bind(string(value)) + "::jsonb, true)"
+	return "jsonb_set(" + doc + ", " + path + ", " + bind(string(value)) + "::jsonb, true)", nil
 }
 
 // RemoveMember is #-, the member's path bound as text[].
-func (PostgresDialect) RemoveMember(doc string, member []string, bind func(any) string) string {
-	return "(" + doc + " #- " + pgMemberPath(member, bind) + ")"
+func (PostgresDialect) RemoveMember(doc string, member []string, bind func(any) string) (string, error) {
+	return "(" + doc + " #- " + pgMemberPath(member, bind) + ")", nil
 }
 
 // HasMember reads the member with #>, NULL where it is missing.
-func (PostgresDialect) HasMember(doc string, member []string, bind func(any) string) string {
-	return "((" + doc + " #> " + pgMemberPath(member, bind) + ") IS NOT NULL)"
+func (PostgresDialect) HasMember(doc string, member []string, bind func(any) string) (string, error) {
+	return "((" + doc + " #> " + pgMemberPath(member, bind) + ") IS NOT NULL)", nil
 }
 
 // IsObject is jsonb_typeof of the member, read with #>.
-func (PostgresDialect) IsObject(doc string, member []string, bind func(any) string) string {
+func (PostgresDialect) IsObject(doc string, member []string, bind func(any) string) (string, error) {
 	if len(member) > 0 {
 		doc = "(" + doc + " #> " + pgMemberPath(member, bind) + ")"
 	}
-	return "COALESCE(jsonb_typeof(" + doc + ") = 'object', FALSE)"
+	return "COALESCE(jsonb_typeof(" + doc + ") = 'object', FALSE)", nil
 }
 
 // pgMemberPath binds member as the text[] path #>, #- and jsonb_set take.
+// No token holds U+0000, which a text element cannot: patch refuses one
+// where it parses the path.
 func pgMemberPath(member []string, bind func(any) string) string {
 	return bind(slices.Clone(member)) + "::text[]"
 }
@@ -167,12 +180,12 @@ func pgMemberPath(member []string, bind func(any) string) string {
 // column's type (a string key of a uuid column). A record's member is the
 // column's exact name, the name the quoted column reads. The tenant is a
 // member of each owner record.
-func (d PostgresDialect) RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *dialect.PairTenant, bind func(any) string) (dialect.PairRows, error) {
+func (d PostgresDialect) RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *core.PairTenant, bind func(any) string) (core.PairRows, error) {
 	var tenantValue any
 	if tenant != nil {
 		v, err := tenant.Record()
 		if err != nil {
-			return dialect.PairRows{}, fmt.Errorf("tenant: %w", err)
+			return core.PairRows{}, fmt.Errorf("tenant: %w", err)
 		}
 		tenantValue = v
 	}
@@ -195,13 +208,13 @@ func (d PostgresDialect) RelationRows(rel *core.RelationSchema, owners, values [
 	}
 	ownersJSON, err := json.Marshal(ownerRows)
 	if err != nil {
-		return dialect.PairRows{}, err
+		return core.PairRows{}, err
 	}
 	valuesJSON, err := json.Marshal(valueRows)
 	if err != nil {
-		return dialect.PairRows{}, err
+		return core.PairRows{}, err
 	}
-	rows := dialect.PairRows{Sources: make([]string, len(rel.SourceColumns)), Targets: make([]string, len(rel.TargetColumns))}
+	rows := core.PairRows{Sources: make([]string, len(rel.SourceColumns)), Targets: make([]string, len(rel.TargetColumns))}
 	for i, c := range rel.SourceColumns {
 		rows.Sources[i] = qualified(d, "o", c)
 	}

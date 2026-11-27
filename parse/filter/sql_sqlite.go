@@ -543,7 +543,7 @@ func sqliteHasKey(expr, key string, bind func(any) string) string {
 // read an object's members, or a scalar as one row.
 func (d SQLiteDialect) elementRows(f *FieldSchema, alias string) string {
 	if p := f.Path; p != nil {
-		path := sqlitePathLiteral(p.Segments)
+		path := sqlitePathLiteral(d, p.Segments)
 		doc := p.document(d)
 		return "json_each(CASE WHEN json_type(" + doc + ", " + path + ") = 'array' THEN " + doc + " END, " + path + ") AS " + alias
 	}

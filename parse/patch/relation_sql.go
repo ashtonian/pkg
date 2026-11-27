@@ -9,7 +9,6 @@ import (
 
 	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // RenderedRelationStatement is one DELETE or INSERT emitted for a
@@ -247,9 +246,10 @@ type RelationDialect interface {
 	// each set bound as one parameter whatever its size, and each key read
 	// back as its column's type. tenant, when not nil, is the tenant of
 	// rel.TenantColumn every pair is written for. The result names what
-	// the select list writes each column from, and the conditions the
-	// statement's own are ANDed after.
-	RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *dialect.PairTenant, bind func(any) string) (dialect.PairRows, error)
+	// the select list writes each column from, which the statement repeats
+	// (core.PairRows), and the conditions the statement's own are ANDed
+	// after.
+	RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *core.PairTenant, bind func(any) string) (core.PairRows, error)
 }
 
 // relationRenderer renders one membership change's statements.
@@ -372,10 +372,10 @@ func (r relationRenderer) insert() (RenderedRelationStatement, error) {
 	var sb strings.Builder
 	sb.WriteString("INSERT INTO " + q(rel.JoinTable) + " (" + cols + ") SELECT ")
 	if rel.TargetTable == "" {
-		var tenant *dialect.PairTenant
+		var tenant *core.PairTenant
 		if r.hasTenant {
 			value := r.opts.TenantValue
-			tenant = &dialect.PairTenant{Value: value, Record: func() (any, error) { return tenantScalar(value) }}
+			tenant = &core.PairTenant{Value: value, Record: func() (any, error) { return tenantScalar(value) }}
 		}
 		rows, err := r.d.RelationRows(rel, r.owners, r.values, tenant, s.bind)
 		if err != nil {

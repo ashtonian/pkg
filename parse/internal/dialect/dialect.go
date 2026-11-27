@@ -1,10 +1,9 @@
 // Package dialect is the SQL dialect kind parse compiles for: the
-// placeholder and identifier rules of PostgreSQL and SQLite, and the values
-// filter's dialects hand patch (PairRows, PairTenant). filter's dialects
-// embed a kind and add their SQL as methods, which filter.Dialect and the
-// interfaces patch consumes name: SQL differs by database only there, and
-// a dialect's Kind decides nothing but which type filter.DialectFromDSN
-// builds.
+// placeholder, identifier and literal rules of PostgreSQL and SQLite.
+// filter's dialects embed a kind and add their SQL as methods, which
+// filter.Dialect and the interfaces patch consumes name: SQL differs by
+// database only there, and a dialect's Kind decides nothing but which type
+// filter.DialectFromDSN builds.
 //
 // The set is closed. Dialect has an unexported method, so only this
 // package's Postgres and SQLite, and the types embedding them, implement
@@ -35,6 +34,10 @@ type Dialect interface {
 	// QuoteIdent quotes an identifier with double quotes, doubling any
 	// quote inside it.
 	QuoteIdent(name string) string
+	// QuoteLiteral quotes s as a string literal that reads as s whatever
+	// the session's settings, for text a statement writes rather than
+	// binds: a JSON path's member names.
+	QuoteLiteral(s string) string
 	// MaxParams is the most parameters one statement binds.
 	MaxParams() int
 

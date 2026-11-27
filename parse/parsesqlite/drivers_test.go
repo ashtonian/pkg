@@ -6,28 +6,28 @@ import (
 	"database/sql"
 	"os"
 	"regexp"
-	"slices"
-	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
+
+	"github.com/ashtonian/pkg/parse/parsesqlite"
 )
 
 // sqliteMinimum is the supported SQLite release as the README states it.
 var sqliteMinimum = regexp.MustCompile(`need \*\*SQLite (\d+\.\d+\.\d+)\*\* or later`)
 
 // The driver this module requires runs a SQLite at least as new as the
-// README's minimum, and every construct the README says the minimum is for:
-// a driver bump that went below it, or a minimum raised past it, fails here.
+// minimum the README states and CheckVersion enforces, and every construct
+// the README says the minimum is for: a driver bump that went below it, or a
+// minimum raised past it, fails here.
 func TestDriver_MeetsTheSQLiteMinimum(t *testing.T) {
 	readme, err := os.ReadFile("README.md")
 	require.NoError(t, err)
 	stated := sqliteMinimum.FindSubmatch(readme)
 	require.NotNil(t, stated, "README.md states the SQLite minimum as %s", sqliteMinimum)
-	minimum := versionParts(t, string(stated[1]))
+	assert.Equal(t, parsesqlite.MinSQLiteVersion, string(stated[1]), "the README states the minimum CheckVersion enforces")
 
 	queries := []struct {
 		name, query, want string
@@ -37,6 +37,8 @@ func TestDriver_MeetsTheSQLiteMinimum(t *testing.T) {
 		{"window function", `SELECT row_number() OVER (ORDER BY k) FROM probe`, "1"},
 		{"NULLS FIRST", `SELECT k IS NULL FROM (SELECT k FROM probe UNION ALL SELECT NULL) ORDER BY k NULLS FIRST LIMIT 1`, "1"},
 		{"the -> operator", `SELECT '{"a":[1, 2]}' -> '$.a'`, "[1,2]"},
+		{"a label compared as decoded", `SELECT json_extract('{"a\u003cb":1}', '$."a<b"')`, "1"},
+		{"an escaped double quote in a label", `SELECT json_set('{"x\".y":1}', '$."x\".y"', 2)`, `{"x\".y":2}`},
 	}
 	db, err := sql.Open("sqlite", ":memory:")
 	require.NoError(t, err)
@@ -45,8 +47,7 @@ func TestDriver_MeetsTheSQLiteMinimum(t *testing.T) {
 
 	var version string
 	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT sqlite_version()`).Scan(&version))
-	assert.GreaterOrEqual(t, slices.Compare(versionParts(t, version), minimum), 0,
-		"modernc.org/sqlite runs SQLite %s, below the stated minimum %s", version, stated[1])
+	require.NoError(t, parsesqlite.CheckVersion(version), "modernc.org/sqlite")
 
 	_, err = db.ExecContext(t.Context(), `CREATE TABLE probe (k INTEGER PRIMARY KEY)`)
 	require.NoError(t, err)
@@ -63,17 +64,4 @@ func TestDriver_MeetsTheSQLiteMinimum(t *testing.T) {
 		require.NoError(t, err, q.name)
 		assert.Equal(t, q.want, got, q.name)
 	}
-}
-
-// versionParts is a dotted SQLite version as its numbers.
-func versionParts(t *testing.T, version string) []int {
-	t.Helper()
-	fields := strings.Split(version, ".")
-	parts := make([]int, len(fields))
-	for i, f := range fields {
-		n, err := strconv.Atoi(f)
-		require.NoError(t, err, "version %q", version)
-		parts[i] = n
-	}
-	return parts
 }
