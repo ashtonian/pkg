@@ -1,6 +1,6 @@
-//go:build unit || integration
+//go:build integration
 
-package filter_test
+package corpus
 
 import (
 	"database/sql"
@@ -13,8 +13,38 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/ordertest"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 )
+
+// Every ordertest case's values, each held in the column type its case
+// names for the engine, order, seek and facet in the case's order.
+func canonicalOrder(t *testing.T, engine Engine) {
+	runOn(t, engine, func(t *testing.T, b sqlBackend) {
+		columnType := func(c ordertest.Case) string { return c.Postgres }
+		if b.engine == SQLite {
+			columnType = func(c ordertest.Case) string { return c.SQLite }
+		}
+		runCanonicalOrderSQL(t, b.db(t), b.dialect, ordertest.Cases(), columnType)
+	})
+}
+
+// The SQLite driver scans a column declared DATE, DATETIME or TIMESTAMP
+// into a time.Time; such a column holds its type's order and cursors as
+// a TEXT column does.
+func canonicalOrderSQLiteTimeColumns(t *testing.T, engine Engine) {
+	declared := map[string]string{"date": "DATE", "timestamp": "TIMESTAMP"}
+	var cases []ordertest.Case
+	for _, c := range ordertest.Cases() {
+		_, ok := declared[c.Name]
+		if ok {
+			cases = append(cases, c)
+		}
+	}
+	b := sqlBackendOf(engine)
+	runCanonicalOrderSQL(t, b.db(t), b.dialect, cases, func(c ordertest.Case) string { return declared[c.Name] })
+}
 
 // runCanonicalOrderSQL stores each case's values in a column of its type
 // (columnType) and holds the database to the case's order: a key column's ORDER BY
@@ -55,7 +85,7 @@ func runCanonicalOrderSQL(t *testing.T, db *sql.DB, d filter.Dialect, cases []or
 			// holding the value the database holds.
 			key := filter.CursorKey{Name: "v", Table: table, Column: "v", DataType: c.Type.Type, NumberKind: c.Type.NumberKind, Nullable: true, Direction: filter.SortAsc}
 			for id, raw := range scannedValues(t, db, "SELECT id, "+d.ReadColumn(column, readType(c.Type))+" FROM "+table+" WHERE v IS NOT NULL") {
-				resumed := resumeKeyValue(t, key, raw)
+				resumed := parsetest.ResumeKeyValue(t, key, raw)
 				got, err := filter.CompareKeyValues(key, resumed, held[id])
 				require.NoError(t, err, "%#v resumed as %#v", raw, resumed)
 				assert.Zero(t, got, "%#v resumed as %#v", raw, resumed)
@@ -72,12 +102,7 @@ func runCanonicalOrderSQL(t *testing.T, db *sql.DB, d filter.Dialect, cases []or
 				schema := &filter.ResourceSchema{Name: table, Fields: map[string]*filter.FieldSchema{"v": field}}
 				q, err := filter.BuildFacetQuery(schema, d, "1=1", nil, []filter.FacetRequest{{Field: "v", Limit: len(c.Values)}})
 				require.NoError(t, err)
-				rows, err := db.QueryContext(ctx, q.SQL, q.Args...)
-				require.NoError(t, err)
-				defer func() { require.NoError(t, rows.Close()) }()
-				results, err := filter.ScanFacetUnion(rows)
-				require.NoError(t, err)
-				require.NoError(t, rows.Err())
+				results := queryFacets(t, db, q.SQL, q.Args...)
 				require.Len(t, results, 1)
 
 				counts := map[string]int64{}
@@ -115,7 +140,7 @@ func runSeeks(t *testing.T, db *sql.DB, d filter.Dialect, table string, c ordert
 	id := filter.CursorKey{Name: "id", Table: table, Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64, Direction: filter.SortAsc}
 	for _, reverse := range []bool{false, true} {
 		for i := 0; i <= null; i++ {
-			v := resumeKeyValue(t, key, scanned[i])
+			v := parsetest.ResumeKeyValue(t, key, scanned[i])
 			got := seekIDs(t, db, d, table, "", []filter.CursorKey{key}, &filter.PageToken{
 				Fields:  []filter.CursorField{{Name: key.Name, Value: v, Direction: key.Direction}},
 				Reverse: reverse,
@@ -161,31 +186,13 @@ func seekIDs(t *testing.T, db *sql.DB, d filter.Dialect, table, where string, ke
 	seek, err := filter.SeekPredicate(d, keys, token, bind)
 	require.NoError(t, err)
 	query := "SELECT id FROM " + table + " WHERE " + where + seek + " " + filter.OrderByKeys(d, keys, token.Reverse)
-	rows, err := db.QueryContext(t.Context(), query, args...)
-	require.NoError(t, err, query)
-	defer func() { _ = rows.Close() }()
-	var ids []int
-	for rows.Next() {
-		var id int
-		require.NoError(t, rows.Scan(&id))
-		ids = append(ids, id)
-	}
-	require.NoError(t, rows.Err())
-	return ids
+	return dbtest.QueryRows[int](t, db, query, args...)
 }
 
+// orderedIDs is the ids query selects, in its order: one row at least.
 func orderedIDs(t *testing.T, db *sql.DB, query string) []int {
 	t.Helper()
-	rows, err := db.QueryContext(t.Context(), query)
-	require.NoError(t, err, query)
-	defer func() { _ = rows.Close() }()
-	var ids []int
-	for rows.Next() {
-		var id int
-		require.NoError(t, rows.Scan(&id))
-		ids = append(ids, id)
-	}
-	require.NoError(t, rows.Err())
+	ids := dbtest.QueryRows[int](t, db, query)
 	require.NotEmpty(t, ids, query)
 	return ids
 }
@@ -219,18 +226,4 @@ func readType(t core.TypeInfo) core.SQLType {
 	}
 	implied, _ := core.ImpliedSQLType(t)
 	return implied
-}
-
-// resumeKeyValue is the value a cursor minted at raw resumes from: raw's
-// KeyValue, encoded, decoded and validated against key.
-func resumeKeyValue(t *testing.T, key filter.CursorKey, raw any) any {
-	t.Helper()
-	v, err := filter.KeyValue(key, raw)
-	require.NoError(t, err, "%#v", raw)
-	encoded, err := filter.EncodeCursor(&filter.PageToken{Fields: []filter.CursorField{{Name: key.Name, Value: v, Direction: key.Direction}}})
-	require.NoError(t, err, "%#v", raw)
-	token, err := filter.DecodeCursor(encoded)
-	require.NoError(t, err, "%#v", raw)
-	require.NoError(t, filter.ValidateCursor(token, []filter.CursorKey{key}), "%#v minted %#v", raw, v)
-	return token.Fields[0].Value
 }

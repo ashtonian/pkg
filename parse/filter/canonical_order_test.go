@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/ordertest"
 )
 
@@ -48,25 +47,6 @@ func TestCanonicalOrder_Readers(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestCanonicalOrder_SQLite(t *testing.T) {
-	runCanonicalOrderSQL(t, dbtest.SQLite(t), filter.SQLiteDialect{}, ordertest.Cases(), func(c ordertest.Case) string { return c.SQLite })
-}
-
-// The SQLite driver scans a column declared DATE, DATETIME or TIMESTAMP
-// into a time.Time; such a column holds its type's order and cursors as
-// a TEXT column does.
-func TestCanonicalOrder_SQLiteTimeColumns(t *testing.T) {
-	declared := map[string]string{"date": "DATE", "timestamp": "TIMESTAMP"}
-	var cases []ordertest.Case
-	for _, c := range ordertest.Cases() {
-		_, ok := declared[c.Name]
-		if ok {
-			cases = append(cases, c)
-		}
-	}
-	runCanonicalOrderSQL(t, dbtest.SQLite(t), filter.SQLiteDialect{}, cases, func(c ordertest.Case) string { return declared[c.Name] })
 }
 
 // holds reports whether op holds for a value ordered c against the
