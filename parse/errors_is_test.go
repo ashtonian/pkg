@@ -44,7 +44,8 @@ func TestParseError_IsByCode(t *testing.T) {
 	coded := core.NewError(filter.ECodeInvalidJSON, "", core.WithCause(cause))
 	assert.ErrorIs(t, coded, cause, "the cause stays reachable")
 	assert.ErrorIs(t, coded, filter.ECodeInvalidJSON)
-	assert.NotErrorIs(t, core.NewError("", ""), core.NewError("", ""), "an empty code matches nothing")
+	uncoded, alsoUncoded := core.NewError("", ""), core.NewError("", "")
+	assert.NotErrorIs(t, uncoded, alsoUncoded, "an empty code matches nothing")
 }
 
 // Each root sentinel is reached with errors.Is from the call that returns
