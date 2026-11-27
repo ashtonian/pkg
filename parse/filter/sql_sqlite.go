@@ -514,12 +514,6 @@ func (d SQLiteDialect) DecimalOrder(o DecimalOperand) string {
 	return decimals.SQLiteKeyFunc + "(" + operand + ")"
 }
 
-// rowValueSeeksExpressions is false: SQLite seeks a row value's index only
-// from a bare leading column. Led by an expression, such as a decimal's
-// parse_decimal_key(amount), the comparison scans the index from its start,
-// and so does the OR expansion over three keys or more.
-func (SQLiteDialect) rowValueSeeksExpressions() bool { return false }
-
 // codePointPair collates the operand: SQLite seeks an index only on a row
 // value's bare columns, and BINARY on the operand still overrides a column
 // declared NOCASE or RTRIM, an explicit collation outranking a column's.

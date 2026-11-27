@@ -99,6 +99,9 @@ func TestTypeOf_NullableWrapper(t *testing.T) {
 			assert.Equal(t, tt.member, core.MemberTypeOf(tt.typ), "member")
 		})
 	}
+	// pgtype.UUID is a wrapper whose value is a bare [16]byte, which is
+	// binary, not a UUID type: the README states the limit.
+	assert.Equal(t, core.TypeInfo{Type: core.FieldTypeAny}, core.TypeOf(reflect.TypeFor[pgtype.UUID]()), "pgtype.UUID")
 }
 
 func TestNormalizeJSON(t *testing.T) {
