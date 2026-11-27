@@ -163,16 +163,6 @@ func (kc keyColumns) compare(a, b Key) (int, error) {
 	return 0, nil
 }
 
-// order is the ORDER BY list that reads the key columns of table in
-// compare's order (filter.KeyOrder).
-func (kc keyColumns) order(d filter.Dialect, table string) string {
-	order := make([]string, len(kc.names))
-	for i, column := range kc.names {
-		order[i] = filter.KeyOrder(d, d.QuoteIdent(table)+"."+d.QuoteIdent(column), kc.types[i])
-	}
-	return strings.Join(order, ", ")
-}
-
 // checkKeyColumns refuses a key of no column, a key column listed twice,
 // one that is no column of model, and one of no scalar type
 // (core.IsKeyType), whose values have no equality to identify a row by.

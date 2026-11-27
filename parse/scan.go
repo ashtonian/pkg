@@ -104,7 +104,10 @@ func (r *Resource[T]) RowScanner(opts ...ScanOption) (*RowScanner[T], error) {
 // errors without the table, which the failure of the statement whose rows
 // it scans names (StatementError).
 func (r *resourceCore) rowRules(opts ...ScanOption) (rowRules, error) {
-	d := r.dialect
+	var d textStorage
+	if r.dialect != nil {
+		d = r.dialect
+	}
 	var cfg scanConfig
 	for _, opt := range opts {
 		opt(&cfg)
@@ -145,7 +148,8 @@ type textStorage interface {
 // rowDecodeOf is the rule for a field of type t: json when the column holds
 // JSON by declaration or by the result's own type; otherwise the driver's,
 // unless d stores t's values as text (Dialect.StoresAsText) and the driver
-// cannot scan into t. A scan decodes such text for a timestamp, a document
+// cannot scan into t. A nil d, a provider that compiles no SQL, stores
+// nothing as text. A scan decodes such text for a timestamp, a document
 // and an array alone, and refuses a dialect that stores another type so,
 // rather than hand its text to a driver that cannot read it into t.
 func rowDecodeOf(t reflect.Type, json bool, d textStorage) (rowDecode, error) {
@@ -157,7 +161,7 @@ func rowDecodeOf(t reflect.Type, json bool, d textStorage) (rowDecode, error) {
 	}
 	info := core.TypeOf(t)
 	switch {
-	case !d.StoresAsText(info.Type):
+	case d == nil || !d.StoresAsText(info.Type):
 		return decodeDriver, nil
 	case info.Type == core.FieldTypeTimestamp:
 		return decodeTimestamp, nil

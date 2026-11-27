@@ -96,18 +96,19 @@ type resourceCore struct {
 	view bool
 
 	// provider is the provider the resource was built on, and dialect its
-	// dialect, which every statement compiles for; conn is where the
-	// statements run: the provider's database, or a transaction (In).
+	// dialect, nil for one that compiles no SQL; exec runs the resource's
+	// requests: the provider's database, or a transaction it joined (In).
 	provider *Provider
 	dialect  filter.Dialect
-	conn     backend.Conn
+	exec     backend.Executor
+	// desc is the descriptor every request carries (backend.Resource),
+	// fixed at construction; a view's holds the view's filter schema.
+	desc *backend.Resource
 	// computedSQL is each computed column's parenthesized SQL for dialect,
-	// by column, and projection the Columns every statement selects,
-	// joined; both are fixed at construction.
+	// by column, fixed at construction.
 	computedSQL map[string]string
-	projection  string
-	// scanRules scan the rows of the resource's statements; a provider
-	// that reports a result's document columns gets rules built for them
+	// scanRules scan the rows the executor hands back; a provider that
+	// reports a result's document columns gets rules built for them
 	// (rulesFor).
 	scanRules rowRules
 }
@@ -195,7 +196,7 @@ func newResourceCore(p *Provider, table string, rowType reflect.Type, generate f
 		accepted:    slices.Clone(cfg.accepted),
 		provider:    p,
 		dialect:     p.dialect,
-		conn:        p.db,
+		exec:        p.db,
 	}
 	err := r.generateSchemas(parserOpts, generate)
 	if err != nil {
@@ -259,6 +260,12 @@ func newResourceCore(p *Provider, table string, rowType reflect.Type, generate f
 	if r.readExprs, err = newComputedColumns(table, cfg, columns, read); err != nil {
 		return nil, err
 	}
+	if r.readExprs != nil {
+		err = p.supports(table, backend.ComputedColumns)
+		if err != nil {
+			return nil, err
+		}
+	}
 	r.filterSchema.Computed, err = r.readExprs.resolve(r.dialect)
 	if err != nil {
 		return nil, err
@@ -309,7 +316,7 @@ func newResourceCore(p *Provider, table string, rowType reflect.Type, generate f
 	if err != nil {
 		return nil, err
 	}
-	r.projection = strings.Join(r.Columns(), ", ")
+	r.desc = r.descriptor()
 	r.scanRules, err = r.rowRules()
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
@@ -678,9 +685,13 @@ func (r *resourceCore) ColumnSQLType(column string) (core.SQLType, bool) {
 // them, table-qualified and quoted for the provider's dialect; a computed
 // column (ReadExpr) is read through its expression and a column with a
 // declared ColumnType as the dialect reads that type, each under the
-// column's own name, so rows scan by name.
+// column's own name, so rows scan by name. Nil on a provider that compiles
+// no SQL.
 func (r *resourceCore) Columns() []string {
 	d := r.dialect
+	if d == nil {
+		return nil
+	}
 	out := make([]string, len(r.read))
 	for i, name := range r.read {
 		stored := d.QuoteIdent(r.table) + "." + d.QuoteIdent(name)
@@ -698,6 +709,25 @@ func (r *resourceCore) Columns() []string {
 		out[i] = col
 	}
 	return out
+}
+
+// descriptor is the resource's descriptor (backend.Resource), with its
+// projection for a provider with a dialect.
+func (r *resourceCore) descriptor() *backend.Resource {
+	desc := &backend.Resource{
+		Table:    r.table,
+		Columns:  slices.Clone(r.read),
+		Key:      slices.Clone(r.pk),
+		KeyTypes: r.keyColumns().types,
+		Tenant:   r.tenant,
+		Deleted:  r.deleted,
+		Schema:   r.filterSchema,
+		Computed: r.readExprs != nil,
+	}
+	if r.dialect != nil {
+		desc.SQL = &backend.SQLResource{Projection: strings.Join(r.Columns(), ", ")}
+	}
+	return desc
 }
 
 // ColumnNames is the unqualified name of each Columns entry, in the same
@@ -882,6 +912,9 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 	}
 	view := *r
 	view.filterSchema, view.sortSchema, view.view = fs, ss, true
+	desc := *r.desc
+	desc.Schema = fs
+	view.desc = &desc
 	return &view, nil
 }
 

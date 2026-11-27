@@ -24,6 +24,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/backend"
+	"github.com/ashtonian/pkg/parse/internal/sqlexec"
 )
 
 // Name is the provider's name in configuration (parse.Provider.Name).
@@ -83,7 +84,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, opts ...Option) (*parse.Provid
 	if err != nil {
 		return nil, err
 	}
-	p := parse.NewProvider(backend.Provider{Name: Name, Dialect: cfg.dialect, DB: database{pool: pool}, SettleTimeout: cfg.settle})
+	p := parse.NewProvider(sqlexec.Provider(Name, cfg.dialect, database{pool: pool}, cfg.settle))
 	return p, nil
 }
 
@@ -115,7 +116,8 @@ func checkCollation(ctx context.Context, pool *pgxpool.Pool, c filter.PostgresCo
 // statements and parse's commit together. An update in it runs under a
 // savepoint. Commit or roll back tx itself, or through the returned Tx.
 func Tx(tx pgx.Tx) *parse.Tx {
-	wrapped := parse.NewTx(backend.Transaction{Provider: Name, Tx: transaction{tx: tx}})
+	joinable := sqlexec.NewTx(transaction{tx: tx}, filter.PostgresDialect{}, parse.DefaultSettleTimeout)
+	wrapped := parse.NewTx(backend.Transaction{Provider: Name, Tx: joinable})
 	return wrapped
 }
 
@@ -124,7 +126,7 @@ type database struct {
 	pool *pgxpool.Pool
 }
 
-func (d database) Send(ctx context.Context, table string, steps ...backend.Step) error {
+func (d database) Send(ctx context.Context, table string, steps ...sqlexec.Step) error {
 	return send(ctx, table, d.pool, steps)
 }
 
@@ -133,10 +135,10 @@ func (d database) Send(ctx context.Context, table string, steps ...backend.Step)
 // wrote is kept, but for parse.ErrCommitUnknown (commitFailed). Once apply
 // succeeds the update is finished whatever ctx does since, so a reported
 // error never hides an applied update; each settling statement therefore
-// runs under its own settle context (backend.Settle), as pgx sends nothing
+// runs under its own settle context (sqlexec.Settle), as pgx sends nothing
 // on a done context. A panic in apply settles as an error does on its way
 // out, so no transaction stays open on the connection.
-func (d database) Transact(ctx context.Context, table string, settle time.Duration, apply func(backend.Conn) error) error {
+func (d database) Transact(ctx context.Context, table string, settle time.Duration, apply func(sqlexec.Conn) error) error {
 	tx, err := d.pool.Begin(ctx)
 	if err != nil {
 		return parse.StatementFailed(table, "begin", err)
@@ -147,7 +149,7 @@ func (d database) Transact(ctx context.Context, table string, settle time.Durati
 			// The panic goes on to the caller, so the rollback's error has
 			// nowhere to go; a rollback that fails closes the connection,
 			// and the server rolls back with it.
-			_ = backend.Settle(ctx, settle, tx.Rollback)
+			_ = sqlexec.Settle(ctx, settle, tx.Rollback)
 		}
 	}()
 	err = apply(transaction{tx: tx})
@@ -155,18 +157,18 @@ func (d database) Transact(ctx context.Context, table string, settle time.Durati
 	if err != nil {
 		// A transaction pgx already closed (its connection lost) kept
 		// nothing to roll back.
-		rollback := backend.Settle(ctx, settle, tx.Rollback)
+		rollback := sqlexec.Settle(ctx, settle, tx.Rollback)
 		if !errors.Is(rollback, pgx.ErrTxClosed) {
 			err = errors.Join(err, parse.StatementFailed(table, "rollback", rollback))
 		}
 		return err
 	}
-	return commitFailed(table, backend.Settle(ctx, settle, tx.Commit))
+	return commitFailed(table, sqlexec.Settle(ctx, settle, tx.Commit))
 }
 
 // Begin begins a transaction that lasts until Commit or Rollback: pgx reads
 // ctx for the BEGIN alone.
-func (d database) Begin(ctx context.Context) (backend.Tx, error) {
+func (d database) Begin(ctx context.Context) (sqlexec.Tx, error) {
 	tx, err := d.pool.Begin(ctx)
 	if err != nil {
 		return nil, parse.StatementFailed("", "begin", err)
@@ -180,7 +182,7 @@ type transaction struct {
 	tx pgx.Tx
 }
 
-func (t transaction) Send(ctx context.Context, table string, steps ...backend.Step) error {
+func (t transaction) Send(ctx context.Context, table string, steps ...sqlexec.Step) error {
 	return send(ctx, table, t.tx, steps)
 }
 
@@ -188,7 +190,7 @@ func (t transaction) Send(ctx context.Context, table string, steps ...backend.St
 // apply succeeds and rolled back to otherwise, or as a panic in apply
 // unwinds. The savepoint is taken by hand rather than through pgx's nested
 // Begin, whose failed release can no longer be rolled back.
-func (t transaction) Transact(ctx context.Context, table string, settle time.Duration, apply func(backend.Conn) error) error {
+func (t transaction) Transact(ctx context.Context, table string, settle time.Duration, apply func(sqlexec.Conn) error) error {
 	_, err := t.tx.Exec(ctx, "SAVEPOINT "+savepoint)
 	if err != nil {
 		return parse.StatementFailed(table, "savepoint", err)
@@ -237,7 +239,7 @@ func (t transaction) undoSavepoint(ctx context.Context, table string, settle tim
 // settleExec runs statement, one that settles the update, on the
 // transaction under a settle context of its own.
 func (t transaction) settleExec(ctx context.Context, settle time.Duration, statement string) error {
-	return backend.Settle(ctx, settle, func(ctx context.Context) error {
+	return sqlexec.Settle(ctx, settle, func(ctx context.Context) error {
 		_, err := t.tx.Exec(ctx, statement)
 		return err
 	})
@@ -273,7 +275,7 @@ type batcher interface {
 // that panics leaves the rest of the batch unread and the connection busy
 // (and a pool's connection unreleased); reading the rest as the panic
 // unwinds frees it for the settle that follows.
-func send(ctx context.Context, table string, db batcher, steps []backend.Step) error {
+func send(ctx context.Context, table string, db batcher, steps []sqlexec.Step) error {
 	b := &pgx.Batch{}
 	// done counts the steps read through, so a failure the batch reports on
 	// Close, such as an Exec's, names the step it stopped at.

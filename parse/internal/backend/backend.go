@@ -1,40 +1,101 @@
-// Package backend is the contract between parse's root package, which runs
-// a resource's statements, and the provider packages (parsesql, parsepgx),
-// which send them to a database: how statements are sent, how their rows
-// are read, and how a transaction is held. The root package composes and
-// compiles every statement, scans every row into the resource's type and
-// holds the executor sequence once for every provider; a provider package
-// supplies the driver underneath. The package is internal so that only
-// parse's own packages open a provider.
+// Package backend is the contract between parse's root package and the
+// providers. The root package composes every request (filter.ComposedList
+// for a list; an update's filter, keys, patch and options), scans every row
+// into the resource's type and builds every page and result; it holds no
+// executor. Each provider runs composed requests through an executor of its
+// own (Executor), and hands every result's rows to a sink the root package
+// implements (ListSink, UpdateSink, BatchSink, QuerySink). The SQL providers
+// (parsesql, parsepgx) share one executor, internal/sqlexec, which compiles
+// the requests to SQL through internal/sqlplan; nothing here assumes SQL, so
+// a provider that evaluates requests in Go implements the same interfaces
+// over its own store. The package imports filter, patch and core alone, and
+// is internal so that only parse's own packages open a provider.
 package backend
 
 import (
 	"context"
+	"strings"
 	"time"
 
+	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/patch"
 )
 
 // Provider is what a provider package hands the root package
-// (parse.NewProvider): the provider's name in configuration, the dialect
-// its statements compile for, its database, and the bound on each
-// statement that settles an update's transaction (Settle), positive.
+// (parse.NewProvider): the provider's name in configuration, the dialect its
+// SQL compiles for (nil for a provider that compiles none), its database,
+// and the operations it supports.
 type Provider struct {
-	Name          string
-	Dialect       filter.Dialect
-	DB            DB
-	SettleTimeout time.Duration
+	Name         string
+	Dialect      filter.Dialect
+	DB           DB
+	Capabilities Capabilities
+}
+
+// Capabilities is a set of the operations a provider may lack. The root
+// package refuses an operation its provider lacks (parse.ErrUnsupported)
+// before the request reaches the provider's executor, and never
+// approximates it.
+type Capabilities uint8
+
+const (
+	// SQLBuilders compiles a resource's requests to SQL for the caller:
+	// parse.Resource's BuildList, BuildFacets, IncludeQueries, BuildUpdate,
+	// BuildUpdateBatch, Page and PagePointers. It needs a Dialect.
+	SQLBuilders Capabilities = 1 << iota
+	// Query runs a statement of the application's own (parse.Resource.Query).
+	Query
+	// Search narrows a list or a facets request by full-text search.
+	Search
+	// ComputedColumns reads a column through an expression (parse.ReadExpr).
+	ComputedColumns
+	// StampSQL stamps an update with an expression the database evaluates
+	// (parse.StampSQL).
+	StampSQL
+)
+
+// AllCapabilities is every capability, as the SQL providers declare.
+const AllCapabilities = SQLBuilders | Query | Search | ComputedColumns | StampSQL
+
+// Has reports whether c holds every capability in want.
+func (c Capabilities) Has(want Capabilities) bool { return c&want == want }
+
+// String names c's capabilities, in declaration order: the name
+// parse.UnsupportedError gives the one a provider lacks.
+func (c Capabilities) String() string {
+	names := []struct {
+		capability Capabilities
+		name       string
+	}{
+		{SQLBuilders, "SQL builders"},
+		{Query, "Query"},
+		{Search, "search"},
+		{ComputedColumns, "computed columns"},
+		{StampSQL, "StampSQL"},
+	}
+	var held []string
+	for _, n := range names {
+		if c.Has(n.capability) {
+			held = append(held, n.name)
+		}
+	}
+	if len(held) == 0 {
+		return "no capability"
+	}
+	return strings.Join(held, ", ")
 }
 
 // Transaction is a transaction a provider package wraps for the root
 // package (parse.NewTx): the name of the provider it belongs to and the
-// transaction.
+// transaction. A resource runs in it once its provider's database joins it
+// (DB.Join).
 type Transaction struct {
 	Provider string
 	Tx       Tx
 }
 
-// Rows are one statement's rows as a provider reads them.
+// Rows are one result's rows as a provider reads them.
 type Rows interface {
 	filter.Rows
 	// Documents names the result's columns the database reports as JSON
@@ -44,70 +105,222 @@ type Rows interface {
 	Documents() []string
 }
 
-// Step is one statement a provider sends.
-type Step struct {
-	// Name names the statement in a failure: page, count, facets, include
-	// <field>, current, conflict, lock, owner, relations or reread. The
-	// provider reports a failed step as parse.StatementFailed(table, Name,
-	// err), table the one Send was given.
-	Name string
-	SQL  string
-	Args []any
-	// Read reads the statement's rows; the provider closes them after. A
-	// statement without Read is run for the rows it changes (Changed).
-	Read func(Rows) error
-	// Changed, when set, is given the number of rows a statement without
-	// Read changed.
-	Changed func(int64)
+// Resource is a resource's descriptor: what an executor knows of the table
+// every request it runs reads. The root package builds it once, when the
+// resource is built (parse.NewResource, and parse.Resource.WithPaths for a
+// view), and nothing writes it after.
+type Resource struct {
+	Table string
+	// Columns are the columns the resource reads, in scan order: every row
+	// handed to a sink holds these, in this order.
+	Columns []string
+	// Key are the key columns, in key order, and KeyTypes their types with
+	// the storage each declares.
+	Key      []string
+	KeyTypes []core.TypeInfo
+	// Tenant and Deleted are the tenant and soft-delete columns, "" for
+	// none.
+	Tenant  string
+	Deleted string
+	// Schema is the filter schema: the fields, system fields and relations
+	// the composed filters name.
+	Schema *filter.ResourceSchema
+	// Computed reports whether the resource reads a column through an
+	// expression (parse.ReadExpr).
+	Computed bool
+	// SQL is the SQL text the resource's statements are compiled around;
+	// nil on a provider without a dialect.
+	SQL *SQLResource
 }
 
-// Conn sends statements: a provider's database, or a transaction on it.
-// table is the resource's whose statements they are, which every failure
-// the provider reports names (parse.StatementFailed).
-type Conn interface {
-	// Send runs steps in order and stops at the first that fails. A
-	// provider may send them in one round trip (a pgx batch); each runs in
-	// its own snapshot unless the Conn is a transaction that holds one.
-	Send(ctx context.Context, table string, steps ...Step) error
-	// Transact runs apply in one transaction, settled only once apply has
-	// returned. On a database it begins one of its own and commits or
-	// rolls it back; in a transaction it takes a savepoint, released or
-	// rolled back to, so the caller's transaction keeps nothing apply wrote
-	// when it fails and stays usable. Every settling statement runs under
-	// Settle with the settle timeout. An error means nothing apply wrote is
-	// kept, unless errors.Is(err, parse.ErrCommitUnknown). apply's error is
-	// returned as it is, joined with the failure of the statements that
-	// undo its writes, if they fail too. A panic in apply settles as an
-	// error does on its way out.
-	Transact(ctx context.Context, table string, settle time.Duration, apply func(Conn) error) error
+// SQLResource is the SQL text a resource's descriptor carries for a
+// provider with a dialect, rendered once for that dialect.
+type SQLResource struct {
+	// Projection selects Columns, each table-qualified and quoted, a
+	// computed column through its expression, each under its own name.
+	Projection string
 }
 
-// DB is a provider's database.
+// ListRequest is a composed list or facets request.
+type ListRequest struct {
+	Resource *Resource
+	// List is the composed list: its filter with the floor and policy
+	// merged in, keyset, cursor, limit, search, count and facets, and the
+	// scope its relations are reached under.
+	List *filter.ComposedList
+	// Include names the relation fields whose related keys the page
+	// carries.
+	Include []string
+}
+
+// QueryRequest is a statement of the application's own over the resource's
+// table, selecting its Columns (parse.Resource.Query).
+type QueryRequest struct {
+	Resource *Resource
+	SQL      string
+	Args     []any
+}
+
+// UpdateRequest is a composed update.
+type UpdateRequest struct {
+	Resource *Resource
+	// Where selects the target rows: the floor a list in the same scope
+	// reads (the tenant, live rows, the policy), ANDed with the target.
+	Where *filter.FilterAST
+	// Keys are the target's keys, each normalized to its key columns'
+	// types, when the target is keys; nil when it is a filter.
+	Keys []core.Key
+	// Relations is the scope Where's relation predicates and the patch's
+	// relation changes reach related rows under.
+	Relations filter.RelationScope
+	Patch     *patch.ParsedPatch
+	Options   UpdateOptions
+}
+
+// UpdateOptions are what an update writes beyond its patch.
+type UpdateOptions struct {
+	// SkipUnchanged writes only the target rows the patch's columns change.
+	SkipUnchanged bool
+	// Stamp, when set, stamps a column on every update that writes one.
+	Stamp *Stamp
+	// Increments are integer columns moved one up on every update that
+	// writes a column, in the order they were named.
+	Increments []string
+}
+
+// Stamp is the column an update stamps and what it stamps it with: At, or
+// SQL, an expression the database evaluates (the server's, trusted) when
+// it is set.
+type Stamp struct {
+	Column string
+	At     time.Time
+	SQL    string
+}
+
+// UpdateBatchRequest is a composed update batch.
+type UpdateBatchRequest struct {
+	Resource *Resource
+	// Rows are the batch's rows in key order, their keys distinct as the
+	// provider's database holds them.
+	Rows []BatchRow
+	// Relations is the scope every row's Where reaches related rows under.
+	Relations filter.RelationScope
+	// MaxParameters bounds the parameters of each statement an executor
+	// that binds parameters sends; zero is its own default.
+	MaxParameters int
+	Options       UpdateOptions
+}
+
+// BatchRow is one row of an update batch: its key, its column patch, and
+// the filter selecting it, the batch's floor and policy and the row's own
+// policy ANDed with its key.
+type BatchRow struct {
+	Key   core.Key
+	Patch *patch.ParsedPatch
+	Where *filter.FilterAST
+}
+
+// ListSink keeps a list's results and builds its page.
+type ListSink interface {
+	// Page scans the page's rows: up to the list's limit plus one, in the
+	// keyset's order, or its reverse for a backward cursor.
+	Page(Rows) error
+	// Count keeps the size of the population the list matches without its
+	// cursor, when it counts.
+	Count(int64)
+	// Facets keeps the population's facet counts, when the list asks for
+	// them.
+	Facets([]filter.FacetResult)
+	// Keys builds the page from the rows Page scanned and returns its rows'
+	// keys, normalized to the key columns' types, for the list's includes:
+	// none when the list includes nothing or the page holds no row. An
+	// executor that reads includes calls it once the page's rows are read.
+	Keys() ([]core.Key, error)
+	// Include keeps the related keys of one relation field the list
+	// includes, by owner key.
+	Include(field string, rows filter.IncludeRows)
+}
+
+// QuerySink keeps the rows of a statement of the application's own.
+type QuerySink interface {
+	Rows(Rows) error
+}
+
+// UpdateSink keeps an update's rows. Each scan replaces the rows the same
+// method scanned before it.
+type UpdateSink interface {
+	// Targets scans every target row the update's filter selects as it
+	// stands before the update writes, the rows it will leave among them:
+	// for an executor that reads the targets apart from the rows it writes.
+	Targets(Rows) error
+	// Changed scans the rows the update wrote, as it left them.
+	Changed(Rows) error
+	// Unchanged scans target rows the update left as they were.
+	Unchanged(Rows) error
+	// Split ends the reads that decide the update's targets, before its
+	// relation changes: the changed rows are Changed's, the unchanged ones
+	// Unchanged's, then Targets' whose keys none of Changed's rows hold.
+	Split() error
+	// Keys are the keys of the changed and the unchanged rows, once Split,
+	// normalized to the key columns' types: the owners of the update's
+	// relation changes.
+	Keys() (changed, unchanged []core.Key, err error)
+	// RelationRows counts junction rows the relation changes touched.
+	RelationRows(int64)
+}
+
+// BatchSink keeps an update batch's rows. An executor may run the batch in
+// parts, such as statements bounded by their parameters.
+type BatchSink interface {
+	// Targets scans the target rows of one part, the rows with keys keys
+	// the rows' filters select, as they stand before the batch writes. Each
+	// call is the next part, numbered from zero.
+	Targets(keys []core.Key, rows Rows) error
+	// Check refuses the targets when a part's rows are not exactly its
+	// keys, before the batch writes (parse.ErrUpdateBatchTargets).
+	Check() error
+	// Changed scans the rows the batch wrote of part, as it left them.
+	Changed(part int, rows Rows) error
+	// Split ends the batch's reads: each part's unchanged rows are its
+	// targets whose keys none of its changed rows hold.
+	Split() error
+}
+
+// Executor runs composed requests. A list's or a facets request's reads
+// may run in whatever order and round trips the executor chooses, each in
+// its own snapshot unless it runs in a transaction that holds one. An
+// update or a batch runs in one transaction, or under a savepoint of the
+// transaction the executor runs in, settled only once every row has
+// scanned: an error means nothing it wrote is kept, unless
+// errors.Is(err, parse.ErrCommitUnknown).
+type Executor interface {
+	List(ctx context.Context, req ListRequest, sink ListSink) error
+	// Facets counts the rows the request matches by each facet it names;
+	// nil when it names none.
+	Facets(ctx context.Context, req ListRequest) ([]filter.FacetResult, error)
+	Query(ctx context.Context, req QueryRequest, sink QuerySink) error
+	Update(ctx context.Context, req UpdateRequest, sink UpdateSink) error
+	UpdateBatch(ctx context.Context, req UpdateBatchRequest, sink BatchSink) error
+}
+
+// DB is a provider's database, which runs requests outside a transaction.
 type DB interface {
-	Conn
+	Executor
 	// Begin begins a transaction the caller settles (parse.Provider.Begin).
 	// The transaction is not bound to ctx's cancellation: it lasts until
 	// Commit or Rollback.
 	Begin(ctx context.Context) (Tx, error)
+	// Join is the executor that runs requests in tx, a transaction Begin
+	// began or a provider package wrapped (Transaction), configured as the
+	// database is: a resource in a transaction (parse.Resource.In) runs as
+	// its provider runs, whichever of the provider's transactions it is.
+	Join(tx Tx) (Executor, error)
 }
 
 // Tx is a transaction a caller holds and settles. Rollback of a
 // transaction already settled does nothing and returns nil.
 type Tx interface {
-	Conn
+	Executor
 	Commit(ctx context.Context) error
 	Rollback(ctx context.Context) error
-}
-
-// Settle runs call, one statement that settles a transaction (a COMMIT, a
-// ROLLBACK or a savepoint's release or rollback), under ctx's values
-// without its cancellation, bounded by timeout. The request may be gone by
-// the time an update settles, and a settle its cancellation cut short would
-// leave the update half reported; the timeout holds a stalled database to
-// that long. Each settling statement takes its own, so one that ran out of
-// time leaves the next its full bound.
-func Settle(ctx context.Context, timeout time.Duration, call func(context.Context) error) error {
-	settle, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
-	defer cancel()
-	return call(settle)
 }

@@ -13,6 +13,8 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/backend"
+	"github.com/ashtonian/pkg/parse/internal/sqlplan"
 )
 
 // ListRequest is a list request validated against its resource: what the
@@ -524,15 +526,10 @@ type ListPlan struct {
 	Keyset filter.CursorPlan
 	Limit  int
 
-	// fields is the filter schema the plan compiled, its includes' targets
-	// included.
-	fields *filter.ResourceSchema
-	table  string
-	// relations is the scope the plan's statements reach related rows
-	// with, and its includes read them with: Scope.Tenant in the tenant
-	// key's type, or, for a governed list (Scope.Governance), each owner
-	// row's own tenant; and Scope.Related.
-	relations filter.RelationScope
+	table string
+	// request is the composed list the plan compiled, which its includes
+	// read with (IncludeQueries).
+	request backend.ListRequest
 }
 
 // BuildList compiles req under scope s into the statements List runs: the
@@ -541,25 +538,64 @@ type ListPlan struct {
 // column, the cursor's seek, search, and the count and facets when asked.
 // The SQL is the provider's dialect's. A nil req is a first page with no
 // filter; a request another resource parsed, a WithPaths view's or its
-// base's included, is ErrForeign.
+// base's included, is ErrForeign. A provider that compiles no SQL refuses
+// it (ErrUnsupported).
 func (r *resourceCore) BuildList(req *ListRequest, s Scope) (*ListPlan, error) {
+	err := r.provider.supports(r.table, backend.SQLBuilders)
+	if err != nil {
+		return nil, err
+	}
+	list, err := r.composeList(req, s)
+	if err != nil {
+		return nil, err
+	}
+	compiled, err := sqlplan.CompileList(r.dialect, list)
+	if err != nil {
+		return nil, err
+	}
+	plan := &ListPlan{
+		Page:     Statement(compiled.Page),
+		Fragment: compiled.Fragment,
+		Count:    (*Statement)(compiled.Count),
+		Facets:   compiled.Facets,
+		Include:  list.Include,
+		Keyset:   list.List.Plan(),
+		Limit:    list.List.Limit(),
+		table:    r.table,
+		request:  list,
+	}
+	return plan, nil
+}
+
+// composeList composes req under scope s (BuildList) as the provider's
+// executor runs it: the floor, governance and policy merged into the
+// request's filter (filter.ComposeConstraints), the keyset, cursor, limit,
+// search, count and facets, at the request's instant, and the scope its
+// relations are reached under. A search on a provider without search is
+// ErrUnsupported.
+func (r *resourceCore) composeList(req *ListRequest, s Scope) (backend.ListRequest, error) {
 	if req == nil {
 		req = &ListRequest{pageSize: r.pageSize, now: r.cfg.Now(), schema: r.filterSchema}
 	}
 	if req.schema != r.filterSchema {
-		return nil, fmt.Errorf("parse: %s: list request: %w", r.table, ErrForeign)
+		return backend.ListRequest{}, fmt.Errorf("parse: %s: list request: %w", r.table, ErrForeign)
+	}
+	if req.search != "" {
+		err := r.provider.supports(r.table, backend.Search)
+		if err != nil {
+			return backend.ListRequest{}, err
+		}
 	}
 	// A governed list's rows span tenants; a resource with a tenant column
 	// holds each row's relations to the row's own.
 	rowTenant := s.governed() && r.tenant != ""
-	var (
-		tenant any
-		err    error
-	)
+	var tenant any
 	if !rowTenant {
-		if tenant, err = r.bindTenant(s.Tenant); err != nil {
-			return nil, err
+		bound, err := r.bindTenant(s.Tenant)
+		if err != nil {
+			return backend.ListRequest{}, err
 		}
+		tenant = bound
 	}
 	policy := filter.ComposeConstraints(filter.RepositoryScope{
 		TenantColumn: r.tenant, TenantID: tenant,
@@ -591,27 +627,14 @@ func (r *resourceCore) BuildList(req *ListRequest, s Scope) (*ListPlan, error) {
 	}
 	lq, err := newListQuery(r.filterSchema, r.sortSchema, r.searchSchema, r.dialect, r.cfg)
 	if err != nil {
-		return nil, err
+		return backend.ListRequest{}, err
 	}
-	res, err := lq.Build(opts...)
+	list, err := lq.Compose(opts...)
 	if err != nil {
-		return nil, err
+		return backend.ListRequest{}, err
 	}
-	plan := &ListPlan{
-		Page:      Statement{SQL: "SELECT " + r.projection + " FROM " + r.dialect.QuoteIdent(r.table) + " " + res.Fragment, Args: res.Args},
-		Fragment:  res.Fragment,
-		Facets:    res.Facets,
-		Include:   slices.Clone(req.include),
-		Keyset:    res.Cursor,
-		Limit:     res.Limit,
-		fields:    r.filterSchema,
-		table:     r.table,
-		relations: relations,
-	}
-	if req.includeTotal {
-		plan.Count = &Statement{SQL: res.CountSQL, Args: res.CountArgs}
-	}
-	return plan, nil
+	composed := backend.ListRequest{Resource: r.desc, List: list, Include: slices.Clone(req.include)}
+	return composed, nil
 }
 
 // Page builds the page from rows fetched with plan.Page, in query order:
@@ -623,7 +646,13 @@ func (r *Resource[T]) Page(items []T, plan *ListPlan) (*filter.Page[T], error) {
 	if err != nil {
 		return nil, err
 	}
-	return filter.NewPage(items, plan.Limit, plan.Keyset, func(item T, column string) (any, error) {
+	return r.page(items, plan.Limit, plan.Keyset)
+}
+
+// page builds the page from items, fetched for a list of limit over
+// keyset (Page).
+func (r *Resource[T]) page(items []T, limit int, keyset filter.CursorPlan) (*filter.Page[T], error) {
+	return filter.NewPage(items, limit, keyset, func(item T, column string) (any, error) {
 		// Not addressable: Interface then reads the field without copying it.
 		return r.columnValue(reflect.ValueOf(item), column)
 	})
@@ -645,7 +674,8 @@ func (r *Resource[T]) PagePointers(items []*T, plan *ListPlan) (*filter.Page[*T]
 // list was. Read each one's rows with query.Scan, then attach the result
 // with page.SetInclude(query.Field, rows). No keys need no statements.
 func (r *resourceCore) IncludeQueries(plan *ListPlan, ownerKeys []Key) ([]filter.IncludeQuery, error) {
-	if err := r.ownsPlan(plan); err != nil {
+	err := r.ownsPlan(plan)
+	if err != nil {
 		return nil, err
 	}
 	if len(plan.Include) == 0 || len(ownerKeys) == 0 {
@@ -655,18 +685,9 @@ func (r *resourceCore) IncludeQueries(plan *ListPlan, ownerKeys []Key) ([]filter
 	if err != nil {
 		return nil, err
 	}
-	opts := []filter.IncludeQueryOption{filter.WithIncludeRelationScope(plan.relations), filter.WithIncludeOwner(plan.fields)}
-	out := make([]filter.IncludeQuery, 0, len(plan.Include))
-	for _, name := range plan.Include {
-		q, err := filter.BuildIncludeQuery(plan.fields.Fields[name], r.dialect, owners, opts...)
-		if err != nil {
-			return nil, err
-		}
-		if q.SQL != "" {
-			out = append(out, q)
-		}
-	}
-	return out, nil
+	list := plan.request
+	list.Include = plan.Include
+	return sqlplan.Includes(r.dialect, list, owners)
 }
 
 // facetParam reports whether name is a list parameter a facets request
@@ -792,8 +813,13 @@ func (r *resourceCore) ParseSort(sortParam string) (*filter.SortResult, error) {
 // and clock as ParseFilter. When the type declares `parse:"...,search"`
 // fields, a ListSearch query composes the dialect's search predicate. A
 // computed column (ReadExpr) compiles as its expression. The error is
-// filter.NewListQuery's, for a key the list cannot end its keyset on.
+// filter.NewListQuery's, for a key the list cannot end its keyset on, or
+// ErrUnsupported on a provider that compiles no SQL.
 func (r *resourceCore) ListQuery() (*filter.ListQuery, error) {
+	err := r.provider.supports(r.table, backend.SQLBuilders)
+	if err != nil {
+		return nil, err
+	}
 	return newListQuery(r.filterSchema, r.sortSchema, r.searchSchema, r.dialect, r.cfg)
 }
 

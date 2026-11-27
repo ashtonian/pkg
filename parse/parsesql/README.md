@@ -43,13 +43,14 @@ p, err := parsesql.New(ctx, sqlDB) // refuses a SQLite older than MinSQLiteVersi
 
 ```mermaid
 flowchart LR
-    res["parse.Resource (List / Facets / Query / Update / UpdateBatch)"] -->|"steps: SQL, args, how to read the rows"| conn["database / transaction (this package)"]
+    res["parse.Resource (List / Facets / Query / Update / UpdateBatch)"] -->|"composed request, sink"| exec["SQL executor (parse/internal/sqlexec)"]
+    exec -->|"steps: SQL, args, how to read the rows"| conn["database / transaction (this package)"]
     conn -->|"QueryContext / ExecContext, one statement after another"| db[("*sql.DB / *sql.Tx")]
-    db -->|"rows"| res
+    db -->|"rows, to the sink"| res
     res --> out["filter.Page[T] / parse.UpdateResult[T]"]
 ```
 
-What runs, in what order, and what the result holds is the root package's, the same on every provider ([`parse` executor contract](../README.md)): a list's page, count and facets, then its includes; an update's `Current`, `Conflict`, `Lock` and `Owner`, then its relation statements and rereads; a batch's every `Current`, then every `Owner`. This package supplies what is `database/sql`'s: sending each step's statement, handing its rows back to the resource, and holding the transaction.
+What runs, in what order, and what the result holds is the SQL executor's, `parse/internal/sqlexec`, the same on both SQL providers ([`parse` code map](../README.md#api-and-code-map)): a list's page, count and facets, then its includes; an update's `Current`, `Conflict`, `Lock` and `Owner`, then its relation statements and rereads; a batch's every `Current`, then every `Owner`. The resource composes each request and scans the rows it gets back. This package supplies what is `database/sql`'s: sending each step's statement, handing its rows back to the executor, and holding the transaction.
 
 **Statements.** The statements of one step run one after another on the provider's `*sql.DB` (each on a connection the pool hands out) or on the transaction's connection. A step's failure stops the rest and is reported as that step (`parse.StatementError`).
 
@@ -121,7 +122,7 @@ parse's SQLite statements need **SQLite 3.47.0** or later (`MinSQLiteVersion`), 
 - `Register()`: registers the six functions with modernc.org/sqlite's `"sqlite"` driver, once per process; it returns its first result on every call. `RegisterOn(d *sqlite.Driver)`: registers them on a `sqlite.Driver` the caller constructs, which then carries them on its own connections only; package-level registrations, `Register`'s included, never reach a constructed driver. Register before the database opens its first connection: modernc.org/sqlite installs registered functions on each connection it opens afterwards.
 - `Functions()`: the table both install, as `Function{Name, NArgs, Call}`, for registering with another SQLite driver ([below](#another-sqlite-driver)). `Decimal(v)`, `DecimalKey(v)`, `DecimalFloat32(v)`, `GeoNear(…)`, `GeoInBox(…)`, `GeoCoveredBy(…)`: the functions over one SQLite value, and the constants `DecimalFunc`, `DecimalKeyFunc`, `DecimalFloat32Func`, `GeoNearFunc`, `GeoInBoxFunc` and `GeoCoveredByFunc` their SQL names.
 
-The resource methods (`List`, `Facets`, `Query`, `Update`, `UpdateBatch`, `In`) are the root package's. A statement's failure is a `*parse.StatementError` naming it, wrapped once with the table: `parse: devices: owner: …`, `… current: …`, `… conflict: …`, `… lock: …`, `… relations: …`, `… reread: …`, `… page: …`, `… count: …`, `… facets: …`, `… include tags: …`, `… query: …`, and the transaction's `begin`, `savepoint`, `release savepoint`, `rollback to savepoint`, `rollback` and `commit`. `errors.As` reaches it and the driver's error under it; `parsepgx` names its statements the same way.
+The resource methods (`List`, `Facets`, `Query`, `Update`, `UpdateBatch`, `In`) are the root package's, run by the SQL executor. A statement's failure is a `*parse.StatementError` naming it, wrapped once with the table: `parse: devices: owner: …`, `… current: …`, `… conflict: …`, `… lock: …`, `… relations: …`, `… reread: …`, `… page: …`, `… count: …`, `… facets: …`, `… include tags: …`, `… query: …`, and the transaction's `begin`, `savepoint`, `release savepoint`, `rollback to savepoint`, `rollback` and `commit`. `errors.As` reaches it and the driver's error under it; `parsepgx` names its statements the same way.
 
 ## Functions
 
@@ -246,7 +247,7 @@ SQL text comes from the resource's compiled plans, never from request strings, a
 | File | Responsibility |
 |------|----------------|
 | [`open.go`](open.go) | `Config`, `Open`, `Database`, `Choice`: the database opened from configuration, its DSN checked and its connection limits set |
-| [`parsesql.go`](parsesql.go) | `New`, `Tx`, `Name`, `SettleTimeout`; the database and transaction the root package's steps run on: statements one after another, the transaction an update begins on a connection taken under the caller's context, the savepoint in a scoped transaction, and their settle |
+| [`parsesql.go`](parsesql.go) | `New`, `Tx`, `Name`, `SettleTimeout`; the database and transaction the SQL executor's steps run on (`internal/sqlexec`'s `Conn`, `DB` and `Tx`): statements one after another, the transaction an update begins on a connection taken under the caller's context, the savepoint in a scoped transaction, and their settle |
 | [`functions.go`](functions.go) | `Function` and the `Functions` table, `Register`, `RegisterOn`, `Decimal`, `DecimalKey`, `DecimalFloat32`, `GeoNear`, `GeoInBox`, `GeoCoveredBy` and the function names |
 | [`version.go`](version.go) | `MinSQLiteVersion`, `CheckVersion`, `VersionError`, and the `sqlite_version()` read `New` checks |
 | [`contract.go`](contract.go) | The compile-time check that parse is at this module's release ([versions](#versions)) |

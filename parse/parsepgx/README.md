@@ -48,14 +48,17 @@ p, err := parsepgx.New(ctx, pool)                   // checks the server has pg_
 sequenceDiagram
     participant H as HTTP handler
     participant R as parse.Resource (on the provider)
+    participant E as SQL executor (parse/internal/sqlexec)
     participant P as parsepgx provider
     participant PG as PostgreSQL (pgx pool)
     H->>R: ParseList(query), List(ctx, req, Scope)
-    R->>P: Send: page, count, facets
+    R->>E: the composed list, with its sink
+    E->>P: Send: page, count, facets
     P->>PG: one batch
     PG-->>P: rows, total, facet rows (batch closed)
-    P-->>R: rows scanned through the row contract
-    R->>P: Send: one include read per relation, for the page's keys
+    P-->>R: rows scanned through the row contract, into the sink
+    E->>R: the page's keys (sink)
+    E->>P: Send: one include read per relation, for the page's keys
     P->>PG: one batch
     PG-->>P: (owner, target) pairs
     R-->>H: *filter.Page[T]: items, page_info, _relations, facets
@@ -83,7 +86,7 @@ sequenceDiagram
 - Context cancelled or past its deadline: pgx's context error; nothing is retried. Once every statement of an update has run and its rows have scanned, the update commits (or releases its savepoint) whatever the context does since, and reports success: an update's error never hides an applied one, so a retry never applies it twice. Each settling statement — `COMMIT`, `ROLLBACK`, `RELEASE SAVEPOINT`, `ROLLBACK TO SAVEPOINT` — runs under the context's values without its cancellation, bounded by the settle timeout.
 
 **Dependencies**
-- *Imports*: `parse`, `parse/filter`, `parse/parseprovider`, `parse/internal/backend`, `parse/internal/dialect`, `github.com/jackc/pgx/v5`
+- *Imports*: `parse`, `parse/filter`, `parse/parseprovider`, `parse/internal/backend`, `parse/internal/sqlexec`, `parse/internal/dialect`, `github.com/jackc/pgx/v5`
 - *Imported by*: applications serving parse resources on PostgreSQL, through `Open`, `Choice` or `New`
 - *Module boundary*: the PostgreSQL provider, released with parse at one version ([versions](#versions)); parse's own module requires no driver
 
@@ -149,7 +152,7 @@ A [`SkipUnchanged`](../docs/patches.md#skipping-unchanged-rows) plan sends `plan
 
 `UpdateBatch` runs in one transaction (a savepoint in a transaction the resource runs in): every chunk's `Current` in one batch, locking its targets in key order, each checked against its keys; then every `Owner` in a second batch. `Changed` are the rows the owners wrote, chunk by chunk; `Unchanged` the locked rows a `SkipUnchanged` owner left.
 
-What runs, in what order, and what the result holds is the root package's (`parse/execute.go`), shared with [`parsesql`](../parsesql/README.md). This package holds only what is pgx's: the batches the statements are pipelined in, the rows' JSON column types, and the transaction or savepoint and how each is settled.
+What runs, in what order, and what the result holds is the SQL executor's (`parse/internal/sqlexec`), shared with [`parsesql`](../parsesql/README.md); the resource composes each request and scans the rows it gets back. This package holds only what is pgx's: the batches the statements are pipelined in, the rows' JSON column types, and the transaction or savepoint and how each is settled.
 
 ## Versions
 
@@ -204,7 +207,7 @@ PARSE_POSTGRES_DSN=postgres://… go test -tags=integration -count=1 ./...     #
 |------|----------------|
 | `go.mod`, `contract.go` | The module, which requires parse at its own release, and the compile-time check that the parse it builds against is that release ([versions](#versions)) |
 | `open.go` | `Config`, `Open` and its checks, the pool configuration, `Database`, `Choice` |
-| `parsepgx.go` | `New` and its collation check, `Option`s, `Tx`; the database and transaction the root package sends steps to: batches read to their end even past a panic (`send`), the transaction-or-savepoint wrapper and its settle under `backend.Settle`, which failed `COMMIT`s are `parse.ErrCommitUnknown` (`commitFailed`), and the json/jsonb columns a result reports (`rows.Documents`) |
+| `parsepgx.go` | `New` and its collation check, `Option`s, `Tx`; the database and transaction the SQL executor sends steps to (`internal/sqlexec`'s `Conn`, `DB` and `Tx`): batches read to their end even past a panic (`send`), the transaction-or-savepoint wrapper and its settle under `sqlexec.Settle`, which failed `COMMIT`s are `parse.ErrCommitUnknown` (`commitFailed`), and the json/jsonb columns a result reports (`rows.Documents`) |
 | `corpus_integration_test.go` | `TestCorpus`: parse's database corpus (`internal/corpus`) on PostgreSQL, as `parsesql`'s runs it on SQLite |
 | `new_test.go` | What `New` refuses before any statement |
 | `open_test.go`, `open_integration_test.go` | `Config`'s defaults against the provider's, every refusal of `Open` naming its setting, `Choice`; a pool `Open` opens on the test server with the configured limits, running a resource |

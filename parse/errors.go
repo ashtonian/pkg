@@ -88,6 +88,29 @@ var ErrProviderMismatch = errors.New("not the resource's provider")
 // ErrRegistered is a registration under a name the registry already holds.
 var ErrRegistered = errors.New("already registered")
 
+// ErrUnsupported is an operation the resource's provider does not support,
+// refused before anything runs and never approximated: a Query, a search,
+// a StampSQL stamp, a computed column (ReadExpr), or a SQL builder (BuildList,
+// Page, IncludeQueries, ListQuery, BuildUpdate, …) on a provider that
+// compiles no SQL. *UnsupportedError names the provider and the operation;
+// errors.Is matches this under it. The SQL providers support every
+// operation.
+var ErrUnsupported = errors.New("not supported by the provider")
+
+// UnsupportedError is an operation a provider does not support
+// (ErrUnsupported): Provider is the provider's name, Capability the
+// operation, such as search or StampSQL.
+type UnsupportedError struct {
+	Provider   string
+	Capability string
+}
+
+func (e *UnsupportedError) Error() string {
+	return "the " + e.Provider + " provider does not support " + e.Capability
+}
+
+func (e *UnsupportedError) Unwrap() error { return ErrUnsupported }
+
 // StatementError is the failure of one statement a resource ran on its
 // provider, as the database or the scan of its rows reported it. Statement
 // names it: a list's page, count, facets or include <field>; a query; an

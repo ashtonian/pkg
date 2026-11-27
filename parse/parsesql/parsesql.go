@@ -75,6 +75,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/backend"
+	"github.com/ashtonian/pkg/parse/internal/sqlexec"
 )
 
 // Name is the provider's name in configuration (parse.Provider.Name).
@@ -129,7 +130,7 @@ func newProvider(ctx context.Context, db *sql.DB, need string, opts []Option) (*
 	if err != nil {
 		return nil, err
 	}
-	p := parse.NewProvider(backend.Provider{Name: Name, Dialect: filter.SQLiteDialect{}, DB: database{db: db}, SettleTimeout: o.settle})
+	p := parse.NewProvider(sqlexec.Provider(Name, filter.SQLiteDialect{}, database{db: db}, o.settle))
 	return p, nil
 }
 
@@ -139,7 +140,8 @@ func newProvider(ctx context.Context, db *sql.DB, need string, opts []Option) (*
 // runs under a savepoint. Commit or roll back tx itself, or through the
 // returned Tx.
 func Tx(tx *sql.Tx) *parse.Tx {
-	wrapped := parse.NewTx(backend.Transaction{Provider: Name, Tx: transaction{tx: tx}})
+	joinable := sqlexec.NewTx(transaction{tx: tx}, filter.SQLiteDialect{}, parse.DefaultSettleTimeout)
+	wrapped := parse.NewTx(backend.Transaction{Provider: Name, Tx: joinable})
 	return wrapped
 }
 
@@ -148,13 +150,13 @@ type database struct {
 	db *sql.DB
 }
 
-func (d database) Send(ctx context.Context, table string, steps ...backend.Step) error {
+func (d database) Send(ctx context.Context, table string, steps ...sqlexec.Step) error {
 	return send(ctx, table, d.db, steps)
 }
 
 // Transact begins a transaction on a connection taken under ctx, so the
 // wait for one keeps ctx's deadline.
-func (d database) Transact(ctx context.Context, table string, _ time.Duration, apply func(backend.Conn) error) error {
+func (d database) Transact(ctx context.Context, table string, _ time.Duration, apply func(sqlexec.Conn) error) error {
 	conn, err := d.db.Conn(ctx)
 	if err != nil {
 		return parse.StatementFailed(table, "begin", err)
@@ -168,7 +170,7 @@ func (d database) Transact(ctx context.Context, table string, _ time.Duration, a
 // Begin begins the transaction without ctx's cancellation, which
 // database/sql would answer by rolling back what is already done; it lasts
 // until Commit or Rollback.
-func (d database) Begin(ctx context.Context) (backend.Tx, error) {
+func (d database) Begin(ctx context.Context) (sqlexec.Tx, error) {
 	tx, err := d.db.BeginTx(context.WithoutCancel(ctx), nil)
 	if err != nil {
 		return nil, parse.StatementFailed("", "begin", err)
@@ -182,11 +184,11 @@ type transaction struct {
 	tx *sql.Tx
 }
 
-func (t transaction) Send(ctx context.Context, table string, steps ...backend.Step) error {
+func (t transaction) Send(ctx context.Context, table string, steps ...sqlexec.Step) error {
 	return send(ctx, table, t.tx, steps)
 }
 
-func (t transaction) Transact(ctx context.Context, table string, settle time.Duration, apply func(backend.Conn) error) error {
+func (t transaction) Transact(ctx context.Context, table string, settle time.Duration, apply func(sqlexec.Conn) error) error {
 	return underSavepoint(ctx, table, settle, t.tx, apply)
 }
 
@@ -208,7 +210,7 @@ func (t transaction) Rollback(context.Context) error {
 // by rolling back what is already done; the statements in it take ctx.
 // SQLite's commit never leaves its outcome unknown, so parse.ErrCommitUnknown
 // is not one of its errors.
-func inTransaction(ctx context.Context, table string, conn *sql.Conn, apply func(backend.Conn) error) error {
+func inTransaction(ctx context.Context, table string, conn *sql.Conn, apply func(sqlexec.Conn) error) error {
 	tx, err := conn.BeginTx(context.WithoutCancel(ctx), nil)
 	if err != nil {
 		return parse.StatementFailed(table, "begin", err)
@@ -239,7 +241,7 @@ func inTransaction(ctx context.Context, table string, conn *sql.Conn, apply func
 // savepoint, released once apply succeeds and rolled back to otherwise, or
 // as a panic in apply unwinds, so tx keeps nothing apply wrote when it
 // fails and stays usable.
-func underSavepoint(ctx context.Context, table string, settle time.Duration, tx *sql.Tx, apply func(backend.Conn) error) error {
+func underSavepoint(ctx context.Context, table string, settle time.Duration, tx *sql.Tx, apply func(sqlexec.Conn) error) error {
 	_, err := tx.ExecContext(ctx, "SAVEPOINT "+savepoint)
 	if err != nil {
 		return parse.StatementFailed(table, "savepoint", err)
@@ -274,9 +276,9 @@ func undoSavepoint(ctx context.Context, table string, settle time.Duration, tx *
 }
 
 // settleExec runs statement, one that settles the update, on tx under a
-// settle context of its own (backend.Settle).
+// settle context of its own (sqlexec.Settle).
 func settleExec(ctx context.Context, settle time.Duration, tx *sql.Tx, statement string) error {
-	return backend.Settle(ctx, settle, func(ctx context.Context) error {
+	return sqlexec.Settle(ctx, settle, func(ctx context.Context) error {
 		_, err := tx.ExecContext(ctx, statement)
 		return err
 	})
@@ -290,7 +292,7 @@ type querier interface {
 
 // send runs steps one after another on q, stopping at the first that
 // fails, its failure named as the step.
-func send(ctx context.Context, table string, q querier, steps []backend.Step) error {
+func send(ctx context.Context, table string, q querier, steps []sqlexec.Step) error {
 	for _, step := range steps {
 		err := run(ctx, q, step)
 		if err != nil {
@@ -302,7 +304,7 @@ func send(ctx context.Context, table string, q querier, steps []backend.Step) er
 
 // run runs one step: a query whose rows its Read reads, or a statement
 // whose changed rows its Changed is given.
-func run(ctx context.Context, q querier, step backend.Step) error {
+func run(ctx context.Context, q querier, step sqlexec.Step) error {
 	if step.Read != nil {
 		return query(ctx, q, step)
 	}
@@ -320,7 +322,7 @@ func run(ctx context.Context, q querier, step backend.Step) error {
 
 // query runs step's query and hands its rows to step.Read, closing them
 // after, as a panic in Read unwinds too.
-func query(ctx context.Context, q querier, step backend.Step) (err error) {
+func query(ctx context.Context, q querier, step sqlexec.Step) (err error) {
 	rs, err := q.QueryContext(ctx, step.SQL, step.Args...)
 	if err != nil {
 		return err
