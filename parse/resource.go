@@ -117,7 +117,8 @@ type columnType struct {
 // with each of them in key order (HasMany, BelongsTo, Through). A key
 // column is of any scalar type (core.IsKeyType): a string, UUID, integer,
 // float, decimal, boolean, date, time of day, timestamp, interval or
-// network value. Every statement compares it by value, as a filter
+// network value, or a pointer to or nullable wrapper (core.NullWrapperOf)
+// of one. Every statement compares it by value, as a filter
 // compares its type (a decimal stored as "1.50" is the key 1.5), and Go
 // tells keys apart by their canonical text (core.KeyTextOf). A document,
 // array or geometry column has no equality to identify a row by, and
@@ -128,7 +129,8 @@ func PrimaryKey(columns ...string) ResourceOption {
 
 // TenantColumn names the column that holds a row's tenant. Every list is then
 // held to Scope.Tenant, and so are tenant-scoped relation junctions. The
-// column's field is a string, a UUID or an integer; Scope.Tenant is
+// column's field is a string, a UUID or an integer, or a pointer to or
+// nullable wrapper (core.NullWrapperOf) of one; Scope.Tenant is
 // normalized to it, and to every tenant column the resource's relations
 // reach (Relate).
 func TenantColumn(column string) ResourceOption {
