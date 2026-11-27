@@ -60,7 +60,8 @@ type RowWrite struct {
 // each by its type's value, in the forms SQLite's change predicate
 // compares (canonical.Text); a float with its zero's sign; and any other
 // value as its column's type orders it (core.CompareCanonical): a
-// timestamp by its instant, a decimal by its value.
+// timestamp by its instant, a decimal by its value. A scalar that holds no
+// value of its column's type compares as stored, as SQLite compares it.
 func (c *ComposedPatch) Apply(row StoredRow) (RowWrite, error) {
 	if !c.Assigns() {
 		return RowWrite{}, nil
@@ -293,12 +294,12 @@ func storedEqual(t core.TypeInfo, a, b any) (bool, error) {
 	}
 	order, err := core.CompareCanonical(t, a, b)
 	if err != nil {
-		if t.Type == "" {
-			// An undeclared type orders scalars of one kind; values of
-			// two kinds differ.
-			return storedBytesEqual(a, b), nil
-		}
-		return false, err
+		// A stored value that holds no value of the column's type, which
+		// only SQLite stores (text that is no UUID, a legacy midnight
+		// timestamp in a date column), compares as stored, as SQLite's
+		// change predicate compares it; an undeclared type orders scalars
+		// of one kind, and values of two kinds differ.
+		return storedBytesEqual(a, b), nil
 	}
 	return order == 0, nil
 }

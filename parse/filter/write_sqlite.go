@@ -46,7 +46,7 @@ func sqliteCanonical(expr string, kind canonical.Kind) string {
 
 // MergePatch is json_patch, SQLite's RFC 7396, with the patch bound as its
 // JSON text and a NULL document merged as {}.
-func (SQLiteDialect) MergePatch(doc string, _ core.SQLType, patch map[string]any, bind func(any) string) (string, error) {
+func (SQLiteDialect) MergePatch(doc string, patch map[string]any, bind func(any) string) (string, error) {
 	text, err := json.Marshal(patch)
 	if err != nil {
 		return "", err

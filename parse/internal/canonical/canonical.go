@@ -142,22 +142,36 @@ func Text(kind Kind, v any) (string, error) {
 }
 
 // Value is v, a SQLite value of a column compared as kind, in its Text
-// form, which SQLite's change predicate compares: NULL as NULL, and v
-// itself where it holds no value of kind — a BLOB, as parse_decimal reads
-// one, text that does not parse, or a document's text that is not valid
-// UTF-8, which PostgreSQL refuses. A value kept as itself equals another
-// value only where the two are one as stored, since every form is a value
-// of kind and Text is idempotent: a value equal to a form is that form.
-func Value(kind Kind, v any) any {
-	switch v.(type) {
-	case nil, []byte:
-		return v
+// form, which SQLite's change predicate compares; NULL is NULL.
+//
+// A document or an array that holds no JSON value — text or a BLOB that is
+// not one JSON value, or not valid UTF-8 — is an error, as PostgreSQL's
+// cast to jsonb refuses a text column's and Apply refuses one: no form
+// decides whether a write changes it, and a merge or member write cannot
+// read it.
+//
+// A scalar that holds no value of kind — a BLOB, as parse_decimal reads
+// one, or text that does not parse, such as a legacy midnight timestamp in
+// a date column — is v itself, compared as stored, as Apply compares it: it
+// equals another value only where the two are one as stored, since every
+// form is a value of kind and Text is idempotent, so the write that stores
+// parse's form counts as a change.
+func Value(kind Kind, v any) (any, error) {
+	if v == nil {
+		return nil, nil
+	}
+	if kind == Document || kind.IsArray() {
+		return Text(kind, v)
+	}
+	_, blob := v.([]byte)
+	if blob {
+		return v, nil
 	}
 	text, err := Text(kind, v)
 	if err != nil {
-		return v
+		return v, nil
 	}
-	return text
+	return text, nil
 }
 
 // Decode is the JSON value v, a stored document's or array's text,

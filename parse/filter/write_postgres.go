@@ -8,15 +8,17 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/canonical"
 )
 
 // ChangedCondition is column IS DISTINCT FROM expr and, where a type's
 // equality is coarser than the text a read returns, their texts compared
-// under "C" collation: a document by its canonical jsonb text, a decimal
-// by value alone.
+// under "C" collation; a document compares by its canonical jsonb text,
+// whatever its column's type, and a decimal by value alone.
 func (PostgresDialect) ChangedCondition(column, expr string, t core.TypeInfo) (string, error) {
+	kind, byForm := canonical.KindOf(t)
 	switch {
-	case t.SQLType == core.SQLJSON:
+	case byForm && kind == canonical.Document:
 		return pgDocumentChanged(column, expr), nil
 	case t.Type == core.FieldTypeDecimal:
 		// A decimal's value has no scale (core.DecimalText binds 1.50 as
@@ -26,35 +28,42 @@ func (PostgresDialect) ChangedCondition(column, expr string, t core.TypeInfo) (s
 	}
 	// A type's equality can be coarser than the text a read returns — an
 	// interval's units, a float's zero sign, citext, a nondeterministic
-	// collation, a jsonb number's form — so the text decides. The equality
-	// goes first because PostgreSQL types a placeholder at its first use and
-	// the WHERE precedes the SET clause: it types the placeholder as the
-	// column (an enum, a domain), where a first use as text would not.
+	// collation — so the text decides. Every other type parse writes, an
+	// array's elements included, has one output text per value, so the text
+	// is the value. The equality goes first because PostgreSQL types a
+	// placeholder at its first use and the WHERE precedes the SET clause: it
+	// types the placeholder as the column (an enum, a domain), where a first
+	// use as text would not.
 	return column + " IS DISTINCT FROM " + expr + " OR " + column + `::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::text", nil
 }
 
 // ChangedDocumentCondition compares the column and the jsonb document the
-// member methods built by their canonical jsonb text, whatever JSON type
-// the column declares.
+// member methods built by their canonical jsonb text, whatever type the
+// column has.
 func (PostgresDialect) ChangedDocumentCondition(column, doc string) (string, error) {
 	return pgDocumentChanged(column, doc), nil
 }
 
-// pgDocumentChanged compares a document column with expr as documents. json
-// has no equality operator, and jsonb's text is canonical: key order and
-// whitespace do not count, a number's written form does. The cast to json
-// types a placeholder as the column.
+// pgDocumentChanged compares a document column with expr as documents, the
+// column read as jsonb: json has no equality operator, a text column's
+// equality is its text's, and jsonb's text is canonical — key order and
+// whitespace do not count, a number's written form does. A text column
+// that holds no JSON fails the cast, and so the statement. The cast to
+// json types a placeholder as json, which assigns to a jsonb, json or text
+// column.
 func pgDocumentChanged(column, expr string) string {
 	return column + `::jsonb::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::json::jsonb::text"
 }
 
 // MergePatch compiles the merge level by level over jsonb (pgMerge):
-// PostgreSQL has no RFC 7396 function. A json column is read as jsonb,
-// since its cast to jsonb applies on assignment but not to a function's
-// argument, and the jsonb result assigns back to it.
-func (PostgresDialect) MergePatch(doc string, storage core.SQLType, patch map[string]any, bind func(any) string) (string, error) {
-	if storage == core.SQLJSON {
-		doc += "::jsonb"
+// PostgreSQL has no RFC 7396 function. The document is read as jsonb
+// whatever its column's type (MemberDocument), since no cast makes a json
+// or text column a jsonb function's argument, and the jsonb result assigns
+// back to a jsonb, json or text column.
+func (d PostgresDialect) MergePatch(doc string, patch map[string]any, bind func(any) string) (string, error) {
+	doc, err := d.MemberDocument(doc)
+	if err != nil {
+		return "", err
 	}
 	levels := 0
 	return pgMerge(doc, patch, bind, &levels)
@@ -138,8 +147,8 @@ func (PostgresDialect) ArrayAppend(array string, element any, bind func(any) str
 	return "array_append(COALESCE(" + array + ", '{}'), " + bind(element) + ")", nil
 }
 
-// MemberDocument reads expr as jsonb, whatever JSON type its column
-// declares: jsonb_set, #- and #> take jsonb.
+// MemberDocument reads expr as jsonb, whatever type its column has (jsonb,
+// json or text): jsonb_set, #- and #> take jsonb.
 func (PostgresDialect) MemberDocument(expr string) (string, error) { return expr + "::jsonb", nil }
 
 // SetMember is jsonb_set, which creates a missing last member: the

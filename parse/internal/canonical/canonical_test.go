@@ -110,9 +110,10 @@ func TestText_RefusesWhatHoldsNoValue(t *testing.T) {
 	}
 }
 
-// SQLite's function keeps a value that holds none of its kind as it is, a
-// BLOB included, and NULL as NULL.
-func TestValue_KeepsWhatHoldsNoValue(t *testing.T) {
+// SQLite's function gives NULL as NULL, a document or array in its form,
+// a JSON BLOB included, and a scalar that holds no value of its kind as it
+// is stored, a BLOB included.
+func TestValue_ComparesAScalarThatHoldsNoValueAsStored(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		kind Kind
@@ -121,14 +122,40 @@ func TestValue_KeepsWhatHoldsNoValue(t *testing.T) {
 	}{
 		{"a document", Document, `{"a": 1.0}`, `{"a":1.0}`},
 		{"NULL", Document, nil, nil},
-		{"a BLOB of JSON text", Document, []byte(`{}`), []byte(`{}`)},
-		{"a document that is not JSON", Document, `{`, `{`},
-		{"a number in a document column", Document, int64(1), int64(1)},
+		{"a BLOB of JSON text", Document, []byte(`{"b":1, "a":2}`), `{"a":2,"b":1}`},
+		{"an array", "array:uuid", `["0190A5B4-7C1E-7D8A-9B2C-3D4E5F6A7B8C"]`, `["0190a5b4-7c1e-7d8a-9b2c-3d4e5f6a7b8c"]`},
 		{"text that is no UUID", "uuid", "ten", "ten"},
+		{"a legacy midnight timestamp in a date column", "date", "2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z"},
+		{"a BLOB that is no decimal", "decimal", []byte("1.5"), []byte("1.5")},
 		{"a REAL decimal", "decimal", 1.5, "1.5"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, Value(tc.kind, tc.v))
+			got, err := Value(tc.kind, tc.v)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// A document or array that holds no JSON value has no form: SQLite's
+// function refuses it, as PostgreSQL's cast to jsonb does.
+func TestValue_RefusesADocumentOrArrayThatHoldsNoJSON(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind Kind
+		v    any
+		err  string
+	}{
+		{"a document that is not JSON", Document, "not json", "decoding the stored document"},
+		{"a BLOB that is not JSON", Document, []byte("{"), "decoding the stored document"},
+		{"a document of invalid UTF-8", Document, "\"\xff\"", "its text is not valid UTF-8"},
+		{"a number in a document column", Document, int64(1), "a stored document is JSON text, not int64"},
+		{"an array that is not JSON", "array:uuid", "[", "decoding the stored document"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Value(tc.kind, tc.v)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.err)
 		})
 	}
 }

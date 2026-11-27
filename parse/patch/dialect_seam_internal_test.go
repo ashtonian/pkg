@@ -49,12 +49,12 @@ func (providerDialect) ChangedDocumentCondition(column, doc string) (string, err
 	return "doc_changed(" + column + ", " + doc + ")", nil
 }
 
-func (providerDialect) MergePatch(doc string, storage core.SQLType, p map[string]any, bind func(any) string) (string, error) {
+func (providerDialect) MergePatch(doc string, p map[string]any, bind func(any) string) (string, error) {
 	text, err := json.Marshal(p)
 	if err != nil {
 		return "", err
 	}
-	return "merge(" + doc + ", " + string(storage) + ", " + bind(string(text)) + ")", nil
+	return "merge(" + doc + ", " + bind(string(text)) + ")", nil
 }
 
 func (providerDialect) ArrayAppend(array string, element any, bind func(any) string) (string, error) {
@@ -140,8 +140,8 @@ func TestBuildPatchSQL_WritesThroughTheDialect(t *testing.T) {
 		args              []any
 	}{
 		{name: "a merge into a json column", body: `{"raw":{"a":1}}`,
-			set:     `"raw" = merge("raw", json, ?1)`,
-			changed: `(changed("raw", merge("raw", json, ?1), json))`,
+			set:     `"raw" = merge("raw", ?1)`,
+			changed: `(changed("raw", merge("raw", ?1), json))`,
 			args:    []any{`{"a":1}`}},
 		{name: "an append", body: `[{"op":"array_append","path":"/tags","value":"x"}]`,
 			set:     `"tags" = append("tags", ?1)`,

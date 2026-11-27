@@ -495,7 +495,7 @@ SQLite searches with `LIKE '%cordless drill%'` — a phrase, where PostgreSQL's 
 <!-- output of Example_patches -->
 ```text
 {"name":"Cordless drill","stock":null,"attrs":{"color":"blue","legacy":null}}
-postgres SET "attrs" = (COALESCE(jsonb_path_query_first("attrs", 'strict $ ? (@.type() == "object")'), '{}'::jsonb) - $1::text[] || $2::jsonb), "name" = $3, "stock" = NULL [[legacy] {"color":"blue"} Cordless drill]
+postgres SET "attrs" = (COALESCE(jsonb_path_query_first("attrs"::jsonb, 'strict $ ? (@.type() == "object")'), '{}'::jsonb) - $1::text[] || $2::jsonb), "name" = $3, "stock" = NULL [[legacy] {"color":"blue"} Cordless drill]
 sqlite   SET "attrs" = json_patch(COALESCE("attrs", '{}'), ?1), "name" = ?2, "stock" = NULL [{"color":"blue","legacy":null} Cordless drill]
 [{"op":"array_append","path":"/tags","value":"clearance"},{"op":"replace","path":"/price","value":19.99}]
 postgres SET "tags" = array_append(COALESCE("tags", '{}'), $1), "price" = $2 [clearance 19.99]

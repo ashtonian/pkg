@@ -257,8 +257,8 @@ func TestCanonical(t *testing.T) {
 		{"a timestamp's offset", "parse_canonical('2025-12-31T19:00:00-05:00', 'timestamp')", "2026-01-01T00:00:00.000000000Z"},
 		{"an array's spacing and elements", `parse_canonical('["0190A5B4-7C1E-7D8A-9B2C-3D4E5F6A7B8C", null]', 'array:uuid')`, `["0190a5b4-7c1e-7d8a-9b2c-3d4e5f6a7b8c",null]`},
 		{"text that holds no value of the kind", "parse_canonical('ten', 'uuid')", "ten"},
-		{"a document that is not JSON", "parse_canonical('{', 'document')", "{"},
-		{"a BLOB", "parse_canonical(x'7b7d', 'document')", []byte("{}")},
+		{"a BLOB that holds no value of the kind", "parse_canonical(x'31', 'decimal')", []byte("1")},
+		{"a BLOB of JSON text", `parse_canonical(x'7b7d', 'document')`, "{}"},
 		{"NULL", "parse_canonical(NULL, 'document')", nil},
 	}
 	for _, d := range databases(t) {
@@ -272,6 +272,8 @@ func TestCanonical(t *testing.T) {
 		for _, tt := range []struct{ expr, err string }{
 			{"parse_canonical('x', 1)", "parse_canonical: want the comparison kind as text, got int64"},
 			{"parse_canonical(NULL, 'string')", `parse_canonical: no comparison kind "string"`},
+			{"parse_canonical('not json', 'document')", "parse_canonical: document: decoding the stored document: invalid character"},
+			{"parse_canonical(x'7b', 'array:uuid')", "parse_canonical: array:uuid: decoding the stored document: unexpected EOF"},
 		} {
 			t.Run(d.name+"/"+tt.expr, func(t *testing.T) {
 				var got any
