@@ -136,10 +136,12 @@ test-parse-race-all:
 ## test-parse-wasip1: the memory provider's unit tests built for GOOS=wasip1
 ## GOARCH=wasm and run under wazero with no directory preopened, so a test that
 ## reaches the filesystem fails: the provider needs no filesystem and no driver.
+## wasm has no preemption, so a goroutine that spins hangs the run: go test
+## kills it a minute past -timeout.
 test-parse-wasip1: export GOOS := wasip1
 test-parse-wasip1: export GOARCH := wasm
 test-parse-wasip1:
-	$(call scoped,go test -exec '$(WAZERO) run' $(UNIT_TEST_COUNT),parse/parsememory,unit)
+	$(call scoped,go test -exec '$(WAZERO) run' $(UNIT_TEST_COUNT) -timeout=5m,parse/parsememory,unit)
 
 # SQLite always runs. Supply PARSE_POSTGRES_DSN and PARSE_POSTGIS_DSN for SQL parity.
 test-parse-integration:

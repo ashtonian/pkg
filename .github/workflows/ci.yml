@@ -246,6 +246,7 @@ jobs:
       # The memory provider runs where there is no filesystem: its tests as a
       # WASI module under wazero, with no directory preopened.
       - name: Parse memory provider tests under WASI
+        timeout-minutes: 10
         run: make test-parse-wasip1
   # Only the modules with platform code: config's file watch rests on kqueue
   # there, and the native modules' processes and files on Darwin. Lint vets

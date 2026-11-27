@@ -9,6 +9,7 @@ import (
 	"maps"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -281,11 +282,16 @@ func TestTxn_RunsConcurrentOperationsOneAtATime(t *testing.T) {
 			scoped, err := r.In(parsememory.Tx(txn))
 			require.NoError(t, err)
 
-			progress := make(chan struct{}, 1)
+			// Each worker runs a bounded number of rounds and the settle
+			// waits for half of them, never for a worker to yield: wasip1
+			// has no preemption, so a worker may run all its rounds before
+			// another goroutine runs.
+			var rounds atomic.Int64
+			halfway := make(chan struct{})
 			var workers sync.WaitGroup
 			for w := range memberWriters {
 				workers.Go(func() {
-					for i := 0; ; i++ {
+					for i := range memberRounds {
 						// Pair 0 is the transaction's first write, which no
 						// worker moves.
 						k := 1 + (w*memberRounds+i)%(memberPairs-1)
@@ -304,19 +310,28 @@ func TestTxn_RunsConcurrentOperationsOneAtATime(t *testing.T) {
 							t.Error(err)
 							return
 						}
-						select {
-						case progress <- struct{}{}:
-						default:
+						if rounds.Add(1) == memberWriters*memberRounds/2 {
+							close(halfway)
 						}
 					}
 				})
 			}
-			for range memberRounds {
-				<-progress
+			finished := make(chan struct{})
+			go func() {
+				workers.Wait()
+				close(finished)
+			}()
+			select {
+			case <-halfway:
+			case <-finished:
 			}
 			require.NoError(t, tc.settle(txn, ctx))
-			workers.Wait()
+			<-finished
 
+			require.ErrorIs(t, putSwapped(ctx, txn, 1, "a"), parsememory.ErrTxnDone)
+			_, err = scoped.UpdateBatch(ctx, swap(patches, 1, "a"), parse.Scope{}, parse.UpdateBatchLimits{})
+			require.ErrorIs(t, err, parsememory.ErrTxnDone)
+			require.ErrorIs(t, checkOneState(ctx, scoped), parsememory.ErrTxnDone)
 			require.NoError(t, checkOneState(ctx, r))
 			assert.Equal(t, tc.group, groupOf(t, r, 0), "the transaction's first write is kept by a commit alone")
 			require.NoError(t, db.Put(ctx, "members", parsememory.Row{"id": int64(0), "group": "a", "attrs": map[string]string{}},
