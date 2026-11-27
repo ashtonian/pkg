@@ -43,7 +43,7 @@ SQLite has no row lock, so such an update holds its targets only in a write tran
 
 Call `parsesqlite.Register()` before the database opens a connection: SQLite plans compare decimals, bound an int or float path's number members and decide geo filters through the functions it registers with `modernc.org/sqlite` ([`parsesqlite`](../parsesqlite/README.md)); another driver registers every entry of `parsesqlite.Functions()` under its name, as deterministic ([another SQLite driver](../parsesqlite/README.md#another-sqlite-driver)). A statement of your own over the table reads `devices.Columns(d)` and scans through `parsesql.Query` or `devices.RowScanner(d)`, never by position or by a driver's own name mapping, which can disagree with the column a field compiles to. The compiler does not create tables, migrations, indexes, or SQLite connections.
 
-Changing dialect selects SQL generation, not identical capabilities. Read [backend semantics](queries.md#type-capabilities), especially search, case folding, and geo differences. A custom SQL expression must be appropriate for the selected database.
+Each dialect has its own capabilities as well as its own SQL. Read [backend semantics](queries.md#type-capabilities), especially search, case folding, and geo differences. A custom SQL expression must be appropriate for the selected database.
 
 ## TypeScript client
 
