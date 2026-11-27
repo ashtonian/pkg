@@ -3,6 +3,7 @@
 package filter_test
 
 import (
+	"database/sql/driver"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,8 +11,18 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
+
+// sortCode is an application's codec: a struct its column holds as text.
+type sortCode struct{ s string }
+
+func (c sortCode) Value() (driver.Value, error) { return c.s, nil }
+
+// codedItem sorts by a codec its storage tag declares a string.
+type codedItem struct {
+	ID   int64    `json:"id"   db:"id"`
+	Code sortCode `json:"code" db:"code" parse:"sort" storage:"scalar:string"`
+}
 
 // A struct sort key orders as the scalar its column holds, which only its
 // storage tag names: untagged, the database would order the column by its
@@ -30,8 +41,4 @@ func TestGenerateSortSchema_StructKeyDeclaresItsScalar(t *testing.T) {
 	sorts, err := filter.GenerateSortSchema[codedItem](core.NewSchemaGenerator())
 	require.NoError(t, err)
 	assert.Equal(t, core.FieldTypeString, sorts.Fields["code"].DataType)
-}
-
-func TestCodedWalks_SQLite(t *testing.T) {
-	runCodedWalks(t, dbtest.SQLite(t), filter.SQLiteDialect{})
 }

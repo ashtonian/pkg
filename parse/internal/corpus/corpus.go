@@ -1,11 +1,13 @@
 //go:build integration
 
 // Package corpus is the database-backed suite parse's SQL providers run:
-// every case builds resources on a provider over a fresh database and
-// asserts the rows that come back, the rows stored and the statements
-// sent. parsesql's tests run it on SQLite and parsepgx's on PostgreSQL
-// (RunSQL), so each provider is held to the same cases. The fixtures the
-// root package's own tests also use live in internal/parsetest.
+// every case runs parse over a fresh database, through resources on a
+// provider or through filter's and patch's builders on the database
+// itself, and asserts the rows that come back, the rows stored and the
+// statements sent. parsesql's tests run it on SQLite and parsepgx's on
+// PostgreSQL (RunSQL), so each provider and dialect is held to the same
+// cases. The fixtures the root package's and filter's own tests also use
+// live in internal/parsetest.
 package corpus
 
 import (
@@ -26,9 +28,26 @@ type sqlCase struct {
 // and sorted by name within it.
 func sqlCases() []sqlCase {
 	cases := []sqlCase{
+		{name: "BuildBaseConstraints_FailClosedWithoutATenant", run: buildBaseConstraintsFailClosedWithoutATenant},
+		{name: "ComposeConstraints", run: composeConstraints},
+		{name: "KeyConstraint_EmptySetAdmitsNoRow", run: keyConstraintEmptySetAdmitsNoRow},
+		{name: "KeyConstraint_SelectsWholeKeys", run: keyConstraintSelectsWholeKeys},
+		{name: "PolicyStoredValues", run: policyStoredValues},
+
 		{name: "ExecutorContract", run: executorContract},
 
 		{name: "ArrayMatrix", run: arrayMatrix},
+		{name: "BuildFacetQuery_RelationFacet_KeysByCodePoint", run: buildFacetQueryRelationFacetKeysByCodePoint},
+		{name: "BuildFacetQuery_RelationFacet_NumbersTieByValue", run: buildFacetQueryRelationFacetNumbersTieByValue},
+		{name: "BuildFacetQuery_RelationFacet_TargetKeyOfSeveralColumns", run: buildFacetQueryRelationFacetTargetKeyOfSeveralColumns},
+		{name: "BuildFacetQuery_RelationFacets_OwnKeyEach", run: buildFacetQueryRelationFacetsOwnKeyEach},
+		{name: "BuildFacetQuery_RoundTrip_BooleanKeysAreJSONLiterals", run: buildFacetQueryRoundTripBooleanKeysAreJSONLiterals},
+		{name: "BuildFacetQuery_RoundTrip_FacetFrom", run: buildFacetQueryRoundTripFacetFrom},
+		{name: "BuildFacetQuery_RoundTrip_ListElements", run: buildFacetQueryRoundTripListElements},
+		{name: "BuildFacetQuery_RoundTrip_NumbersTieByValue", run: buildFacetQueryRoundTripNumbersTieByValue},
+		{name: "BuildFacetQuery_RoundTrip_Order", run: buildFacetQueryRoundTripOrder},
+		{name: "BuildFacetQuery_RoundTrip_PerFacetLimit", run: buildFacetQueryRoundTripPerFacetLimit},
+		{name: "BuildFacetQuery_RoundTrip_TenantScoped", run: buildFacetQueryRoundTripTenantScoped},
 		{name: "NumberKeys", run: numberKeys},
 		{name: "PathFacets", run: pathFacets},
 
@@ -41,6 +60,7 @@ func sqlCases() []sqlCase {
 		{name: "JSONIntegerEdges_SameRowsOnEveryBackend", run: jsonIntegerEdgesSameRowsOnEveryBackend},
 		{name: "LookupSets", run: lookupSets},
 		{name: "MembershipMatrix", run: membershipMatrix},
+		{name: "NullOperands", run: nullOperands},
 		{name: "PathMatrix", run: pathMatrix},
 		{name: "PolicyMatrix", run: policyMatrix},
 		{name: "QuotedMatrix", run: quotedMatrix},
@@ -48,24 +68,59 @@ func sqlCases() []sqlCase {
 
 		{name: "ReservedIdentifiers", run: reservedIdentifiers},
 
+		{name: "BuildIncludeQuery_TextKeysUseCodePointOrder", run: buildIncludeQueryTextKeysUseCodePointOrder},
+		{name: "RelationE2E_Facet_TenantScoped", run: relationE2EFacetTenantScoped},
+		{name: "RelationE2E_Filter_CrossTenantBlocked", run: relationE2EFilterCrossTenantBlocked},
+		{name: "RelationE2E_Filter_TenantScopedJunction", run: relationE2EFilterTenantScopedJunction},
+		{name: "RelationE2E_Include_CapPerOwner", run: relationE2EIncludeCapPerOwner},
+		{name: "RelationE2E_Include_TenantScoped", run: relationE2EIncludeTenantScoped},
+		{name: "RelationE2E_Patch_Replace_Add_Remove_Atomic", run: relationE2EPatchReplaceAddRemoveAtomic},
+		{name: "Relation_TypedEdgesCountOnce", run: relationTypedEdgesCountOnce},
+
 		{name: "CompositeKeyPaging", run: compositeKeyPaging},
 		{name: "CompositeKeyUpdates", run: compositeKeyUpdates},
 		{name: "KeyTypes", run: keyTypes},
 		{name: "UUIDKeyRanges", run: uuidKeyRangesCase},
 
+		{name: "Integration_CursorWalkNoLossNoDup", run: integrationCursorWalkNoLossNoDup},
+		{name: "KeysetRender", run: keysetRender},
+		// NOCASE and an expression's own COLLATE are SQLite's; PostgreSQL's
+		// counterpart is KeysetWalk_LinguisticCollationWalksByCodePoint.
+		{name: "KeysetSeek_SQLiteCollatedExpressionWalksByCodePoint", only: SQLite, run: keysetSeekSQLiteCollatedExpressionWalksByCodePoint},
+		{name: "KeysetSeek_SQLiteNoCaseKeyWalksByCodePoint", only: SQLite, run: keysetSeekSQLiteNoCaseKeyWalksByCodePoint},
 		{name: "KeysetWalk", run: keysetWalk},
 		{name: "KeysetWalk_LinguisticCollationWalksByCodePoint", only: Postgres, run: keysetWalkLinguisticCollationWalksByCodePoint},
+		{name: "ListQuery_CompositeKeyBreaksTies", run: listQueryCompositeKeyBreaksTies},
+		{name: "ListQuery_KeyBreaksTies", run: listQueryKeyBreaksTies},
 		{name: "PathWalks", run: pathWalks},
 
 		{name: "GovernedLists", run: governedLists},
 		{name: "GovernedLists_Memory", run: governedListsMemory},
 		{name: "GovernedMixedTypes", run: governedMixedTypes},
 		{name: "ListBodyTransport", run: listBodyTransport},
+		{name: "ListOffsetDoesNotOffsetStandaloneQueries", run: listOffsetDoesNotOffsetStandaloneQueries},
 
+		{name: "CanonicalOrder", run: canonicalOrder},
+		{name: "CanonicalOrder_SQLiteTimeColumns", only: SQLite, run: canonicalOrderSQLiteTimeColumns},
+
+		// SQLite's query plans (EXPLAIN QUERY PLAN).
+		{name: "KeysetSeek_SQLiteDecimalKeySearchesItsIndex", only: SQLite, run: keysetSeekSQLiteDecimalKeySearchesItsIndex},
+		{name: "KeysetSeek_SQLiteSearchesTheSortIndex", only: SQLite, run: keysetSeekSQLiteSearchesTheSortIndex},
 		{name: "SetPlans_SQLiteDecimalKeyIndex", only: SQLite, run: setPlansSQLiteDecimalKeyIndex},
 
 		{name: "PolicyServerFields", run: policyServerFields},
 		{name: "RawPolicy", run: rawPolicy},
+
+		{name: "Integration_Facets", run: integrationFacets},
+		{name: "Integration_InOperator", run: integrationInOperator},
+		{name: "Integration_ListQuery_PolicyConstraints", run: integrationListQueryPolicyConstraints},
+		{name: "Integration_ListQuery_SortAndLimit", run: integrationListQuerySortAndLimit},
+		{name: "Integration_ListQuery_WithCount", run: integrationListQueryWithCount},
+		{name: "Integration_MultiCondition", run: integrationMultiCondition},
+		{name: "Integration_NotOperator", run: integrationNotOperator},
+		{name: "Integration_OrOperator", run: integrationOrOperator},
+		{name: "Integration_SimpleEq", run: integrationSimpleEq},
+		{name: "Integration_WithStartParam", run: integrationWithStartParam},
 
 		{name: "ReadExpr", run: readExpr},
 
@@ -104,6 +159,24 @@ func sqlCases() []sqlCase {
 		{name: "SQLTextValuesSQL", run: sqlTextValuesSQL},
 		{name: "Timestamps", run: timestamps},
 		{name: "TypedDocumentSQLiteParity", only: SQLite, run: typedDocumentSQLiteParity},
+
+		{name: "CodedWalks", run: codedWalks},
+		{name: "NonFiniteDecimal_SQLiteReadsThemAsNull", only: SQLite, run: nonFiniteDecimalSQLiteReadsThemAsNull},
+		// SQLite stores a REAL NaN as NULL, PostgreSQL holds it after
+		// +Infinity, so each engine walks its own order. NonFiniteFloatFacet
+		// and NonFiniteFloatFilter are SQLite's REAL column under the helpers
+		// NonFiniteFilterAndFacet runs on PostgreSQL's float8 and numeric.
+		{name: "NonFiniteFilterAndFacet", only: Postgres, run: nonFiniteFilterAndFacet},
+		{name: "NonFiniteFloatFacet", only: SQLite, run: nonFiniteFloatFacet},
+		{name: "NonFiniteFloatFilter", only: SQLite, run: nonFiniteFloatFilter},
+		{name: "NonFiniteFloatSeek_SQLiteNaNIsNull", only: SQLite, run: nonFiniteFloatSeekSQLiteNaNIsNull},
+		{name: "NonFiniteFloatWalk", only: SQLite, run: nonFiniteFloatWalk},
+		{name: "NonFiniteWalk", only: Postgres, run: nonFiniteWalk},
+		{name: "NullableWrappers", run: nullableWrappers},
+		{name: "PathNumberFacets", run: pathNumberFacets},
+		{name: "PathNumberFilters", run: pathNumberFilters},
+		{name: "PathNumberWalk", run: pathNumberWalk},
+		{name: "PathNumberWalk_PostgresResumesAFloat64TokenFromItsRoundedValue", only: Postgres, run: pathNumberWalkPostgresResumesAFloat64TokenFromItsRoundedValue},
 	}
 	return cases
 }

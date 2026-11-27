@@ -10,7 +10,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
 // stockSchema keys stock_items by (warehouse_id, sku) and filters qty.
@@ -184,81 +183,6 @@ func TestKeyConstraint_RefusesMalformedKeys(t *testing.T) {
 			_, err := keyWhere(t, filter.PostgresDialect{}, tc.c)
 			require.ErrorIs(t, err, filter.ErrPolicyInvalid)
 			assert.ErrorContains(t, err, tc.want)
-		})
-	}
-}
-
-// A key set selects the rows whose columns together equal one key, not the
-// rows matching each column alone, on SQLite and in memory alike.
-func TestKeyConstraint_SelectsWholeKeys(t *testing.T) {
-	db := dbtest.SQLite(t)
-	_, err := db.ExecContext(t.Context(), `CREATE TABLE stock_items (warehouse_id TEXT NOT NULL, sku TEXT NOT NULL, qty INTEGER NOT NULL, PRIMARY KEY (warehouse_id, sku))`)
-	require.NoError(t, err)
-	rows := []stockItem{{"w1", "a", 1}, {"w1", "b", 2}, {"w2", "a", 3}, {"w2", "b", 4}}
-	for _, r := range rows {
-		_, err := db.ExecContext(t.Context(), `INSERT INTO stock_items VALUES (?, ?, ?)`, r.WarehouseID, r.SKU, r.Qty)
-		require.NoError(t, err)
-	}
-	c := &filter.PolicyConstraint{Fields: []string{"warehouse_id", "sku"}, Operator: filter.OpIn, Value: []core.Key{{"w1", "b"}, {"w2", "a"}, {"w9", "a"}}}
-	res, err := keyWhere(t, filter.SQLiteDialect{}, c)
-	require.NoError(t, err)
-	var got []int64
-	rs, err := db.QueryContext(t.Context(), "SELECT qty FROM stock_items WHERE "+res.Where+" ORDER BY qty", res.Args...)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, rs.Close()) }()
-	for rs.Next() {
-		var qty int64
-		require.NoError(t, rs.Scan(&qty))
-		got = append(got, qty)
-	}
-	require.NoError(t, rs.Err())
-	assert.Equal(t, []int64{2, 3}, got)
-
-	ast, err := filter.ApplyPolicyConstraints(stockSchema(), nil, &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{c}})
-	require.NoError(t, err)
-	var inMemory []int64
-	for _, r := range rows {
-		values := map[string]any{"warehouse_id": r.WarehouseID, "sku": r.SKU, "qty": r.Qty}
-		truth, err := filter.Evaluate(ast.Root, filter.RowFunc(func(f *filter.FieldSchema) (any, bool, error) {
-			v, ok := values[f.Column]
-			return v, ok, nil
-		}))
-		require.NoError(t, err)
-		if truth == filter.True {
-			inMemory = append(inMemory, r.Qty)
-		}
-	}
-	assert.Equal(t, []int64{2, 3}, inMemory)
-}
-
-// An empty key set admits no row, of one column as of several, in SQL and in
-// memory: a subject granted no key reads nothing.
-func TestKeyConstraint_EmptySetAdmitsNoRow(t *testing.T) {
-	db := dbtest.SQLite(t)
-	_, err := db.ExecContext(t.Context(), `CREATE TABLE stock_items (warehouse_id TEXT NOT NULL, sku TEXT NOT NULL, qty INTEGER NOT NULL, PRIMARY KEY (warehouse_id, sku))`)
-	require.NoError(t, err)
-	_, err = db.ExecContext(t.Context(), `INSERT INTO stock_items VALUES ('w1', 'a', 1)`)
-	require.NoError(t, err)
-	for name, fields := range map[string][]string{"one column": {"warehouse_id"}, "several columns": {"warehouse_id", "sku"}} {
-		t.Run(name, func(t *testing.T) {
-			c := &filter.PolicyConstraint{Fields: fields, Operator: filter.OpIn, Value: []core.Key{}}
-			for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
-				_, err := keyWhere(t, d, c)
-				require.NoError(t, err, d.Name())
-			}
-			res, err := keyWhere(t, filter.SQLiteDialect{}, c)
-			require.NoError(t, err)
-			var n int
-			require.NoError(t, db.QueryRowContext(t.Context(), "SELECT count(*) FROM stock_items WHERE "+res.Where, res.Args...).Scan(&n))
-			assert.Zero(t, n)
-
-			ast, err := filter.ApplyPolicyConstraints(stockSchema(), nil, &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{c}})
-			require.NoError(t, err)
-			truth, err := filter.Evaluate(ast.Root, filter.RowFunc(func(f *filter.FieldSchema) (any, bool, error) {
-				return map[string]any{"warehouse_id": "w1", "sku": "a"}[f.Column], true, nil
-			}))
-			require.NoError(t, err)
-			assert.Equal(t, filter.False, truth)
 		})
 	}
 }

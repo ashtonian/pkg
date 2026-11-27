@@ -651,3 +651,83 @@ func quotedMatrix(t *testing.T, engine Engine) {
 		filtertest.RunQuoted(t, b.filterIDs(db, schema))
 	})
 }
+
+// A NULL operand or set member means on every engine what it means in SQL
+// and in filter.Evaluate (runNullOperands).
+func nullOperands(t *testing.T, engine Engine) {
+	runOn(t, engine, runNullOperands)
+}
+
+// nullColumn is a column the NULL operand cases compare: its field type,
+// the value its one row holds, and another value of its type.
+type nullColumn struct {
+	field       core.FieldType
+	held, other any
+}
+
+// runNullOperands holds a database and filter.Evaluate to SQL's answer for
+// a NULL operand or set member, whether nil, a nil pointer or a NULL
+// Valuer: a comparison with it is Unknown, and `IN` a set holding it is
+// True on an equal member and otherwise Unknown, so `NOT IN` is False or
+// Unknown. Each case runs against a string and an integer column.
+func runNullOperands(t *testing.T, b sqlBackend) {
+	db := b.db(t)
+	columns := map[string]nullColumn{
+		"string": {core.FieldTypeString, "a", "b"},
+		"int":    {core.FieldTypeInt, int64(7), int64(8)},
+	}
+	for name, c := range columns {
+		t.Run(name, func(t *testing.T) {
+			table := "null_operands_" + name
+			_, err := db.ExecContext(t.Context(), "CREATE TABLE "+table+" (id INTEGER PRIMARY KEY, v "+b.columnType(core.TypeInfo{Type: c.field})+")")
+			require.NoError(t, err)
+			_, err = db.ExecContext(t.Context(), "INSERT INTO "+table+" (id, v) VALUES (1, "+b.dialect.Placeholder(1)+")", c.held)
+			require.NoError(t, err)
+			field := &filter.FieldSchema{ExternalName: "v", Table: table, Column: "v", DataType: c.field}
+			schema := &filter.ResourceSchema{Name: table, Fields: map[string]*filter.FieldSchema{"v": field}}
+			row := filter.ColumnRow(func(column string) (any, bool) { return c.held, column == table+".v" })
+
+			for _, tc := range nullOperandCases(field, c) {
+				n := tc.n
+				res, err := filter.NewSQLBuilder(schema, b.dialect).Build(&filter.FilterAST{Root: n})
+				require.NoError(t, err, "$%s %#v", n.Op, n.Value)
+				answer := dbtest.QueryRows[string](t, db, "SELECT CASE WHEN ("+res.Where+") THEN 'true' WHEN NOT ("+res.Where+") THEN 'false' ELSE 'unknown' END FROM "+table, res.Args...)
+				assert.Equal(t, []string{tc.want.String()}, answer, "the statement: $%s %#v", n.Op, n.Value)
+
+				got, err := filter.Evaluate(n, row)
+				require.NoError(t, err, "$%s %#v", n.Op, n.Value)
+				assert.Equal(t, tc.want, got, "Evaluate: $%s %#v", n.Op, n.Value)
+			}
+		})
+	}
+}
+
+type nullOperandCase struct {
+	n    *filter.FilterNode
+	want filter.Truth
+}
+
+// nullOperandCases are each NULL spelling of c's type as a comparison's
+// operand and as a set member beside c's held and other values.
+func nullOperandCases(field *filter.FieldSchema, c nullColumn) []nullOperandCase {
+	nulls := []any{nil, (*string)(nil), sql.NullString{}}
+	if c.field == core.FieldTypeInt {
+		nulls = []any{nil, (*int64)(nil), sql.NullInt64{}}
+	}
+	var cases []nullOperandCase
+	add := func(op filter.FilterOperator, value any, want filter.Truth) {
+		cases = append(cases, nullOperandCase{&filter.FilterNode{Field: field, Op: op, Value: value}, want})
+	}
+	for _, null := range nulls {
+		for _, op := range []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpLt, filter.OpLte, filter.OpGt, filter.OpGte} {
+			add(op, null, filter.Unknown)
+		}
+		add(filter.OpIn, []any{null}, filter.Unknown)
+		add(filter.OpIn, []any{c.other, null}, filter.Unknown)
+		add(filter.OpIn, []any{null, c.held}, filter.True)
+		add(filter.OpNin, []any{null}, filter.Unknown)
+		add(filter.OpNin, []any{c.other, null}, filter.Unknown)
+		add(filter.OpNin, []any{null, c.held}, filter.False)
+	}
+	return cases
+}

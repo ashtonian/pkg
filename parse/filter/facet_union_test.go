@@ -3,75 +3,21 @@
 package filter_test
 
 import (
-	"database/sql"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/parsesqlite"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// facetSchema returns a small schema with a mix of terms and range facets,
-// covering the cases BuildFacetQuery has to handle: text/uuid/int casting,
-// per-field LIMIT, and range pre-bucketing.
-func facetSchema() *filter.ResourceSchema {
-	maxLow := 50.0
-	maxMid := 100.0
-	return &filter.ResourceSchema{
-		Name:       "items",
-		PrimaryKey: []string{"id"},
-		SystemFields: map[string]*filter.FieldSchema{
-			"id": {ExternalName: "id", Table: "items", Column: "id", DataType: core.FieldTypeString},
-		},
-		Fields: map[string]*filter.FieldSchema{
-			"status": {
-				ExternalName: "status", Table: "items", Column: "status", DataType: core.FieldTypeString,
-				AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpIn},
-				Facetable:        true,
-				FacetSchema:      &filter.FacetSchema{Type: filter.FacetTerms, Limit: 25},
-			},
-			"owner_id": {
-				ExternalName: "owner_id", Table: "items", Column: "owner_id", DataType: core.FieldTypeUUID,
-				AllowedOperators: []filter.FilterOperator{filter.OpEq},
-				Facetable:        true,
-				// No FacetSchema → defaults to terms; default limit 50.
-			},
-			"price": {
-				ExternalName: "price", Table: "items", Column: "price", DataType: core.FieldTypeFloat,
-				AllowedOperators: []filter.FilterOperator{filter.OpGt, filter.OpLte},
-				Facetable:        true,
-				FacetSchema: &filter.FacetSchema{
-					Type: filter.FacetTypeRange,
-					Ranges: []filter.FacetRange{
-						{Key: "0-50", Min: new(float64(0)), Max: &maxLow},
-						{Key: "50-100", Min: &maxLow, Max: &maxMid},
-						{Key: "100+", Min: &maxMid},
-					},
-				},
-			},
-			"name": {
-				ExternalName: "name", Table: "items", Column: "name", DataType: core.FieldTypeString,
-				// Not facetable.
-			},
-			"in_stock": {
-				ExternalName: "in_stock", Table: "items", Column: "in_stock", DataType: core.FieldTypeBool,
-				AllowedOperators: []filter.FilterOperator{filter.OpEq},
-				Facetable:        true,
-			},
-		},
-	}
-}
-
 func TestBuildFacetQuery_Postgres(t *testing.T) {
 	q, err := filter.BuildFacetQuery(
-		facetSchema(),
+		parsetest.FacetSchema(),
 		filter.PostgresDialect{},
 		`"items"."tenant_id" = $1`,
 		[]any{"t1"},
@@ -120,7 +66,7 @@ func TestBuildFacetQuery_Postgres(t *testing.T) {
 
 func TestBuildFacetQuery_SQLite(t *testing.T) {
 	q, err := filter.BuildFacetQuery(
-		facetSchema(),
+		parsetest.FacetSchema(),
 		filter.SQLiteDialect{},
 		`"items"."tenant_id" = ?1`,
 		[]any{"t1"},
@@ -146,7 +92,7 @@ func TestBuildFacetQuery_SQLite(t *testing.T) {
 
 func TestBuildFacetQuery_RejectsNonFacetable(t *testing.T) {
 	_, err := filter.BuildFacetQuery(
-		facetSchema(),
+		parsetest.FacetSchema(),
 		filter.SQLiteDialect{},
 		"1=1", nil,
 		[]filter.FacetRequest{{Field: "name"}},
@@ -161,7 +107,7 @@ func TestBuildFacetQuery_RejectsNonFacetable(t *testing.T) {
 
 func TestBuildFacetQuery_RejectsUnknownField(t *testing.T) {
 	_, err := filter.BuildFacetQuery(
-		facetSchema(),
+		parsetest.FacetSchema(),
 		filter.SQLiteDialect{},
 		"1=1", nil,
 		[]filter.FacetRequest{{Field: "missing"}},
@@ -175,7 +121,7 @@ func TestBuildFacetQuery_RejectsUnknownField(t *testing.T) {
 
 func TestBuildFacetQuery_RejectsEmpty(t *testing.T) {
 	_, err := filter.BuildFacetQuery(
-		facetSchema(), filter.SQLiteDialect{}, "1=1", nil, nil,
+		parsetest.FacetSchema(), filter.SQLiteDialect{}, "1=1", nil, nil,
 	)
 	if err == nil {
 		t.Fatal("expected error for empty facets list")
@@ -185,7 +131,7 @@ func TestBuildFacetQuery_RejectsEmpty(t *testing.T) {
 func TestBuildFacetQuery_DefaultLimit(t *testing.T) {
 	// owner_id has no FacetSchema; should default to terms with limit 50.
 	q, err := filter.BuildFacetQuery(
-		facetSchema(), filter.PostgresDialect{}, "1=1", nil,
+		parsetest.FacetSchema(), filter.PostgresDialect{}, "1=1", nil,
 		[]filter.FacetRequest{{Field: "owner_id"}},
 	)
 	if err != nil {
@@ -196,152 +142,10 @@ func TestBuildFacetQuery_DefaultLimit(t *testing.T) {
 	}
 }
 
-// --- BuildFacetQuery + ScanFacetUnion round-trip via in-memory SQLite ---
-
-func setupFacetDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-
-	if _, err := db.Exec(`CREATE TABLE items (
-		id        INTEGER PRIMARY KEY,
-		tenant_id TEXT NOT NULL,
-		status    TEXT NOT NULL,
-		owner_id  TEXT NOT NULL,
-		price     REAL NOT NULL,
-		name      TEXT,
-		in_stock  BOOLEAN NOT NULL DEFAULT 0
-	)`); err != nil {
-		t.Fatal(err)
-	}
-
-	rows := []struct {
-		tid, status, owner string
-		price              float64
-	}{
-		{"t1", "active", "u1", 10},
-		{"t1", "active", "u1", 30},
-		{"t1", "active", "u2", 75},
-		{"t1", "pending", "u1", 120},
-		{"t1", "pending", "u3", 200},
-		{"t2", "active", "u9", 99}, // wrong tenant; must not appear in t1 facets
-	}
-	for _, r := range rows {
-		if _, err := db.Exec(
-			`INSERT INTO items (tenant_id, status, owner_id, price) VALUES (?, ?, ?, ?)`,
-			r.tid, r.status, r.owner, r.price,
-		); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return db
-}
-
-func TestBuildFacetQuery_RoundTrip_TenantScoped(t *testing.T) {
-	db := setupFacetDB(t)
-
-	q, err := filter.BuildFacetQuery(
-		facetSchema(),
-		filter.SQLiteDialect{},
-		"items.tenant_id = ?1",
-		[]any{"t1"},
-		[]filter.FacetRequest{
-			{Field: "status"},
-			{Field: "owner_id"},
-			{Field: "price"},
-		},
-	)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-
-	rows, err := db.Query(q.SQL, q.Args...)
-	if err != nil {
-		t.Fatalf("execute: %v\nSQL:\n%s", err, q.SQL)
-	}
-	defer func() { require.NoError(t, rows.Close()) }()
-	results, err := filter.ScanFacetUnion(rows)
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
-
-	got := indexFacets(results)
-
-	// Tenant t1 has 5 rows: 3 active, 2 pending. Tenant t2's row must not leak.
-	checkBuckets(t, got["status"], map[string]int64{"active": 3, "pending": 2})
-
-	// owner_id: u1 → 3, u2 → 1, u3 → 1.
-	checkBuckets(t, got["owner_id"], map[string]int64{"u1": 3, "u2": 1, "u3": 1})
-
-	// price ranges: 10,30 in 0-50 (2); 75 in 50-100 (1); 120,200 in 100+ (2).
-	checkBuckets(t, got["price"], map[string]int64{"0-50": 2, "50-100": 1, "100+": 2})
-}
-
-func TestBuildFacetQuery_RoundTrip_PerFacetLimit(t *testing.T) {
-	db := setupFacetDB(t)
-
-	q, err := filter.BuildFacetQuery(
-		facetSchema(), filter.SQLiteDialect{}, "items.tenant_id = ?1",
-		[]any{"t1"},
-		[]filter.FacetRequest{{Field: "owner_id", Limit: 1}},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows, err := db.Query(q.SQL, q.Args...)
-	if err != nil {
-		t.Fatalf("execute: %v\nSQL:\n%s", err, q.SQL)
-	}
-	defer func() { require.NoError(t, rows.Close()) }()
-	results, err := filter.ScanFacetUnion(rows)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 1 || len(results[0].Buckets) != 1 {
-		t.Errorf("expected 1 bucket due to LIMIT 1, got results=%+v", results)
-	}
-	if results[0].Buckets[0].Key != "u1" || results[0].Buckets[0].Count != 3 {
-		t.Errorf("expected top bucket u1=3, got %+v", results[0].Buckets[0])
-	}
-}
-
-// Facet rows come back in one order on every run: facets as requested; a
-// terms facet by count, ties in the field's type order, its limit keeping
-// the lowest tied values; a range facet as declared, whatever its counts.
-func TestBuildFacetQuery_RoundTrip_Order(t *testing.T) {
-	db := setupFacetDB(t)
-	q, err := filter.BuildFacetQuery(
-		facetSchema(), filter.SQLiteDialect{}, "items.tenant_id = ?1", []any{"t1"},
-		[]filter.FacetRequest{{Field: "price"}, {Field: "owner_id", Limit: 2}, {Field: "status"}},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows, err := db.Query(q.SQL, q.Args...)
-	if err != nil {
-		t.Fatalf("execute: %v\nSQL:\n%s", err, q.SQL)
-	}
-	results, err := filter.ScanFacetUnion(rows)
-	if closeErr := errors.Join(err, rows.Close()); closeErr != nil {
-		t.Fatal(closeErr)
-	}
-	want := []filter.FacetResult{
-		{Field: "price", Buckets: []filter.FacetBucket{{Key: "0-50", Count: 2}, {Key: "50-100", Count: 1}, {Key: "100+", Count: 2}}},
-		{Field: "owner_id", Buckets: []filter.FacetBucket{{Key: "u1", Count: 3}, {Key: "u2", Count: 1}}}, // u3 ties u2 and sorts after it
-		{Field: "status", Buckets: []filter.FacetBucket{{Key: "active", Count: 3}, {Key: "pending", Count: 2}}},
-	}
-	if !reflect.DeepEqual(results, want) {
-		t.Errorf("facets = %+v\nwant     %+v", results, want)
-	}
-}
-
 // FacetBuckets is the order a backend counting in Go returns, the order
 // the SQL facet query returns.
 func TestFacetBuckets_OrderAsTheQueryDoes(t *testing.T) {
-	got := filter.FacetBuckets(facetSchema().Fields["price"], map[string]int64{"100+": 2, "0-50": 2, "50-100": 1, "unused": 0}, 0)
+	got := filter.FacetBuckets(parsetest.FacetSchema().Fields["price"], map[string]int64{"100+": 2, "0-50": 2, "50-100": 1, "unused": 0}, 0)
 	if want := []filter.FacetBucket{{Key: "0-50", Count: 2}, {Key: "50-100", Count: 1}, {Key: "100+", Count: 2}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("ranges = %+v, want %+v", got, want)
 	}
@@ -394,357 +198,10 @@ func TestFacetBuckets_NumbersTieByValue(t *testing.T) {
 	}
 }
 
-// BuildFacetQuery keeps and orders the buckets FacetBuckets does: numeric
-// ties by value on an int and a float column, a decimal path and an int
-// array's elements; strings by code point.
-func TestBuildFacetQuery_RoundTrip_NumbersTieByValue(t *testing.T) {
-	require.NoError(t, parsesqlite.Register())
-	db, err := sql.Open("sqlite", ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	for _, stmt := range []string{
-		`CREATE TABLE items (id INTEGER PRIMARY KEY, qty INTEGER, ratio REAL, label TEXT, doc TEXT, scores TEXT)`,
-		`INSERT INTO items (qty, ratio, label, doc, scores) VALUES
-			(9, 9.5, '9', '{"price":9}', '[9,10]'),
-			(10, 10.25, '10', '{"price":"10.0"}', '[10,100]'),
-			(100, -1, '100', '{"price":100}', '[9]'),
-			(-1, 100, '-1', '{"price":-1.5}', '[100]')`,
-	} {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err)
-	}
-	schema := &filter.ResourceSchema{Name: "items", Fields: map[string]*filter.FieldSchema{
-		"qty":   {ExternalName: "qty", Table: "items", Column: "qty", DataType: core.FieldTypeInt, Facetable: true},
-		"ratio": {ExternalName: "ratio", Table: "items", Column: "ratio", DataType: core.FieldTypeFloat, Facetable: true},
-		"label": {ExternalName: "label", Table: "items", Column: "label", DataType: core.FieldTypeString, Facetable: true},
-		"doc.price": {ExternalName: "doc.price", DataType: core.FieldTypeDecimal, Facetable: true,
-			Path: &filter.JSONPath{Table: "items", Column: "doc", Segments: []string{"price"}, Storage: filter.StorageJSON}},
-		"scores": {ExternalName: "scores", Table: "items", Column: "scores", DataType: core.FieldTypeArray, Elem: core.FieldTypeInt, Facetable: true},
-	}}
-	reqs := []filter.FacetRequest{{Field: "qty", Limit: 3}, {Field: "ratio", Limit: 3}, {Field: "label", Limit: 3}, {Field: "doc.price", Limit: 3}, {Field: "scores"}}
-	q, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil, reqs)
-	require.NoError(t, err)
-	rows, err := db.Query(q.SQL, q.Args...)
-	require.NoError(t, err, q.SQL)
-	results, err := filter.ScanFacetUnion(rows)
-	require.NoError(t, errors.Join(err, rows.Close()))
-	one := func(ks ...string) []filter.FacetBucket {
-		out := make([]filter.FacetBucket, len(ks))
-		for i, k := range ks {
-			out[i] = filter.FacetBucket{Key: k, Count: 1}
-		}
-		return out
-	}
-	want := []filter.FacetResult{
-		{Field: "qty", Buckets: one("-1", "9", "10")},
-		{Field: "ratio", Buckets: one("-1", "9.5", "10.25")},
-		{Field: "label", Buckets: one("-1", "10", "100")},
-		{Field: "doc.price", Buckets: one("-1.5", "9", "10")},
-		{Field: "scores", Buckets: []filter.FacetBucket{{Key: "9", Count: 2}, {Key: "10", Count: 2}, {Key: "100", Count: 2}}},
-	}
-	if !reflect.DeepEqual(results, want) {
-		t.Errorf("facets = %+v\nwant     %+v\nSQL:\n%s", results, want, q.SQL)
-	}
-	for _, r := range results {
-		if len(r.Buckets) == 0 {
-			continue
-		}
-		counts := map[string]int64{}
-		for _, b := range r.Buckets {
-			counts[b.Key] = b.Count
-		}
-		inGo := filter.FacetBuckets(schema.Fields[r.Field], counts, 0)
-		if !reflect.DeepEqual(inGo, r.Buckets) {
-			t.Errorf("%s: FacetBuckets = %+v, the query %+v", r.Field, inGo, r.Buckets)
-		}
-	}
-}
-
-// A relation terms facet on a numeric target key breaks count ties, and
-// cuts at its limit, by the keys' values, as FacetBuckets does: 2 before
-// 10, 9 before 10.5. A string key keeps code-point order.
-func TestBuildFacetQuery_RelationFacet_NumbersTieByValue(t *testing.T) {
-	require.NoError(t, parsesqlite.Register())
-	db, err := sql.Open("sqlite", ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	for _, stmt := range []string{
-		`CREATE TABLE items (id TEXT PRIMARY KEY)`,
-		`CREATE TABLE item_ranks (item_id TEXT NOT NULL, rank_id INTEGER NOT NULL)`,
-		`CREATE TABLE item_prices (item_id TEXT NOT NULL, price TEXT NOT NULL)`,
-		`CREATE TABLE item_weights (item_id TEXT NOT NULL, weight REAL NOT NULL)`,
-		`CREATE TABLE item_codes (item_id TEXT NOT NULL, code TEXT NOT NULL)`,
-		`INSERT INTO items VALUES ('a'), ('b'), ('c')`,
-		`INSERT INTO item_ranks VALUES ('a', 10), ('b', 2), ('c', 1), ('a', 1)`,
-		`INSERT INTO item_prices VALUES ('a', '10.5'), ('b', '9'), ('c', '-1'), ('a', '-1')`,
-		`INSERT INTO item_weights VALUES ('a', 10.25), ('b', 9.5), ('c', -1), ('a', -1)`,
-		`INSERT INTO item_codes VALUES ('a', '10'), ('b', '9'), ('c', '-1'), ('a', '-1')`,
-	} {
-		_, err := db.ExecContext(t.Context(), stmt)
-		require.NoError(t, err, stmt)
-	}
-	related := func(table, column string, t core.FieldType) *filter.FieldSchema {
-		field := &filter.FieldSchema{
-			ExternalName: column, DataType: t, Facetable: true,
-			Relation: &core.RelationSchema{
-				JoinTable: table, SourceColumns: []string{"item_id"}, TargetColumns: []string{column}, OwnerKey: []string{"id"},
-				SourceTypes: textKey(), TargetTypes: []core.TypeInfo{{Type: t}},
-			},
-		}
-		return field
-	}
-	schema := &filter.ResourceSchema{
-		Name: "items", PrimaryKey: []string{"id"},
-		SystemFields: map[string]*filter.FieldSchema{
-			"id": {ExternalName: "id", Table: "items", Column: "id", DataType: core.FieldTypeString},
-		},
-		Fields: map[string]*filter.FieldSchema{
-			"rank_id": related("item_ranks", "rank_id", core.FieldTypeInt),
-			"price":   related("item_prices", "price", core.FieldTypeDecimal),
-			"weight":  related("item_weights", "weight", core.FieldTypeFloat),
-			"code":    related("item_codes", "code", core.FieldTypeString),
-		},
-	}
-	q, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil,
-		[]filter.FacetRequest{{Field: "rank_id", Limit: 2}, {Field: "price", Limit: 2}, {Field: "weight", Limit: 2}, {Field: "code", Limit: 2}},
-		filter.WithFacetRelationScope(filter.RelationScope{}))
-	require.NoError(t, err)
-	rows, err := db.QueryContext(t.Context(), q.SQL, q.Args...)
-	require.NoError(t, err, q.SQL)
-	defer func() { require.NoError(t, rows.Close()) }()
-	results, err := filter.ScanFacetUnion(rows)
-	require.NoError(t, err)
-	require.NoError(t, rows.Err())
-
-	want := map[string][]filter.FacetBucket{
-		"rank_id": {{Key: "1", Count: 2}, {Key: "2", Count: 1}},
-		"price":   {{Key: "-1", Count: 2}, {Key: "9", Count: 1}},
-		"weight":  {{Key: "-1", Count: 2}, {Key: "9.5", Count: 1}},
-		"code":    {{Key: "-1", Count: 2}, {Key: "10", Count: 1}},
-	}
-	got := indexFacets(results)
-	assert.Equal(t, want, got, q.SQL)
-	all := map[string]map[string]int64{
-		"rank_id": {"1": 2, "10": 1, "2": 1},
-		"price":   {"-1": 2, "10.5": 1, "9": 1},
-		"weight":  {"-1": 2, "10.25": 1, "9.5": 1},
-		"code":    {"-1": 2, "10": 1, "9": 1},
-	}
-	for name, counts := range all {
-		assert.Equal(t, want[name], filter.FacetBuckets(schema.Fields[name], counts, 2), "FacetBuckets(%s)", name)
-	}
-}
-
-// A relation facet groups its string keys by code point, as includes name
-// them, whatever the junction column's collation: a case-insensitive
-// column's "Red" and "red" are two keys.
-func TestBuildFacetQuery_RelationFacet_KeysByCodePoint(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	for _, stmt := range []string{
-		`CREATE TABLE items (id TEXT PRIMARY KEY)`,
-		`CREATE TABLE item_tags (item_id TEXT NOT NULL, tag TEXT NOT NULL COLLATE NOCASE)`,
-		`INSERT INTO items VALUES ('a'), ('b'), ('c')`,
-		`INSERT INTO item_tags VALUES ('a', 'Red'), ('b', 'red'), ('c', 'red')`,
-	} {
-		_, err := db.ExecContext(t.Context(), stmt)
-		require.NoError(t, err, stmt)
-	}
-	schema := &filter.ResourceSchema{
-		Name: "items", PrimaryKey: []string{"id"},
-		SystemFields: map[string]*filter.FieldSchema{
-			"id": {ExternalName: "id", Table: "items", Column: "id", DataType: core.FieldTypeString},
-		},
-		Fields: map[string]*filter.FieldSchema{
-			"tags": {
-				ExternalName: "tags", DataType: core.FieldTypeString, Facetable: true,
-				Relation: &core.RelationSchema{JoinTable: "item_tags", SourceColumns: []string{"item_id"}, TargetColumns: []string{"tag"}, OwnerKey: []string{"id"}, SourceTypes: textKey(), TargetTypes: textKey()},
-			},
-		},
-	}
-	q, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil, []filter.FacetRequest{{Field: "tags"}},
-		filter.WithFacetRelationScope(filter.RelationScope{}))
-	require.NoError(t, err)
-	rows, err := db.QueryContext(t.Context(), q.SQL, q.Args...)
-	require.NoError(t, err, q.SQL)
-	defer func() { require.NoError(t, rows.Close()) }()
-	results, err := filter.ScanFacetUnion(rows)
-	require.NoError(t, err)
-	require.NoError(t, rows.Err())
-	assert.Equal(t, []filter.FacetBucket{{Key: "red", Count: 2}, {Key: "Red", Count: 1}}, indexFacets(results)["tags"], q.SQL)
-}
-
-// A list column's terms facet counts each distinct element once per row,
-// the rows holding it, as memory backends count it: a repeated element is
-// one row, an absent list none.
-func TestBuildFacetQuery_RoundTrip_ListElements(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	for _, stmt := range []string{
-		`CREATE TABLE posts (id INTEGER PRIMARY KEY, tags TEXT)`,
-		`INSERT INTO posts (tags) VALUES ('["a","b"]'), ('["a","a"]'), ('["c","b"]'), (NULL), ('[]')`,
-	} {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatal(err)
-		}
-	}
-	schema := &filter.ResourceSchema{Name: "posts", Fields: map[string]*filter.FieldSchema{
-		"tags": {
-			ExternalName: "tags", Table: "posts", Column: "tags", DataType: core.FieldTypeArray, Elem: core.FieldTypeString,
-			AllowedOperators: []filter.FilterOperator{filter.OpContains}, Facetable: true,
-		},
-	}}
-	for _, tc := range []struct {
-		limit int
-		want  []filter.FacetBucket
-	}{
-		{0, []filter.FacetBucket{{Key: "a", Count: 2}, {Key: "b", Count: 2}, {Key: "c", Count: 1}}},
-		{1, []filter.FacetBucket{{Key: "a", Count: 2}}},
-	} {
-		q, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil, []filter.FacetRequest{{Field: "tags", Limit: tc.limit}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		rows, err := db.Query(q.SQL, q.Args...)
-		if err != nil {
-			t.Fatalf("execute: %v\nSQL:\n%s", err, q.SQL)
-		}
-		results, err := filter.ScanFacetUnion(rows)
-		if closeErr := errors.Join(err, rows.Close()); closeErr != nil {
-			t.Fatal(closeErr)
-		}
-		if want := []filter.FacetResult{{Field: "tags", Buckets: tc.want}}; !reflect.DeepEqual(results, want) {
-			t.Errorf("limit %d: facets = %+v, want %+v", tc.limit, results, want)
-		}
-	}
-
-	schema.Fields["tags"].FacetSchema = &filter.FacetSchema{Type: filter.FacetTypeRange, Ranges: []filter.FacetRange{{Key: "0+", Min: new(float64(0))}}}
-	if _, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil, []filter.FacetRequest{{Field: "tags"}}); err == nil {
-		t.Error("a range facet over a list is refused")
-	}
-}
-
-// WithFacetFrom facets the rows of a caller's FROM clause, an aliased table
-// joined to another, keyed and ordered as over one table; without it the
-// base reads the schema's table.
-func TestBuildFacetQuery_RoundTrip_FacetFrom(t *testing.T) {
-	require.NoError(t, parsesqlite.Register())
-	db, err := sql.Open("sqlite", ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	for _, stmt := range []string{
-		`CREATE TABLE owners (id INTEGER PRIMARY KEY, active INTEGER)`,
-		`CREATE TABLE docs (id INTEGER PRIMARY KEY, owner_id INTEGER, status TEXT, doc TEXT, tags TEXT)`,
-		`INSERT INTO owners (id, active) VALUES (1, 1), (2, 0)`,
-		`INSERT INTO docs (owner_id, status, doc, tags) VALUES
-			(1, 'open', '{"price":10.0}', '["a","b"]'),
-			(1, 'open', '{"price":9}', '["a","a"]'),
-			(1, 'done', '{"price":10}', NULL),
-			(2, 'open', '{"price":9}', '["b"]')`,
-	} {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err)
-	}
-	schema := &filter.ResourceSchema{Name: "docs", Fields: map[string]*filter.FieldSchema{
-		"status": {ExternalName: "status", Table: "d", Column: "status", DataType: core.FieldTypeString, Facetable: true},
-		"doc.price": {ExternalName: "doc.price", DataType: core.FieldTypeDecimal, Facetable: true,
-			Path: &filter.JSONPath{Table: "d", Column: "doc", Segments: []string{"price"}, Storage: filter.StorageJSON}},
-		"tags": {ExternalName: "tags", Table: "d", Column: "tags", DataType: core.FieldTypeArray, Elem: core.FieldTypeString, Facetable: true},
-	}}
-	reqs := []filter.FacetRequest{{Field: "status"}, {Field: "doc.price"}, {Field: "tags"}}
-	const from = "docs d JOIN owners o ON o.id = d.owner_id"
-	q, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "o.active = ?1", []any{1}, reqs, filter.WithFacetFrom(from))
-	require.NoError(t, err)
-	require.Contains(t, q.SQL, " FROM "+from+" WHERE o.active = ?1")
-	rows, err := db.Query(q.SQL, q.Args...)
-	require.NoError(t, err, q.SQL)
-	results, err := filter.ScanFacetUnion(rows)
-	require.NoError(t, errors.Join(err, rows.Close()))
-	want := []filter.FacetResult{
-		{Field: "status", Buckets: []filter.FacetBucket{{Key: "open", Count: 2}, {Key: "done", Count: 1}}},
-		{Field: "doc.price", Buckets: []filter.FacetBucket{{Key: "10", Count: 2}, {Key: "9", Count: 1}}},
-		{Field: "tags", Buckets: []filter.FacetBucket{{Key: "a", Count: 2}, {Key: "b", Count: 1}}},
-	}
-	if !reflect.DeepEqual(results, want) {
-		t.Errorf("facets = %+v\nwant     %+v\nSQL:\n%s", results, want, q.SQL)
-	}
-
-	plain, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil, reqs)
-	require.NoError(t, err)
-	require.Contains(t, plain.SQL, ` FROM "docs" WHERE 1=1`)
-}
-
-// --- helpers ---
-
-func indexFacets(results []filter.FacetResult) map[string][]filter.FacetBucket {
-	m := make(map[string][]filter.FacetBucket, len(results))
-	for _, r := range results {
-		m[r.Field] = r.Buckets
-	}
-	return m
-}
-
-func checkBuckets(t *testing.T, got []filter.FacetBucket, want map[string]int64) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Errorf("bucket count mismatch: got %d (%+v), want %d (%v)", len(got), got, len(want), want)
-		return
-	}
-	for _, b := range got {
-		w, ok := want[b.Key]
-		if !ok {
-			t.Errorf("unexpected bucket %q", b.Key)
-			continue
-		}
-		if b.Count != w {
-			t.Errorf("bucket %q count = %d, want %d", b.Key, b.Count, w)
-		}
-	}
-}
-
-// Boolean facet keys must be the JSON literals on every backend: a bare
-// text cast yields "1"/"0" on SQLite vs "true"/"false" on PostgreSQL,
-// and  consumers compare against the JSON form (the admin SPAs'
-// facetCount(facets, field, true) stringifies to "true"). Regression for
-// the termsKeyExpr boolean CASE normalization.
-func TestBuildFacetQuery_RoundTrip_BooleanKeysAreJSONLiterals(t *testing.T) {
-	db := setupFacetDB(t)
-	if _, err := db.Exec(`UPDATE items SET in_stock = 1 WHERE tenant_id = 't1' AND status = 'active'`); err != nil {
-		t.Fatal(err)
-	}
-
-	q, err := filter.BuildFacetQuery(
-		facetSchema(),
-		filter.SQLiteDialect{},
-		"items.tenant_id = ?1",
-		[]any{"t1"},
-		[]filter.FacetRequest{{Field: "in_stock"}},
-	)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	rows, err := db.Query(q.SQL, q.Args...)
-	if err != nil {
-		t.Fatalf("execute: %v\nSQL:\n%s", err, q.SQL)
-	}
-	defer func() { require.NoError(t, rows.Close()) }()
-	results, err := filter.ScanFacetUnion(rows)
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
-
-	got := indexFacets(results)
-	checkBuckets(t, got["in_stock"], map[string]int64{"true": 3, "false": 2})
-}
-
 // BuildFacetQuery numbers its own parameters after filterArgs, so a
 // fragment numbered from an offset would collide with them; it is refused.
 func TestBuildFacetQuery_RefusesAnOffsetFragment(t *testing.T) {
-	schema := facetSchema()
+	schema := parsetest.FacetSchema()
 	ast, err := filter.NewFilterParser(schema, nil).Parse(`{"status":"active"}`)
 	require.NoError(t, err)
 	for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
