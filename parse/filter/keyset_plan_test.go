@@ -113,10 +113,12 @@ func TestKeysetSeek_SQLiteDecimalKeySearchesItsIndex(t *testing.T) {
 	require.NoError(t, err)
 	lq := mustListQuery(t, fs, ss, filter.SQLiteDialect{})
 	amount := func(dir filter.SortDirection) filter.CursorField {
-		return filter.CursorField{Name: "amount", Value: "500.3", Direction: dir}
+		field := filter.CursorField{Name: "amount", Value: "500.3", Direction: dir}
+		return field
 	}
 	id := func(dir filter.SortDirection) filter.CursorField {
-		return filter.CursorField{Name: "id", Value: int64(1500), Direction: dir}
+		field := filter.CursorField{Name: "id", Value: int64(1500), Direction: dir}
+		return field
 	}
 	qty := filter.CursorField{Name: "qty", Value: int64(5), Direction: filter.SortAsc}
 

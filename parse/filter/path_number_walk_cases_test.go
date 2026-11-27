@@ -30,32 +30,41 @@ type measureRow struct {
 // integer beyond it, so they are NULL, as a string member and an absent one
 // are. ns holds elements on either side of float64 precision and of the
 // bound.
-var measureSeeds = []measureRow{
-	{1, `{"n": 0.1, "ns": [0.1, 1e-1000]}`},
-	{2, `{"n": 0.10000000000000001, "ns": [0.10000000000000001]}`},
-	{3, `{"n": 0.1}`},
-	{4, `{"n": 0.09999999999999999999}`},
-	{5, `{"n": 1}`},
-	{6, `{"n": 1.0000000000000001}`},
-	{7, `{"n": "0.5"}`},
-	{8, `{}`},
-	{9, `{"n": 12345678901234567890123}`},
-	{10, `{"n": 12345678901234567890124}`},
-	{11, `{"n": 1e-1000, "ns": [1e-1000]}`},
-	{12, `{"n": 1` + strings.Repeat("0", core.MaxDecimalDigits) + `}`},
-	{13, `{"n": 1e400, "ns": [1e400]}`},
-	{14, `{"n": -1e400}`},
-	{15, `{"n": 1e-999}`},
+func measureSeeds() []measureRow {
+	seeds := []measureRow{
+		{1, `{"n": 0.1, "ns": [0.1, 1e-1000]}`},
+		{2, `{"n": 0.10000000000000001, "ns": [0.10000000000000001]}`},
+		{3, `{"n": 0.1}`},
+		{4, `{"n": 0.09999999999999999999}`},
+		{5, `{"n": 1}`},
+		{6, `{"n": 1.0000000000000001}`},
+		{7, `{"n": "0.5"}`},
+		{8, `{}`},
+		{9, `{"n": 12345678901234567890123}`},
+		{10, `{"n": 12345678901234567890124}`},
+		{11, `{"n": 1e-1000, "ns": [1e-1000]}`},
+		{12, `{"n": 1` + strings.Repeat("0", core.MaxDecimalDigits) + `}`},
+		{13, `{"n": 1e400, "ns": [1e400]}`},
+		{14, `{"n": -1e400}`},
+		{15, `{"n": 1e-999}`},
+	}
+	return seeds
 }
 
 // postgresMeasureOrder is the seeds ascending by n as PostgreSQL orders
 // the member, exactly (::numeric), ties on the id.
-var postgresMeasureOrder = []int64{14, 15, 4, 1, 3, 2, 5, 6, 9, 10, 13, 7, 8, 11, 12}
+func postgresMeasureOrder() []int64 {
+	order := []int64{14, 15, 4, 1, 3, 2, 5, 6, 9, 10, 13, 7, 8, 11, 12}
+	return order
+}
 
 // sqliteMeasureOrder is the seeds ascending by n as SQLite orders the
 // INTEGER or REAL json_extract reads: members one float64 apart tie and
 // break on the id, 1e-999 is 0.0 and ±1e400 are ±Inf.
-var sqliteMeasureOrder = []int64{14, 15, 1, 2, 3, 4, 5, 6, 9, 10, 13, 7, 8, 11, 12}
+func sqliteMeasureOrder() []int64 {
+	order := []int64{14, 15, 1, 2, 3, 4, 5, 6, 9, 10, 13, 7, 8, 11, 12}
+	return order
+}
 
 // measureDB is a database a document column's float path pages on.
 type measureDB struct {
@@ -90,7 +99,7 @@ func storeMeasures(t *testing.T, m measureDB) {
 	_, err := m.db.ExecContext(t.Context(), "CREATE TABLE measures (id INTEGER PRIMARY KEY, doc "+m.docType+" NOT NULL)")
 	require.NoError(t, err)
 	insert := "INSERT INTO measures (id, doc) VALUES (" + m.dialect.Placeholder(1) + ", " + m.dialect.Placeholder(2) + ")"
-	for _, seed := range measureSeeds {
+	for _, seed := range measureSeeds() {
 		_, err = m.db.ExecContext(t.Context(), insert, seed.ID, seed.Doc)
 		require.NoError(t, err)
 	}
@@ -99,7 +108,7 @@ func storeMeasures(t *testing.T, m measureDB) {
 // measureSchema filters and facets on the float path n and the float array
 // path ns.
 func measureSchema(storage filter.JSONStorage) *filter.ResourceSchema {
-	return &filter.ResourceSchema{
+	schema := &filter.ResourceSchema{
 		Name: "measures", PrimaryKey: []string{"id"},
 		SystemFields: map[string]*filter.FieldSchema{
 			"id": {ExternalName: "id", Table: "measures", Column: "id", DataType: core.FieldTypeInt},
@@ -111,16 +120,19 @@ func measureSchema(storage filter.JSONStorage) *filter.ResourceSchema {
 				AllowedOperators: []filter.FilterOperator{filter.OpContains, filter.OpSome, filter.OpNone, filter.OpNull}},
 		},
 	}
+	return schema
 }
 
 func measurePath(storage filter.JSONStorage, member string) *filter.JSONPath {
-	return &filter.JSONPath{Table: "measures", Column: "doc", Segments: []string{member}, Storage: storage}
+	path := &filter.JSONPath{Table: "measures", Column: "doc", Segments: []string{member}, Storage: storage}
+	return path
 }
 
 func measureSorts(storage filter.JSONStorage) *filter.SortSchema {
-	return &filter.SortSchema{Fields: map[string]*filter.SortFieldSchema{
+	sorts := &filter.SortSchema{Fields: map[string]*filter.SortFieldSchema{
 		"n": {DataType: core.FieldTypeFloat, Path: measurePath(storage, "n")},
 	}}
+	return sorts
 }
 
 func queryMeasures(t *testing.T, db *sql.DB, res *filter.ListResult) []measureRow {
@@ -149,7 +161,7 @@ func runPathNumberFilters(t *testing.T, m measureDB, filters []string) {
 	for _, q := range filters {
 		ast, err := filter.NewFilterParser(schema, nil).Parse(q)
 		require.NoError(t, err, q)
-		res, err := lq.Build(filter.ListFilterAST(ast), filter.ListLimit(len(measureSeeds)))
+		res, err := lq.Build(filter.ListFilterAST(ast), filter.ListLimit(len(measureSeeds())))
 		require.NoError(t, err, q)
 		var selected []int64
 		for _, r := range queryMeasures(t, m.db, res) {
@@ -177,25 +189,29 @@ func runPathNumberFacets(t *testing.T, m measureDB) {
 	storeMeasures(t, m)
 	schema := measureSchema(m.storage)
 	stored := queryMeasures(t, m.db, &filter.ListResult{Fragment: "ORDER BY measures.id"})
+	limit := len(measureSeeds())
 	for _, name := range []string{"n", "ns"} {
-		field := schema.Fields[name]
-		q, err := filter.BuildFacetQuery(schema, m.dialect, "1=1", nil, []filter.FacetRequest{{Field: name, Limit: len(measureSeeds)}})
-		require.NoError(t, err)
-		rows, err := m.db.QueryContext(t.Context(), q.SQL, q.Args...)
-		require.NoError(t, err)
-		results, err := filter.ScanFacetUnion(rows)
-		require.NoError(t, rows.Close())
-		require.NoError(t, err)
-		require.Len(t, results, 1)
+		t.Run(name, func(t *testing.T) {
+			field := schema.Fields[name]
+			q, err := filter.BuildFacetQuery(schema, m.dialect, "1=1", nil, []filter.FacetRequest{{Field: name, Limit: limit}})
+			require.NoError(t, err)
+			rows, err := m.db.QueryContext(t.Context(), q.SQL, q.Args...)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, rows.Close()) }()
+			results, err := filter.ScanFacetUnion(rows)
+			require.NoError(t, err)
+			require.NoError(t, rows.Err())
+			require.Len(t, results, 1)
 
-		counts := map[string]int64{}
-		for _, r := range stored {
-			keys, err := filter.FacetKeys(r.Doc, field)
-			require.NoError(t, err, "%s row %d", name, r.ID)
-			for _, k := range keys {
-				counts[k]++
+			counts := map[string]int64{}
+			for _, r := range stored {
+				keys, err := filter.FacetKeys(r.Doc, field)
+				require.NoError(t, err, "row %d", r.ID)
+				for _, k := range keys {
+					counts[k]++
+				}
 			}
-		}
-		assert.Equal(t, results[0].Buckets, filter.FacetBuckets(field, counts, len(measureSeeds)), name)
+			assert.Equal(t, results[0].Buckets, filter.FacetBuckets(field, counts, limit))
+		})
 	}
 }

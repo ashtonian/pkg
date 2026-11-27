@@ -516,7 +516,8 @@ func compareScalar(f *FieldSchema, t core.FieldType, v, lit any) (int, error) {
 		return 0, fmt.Errorf("field %s: type %q has no scalar comparison", f.ExternalName, t)
 	}
 	typ := core.TypeInfo{Type: t, NumberKind: f.NumberKind}
-	if _, member := v.(json.Number); member {
+	_, member := v.(json.Number)
+	if member {
 		typ = memberType(t)
 	}
 	c, err := core.CompareCanonical(typ, v, lit)

@@ -321,7 +321,8 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	}
 	// The last check: past it nothing fails, so the graph never holds a
 	// relation the resource does not declare.
-	if err := r.tenantNode.relate(t.tenantGraph(), rel.policy); err != nil {
+	err = r.tenantNode.relate(t.tenantGraph(), rel.policy)
+	if err != nil {
 		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
 	}
 	fs.Fields[name] = field

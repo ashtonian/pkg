@@ -122,7 +122,8 @@ func pgMerge(target string, patch map[string]any, bind func(any) string, levels 
 
 func hasNestedObject(patch map[string]any) bool {
 	for _, v := range patch {
-		if _, ok := v.(map[string]any); ok {
+		_, ok := v.(map[string]any)
+		if ok {
 			return true
 		}
 	}

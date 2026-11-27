@@ -11,7 +11,8 @@ import (
 )
 
 func postgresScores(t *testing.T, column string, field core.FieldType) scoreDB {
-	return scoreDB{db: dbtest.Postgres(t), dialect: filter.PostgresDialect{}, column: column, field: field}
+	scores := scoreDB{db: dbtest.Postgres(t), dialect: filter.PostgresDialect{}, column: column, field: field}
+	return scores
 }
 
 // PostgreSQL orders float8 and numeric -Infinity, the finite values,

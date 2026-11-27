@@ -19,7 +19,7 @@ import (
 // returns, so members one float64 apart tie and break on the id: the
 // walk resumes at each boundary in that order.
 func TestPathNumberWalk_SQLite(t *testing.T) {
-	runPathNumberWalks(t, sqliteMeasures(t), sqliteMeasureOrder)
+	runPathNumberWalks(t, sqliteMeasures(t), sqliteMeasureOrder())
 }
 
 // SQLite agrees with Evaluate on which members are numbers, and on every
@@ -36,7 +36,8 @@ func TestPathNumberFacets_SQLite(t *testing.T) {
 }
 
 func sqliteMeasures(t *testing.T) measureDB {
-	return measureDB{db: dbtest.SQLite(t), dialect: filter.SQLiteDialect{}, docType: "TEXT"}
+	measures := measureDB{db: dbtest.SQLite(t), dialect: filter.SQLiteDialect{}, docType: "TEXT"}
+	return measures
 }
 
 // A memory backend orders a float path's members by the values its
@@ -45,8 +46,9 @@ func sqliteMeasures(t *testing.T) measureDB {
 func TestPathNumberKeyValues_OrderAsPostgres(t *testing.T) {
 	keys := filter.Keyset(&filter.SortResult{Fields: []filter.SortField{{Name: "n", Direction: filter.SortAsc, Schema: measureSorts("").Fields["n"]}}},
 		filter.CursorKey{Name: "id", Table: "measures", Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64})
+	seeds := measureSeeds()
 	values := map[int64][]any{}
-	for _, seed := range measureSeeds {
+	for _, seed := range seeds {
 		token, err := filter.CursorPlan{Keys: keys}.Token(false, func(column string) (any, error) {
 			if column == "doc" {
 				return seed.Doc, nil
@@ -56,8 +58,8 @@ func TestPathNumberKeyValues_OrderAsPostgres(t *testing.T) {
 		require.NoError(t, err)
 		values[seed.ID] = []any{token.Fields[0].Value, token.Fields[1].Value}
 	}
-	ids := make([]int64, 0, len(measureSeeds))
-	for _, seed := range measureSeeds {
+	ids := make([]int64, 0, len(seeds))
+	for _, seed := range seeds {
 		ids = append(ids, seed.ID)
 	}
 	slices.SortFunc(ids, func(a, b int64) int {
@@ -70,5 +72,5 @@ func TestPathNumberKeyValues_OrderAsPostgres(t *testing.T) {
 		}
 		return 0
 	})
-	assert.Equal(t, postgresMeasureOrder, ids)
+	assert.Equal(t, postgresMeasureOrder(), ids)
 }

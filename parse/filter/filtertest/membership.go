@@ -120,10 +120,12 @@ func MembershipCases() []MembershipCase {
 	// the declared one; both select what the typed list of plain values does.
 	scanned := func(v any) *any { return &v }
 	texts := func() []any {
-		return []any{new("b"), scanned("e"), sql.NullString{String: "b", Valid: true}, scanned(new("e"))}
+		values := []any{new("b"), scanned("e"), sql.NullString{String: "b", Valid: true}, scanned(new("e"))}
+		return values
 	}
 	refs := func() []any {
-		return []any{ref(1), scanned(*ref(2)), googleuuid.UUID(*ref(5)), scanned(new(googleuuid.UUID(*ref(5))))}
+		values := []any{ref(1), scanned(*ref(2)), googleuuid.UUID(*ref(5)), scanned(new(googleuuid.UUID(*ref(5))))}
+		return values
 	}
 	granted := func(where *filter.LookupCond) *filter.Lookup {
 		lookup := &filter.Lookup{Table: "ref_grants", Project: "ref_id", Where: where}

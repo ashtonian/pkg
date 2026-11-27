@@ -26,22 +26,29 @@ type visit struct {
 	DeletedAt sql.NullTime  `json:"deleted_at" db:"deleted_at" parse:"filter"`
 }
 
-var visitBase = time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
-
 func visitAt(sec int) sql.NullTime {
-	return sql.NullTime{Time: visitBase.Add(time.Duration(sec) * time.Second), Valid: true}
+	base := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	at := sql.NullTime{Time: base.Add(time.Duration(sec) * time.Second), Valid: true}
+	return at
 }
 
-func visitScore(n int64) sql.NullInt64 { return sql.NullInt64{Int64: n, Valid: true} }
+func visitScore(n int64) sql.NullInt64 {
+	score := sql.NullInt64{Int64: n, Valid: true}
+	return score
+}
 
-// visits: c and e hold NULL scores, b and e NULL seen_at, and d is deleted.
-var visits = []visit{
-	{ID: "a", Score: visitScore(5), SeenAt: visitAt(1)},
-	{ID: "b", Score: visitScore(2)},
-	{ID: "c", SeenAt: visitAt(3)},
-	{ID: "d", Score: visitScore(7), SeenAt: visitAt(2), DeletedAt: visitAt(4)},
-	{ID: "e"},
-	{ID: "f", Score: visitScore(5), SeenAt: visitAt(5)},
+// seededVisits are the stored visits: c and e hold NULL scores, b and e
+// NULL seen_at, and d is deleted.
+func seededVisits() []visit {
+	visits := []visit{
+		{ID: "a", Score: visitScore(5), SeenAt: visitAt(1)},
+		{ID: "b", Score: visitScore(2)},
+		{ID: "c", SeenAt: visitAt(3)},
+		{ID: "d", Score: visitScore(7), SeenAt: visitAt(2), DeletedAt: visitAt(4)},
+		{ID: "e"},
+		{ID: "f", Score: visitScore(5), SeenAt: visitAt(5)},
+	}
+	return visits
 }
 
 // visitDB is a database the visits are stored in: the column type of a
@@ -60,6 +67,7 @@ type visitDB struct {
 func runNullableWrappers(t *testing.T, vdb visitDB) {
 	t.Helper()
 	ctx := t.Context()
+	visits := seededVisits()
 	_, err := vdb.db.ExecContext(ctx, "CREATE TABLE visits (id TEXT PRIMARY KEY, score BIGINT, seen_at "+vdb.timestampType+", deleted_at "+vdb.timestampType+")")
 	require.NoError(t, err)
 	insert := "INSERT INTO visits (id, score, seen_at, deleted_at) VALUES (" +

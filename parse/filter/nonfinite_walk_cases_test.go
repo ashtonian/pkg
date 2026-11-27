@@ -32,16 +32,21 @@ type nonFiniteSeed struct {
 
 // The seeds tie on each non-finite value and on NULL: a float column's as
 // float64s, a decimal column's as the text PostgreSQL's numeric writes.
-var (
-	floatSeeds = []nonFiniteSeed{
+func floatSeeds() []nonFiniteSeed {
+	seeds := []nonFiniteSeed{
 		{1, math.NaN()}, {2, math.Inf(1)}, {3, math.Inf(-1)}, {4, 1.5}, {5, nil},
 		{6, math.NaN()}, {7, math.Inf(-1)}, {8, math.Inf(1)}, {9, 0.0}, {10, nil},
 	}
-	decimalSeeds = []nonFiniteSeed{
+	return seeds
+}
+
+func decimalSeeds() []nonFiniteSeed {
+	seeds := []nonFiniteSeed{
 		{1, "NaN"}, {2, "Infinity"}, {3, "-Infinity"}, {4, "1.5"}, {5, nil},
 		{6, "NaN"}, {7, "-Infinity"}, {8, "Infinity"}, {9, "0"}, {10, nil},
 	}
-)
+	return seeds
+}
 
 // scoreDB is a database a number column of a float or decimal field pages
 // on.
@@ -57,9 +62,9 @@ type scoreDB struct {
 // seeds are the rows a column of the field's type holds.
 func (s scoreDB) seeds() []nonFiniteSeed {
 	if s.field == core.FieldTypeDecimal {
-		return decimalSeeds
+		return decimalSeeds()
 	}
-	return floatSeeds
+	return floatSeeds()
 }
 
 // scoreField is the field the score column is read as.
@@ -201,9 +206,10 @@ func runNonFiniteFacets(t *testing.T, s scoreDB, want []filter.FacetBucket) {
 	require.NoError(t, err)
 	rows, err := s.db.QueryContext(t.Context(), q.SQL, q.Args...)
 	require.NoError(t, err)
+	defer func() { require.NoError(t, rows.Close()) }()
 	results, err := filter.ScanFacetUnion(rows)
-	require.NoError(t, rows.Close())
 	require.NoError(t, err)
+	require.NoError(t, rows.Err())
 	require.Len(t, results, 1)
 	assert.Equal(t, want, results[0].Buckets, "the statement's facet")
 

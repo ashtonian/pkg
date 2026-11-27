@@ -61,7 +61,8 @@ type flaggedNull struct {
 
 func (f *flaggedNull) Scan(src any) error {
 	f.null = src == nil
-	if n, ok := src.(int64); ok {
+	n, ok := src.(int64)
+	if ok {
 		f.n = n
 	}
 	return nil

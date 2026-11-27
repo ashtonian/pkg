@@ -72,7 +72,7 @@ func Cases() []Case {
 	ref := "0198a3c2-7a1e-7c00-8000-00000000000a"
 	probe := "550e8400-e29b-41d4-a716-446655440000"
 	plusOne := time.FixedZone("+01:00", 3600)
-	return []Case{
+	cases := []Case{
 		{
 			Name: "string", Type: core.TypeInfo{Type: core.FieldTypeString},
 			Ordered: true, Sortable: true, Faceted: true, SQLite: "TEXT", Postgres: "text",
@@ -253,6 +253,7 @@ func Cases() []Case {
 			},
 		},
 	}
+	return cases
 }
 
 // Stored is v's canonical value as its case's column holds it: what a

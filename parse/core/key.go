@@ -52,7 +52,8 @@ func NormalizeKey(types []TypeInfo, key Key) (Key, error) {
 	for i, v := range key {
 		n, err := normalizeKeyValue(types[i], v)
 		if err != nil {
-			return nil, &KeyValueError{Index: i, Err: err}
+			keyErr := &KeyValueError{Index: i, Err: err}
+			return nil, keyErr
 		}
 		out[i] = n
 	}

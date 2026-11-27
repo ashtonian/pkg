@@ -51,4 +51,4 @@ func SQLiteJSONPath(labels []string) string {
 	return b.String()
 }
 
-var sqliteLabelEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+var sqliteLabelEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`) //nolint:gochecknoglobals // an immutable replacer, safe for concurrent use, built once rather than per label

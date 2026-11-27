@@ -120,7 +120,7 @@ func (l labelDB) selecting(t *testing.T, value string) []int {
 	require.NoError(t, err)
 	rows, err := l.db.QueryContext(t.Context(), "SELECT id FROM docs WHERE "+cond+" ORDER BY id", args...)
 	require.NoError(t, err)
-	defer rows.Close()
+	defer func() { require.NoError(t, rows.Close()) }()
 	var ids []int
 	for rows.Next() {
 		var id int

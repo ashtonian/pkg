@@ -42,7 +42,7 @@ func TestCompareKeyValues_CanonicalOrder(t *testing.T) {
 // text.
 func TestCompareKeyValues_RefusesWhatItsTypeCannotOrder(t *testing.T) {
 	_, err := filter.CompareKeyValues(filter.CursorKey{Name: "n", DataType: core.FieldTypeInt}, "7", int64(7))
-	require.ErrorContains(t, err, `comparing values of key "n": cannot compare int values string and int64`)
+	require.ErrorContains(t, err, `comparing values of key "n": int values string and int64 are incomparable`)
 }
 
 // Every spelling of a key type's value, the Go values drivers scan a column

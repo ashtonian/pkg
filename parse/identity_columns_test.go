@@ -154,7 +154,7 @@ func TestNewResource_AcceptsWhatARowCanBeServedBy(t *testing.T) {
 		Name     string `json:"name"      db:"name"      parse:"patch"`
 	}
 	_, err := parse.NewResource[tenantKeyed]("tenants", parse.PrimaryKey("tenant_id"), parse.TenantColumn("tenant_id"))
-	assert.NoError(t, err, "a resource whose tenant column is its key")
+	require.NoError(t, err, "a resource whose tenant column is its key")
 
 	// A pointer or a nullable wrapper is the type it holds, for a key or a
 	// tenant column too.
@@ -163,13 +163,13 @@ func TestNewResource_AcceptsWhatARowCanBeServedBy(t *testing.T) {
 		TenantID *string `json:"tenant_id" db:"tenant_id" parse:"filter"`
 	}
 	_, err = parse.NewResource[pointerKeys]("pointed", parse.TenantColumn("tenant_id"))
-	assert.NoError(t, err, "a pointer key and tenant column")
+	require.NoError(t, err, "a pointer key and tenant column")
 	type wrappedKeys struct {
 		ID       sql.NullInt64  `json:"id"        db:"id"`
 		TenantID sql.NullString `json:"tenant_id" db:"tenant_id" parse:"filter"`
 	}
 	_, err = parse.NewResource[wrappedKeys]("wrapped", parse.TenantColumn("tenant_id"))
-	assert.NoError(t, err, "a wrapper key and tenant column")
+	require.NoError(t, err, "a wrapper key and tenant column")
 
 	r, err := parse.NewResource[nullable]("rows", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
 	require.NoError(t, err)

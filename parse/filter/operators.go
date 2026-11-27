@@ -192,15 +192,13 @@ func OperatorsFor(dt core.FieldType, relation bool) []FilterOperator {
 	return ops
 }
 
-// keyOperators are the operators a key column offers a request filter, in
-// the order a key field lists them, of those its type takes (KeyOperators).
-var keyOperators = []FilterOperator{OpEq, OpGt, OpLt, OpGte, OpLte, OpIn}
-
 // KeyOperators returns the operators a key column of type dt takes in a
 // request filter: equality, the range operators and $in, those of them dt
 // takes (OperatorsFor). A type without an order, such as an inet or an
 // interval, takes no range on its key either.
 func KeyOperators(dt core.FieldType) []FilterOperator {
+	// The operators a key column offers, in the order a key field lists them.
+	keyOperators := [...]FilterOperator{OpEq, OpGt, OpLt, OpGte, OpLte, OpIn}
 	allowed := typeOperators[dt]
 	ops := make([]FilterOperator, 0, len(keyOperators))
 	for _, op := range keyOperators {

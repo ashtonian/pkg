@@ -149,7 +149,8 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 			date, err := ParseDate(text)
 			return string(date), err
 		}
-		if t, ok := v.(time.Time); ok {
+		t, ok := v.(time.Time)
+		if ok {
 			date, err := dateOf(t)
 			return string(date), err
 		}
@@ -183,7 +184,8 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 // what a driver binds for it. A json.Number is a number, and any other
 // value is itself.
 func plainString(v any) any {
-	if _, ok := v.(json.Number); ok {
+	_, ok := v.(json.Number)
+	if ok {
 		return v
 	}
 	rv := reflect.ValueOf(v)
@@ -385,7 +387,8 @@ func text(v any) (string, bool) {
 	case json.Number: // a JSON number is not a string, whatever its Go kind
 		return "", false
 	}
-	if tm, ok := textMarshalerOf(v); ok {
+	tm, ok := textMarshalerOf(v)
+	if ok {
 		b, err := tm.MarshalText()
 		if err != nil {
 			return "", false

@@ -16,7 +16,8 @@ import (
 )
 
 func sqliteScores(t *testing.T, column string, field core.FieldType) scoreDB {
-	return scoreDB{db: dbtest.SQLite(t), dialect: filter.SQLiteDialect{}, column: column, field: field}
+	scores := scoreDB{db: dbtest.SQLite(t), dialect: filter.SQLiteDialect{}, column: column, field: field}
+	return scores
 }
 
 // SQLite orders a REAL column -Infinity, the finite values, +Infinity,
@@ -64,7 +65,7 @@ func TestNonFiniteFloatSeek_SQLiteNaNIsNull(t *testing.T) {
 	db := dbtest.SQLite(t)
 	_, err := db.ExecContext(t.Context(), "CREATE TABLE scores (id INTEGER PRIMARY KEY, score REAL)")
 	require.NoError(t, err)
-	for _, seed := range floatSeeds {
+	for _, seed := range floatSeeds() {
 		_, err = db.ExecContext(t.Context(), "INSERT INTO scores (id, score) VALUES (?, ?)", seed.id, seed.score)
 		require.NoError(t, err)
 	}
@@ -72,32 +73,35 @@ func TestNonFiniteFloatSeek_SQLiteNaNIsNull(t *testing.T) {
 	id := filter.CursorKey{Name: "id", Table: "scores", Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64, Direction: filter.SortAsc}
 	keys := []filter.CursorKey{key, id}
 	for _, tc := range []struct {
+		name    string
 		reverse bool
 		want    []int64
 	}{
-		{false, []int64{5, 6, 10}},
-		{true, []int64{8, 2, 4, 9, 7, 3}},
+		{"forward", false, []int64{5, 6, 10}},
+		{"reverse", true, []int64{8, 2, 4, 9, 7, 3}},
 	} {
-		token := &filter.PageToken{Reverse: tc.reverse, Fields: []filter.CursorField{
-			{Name: "score", Value: math.NaN(), Direction: filter.SortAsc},
-			{Name: "id", Value: int64(1), Direction: filter.SortAsc},
-		}}
-		var args []any
-		where, err := filter.SeekPredicate(filter.SQLiteDialect{}, keys, token, func(v any) string {
-			args = append(args, v)
-			return filter.SQLiteDialect{}.Placeholder(len(args))
+		t.Run(tc.name, func(t *testing.T) {
+			token := &filter.PageToken{Reverse: tc.reverse, Fields: []filter.CursorField{
+				{Name: "score", Value: math.NaN(), Direction: filter.SortAsc},
+				{Name: "id", Value: int64(1), Direction: filter.SortAsc},
+			}}
+			var args []any
+			where, err := filter.SeekPredicate(filter.SQLiteDialect{}, keys, token, func(v any) string {
+				args = append(args, v)
+				return filter.SQLiteDialect{}.Placeholder(len(args))
+			})
+			require.NoError(t, err)
+			rows, err := db.QueryContext(t.Context(), "SELECT id FROM scores WHERE "+where+" "+filter.OrderByKeys(filter.SQLiteDialect{}, keys, tc.reverse), args...)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, rows.Close()) }()
+			var got []int64
+			for rows.Next() {
+				var n int64
+				require.NoError(t, rows.Scan(&n))
+				got = append(got, n)
+			}
+			require.NoError(t, rows.Err())
+			assert.Equal(t, tc.want, got)
 		})
-		require.NoError(t, err)
-		rows, err := db.QueryContext(t.Context(), "SELECT id FROM scores WHERE "+where+" "+filter.OrderByKeys(filter.SQLiteDialect{}, keys, tc.reverse), args...)
-		require.NoError(t, err)
-		var got []int64
-		for rows.Next() {
-			var n int64
-			require.NoError(t, rows.Scan(&n))
-			got = append(got, n)
-		}
-		require.NoError(t, rows.Err())
-		require.NoError(t, rows.Close())
-		assert.Equal(t, tc.want, got, "reverse %v", tc.reverse)
 	}
 }

@@ -35,7 +35,8 @@ func runNullOperands(t *testing.T, db *sql.DB, d filter.Dialect) {
 	for name, c := range columns {
 		t.Run(name, func(t *testing.T) {
 			columnType := c.sqlite
-			if _, ok := d.(filter.PostgresDialect); ok {
+			_, ok := d.(filter.PostgresDialect)
+			if ok {
 				columnType = c.postgres
 			}
 			table := "null_operands_" + name

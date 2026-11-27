@@ -26,7 +26,8 @@ func IsNullableType(t reflect.Type) bool {
 	case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Interface:
 		return true
 	}
-	if held, ok := nullScanners.Load(t); ok {
+	held, ok := nullScanners.Load(t)
+	if ok {
 		is, _ := held.(bool) // only bools are stored
 		return is
 	}
@@ -35,16 +36,15 @@ func IsNullableType(t reflect.Type) bool {
 	return is
 }
 
-var nullScanners sync.Map // reflect.Type -> bool
-
-var scannerType = reflect.TypeFor[sql.Scanner]()
+// nullScanners holds scansNull's answer per type: reflect.Type -> bool.
+var nullScanners sync.Map //nolint:gochecknoglobals // process-wide cache of immutable per-type data, bounded by the program's types
 
 // scansNull reports whether t's zero value writes NULL, scans NULL, and
 // writes NULL again. A Scan or Value that panics on the zero value is one
 // database/sql would panic in as well: such a type holds no NULL.
 func scansNull(t reflect.Type) (held bool) {
 	ptr := reflect.PointerTo(t)
-	if !ptr.Implements(scannerType) || !ptr.Implements(valuerType) {
+	if !ptr.Implements(reflect.TypeFor[sql.Scanner]()) || !ptr.Implements(reflect.TypeFor[driver.Valuer]()) {
 		return false
 	}
 	defer func() {
