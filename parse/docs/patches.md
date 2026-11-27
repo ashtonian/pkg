@@ -9,6 +9,7 @@ parsed, err := products.ParsePatch(body)                      // RFC 6902 JSON P
 parsed, err := products.ParseMergePatch(body)                 // RFC 7396 JSON Merge Patch
 updated, err := products.ApplyValidatedPatch(parsed, current) // apply to a Go value (patch.Applier)
 set, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{})
+update, err := patch.ComposePatch(parsed)                     // the update for any store: SQL, or Apply to stored values
 res, err := products.Update(ctx, parsed, parse.ByID(id), scope)  // the scoped UPDATE, run on the provider
 plan, err := products.BuildUpdate(parsed, parse.ByID(id), scope)   // its statements, not run
 ```
@@ -144,7 +145,7 @@ The single statement enforces the preconditions as a WHERE guard: a row that fai
 
 A member is addressed by object keys only. PostgreSQL's `#>` and `jsonb_set` read a token that looks like an integer as an array index, so a member whose name reads as an index (`/attrs/0`, `/attrs/-`) is E2070 unless the field's Go type makes its parent an object (a struct or a map, `map[int]T` included); a member of an array is E2070 always. A member whose name holds `"` or `\` is written as any other: SQLite's JSON path quotes the label with its escapes, which every SQLite `parsesql.New` opens a provider on reads as the member ([supported SQLite](../parsesql/README.md#supported-sqlite)), and PostgreSQL binds the names as text. A member below a type that codes itself as JSON (`core.CustomJSON`: `MarshalJSON` or `UnmarshalJSON`, or encoding/json/v2's `MarshalJSONTo` or `UnmarshalJSONFrom`, on the value or its pointer) is E2070, since only its decoder can judge the stored document. Below any other declared Go type, `ParsePatch` holds the member to it, for SQL and `ApplyValidatedPatch` alike: a struct member by its exact JSON name, a map key as encoding/json writes it (`/sizes/07` for `map[int]T` is refused; name it `/sizes/7`), an added or replacing value that decodes as the member, its tag options applied, and a `remove` only of a struct member the type leaves out at its zero value (`omitempty` or `omitzero`): SQL deletes the member, which the type would write again, so `remove /dims/w` of a plain `W int` is refused, as a merge patch's `{"dims":{"w":null}}` is; replace it with `0`. Each is E2077.
 
-Values bind through the dialect's `MarshalValue(value, core.TypeInfo)` (the `SQLDialect` interface): documents as JSON text; on PostgreSQL an array as a typed Go slice — UUIDs as their canonical text — which pgx encodes in every query mode, and on SQLite as JSON text; a timestamp on SQLite as its canonical text ([timestamps](schema-configuration.md#timestamps)); a date and a timestamp as their columns hold them, a `driver.Valuer` read as the value it writes and one that writes nil as NULL (`core.StoredScalar`). A hand-built `PathSchema` naming no Go type binds an array typed by its elements.
+Values bind through the dialect's `MarshalValue(value, core.TypeInfo)` (the `SQLDialect` interface): documents as JSON text; on PostgreSQL an array as a typed Go slice — UUIDs as their canonical text — which pgx encodes in every query mode, and on SQLite as JSON text; a timestamp on SQLite as its canonical text ([timestamps](schema-configuration.md#timestamps)); a date and a timestamp as their columns hold them, a `driver.Valuer` read as the value it writes and one that writes nil as NULL (`core.StoredScalar`). A hand-built `PathSchema` naming no Go type binds an array typed by its elements. SQLite's `MarshalValue` is `core.StorageValue`, the one form a row stores a value in, which [composed updates](#composed-updates) read and write.
 
 `parse.ColumnType` / `core.WithColumnTypes` carries the physical storage profile into patch paths and binding. A declared JSON string, byte slice or scalar slice binds its Go JSON encoding; native SQL arrays keep their array representation. Declared JSON uses this encoding even when the Go value implements `driver.Valuer`; native database values keep their driver binding.
 
@@ -240,20 +241,73 @@ A patch with columns and relations changes the memberships of every target row, 
 
 | Column | PostgreSQL | SQLite |
 |---|---|---|
-| Any | `col IS DISTINCT FROM <value> OR col::text COLLATE "C" IS DISTINCT FROM (<value>)::text`: the text a read returns, byte for byte, NULL equal to NULL. The equality types the placeholder as the column — an enum, a domain — since PostgreSQL types it at its first use and the WHERE precedes the SET clause | `col COLLATE BINARY IS NOT <value>` (`IS NOT` is null-safe on every SQLite version): byte for byte whatever collation the column declares (NOCASE, RTRIM), numbers by value under the column's affinity |
+| Any | `col IS DISTINCT FROM <value> OR col::text COLLATE "C" IS DISTINCT FROM (<value>)::text`: the text a read returns, byte for byte, NULL equal to NULL. The equality types the placeholder as the column — an enum, a domain — since PostgreSQL types it at its first use and the WHERE precedes the SET clause | `col COLLATE BINARY IS NOT <value>` (`IS NOT` is null-safe on every SQLite version): byte for byte whatever collation the column declares (NOCASE, RTRIM), numbers by value under the column's affinity. A column of a type whose text spells one value more than one way — the rows below that say "by value" — must also differ by value: `(col COLLATE BINARY IS NOT <value> AND parse_canonical(col, '<kind>') IS NOT parse_canonical(<value>, '<kind>'))`, the form [`parse_canonical`](../parsesql/README.md#change-comparison) gives two values of one value, which `ComposedPatch.Apply` compares too |
 | Text (string fields, enum labels) | A change of case or accents counts where the column's equality ignores it: citext, a nondeterministic collation | The same, against NOCASE and RTRIM |
 | Interval (a string field) | `1 day` and `24 hours` differ: equal intervals, other text | By text |
 | Float | `-0` and `0` differ | By value; a REAL column stores `-0.0` as `0.0` |
-| Decimal | By value, `col IS DISTINCT FROM <value>` alone: parse binds and reads a decimal in one canonical text (`1.50` binds as `1.5`), and a `numeric(p,s)` column stores scale `s` whatever text is bound, so value equality is the read's equality. The one boundary: a scale another writer stored in an unconstrained `numeric` column (`1.50` where parse writes `1.5`) is not part of the value, and a patch of the same number leaves it | By value in a NUMERIC or REAL column, which converts the value on store as it does in the comparison: `1` and `1.0` read the same. By text in a TEXT column, which holds decimals exactly: parse writes the canonical text, so a value another writer stored with a scale (`1.50`) counts as changed once |
-| Timestamp | One instant, whatever offset the patch wrote | parse's canonical text (UTC, nine fractional digits): one instant is one text where parse wrote the stored value |
-| Civil date, UUID, time, interval, inet, cidr, macaddr | Their text: one value, one text. An `Interval` whose fields differ (`P1M`, `P30D`) counts as changed though PostgreSQL's equality matches them | The canonical text; a legacy midnight timestamp in a date column counts as changed, and the write stores the date |
-| JSON document (`jsonb`) | jsonb's text, which is canonical: key order, whitespace and duplicate keys do not count; a number's written form (`1.0` against `1`) does | By text. parse writes compact JSON with object keys in Go's sorted order, and a merge keeps the stored order: a document stored in another order or spacing counts as changed once, and the write stores parse's text |
-| JSON declared `core.SQLJSON` (`json`) | Compared as `jsonb` text (`json` has no equality operator): a document whose stored text differs only in whitespace or key order counts as unchanged, although a read returns that text | By text, as above |
-| A document whose members a patch writes ([document members](#document-members)) | Compared as `jsonb` text whatever the column declares (`jsonb`, `json` or `text`): the members are written over the stored document read as `jsonb` | By text: `json_set` and `json_remove` return compact text, so a document stored in other spacing counts as changed once |
-| Native array | Its text: element by element, in order | By text, as documents |
+| Decimal | By value, `col IS DISTINCT FROM <value>` alone: parse binds and reads a decimal in one canonical text (`1.50` binds as `1.5`), and a `numeric(p,s)` column stores scale `s` whatever text is bound, so value equality is the read's equality. The one boundary: a scale another writer stored in an unconstrained `numeric` column (`1.50` where parse writes `1.5`) is not part of the value, and a patch of the same number leaves it | By value: its canonical decimal text, as `parse_decimal` reads an INTEGER, a REAL or TEXT. A TEXT column holds decimals exactly, so a value another writer stored with a scale or an exponent (`1.50`, `0.15e1`) is the value `1.5` parse writes. In a NUMERIC or REAL column the stored comparison, under the column's affinity, also leaves unchanged a value past 15 significant digits that the column rounds as it stores it, which reads back rounded either way |
+| Timestamp | One instant, whatever offset the patch wrote | By value: one instant, whatever offset and precision the stored RFC 3339 text has |
+| Civil date, UUID, time, interval, inet, cidr, macaddr | Their text: one value, one text. An `Interval` whose fields differ (`P1M`, `P30D`) counts as changed though PostgreSQL's equality matches them | By value: their canonical text (`core.NormalizeStored`), so a UUID in upper case or braces, a time `10:30:00.000`, an inet `192.0.2.1/32` and a MAC address `08-00-2B-01-02-03` are the values parse writes, and an `Interval` compares by its fields as on PostgreSQL. A legacy midnight timestamp in a date column is no date's text: it counts as changed, and the write stores the date |
+| JSON document (`jsonb`) | jsonb's text, which is canonical: key order, whitespace and duplicate keys do not count; a number's written form (`1.0` against `1`) does | By value, as jsonb's text: members sorted and unspaced, a duplicated member by its last value, and each number as `numeric` writes it, its value at the scale its literal gives (`1e2` is `100`, `1.50e1` is `15.0`, `-0` is `0`, `1.0` is not `1`) |
+| JSON declared `core.SQLJSON` (`json`) | Compared as `jsonb` text (`json` has no equality operator): a document whose stored text differs only in whitespace or key order counts as unchanged, although a read returns that text | By value, as above |
+| A document whose members a patch writes ([document members](#document-members)) | Compared as `jsonb` text whatever the column declares (`jsonb`, `json` or `text`): the members are written over the stored document read as `jsonb` | By value, as above, against the compact text `json_set` and `json_remove` return |
+| Native array | Its text: element by element, in order | By value: element by element, in order, each as its type's value (`[ "X" ]` against `["x"]` in a UUID array, a timestamp's offset, `5e-1` against `0.5` in a float array), a float keeping its zero's sign |
 | Cleared value | A slice or map field clears to empty, unchanged when already empty; others to NULL | The same |
 
-A value the column rounds as it stores it — a timestamp finer than the column's precision, a decimal beyond a `numeric(p,s)` scale — is compared as the patch gave it, so sending it again counts as changed every time and writes what the column already holds. A PostgreSQL `json` column must be declared with `parse.ColumnType(column, core.SQLJSON)`: undeclared, it is compared as a `jsonb` one and the update fails with `operator does not exist: json = …`. A document in a `text` column compares by text, as on SQLite. On SQLite, a column with no affinity (an untyped or `ANY` column) compares an integer and a real of one value as equal although a read reports their storage classes apart; scanned into the field's Go type they read the same. Each assigned expression runs up to twice in the WHERE for every target row and once more in the SET clause for the rows that change, so a merge costs up to three times what it does unguarded.
+A value the column rounds as it stores it — a timestamp finer than the column's precision, a decimal beyond a `numeric(p,s)` scale — is compared as the patch gave it, so sending it again counts as changed every time and writes what the column already holds. A PostgreSQL `json` column must be declared with `parse.ColumnType(column, core.SQLJSON)`: undeclared, it is compared as a `jsonb` one and the update fails with `operator does not exist: json = …`. A document in a PostgreSQL `text` column compares by its text. On SQLite, a stored value that holds no value of its type — a document that is not JSON or not valid UTF-8, text that is no UUID or timestamp, a BLOB — compares as stored, so it counts as changed and the write stores parse's text. On SQLite, a column with no affinity (an untyped or `ANY` column) compares an integer and a real of one value as equal although a read reports their storage classes apart; scanned into the field's Go type they read the same. Each assigned expression runs up to twice in the WHERE for every target row and once more in the SET clause for the rows that change, so a merge costs up to three times what it does unguarded. On SQLite a by-value column calls `parse_canonical` twice for each row whose stored text differs from the written one, and not at all for a row that holds it.
+
+## Composed updates
+
+`BuildPatchSQL` is two steps, and a store that is not a SQL database takes the first. `patch.ComposePatch(parsed, opts...)` decides what the update writes: each column's operations folded as [SQL compilation](#sql-compilation) describes, columns in the order the patch first touches them, the server's stamped and counted columns dropped from the patch, the stamp and counters, the [document-member preconditions](#document-members) the stored row decides, and the relation operations. It refuses every patch `BuildPatchSQL` refuses, with the same error. `ComposedPatch.SQL(dialect, opts...)` renders it for a dialect; `BuildPatchSQL(p, d, opts...)` is exactly the two. Each step takes its own options ([configuration](#configuration)) and refuses the other's.
+
+`ComposedPatch.Apply(row)` applies the update to one row's stored values:
+
+```go
+update, err := patch.ComposePatch(parsed, patch.WithAutoTimestamp("updated_at"), patch.WithIncrement("version"))
+if err != nil {
+	return err // what BuildPatchSQL returns for the patch
+}
+write, err := update.Apply(func(column string) (any, bool) {
+	v, ok := stored[column]
+	return v, ok
+})
+if err != nil {
+	return err // a member precondition's E2077, as Update reports it
+}
+if skipUnchanged && !write.Changed {
+	return nil // neither written, stamped nor counted
+}
+for i, column := range update.Columns() {
+	stored[column] = write.Values[i]
+}
+```
+
+A row's values are in the form a row stores them, `core.StorageValue`'s, which is what a SQLite column holds: NULL for nil, a nil pointer or a nil array; a date and a timestamp as their canonical text; a document or an array as its JSON text; anything else as its `driver.Value`. `Columns` names the columns the SET clause assigns, in its order, and `RowWrite.Values` what each becomes, as the database writes it:
+
+| Column | Written |
+|---|---|
+| A value, or a clear | The value in that form for the type its path declares; NULL, or the path's empty value for a slice or map field |
+| A merge patch | RFC 7396 over the stored document, a NULL or non-object one as `{}` |
+| `array_append` with no earlier whole write | The elements after the stored array's, a NULL one as `[]` |
+| Members of a document | Each add, replace and remove over the stored document, in patch order |
+| The stamp | Its instant's canonical text (`core.FormatTimestamp`) |
+| A counter | One more than it holds; NULL stays NULL |
+
+A patch that assigns no column of its own writes nothing, stamp and counters included. A row that fails a precondition writes nothing, and `Apply` returns the first failing operation's `Precondition.Err`, the E2077 `Update` returns. `Apply` also refuses what it cannot write as a database does: a stamp of a SQL expression (`WithAutoTimestampSQL`), which only a database evaluates; a counter at `math.MaxInt64`, which PostgreSQL refuses as out of range and SQLite turns into a REAL the row then cannot scan, so the update fails on both; and a stored value that is not of its column's type, such as a document that is not JSON text or a counter that is not an integer.
+
+`RowWrite.Changed` is `WithChangePredicate`'s verdict over the patch's columns, the stamp and counters left out, compared as each engine's SQL compares them ([skipping unchanged rows](#skipping-unchanged-rows)):
+
+| Column | `Apply` compares |
+|---|---|
+| Text, enum labels | Byte for byte |
+| Integer, decimal | By value |
+| Float | By value, `-0` apart from `0`; SQLite's REAL stores `-0.0` as `0.0`, so a SQLite row holds no `-0` |
+| Timestamp | By instant |
+| Date, time, interval, inet, cidr, macaddr, UUID | By canonical text |
+| Document | As PostgreSQL writes it as `jsonb` text: key order and spacing aside, a number by its value and the scale its literal gives (`1.0` is not `1`; `1e2` is `100`, `-0` is `0`) |
+| Native array | Element by element, in order, each by its type's value, a float keeping its zero's sign (`-0` is not `0`, as PostgreSQL's `float8` text keeps it) |
+
+A document and an array compare through one implementation, `internal/canonical`, which SQLite's `parse_canonical` runs, so `Apply` and SQLite reach one verdict on any stored text. A test in each provider's corpus (`ComposedPatch_ApplyAgreesWithTheDatabase`) runs every patch the corpus's other patch cases use, and more, on SQLite and PostgreSQL and through `Apply` over the row's stored values, among them values another writer stored in other forms (a decimal's scale in a TEXT column, a UUID in upper case or braces, a timestamp's offset, the value types' other spellings, a document's key order, spacing and number forms, an array's spacing and its elements' forms): the rows match in `filter.ColumnValue`'s terms, the verdicts match on every case, and the refusals match code, message, path and index.
 
 ## JSON documents
 
@@ -302,7 +356,7 @@ JSON Patch `test` checks the supplied document shape; missing struct members are
 
 ## Configuration
 
-`PatchSQLOption`s for `BuildPatchSQL`:
+`PatchSQLOption`s for `BuildPatchSQL`. `ComposePatch` takes the ones that decide what the update writes (`WithAutoTimestamp`, `WithAutoTimestampSQL`, `WithIncrement`, `WithTimeFunc`) and `ComposedPatch.SQL` the ones that decide how its SQL reads (`WithStartParam`, `WithChangePredicate`); each refuses the other's ([composed updates](#composed-updates)):
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|

@@ -86,7 +86,7 @@ func TestFunctions(t *testing.T) {
 	}
 	assert.Equal(t, []string{
 		parsesql.DecimalFunc, parsesql.DecimalKeyFunc, parsesql.DecimalFloat32Func,
-		parsesql.GeoNearFunc, parsesql.GeoInBoxFunc, parsesql.GeoCoveredByFunc,
+		parsesql.GeoNearFunc, parsesql.GeoInBoxFunc, parsesql.GeoCoveredByFunc, parsesql.CanonicalFunc,
 	}, names)
 
 	fns := parsesql.Functions()
@@ -237,6 +237,48 @@ func TestDecimalKeyOrdersExactly(t *testing.T) {
 			var holds bool
 			require.NoError(t, d.db.QueryRow("SELECT "+expr).Scan(&holds), d.name, expr)
 			assert.True(t, holds, d.name, expr)
+		}
+	}
+}
+
+// parse_canonical gives two stored values of one value one form, and keeps
+// a value that holds none of its kind, a BLOB included, as it is.
+func TestCanonical(t *testing.T) {
+	tests := []struct {
+		name string
+		expr string
+		want any
+	}{
+		{"a document's members, spacing and numbers", `parse_canonical('{"b":1.50e1, "a":[1e2,-0,1.0]}', 'document')`, `{"a":[100,0,1.0],"b":15.0}`},
+		{"a UUID in upper case", "parse_canonical('0190A5B4-7C1E-7D8A-9B2C-3D4E5F6A7B8C', 'uuid')", "0190a5b4-7c1e-7d8a-9b2c-3d4e5f6a7b8c"},
+		{"a decimal's scale", "parse_canonical('1.50', 'decimal')", "1.5"},
+		{"a decimal REAL", "parse_canonical(1.5, 'decimal')", "1.5"},
+		{"a decimal INTEGER", "parse_canonical(2, 'decimal')", "2"},
+		{"a timestamp's offset", "parse_canonical('2025-12-31T19:00:00-05:00', 'timestamp')", "2026-01-01T00:00:00.000000000Z"},
+		{"an array's spacing and elements", `parse_canonical('["0190A5B4-7C1E-7D8A-9B2C-3D4E5F6A7B8C", null]', 'array:uuid')`, `["0190a5b4-7c1e-7d8a-9b2c-3d4e5f6a7b8c",null]`},
+		{"text that holds no value of the kind", "parse_canonical('ten', 'uuid')", "ten"},
+		{"a document that is not JSON", "parse_canonical('{', 'document')", "{"},
+		{"a BLOB", "parse_canonical(x'7b7d', 'document')", []byte("{}")},
+		{"NULL", "parse_canonical(NULL, 'document')", nil},
+	}
+	for _, d := range databases(t) {
+		for _, tt := range tests {
+			t.Run(d.name+"/"+tt.name, func(t *testing.T) {
+				var got any
+				require.NoError(t, d.db.QueryRowContext(t.Context(), "SELECT "+tt.expr).Scan(&got))
+				assert.Equal(t, tt.want, got)
+			})
+		}
+		for _, tt := range []struct{ expr, err string }{
+			{"parse_canonical('x', 1)", "parse_canonical: want the comparison kind as text, got int64"},
+			{"parse_canonical(NULL, 'string')", `parse_canonical: no comparison kind "string"`},
+		} {
+			t.Run(d.name+"/"+tt.expr, func(t *testing.T) {
+				var got any
+				err := d.db.QueryRowContext(t.Context(), "SELECT "+tt.expr).Scan(&got)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.err)
+			})
 		}
 	}
 }

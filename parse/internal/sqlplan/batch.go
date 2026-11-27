@@ -41,12 +41,20 @@ func CompileBatch(d filter.Dialect, req backend.UpdateBatchRequest) (*Batch, err
 	if maxParameters == 0 {
 		maxParameters = d.MaxParams()
 	}
-	options := patchOptions(req.Options)
+	options := renderOptions(req.Options)
 	batch := &Batch{Chunks: []Chunk{}}
 	var compiled []compiledRow
 	var offset int
 	for _, row := range req.Rows {
-		item, err := compileRow(d, req, row, options, offset)
+		update, err := req.Options.Compose(row.Patch)
+		if err != nil {
+			return nil, err
+		}
+		err = req.Resource.CheckBatchRow(row.Key, update)
+		if err != nil {
+			return nil, err
+		}
+		item, err := compileRow(d, req, row, update, options, offset)
 		if err != nil {
 			return nil, err
 		}
@@ -60,7 +68,7 @@ func CompileBatch(d filter.Dialect, req backend.UpdateBatchRequest) (*Batch, err
 			}
 			batch.Chunks = append(batch.Chunks, chunk)
 			compiled, offset = nil, 0
-			item, err = compileRow(d, req, row, options, 0)
+			item, err = compileRow(d, req, row, update, options, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -89,27 +97,14 @@ type compiledRow struct {
 	args        []any
 }
 
-func compileRow(d filter.Dialect, req backend.UpdateBatchRequest, row backend.BatchRow, options []patch.PatchSQLOption, offset int) (compiledRow, error) {
-	res := req.Resource
-	set, err := patch.BuildPatchSQL(row.Patch, d, append(slices.Clone(options), patch.WithStartParam(offset))...)
+// compileRow renders row's update, which CheckBatchRow admitted, with its
+// placeholders after offset ones.
+func compileRow(d filter.Dialect, req backend.UpdateBatchRequest, row backend.BatchRow, update *patch.ComposedPatch, options []patch.PatchSQLOption, offset int) (compiledRow, error) {
+	set, err := update.SQL(d, append(slices.Clone(options), patch.WithStartParam(offset))...)
 	if err != nil {
 		return compiledRow{}, err
 	}
-	if len(set.RelationOps) != 0 {
-		return compiledRow{}, fmt.Errorf("parse: %s: update batch relation mutations are unsupported", res.Table)
-	}
-	if len(set.Preconditions) != 0 {
-		// A batch locks and checks its rows by key alone; which operation a
-		// row's document fails is BuildUpdate's Conflict to report.
-		refused := core.NewError(patch.ECodeOpNotSQLCompilable, fmt.Sprintf("row %v: a batch update does not compile an operation below a JSON document field that the stored row must decide; update the row with BuildUpdate", row.Key),
-			core.WithPath(set.Preconditions[0].Path))
-		return compiledRow{}, refused
-	}
-	err = checkAssignments(res, set.Assignments, "update batch")
-	if err != nil {
-		return compiledRow{}, err
-	}
-	where, args, err := compileWhere(d, res, row.Where, req.Relations, offset+set.ParamCount)
+	where, args, err := compileWhere(d, req.Resource, row.Where, req.Relations, offset+set.ParamCount)
 	if err != nil {
 		return compiledRow{}, err
 	}

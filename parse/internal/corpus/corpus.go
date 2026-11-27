@@ -126,6 +126,8 @@ func sqlCases() []sqlCase {
 		{name: "Applier_FailingMemberOperationAgreesWithTheDatabase", sqlOnly: "holds the Applier to the precondition SQL patch.RenderPreconditions writes", run: applierFailingMemberOperationAgreesWithTheDatabase},
 		{name: "Applier_MergesIntoARawMessageMember", sqlOnly: "holds the Applier to the statements patch.BuildPatchSQL writes", run: applierMergesIntoARawMessageMember},
 
+		{name: "ComposedPatch_ApplyAgreesWithTheDatabase", sqlOnly: "holds ComposedPatch.Apply, which the memory engine's updates run, to the update a SQL database runs", run: composedPatchApplyAgreesWithTheDatabase},
+
 		{name: "RenderRelationOp_Executes", sqlOnly: "runs the statements patch.RenderRelationOp writes", run: renderRelationOpExecutes},
 
 		{name: "CanonicalOrder", run: canonicalOrder},

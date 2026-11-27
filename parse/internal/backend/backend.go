@@ -14,6 +14,8 @@ package backend
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -361,4 +363,61 @@ type Tx interface {
 	Executor
 	Commit(ctx context.Context) error
 	Rollback(ctx context.Context) error
+}
+
+// Compose is p composed for any executor under o's writes beyond the
+// patch: the stamp and the increments, in the order they were named
+// (patch.ComposePatch). An executor renders it (patch.ComposedPatch.SQL),
+// or applies it to each target's stored values (patch.ComposedPatch.Apply).
+func (o UpdateOptions) Compose(p *patch.ParsedPatch) (*patch.ComposedPatch, error) {
+	var opts []patch.PatchSQLOption
+	if o.Stamp != nil {
+		if o.Stamp.SQL != "" {
+			opts = append(opts, patch.WithAutoTimestampSQL(o.Stamp.Column, o.Stamp.SQL))
+		} else {
+			at := o.Stamp.At
+			opts = append(opts, patch.WithAutoTimestamp(o.Stamp.Column), patch.WithTimeFunc(func() time.Time { return at }))
+		}
+	}
+	for _, column := range o.Increments {
+		opts = append(opts, patch.WithIncrement(column))
+	}
+	return patch.ComposePatch(p, opts...)
+}
+
+// CheckUpdate refuses an update that assigns a key column or the tenant
+// column. NewResource refuses a patch path over either, so only a server
+// column (parse.Stamp, parse.Increment) can name one here; every executor
+// holds every update to the rule before it runs one, and an update that
+// assigns nothing is never refused.
+func (r *Resource) CheckUpdate(update *patch.ComposedPatch) error {
+	return r.checkIdentity(update, "update")
+}
+
+// CheckBatchRow refuses a row of an update batch that the batch cannot
+// write as one keyed row: one that changes relations, one that writes a
+// member of a JSON document the stored row must decide (a batch locks and
+// checks its rows by key alone; which operation a row's document fails is
+// a single update's to report), and one that assigns an identity column
+// (CheckUpdate).
+func (r *Resource) CheckBatchRow(key core.Key, update *patch.ComposedPatch) error {
+	if len(update.RelationOps()) != 0 {
+		return fmt.Errorf("parse: %s: update batch relation mutations are unsupported", r.Table)
+	}
+	preconditions := update.Preconditions()
+	if len(preconditions) != 0 {
+		refused := core.NewError(patch.ECodeOpNotSQLCompilable, fmt.Sprintf("row %v: a batch update does not compile an operation below a JSON document field that the stored row must decide; update the row with BuildUpdate", key),
+			core.WithPath(preconditions[0].Path))
+		return refused
+	}
+	return r.checkIdentity(update, "update batch")
+}
+
+func (r *Resource) checkIdentity(update *patch.ComposedPatch, builder string) error {
+	for _, column := range update.Columns() {
+		if slices.Contains(r.Key, column) || (r.Tenant != "" && column == r.Tenant) {
+			return fmt.Errorf("parse: %s: %s cannot change identity column %s", r.Table, builder, column)
+		}
+	}
+	return nil
 }

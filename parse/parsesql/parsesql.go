@@ -50,9 +50,21 @@
 // read as PostgreSQL reads (doc->>'lat')::float8, a duplicated member by its
 // last value. Each function is NULL when the point is: NULL, not an object,
 // or a member missing, null or no number. An operand of the wrong type is
-// an error on every row, one whose point is NULL included. A statement on
-// a connection without the functions fails with SQLite's "no such function:
-// parse_decimal" rather than comparing a rounded double.
+// an error on every row, one whose point is NULL included.
+//
+// SQLite stores what another writer wrote as it was written, where
+// PostgreSQL's typed columns hold one text per value, so an update that
+// skips unchanged rows compares a column whose text can spell one value
+// more than one way by value too:
+//
+//   - parse_canonical(x, kind) is the form two stored values of one value
+//     share — a document as jsonb's text, an array element by element by
+//     each element's value, a decimal, UUID, timestamp or value type by its
+//     canonical text — NULL for NULL, or x itself where it holds no value
+//     of kind. patch.ComposedPatch.Apply compares the same form.
+//
+// A statement on a connection without the functions fails with SQLite's
+// "no such function: parse_decimal" rather than comparing a rounded double.
 //
 // SQLite has no row lock: an update that reads before it writes (a
 // SkipUnchanged plan's Current, a batch's preimages) holds its targets only

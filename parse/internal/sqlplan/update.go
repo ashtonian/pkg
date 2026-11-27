@@ -3,7 +3,6 @@ package sqlplan
 import (
 	"fmt"
 	"slices"
-	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
@@ -62,11 +61,15 @@ func CompileUpdate(d filter.Dialect, req backend.UpdateRequest) (*Update, error)
 	if err != nil {
 		return nil, err
 	}
-	set, err := patch.BuildPatchSQL(req.Patch, d, patchOptions(req.Options)...)
+	update, err := req.Options.Compose(req.Patch)
 	if err != nil {
 		return nil, err
 	}
-	err = checkAssignments(res, set.Assignments, "update")
+	err = res.CheckUpdate(update)
+	if err != nil {
+		return nil, err
+	}
+	set, err := update.SQL(d, renderOptions(req.Options)...)
 	if err != nil {
 		return nil, err
 	}
@@ -238,37 +241,13 @@ func Reread(d filter.Dialect, req backend.UpdateRequest, plan *Update, owners []
 	return stmt, nil
 }
 
-// patchOptions are the patch compiler's options for what an update writes
-// beyond its patch: the stamp, the increments in the order they were named,
-// then the change predicate.
-func patchOptions(o backend.UpdateOptions) []patch.PatchSQLOption {
-	var opts []patch.PatchSQLOption
-	if o.Stamp != nil {
-		if o.Stamp.SQL != "" {
-			opts = append(opts, patch.WithAutoTimestampSQL(o.Stamp.Column, o.Stamp.SQL))
-		} else {
-			at := o.Stamp.At
-			opts = append(opts, patch.WithAutoTimestamp(o.Stamp.Column), patch.WithTimeFunc(func() time.Time { return at }))
-		}
-	}
-	for _, column := range o.Increments {
-		opts = append(opts, patch.WithIncrement(column))
-	}
+// renderOptions are the options an update's SQL is rendered with beyond
+// its placeholders' offset: the change predicate, for an update that skips
+// the rows it leaves unchanged.
+func renderOptions(o backend.UpdateOptions) []patch.PatchSQLOption {
 	if o.SkipUnchanged {
-		opts = append(opts, patch.WithChangePredicate())
-	}
-	return opts
-}
-
-// checkAssignments refuses a statement of builder that assigns a key column
-// or the tenant column. NewResource refuses a patch path over either, so
-// only a server column (parse.Stamp, parse.Increment) can name one here;
-// both builders hold every write to that rule.
-func checkAssignments(res *backend.Resource, assignments []patch.ColumnAssignment, builder string) error {
-	for _, assignment := range assignments {
-		if slices.Contains(res.Key, assignment.Column) || (res.Tenant != "" && assignment.Column == res.Tenant) {
-			return fmt.Errorf("parse: %s: %s cannot change identity column %s", res.Table, builder, assignment.Column)
-		}
+		opts := []patch.PatchSQLOption{patch.WithChangePredicate()}
+		return opts
 	}
 	return nil
 }
