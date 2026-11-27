@@ -109,7 +109,9 @@ func memberCases() []memberCase {
 // RFC 6902 member writes compile to SQL on every dialect: each case is
 // executed with its precondition, checked against json-patch applying the
 // same operations to the document path's form of the row, and against the
-// equivalent merge patch where there is one.
+// equivalent merge patch where there is one. A dialect that refuses a
+// member name holding a double quote or a backslash refuses the case
+// naming one, and its merge patch writes what json-patch does.
 func runMemberCases(t *testing.T, mdb mergeDB) {
 	t.Helper()
 	parser := patch.NewParser(memberSchema(mdb.storage), nil)
@@ -136,6 +138,18 @@ func runMemberCases(t *testing.T, mdb mergeDB) {
 			}
 			reset()
 			reference, referenceErr := applyRFC6902(t, tc.start, tc.ops)
+
+			merged := func() string {
+				t.Helper()
+				reset()
+				merge, err := patch.ParseMergePatch([]byte(tc.merge), mergeSchema(mdb.storage), nil)
+				require.NoError(t, err)
+				mergeRes, err := patch.BuildPatchSQL(merge, mdb.dialect)
+				require.NoError(t, err)
+				_, err = mdb.db.ExecContext(t.Context(), "UPDATE docs SET "+mergeRes.SetClause+" WHERE id = "+mdb.dialect.Placeholder(mergeRes.ParamCount+1), append(mergeRes.Args, 1)...)
+				require.NoError(t, err)
+				return read()
+			}
 
 			parsed, err := parser.Parse([]byte(tc.ops))
 			require.NoError(t, err)
@@ -183,14 +197,7 @@ func runMemberCases(t *testing.T, mdb mergeDB) {
 			if tc.merge == "" {
 				return
 			}
-			reset()
-			merge, err := patch.ParseMergePatch([]byte(tc.merge), mergeSchema(mdb.storage), nil)
-			require.NoError(t, err)
-			mergeRes, err := patch.BuildPatchSQL(merge, mdb.dialect)
-			require.NoError(t, err)
-			_, err = mdb.db.ExecContext(t.Context(), "UPDATE docs SET "+mergeRes.SetClause+" WHERE id = "+mdb.dialect.Placeholder(mergeRes.ParamCount+1), append(mergeRes.Args, 1)...)
-			require.NoError(t, err)
-			assert.Equal(t, decodeDoc(t, got), decodeDoc(t, read()), "the same row as the equivalent merge patch")
+			assert.Equal(t, decodeDoc(t, got), decodeDoc(t, merged()), "the same row as the equivalent merge patch")
 		})
 	}
 }

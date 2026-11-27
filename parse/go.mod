@@ -6,7 +6,7 @@ go 1.27.0
 ignore node_modules
 
 require (
-	github.com/ashtonian/pkg/gowalker v0.9.0
+	github.com/ashtonian/pkg/gowalker v0.10.0
 	github.com/ashtonian/pkg/jsonvalue v0.1.0
 	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/google/uuid v1.6.0

@@ -114,10 +114,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 	if n := highestPlaceholder(dialect, filterWhere); n > len(filterArgs) {
 		return FacetQuery{}, fmt.Errorf("BuildFacetQuery: filterWhere names placeholder %d with %d arguments; number its placeholders from 1", n, len(filterArgs))
 	}
-	exprs, err := schema.ComputedSQL(dialect)
-	if err != nil {
-		return FacetQuery{}, err
-	}
+	exprs := schema.ComputedSQL()
 
 	type meta struct {
 		req       FacetRequest
@@ -142,12 +139,8 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 	for _, req := range facets {
 		f, ok := schema.Fields[req.Field]
 		if !ok || !f.Facetable {
-			return FacetQuery{}, &core.ParseError{
-				Kind:    core.ParseErrorKindFilter,
-				Code:    ECodeUnknownField.String(),
-				Message: fmt.Sprintf("field '%s' is not facetable", req.Field),
-				Path:    req.Field,
-			}
+			return FacetQuery{}, core.NewError(ECodeUnknownField, fmt.Sprintf("field '%s' is not facetable", req.Field),
+				core.WithField(req.Field))
 		}
 		f = columnExprs(exprs).field(f)
 		fcfg := f.facetConfig()

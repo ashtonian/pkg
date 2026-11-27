@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"iter"
@@ -125,6 +126,18 @@ func (f *Field) Bounds() Bounds { return f.bounds.Clone() }
 // Hidden reports a field the field-name tag hides: it has columns, but no
 // name a request can use (relations and server fields name themselves).
 func (f *Field) Hidden() bool { return f.external == "" }
+
+// RelationName returns the name filters and patches address a relation
+// field by: its External name, or, when the field-name tag hides it (a
+// virtual relation conventionally carries `json:"-"` to stay out of
+// response payloads), its relation_name tag, else its Go name in
+// snake_case. It is empty for a field with no relation tag.
+func (f *Field) RelationName() string {
+	if f.tags.Relation == "" {
+		return ""
+	}
+	return cmp.Or(f.external, f.tags.RelationName, SnakeCase(f.goName))
+}
 
 // CheckWritable refuses a field promoted through an unexported embedded
 // pointer. Reflection can neither allocate that pointer nor point it at a

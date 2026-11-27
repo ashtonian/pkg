@@ -8,7 +8,7 @@
 //   go test -tags=unit -run TestEmitFilterConformance -update .   (in parse/)
 //
 // The TS client has no parser, so it does not reconstruct the canonical AST or
-// SQL (those are Go-side checks in filter_conformance_test.go). What the client
+// SQL (those are Go-side checks in parse's conformance_test.go). What the client
 // owns — and what this test guards — is the validate-before-send contract.
 
 import { readFileSync } from "node:fs";

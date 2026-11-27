@@ -1,46 +1,27 @@
 package filter
 
-import (
-	"errors"
-	"fmt"
-	"slices"
-)
-
-// ComputedExpr is a computed column's SQL in one dialect: trusted
-// application SQL naming the schema's own columns, or an error for a dialect
-// it cannot serve. Every statement that compiles the schema calls it, so it
-// must be cheap and return the same SQL for the same dialect.
-type ComputedExpr func(Dialect) (string, error)
+import "slices"
 
 // ComputedColumn is a column statements read through an expression instead
-// of the table's column (parse.ReadExpr).
+// of the table's column (parse.ReadExpr): SQL is trusted application SQL in
+// the dialect the schema's statements compile for, naming the schema's own
+// columns.
 type ComputedColumn struct {
 	Column string
-	Expr   ComputedExpr
+	SQL    string
 }
 
-// ComputedSQL resolves the schema's computed columns for d: each one's SQL,
-// parenthesized, by column; nil when the schema computes none. The first
-// expression, in declaration order, that refuses d returns its error.
-func (s *ResourceSchema) ComputedSQL(d Dialect) (map[string]string, error) {
+// ComputedSQL is each of the schema's computed columns' SQL, parenthesized,
+// by column; nil when the schema computes none.
+func (s *ResourceSchema) ComputedSQL() map[string]string {
 	if s == nil || len(s.Computed) == 0 {
-		return nil, nil
-	}
-	if d == nil {
-		return nil, fmt.Errorf("filter: %s: computed columns need a dialect", s.Name)
+		return nil
 	}
 	out := make(map[string]string, len(s.Computed))
 	for _, c := range s.Computed {
-		if c.Expr == nil {
-			return nil, fmt.Errorf("filter: %s: computed column %q has no expression", s.Name, c.Column)
-		}
-		sql, err := c.Expr(d)
-		if err != nil {
-			return nil, err
-		}
-		out[c.Column] = "(" + sql + ")"
+		out[c.Column] = "(" + c.SQL + ")"
 	}
-	return out, nil
+	return out
 }
 
 // columnExprs are a schema's computed columns resolved for the dialect a
@@ -50,33 +31,6 @@ type columnExprs map[string]string
 // computes reports whether column is one of the schema's computed columns.
 func (s *ResourceSchema) computes(column string) bool {
 	return s != nil && slices.ContainsFunc(s.Computed, func(c ComputedColumn) bool { return c.Column == column })
-}
-
-// resolve is ComputedSQL inside a build: a refusal passes through the
-// builder unwrapped (computedError).
-func (s *ResourceSchema) resolve(d Dialect) (columnExprs, error) {
-	exprs, err := s.ComputedSQL(d)
-	if err != nil {
-		return nil, &computedError{err}
-	}
-	return exprs, nil
-}
-
-// computedError is a computed column's refusal of a dialect. A builder
-// returns it as the expression returned it, never as a failure to generate
-// SQL from the filter.
-type computedError struct{ err error }
-
-func (e *computedError) Error() string { return e.err.Error() }
-func (e *computedError) Unwrap() error { return e.err }
-
-// computedCause is err as a builder returns it: a computed column's refusal
-// as the expression returned it, any other error as it is.
-func computedCause(err error) error {
-	if ce, ok := errors.AsType[*computedError](err); ok {
-		return ce.err
-	}
-	return err
 }
 
 // computes reports whether f reads a computed column: a field of its own

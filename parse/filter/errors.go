@@ -60,34 +60,19 @@ func Codes() []core.Code {
 }
 
 // ErrUnsupportedDialect is what application SQL, such as a computed column's
-// expression, returns for a dialect it has no rendering for. A DSN naming
-// an unsupported database is ErrUnknownDSN.
+// expression, returns for a dialect it has no rendering for.
 var ErrUnsupportedDialect = errors.New("unsupported SQL dialect")
 
+// fieldError is a refusal about one field the request named: its message
+// opens with the field's name and Details[core.DetailField] holds it, so the
+// two cannot disagree.
+func fieldError(code core.Code, name, problem string, opts ...core.ErrorOption) *core.ParseError {
+	all := append([]core.ErrorOption{core.WithField(name)}, opts...)
+	return core.NewError(code, fmt.Sprintf("field '%s': %s", name, problem), all...)
+}
+
 // valueMismatch is E2073 for a request value field cannot hold, naming the
-// field.
+// field, caused by cause.
 func valueMismatch(field *FieldSchema, cause error) *core.ParseError {
-	return &core.ParseError{
-		Kind:    core.ParseErrorKindFilter,
-		Code:    ECodeValueTypeMismatch.String(),
-		Message: fmt.Sprintf("field '%s': %v", field.ExternalName, cause),
-		Details: map[string]any{core.DetailField: field.ExternalName},
-		Cause:   cause,
-	}
-}
-
-func newFilterError(code core.Code, message string) *core.ParseError {
-	return &core.ParseError{
-		Code:    code.String(),
-		Message: message,
-		Kind:    core.ParseErrorKindFilter,
-	}
-}
-
-func newSortError(code core.Code, message string) *core.ParseError {
-	return &core.ParseError{
-		Code:    code.String(),
-		Message: message,
-		Kind:    core.ParseErrorKindSort,
-	}
+	return fieldError(ECodeValueTypeMismatch, field.ExternalName, cause.Error(), core.WithCause(cause))
 }

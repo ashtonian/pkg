@@ -3,79 +3,207 @@
 package parse_test
 
 import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
+	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
+	"github.com/ashtonian/pkg/parse/parsehttp"
+	"github.com/ashtonian/pkg/parse/parsepgx"
 )
 
-// CheckPlan is the refusal every executor makes before its first statement;
-// the executor contract (executor_contract_cases_test.go) shows both
-// executors make it.
-func TestCheckPlan(t *testing.T) {
-	sqlite := filter.SQLiteDialect{}
-	list, err := execItems.BuildList(sqlite, nil, execScope)
-	require.NoError(t, err)
-	require.NoError(t, execItems.CheckPlan(list, sqlite))
-
-	err = execItems.CheckPlan(list, filter.PostgresDialect{})
-	require.ErrorIs(t, err, parse.ErrDialect)
-	require.ErrorContains(t, err, "parse: exec_items: list plan for sqlite, run on postgres")
-
-	var noUpdate *parse.UpdatePlan
-	require.ErrorContains(t, execItems.CheckPlan(noUpdate, sqlite), "parse: exec_items: nil update plan")
-	var noBatch *parse.UpdateBatchPlan
-	require.ErrorContains(t, execItems.CheckPlan(noBatch, sqlite), "parse: exec_items: nil update batch plan")
-	require.ErrorContains(t, execItems.CheckPlan(nil, sqlite), "parse: exec_items: nil plan")
-	require.ErrorIs(t, execItems.CheckPlan(list, nil), parse.ErrDialect)
-}
-
-// The batch steps take one read per chunk: an executor that lost a chunk's
-// rows is refused rather than reported as a missing or unchanged target.
-func TestBatchSteps_RefuseReadsOfAnotherChunkCount(t *testing.T) {
-	p, err := execItems.ParseMergePatch([]byte(`{"name":"x"}`))
-	require.NoError(t, err)
-	plan, err := execItems.BuildUpdateBatch(filter.SQLiteDialect{}, []parse.RowUpdate{{Key: parse.Key{"e1"}, Patch: p}}, execScope, parse.UpdateBatchLimits{})
-	require.NoError(t, err)
-	require.Len(t, plan.Chunks, 1)
-
-	err = execItems.CheckBatchCurrent(plan, nil)
-	require.ErrorContains(t, err, "parse: exec_items: Current rows of 0 chunks for a batch of 1")
-	_, err = execItems.BatchResult(plan, [][]execItem{{{ID: "e1"}}}, nil)
-	require.ErrorContains(t, err, "parse: exec_items: Owner rows of 0 chunks for a batch of 1")
-	_, err = execItems.BatchResult(nil, nil, nil)
-	require.ErrorContains(t, err, "parse: exec_items: nil update batch plan")
-
-	res, err := execItems.BatchResult(plan, [][]execItem{{{ID: "e1"}}}, [][]execItem{nil})
-	require.NoError(t, err)
-	assert.Empty(t, res.Changed)
-	assert.Equal(t, []execItem{{ID: "e1"}}, res.Unchanged, "a chunk's read row its owner left is unchanged")
-}
-
+// A statement's failure names its resource's table once, and a
+// transaction's own statement names none.
 func TestStatementFailed(t *testing.T) {
-	require.NoError(t, parse.StatementFailed("owner", nil))
 	cause := assert.AnError
-	err := parse.StatementFailed("include tags", cause)
-	require.ErrorIs(t, err, cause)
-	require.EqualError(t, err, "include tags: "+cause.Error())
-	var failed *parse.StatementError
-	require.ErrorAs(t, err, &failed)
-	assert.Equal(t, "include tags", failed.Statement)
+	for _, tc := range []struct {
+		name, table, statement, want string
+	}{
+		{"a resource's statement", "widgets", "include tags", "parse: widgets: include tags: " + cause.Error()},
+		{"a transaction's own statement", "", "commit", "commit: " + cause.Error()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, parse.StatementFailed(tc.table, tc.statement, nil))
+			err := parse.StatementFailed(tc.table, tc.statement, cause)
+			require.ErrorIs(t, err, cause)
+			require.EqualError(t, err, tc.want)
+			failed, ok := errors.AsType[*parse.StatementError](err)
+			require.True(t, ok)
+			assert.Equal(t, tc.table, failed.Table)
+			assert.Equal(t, tc.statement, failed.Statement)
+		})
+	}
 }
 
-func TestNewExecConfig(t *testing.T) {
-	cfg, err := parse.NewExecConfig()
+type countedRow struct {
+	ID     string         `json:"id"     db:"id"     parse:"filter,sort"`
+	Counts map[string]int `json:"counts" db:"counts"`
+}
+
+// A row that fails to scan fails the statement that read it, whose error
+// names the table once, then the statement, then the column.
+func TestList_NamesAScanFailureOnce(t *testing.T) {
+	p, db := providertest.SQLite(t)
+	dbtest.Exec(t, db,
+		`CREATE TABLE "counted" ("id" TEXT PRIMARY KEY, "counts" TEXT)`,
+		`INSERT INTO "counted" VALUES ('a', 'null')`)
+	r := parse.MustResource[countedRow](p, "counted")
+	_, err := r.List(t.Context(), nil, parse.Scope{})
+	require.EqualError(t, err, "parse: counted: page: column counts: JSON document decodes to nil map[string]int; use json.RawMessage to preserve JSON null")
+}
+
+// A resource scoped to a transaction is on its provider and is a view; a
+// transaction another provider began, a wrapped one of another kind of
+// provider, or none, is refused before it is used.
+func TestIn(t *testing.T) {
+	p, _ := providertest.SQLite(t)
+	r := parsetest.ExecItems(p)
+	assert.Same(t, p, r.Provider())
+	tx, err := p.Begin(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, parse.DefaultSettleTimeout, cfg.SettleTimeout)
-	cfg, err = parse.NewExecConfig(parse.WithSettleTimeout(time.Second), nil)
+	defer func() { require.NoError(t, tx.Rollback(t.Context())) }()
+
+	scoped, err := r.In(tx)
 	require.NoError(t, err)
-	assert.Equal(t, time.Second, cfg.SettleTimeout, "a nil option is skipped")
-	for _, d := range []time.Duration{0, -time.Second} {
-		_, err := parse.NewExecConfig(parse.WithSettleTimeout(d))
-		require.ErrorContains(t, err, "must be positive", "%s", d)
+	assert.Same(t, p, scoped.Provider())
+	err = scoped.Relate("again", parse.HasMany(r, "id"))
+	require.ErrorContains(t, err, `parse: exec_items: relation "again": a view (WithPaths, In) declares no relations`)
+
+	other, _ := providertest.SQLite(t)
+	otherTx, err := other.Begin(t.Context())
+	require.NoError(t, err)
+	defer func() { require.NoError(t, otherTx.Rollback(t.Context())) }()
+	_, err = r.In(otherTx)
+	require.ErrorIs(t, err, parse.ErrProviderMismatch)
+	require.ErrorContains(t, err, "parse: exec_items: transaction another sqlite provider began")
+
+	_, err = r.In(parsepgx.Tx(nil))
+	require.ErrorIs(t, err, parse.ErrProviderMismatch)
+	require.ErrorContains(t, err, "parse: exec_items: postgres transaction for a resource on sqlite")
+	_, err = r.In(nil)
+	require.ErrorContains(t, err, "parse: exec_items: nil transaction")
+}
+
+type faultLabel struct {
+	ID       string `json:"id"        db:"id"        parse:"filter"`
+	TenantID string `json:"-"         db:"tenant_id"`
+	DeviceID int    `json:"device_id" db:"device_id" parse:"filter"`
+	Name     string `json:"name"      db:"name"      parse:"filter"`
+}
+
+type faultDevice struct {
+	ID       int    `json:"id"        db:"id"        parse:"filter"`
+	TenantID string `json:"-"         db:"tenant_id"`
+	Name     string `json:"name"      db:"name"      parse:"filter"`
+}
+
+type faultBoard struct {
+	ID   int    `json:"id"   db:"id"   parse:"filter"`
+	Name string `json:"name" db:"name" parse:"filter"`
+}
+
+type unsignedRow struct {
+	ID string `json:"id" db:"id"`
+	N  uint64 `json:"n"  db:"n"  parse:"filter"`
+}
+
+// What the server supplies and cannot build — a policy-scoped relation
+// without its policy, a tenant-scoped pair table without a tenant, a policy
+// naming a field the resource lacks or holding a value of the wrong shape —
+// is the server's fault: a plain error matching its sentinel, which
+// parsehttp.WriteError declines without writing, so the handler logs it and
+// answers its own 500 instead of telling the client its request was invalid.
+func TestBuildList_ServerFaultsAreNoParseError(t *testing.T) {
+	labels := parse.MustResource[faultLabel](onPostgres, "labels", parse.TenantColumn("tenant_id"))
+	devices := parse.MustResource[faultDevice](onPostgres, "devices", parse.TenantColumn("tenant_id"))
+	devices.MustRelate("labels", parse.HasMany(labels, "device_id", parse.PolicyScoped(), parse.Indexed()))
+	boards := parse.MustResource[faultBoard](onPostgres, "boards")
+	boards.MustRelate("labels", parse.ManyToMany(labels,
+		parse.Junction{Table: "board_labels", Source: []string{"board_id"}, Target: []string{"label_id"}, Tenant: "tenant_id"}, parse.Indexed()))
+
+	build := func(t *testing.T, r interface {
+		ParseListInput(parse.ListInput) (*parse.ListRequest, error)
+		BuildList(*parse.ListRequest, parse.Scope) (*parse.ListPlan, error)
+	}, f string, scope parse.Scope) error {
+		t.Helper()
+		req, err := r.ParseListInput(parse.ListInput{Filter: f})
+		require.NoError(t, err, "the request is valid")
+		_, err = r.BuildList(req, scope)
+		return err
+	}
+	policy := func(c *filter.PolicyConstraint) *filter.PolicyConstraints {
+		constraints := &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{c}}
+		return constraints
+	}
+	for _, tt := range []struct {
+		name     string
+		err      func(t *testing.T) error
+		sentinel error
+	}{
+		{"a policy-scoped relation built without the target's policy", func(t *testing.T) error {
+			return build(t, devices, `{"labels":{"$some":{"name":"x"}}}`, parse.Scope{Tenant: "t1"})
+		}, filter.ErrRelatedPolicyRequired},
+		{"a tenant-scoped pair table on a resource built without a tenant", func(t *testing.T) error {
+			return build(t, boards, `{"labels":"l1"}`, parse.Scope{})
+		}, filter.ErrRelationTenantRequired},
+		{"a policy naming a field the resource lacks", func(t *testing.T) error {
+			return build(t, devices, `{"name":"a"}`, parse.Scope{Tenant: "t1", Policy: policy(&filter.PolicyConstraint{Field: "owner_org", Operator: filter.OpEq, Value: "o"})})
+		}, filter.ErrPolicyInvalid},
+		{"a policy $in with a scalar", func(t *testing.T) error {
+			return build(t, devices, `{"name":"a"}`, parse.Scope{Tenant: "t1", Policy: policy(&filter.PolicyConstraint{Field: "name", Operator: filter.OpIn, Value: "a"})})
+		}, filter.ErrPolicyInvalid},
+		{"a policy operator the field's type does not take", func(t *testing.T) error {
+			return build(t, devices, `{"name":"a"}`, parse.Scope{Tenant: "t1", Policy: policy(&filter.PolicyConstraint{Field: "id", Operator: filter.OpLike, Value: "a%"})})
+		}, filter.ErrPolicyInvalid},
+		{"a policy negating an empty group", func(t *testing.T) error {
+			return build(t, devices, `{"name":"a"}`, parse.Scope{Tenant: "t1", Policy: &filter.PolicyConstraints{And: []*filter.PolicyConstraints{{Not: true}}}})
+		}, filter.ErrPolicyInvalid},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.err(t)
+			require.ErrorIs(t, err, tt.sentinel)
+			_, isParseError := errors.AsType[*core.ParseError](err)
+			assert.False(t, isParseError, "%v", err)
+
+			w := httptest.NewRecorder()
+			assert.False(t, parsehttp.WriteError(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/devices", nil), err))
+			assert.Zero(t, w.Body.Len(), "nothing is written")
+			assert.Empty(t, w.Header())
+		})
+	}
+}
+
+// A request value the dialect's integers cannot hold is the request's E2073,
+// as a typed field's Go kind refuses one: SQLite's integers end at int64.
+func TestBuildList_AnUnsignedOperandSQLiteCannotHold(t *testing.T) {
+	rows := parse.MustResource[unsignedRow](onSQLite, "rows")
+	numeric := parse.MustResource[unsignedRow](onPostgres, "rows")
+	for _, f := range []string{
+		`{"n":18446744073709551615}`,
+		`{"n":{"$gt":9223372036854775808}}`,
+		`{"n":{"$in":[1,18446744073709551615]}}`,
+	} {
+		req, err := rows.ParseListInput(parse.ListInput{Filter: f})
+		require.NoError(t, err, f)
+		_, err = rows.BuildList(req, parse.Scope{})
+		require.ErrorIs(t, err, filter.ECodeValueTypeMismatch, f)
+		pe, ok := errors.AsType[*core.ParseError](err)
+		require.True(t, ok, f)
+		assert.Equal(t, "n", pe.Details[core.DetailField], f)
+		assert.Contains(t, pe.Message, "exceeds SQLite's 64-bit signed integers", f)
+
+		req, err = numeric.ParseListInput(parse.ListInput{Filter: f})
+		require.NoError(t, err, f)
+		_, err = numeric.BuildList(req, parse.Scope{})
+		assert.NoError(t, err, "a numeric column holds it: %s", f)
 	}
 }

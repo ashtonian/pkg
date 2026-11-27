@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"cmp"
 	"database/sql/driver"
 	"encoding"
 	"fmt"
@@ -66,13 +65,8 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			}
 		}
 		fieldName := field.External()
-		if tags.Parse.Filter && fieldName == "" && tags.Relation != "" {
-			// A virtual relation field conventionally carries `json:"-"`
-			// to hide it from response payloads, and still needs an
-			// addressable name. Generators can preserve their
-			// declared name with relation_name; otherwise use snake_case
-			// of the struct field name.
-			fieldName = cmp.Or(tags.RelationName, core.SnakeCase(field.GoName()))
+		if tags.Relation != "" {
+			fieldName = field.RelationName()
 		}
 		if !tags.Parse.Filter || fieldName == "" {
 			if c, ok := policyColumn(g, tableName, field); ok {
@@ -199,10 +193,12 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			fs.GeoConfig = geoConfig
 		}
 
-		if err := applyStorage(g, fs, field); err != nil {
+		err = applyStorage(g, fs, field)
+		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
-		if err := checkOperators(fs); err != nil {
+		err = CheckOperators(fs)
+		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 		// After storage, which can make a document field a scalar.
@@ -302,33 +298,37 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 			continue
 		}
 		ft := field.Type()
-		nullable := ft.Kind() == reflect.Pointer || ft.Kind() == reflect.Slice || ft.Kind() == reflect.Map || ft.Kind() == reflect.Interface
-		fieldType := info.Type
+		nullable := core.IsNullableType(ft)
+		fieldType, kind := info.Type, info.NumberKind
 		if !sortable(ft, fieldType) {
 			// A cursor carries a scalar per key; a document, array or geo
 			// value has no portable order, and an interval or network
 			// value's text order is not its order.
 			return nil, fmt.Errorf("field %s: %s fields are not sortable", field.GoName(), fieldType)
 		}
-		expr, err := g.MappedExpr(tableName, fieldName, fieldType, tags.Column)
+		if fieldType == core.FieldTypeObject {
+			// A struct orders as the scalar its column holds, as it filters
+			// (applyStorage). Only its declaration names that scalar: an
+			// undeclared one would order as the database orders the
+			// column (PostgreSQL text by its collation), not as its
+			// cursor compares.
+			scalar, err := scalarStorage(g, field)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
+			}
+			if scalar == "" {
+				return nil, fmt.Errorf("field %s: a struct sorts as the scalar its column holds: declare it with storage:\"scalar:<type>\" (<type> is %s)", field.GoName(), pathTypeNames)
+			}
+			fieldType, kind = scalar, kindOf(scalar)
+		}
+		// A mapper sees the field's own type, as the filter schema's does.
+		expr, err := g.MappedExpr(tableName, fieldName, info.Type, tags.Column)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 		column, err := g.ColumnName(fieldName, tags.Column)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
-		}
-		kind := core.NumericKind(ft)
-		if core.IsDocument(fieldType) {
-			// A struct the database holds as a scalar orders as that scalar,
-			// as it filters (applyStorage).
-			scalar, err := scalarStorage(g, field)
-			if err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
-			}
-			if scalar != "" {
-				fieldType, kind = scalar, kindOf(scalar)
-			}
 		}
 		fields[fieldName] = &SortFieldSchema{
 			Table:      tableName,
@@ -423,7 +423,7 @@ func DefaultFilterOps() map[core.FieldType][]FilterOperator {
 
 // sortable reports whether a keyset can order and resume on a field: a scalar
 // type, or a struct whose value reduces to one (driver.Valuer,
-// encoding.TextMarshaler — see CursorValue).
+// encoding.TextMarshaler), which its storage tag declares.
 func sortable(t reflect.Type, ft core.FieldType) bool {
 	switch ft {
 	case core.FieldTypeString, core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeDecimal,

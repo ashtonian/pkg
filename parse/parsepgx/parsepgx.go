@@ -1,346 +1,145 @@
-// Package parsepgx runs parse plans on PostgreSQL through pgx.
-// QueryPage answers a list plan — the page, its total, its facets and its
-// includes —, Update applies an update plan with its relation changes,
-// UpdateBatch applies a batch plan, and Query reads one statement's rows.
-// Rows scan through the resource's row contract (parse.RowScanner).
-// Both take the caller's context, connection and transaction; the core
-// parse packages stay free of I/O.
+// Package parsepgx is parse's PostgreSQL provider. New opens a
+// parse.Provider over a pgx pool, and every resource built on it
+// (parse.NewResource) compiles for filter.PostgresDialect and runs its
+// lists, facets, queries and updates on that pool; Tx wraps a transaction
+// of the application's own for a resource to run in (parse.Resource.In).
+// The statements of one step go to the database in one pgx batch, one
+// round trip. Rows scan through the resource's row contract
+// (parse.RowScanner), and a column PostgreSQL reports as json or jsonb is
+// decoded as a stored document whether or not the resource declares its
+// type.
 package parsepgx
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/backend"
 )
 
-// Querier sends statement batches: *pgxpool.Pool, *pgx.Conn and pgx.Tx have
-// it.
-type Querier interface {
-	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
-}
+// Name is the provider's name in configuration (parse.Provider.Name).
+const Name = "postgres"
 
-// DB sends batches and opens transactions: on *pgxpool.Pool and *pgx.Conn
-// an update begins its own transaction, and in a pgx.Tx it takes a
-// savepoint the caller's rollback undoes.
-type DB interface {
-	Querier
-	Begin(ctx context.Context) (pgx.Tx, error)
-}
-
-// savepoint names the savepoint Update and UpdateBatch take in a caller's
-// transaction.
+// savepoint names the savepoint an update takes in a caller's transaction.
 const savepoint = "parsepgx_update"
 
-// QueryPage reads the page plan selects, scanned into T through r's row
-// contract (parse.RowScanner), and returns it as r.Page builds it: with its
-// total when the plan counts, its facet counts when the plan facets, and the
-// related IDs of the page's rows for each relation the plan includes.
-//
-// The page, count and facet statements go to db in one batch, closed before
-// the includes — which need the page's keys — go in a second. The statements
-// run in their own snapshots unless db is a transaction at REPEATABLE READ
-// or stricter; pass one when the total and facets must describe exactly the
-// page's rows under concurrent writes.
-func QueryPage[T any](ctx context.Context, db Querier, r *parse.Resource[T], plan *parse.ListPlan) (*filter.Page[T], error) {
-	err := r.CheckPlan(plan, filter.PostgresDialect{})
+// Option configures New.
+type Option func(*config)
+
+type config struct {
+	dialect filter.PostgresDialect
+	settle  time.Duration
+}
+
+// Collation is the code-point collation string sorts, keyset seeks and
+// string ranges compile under (filter.PostgresDialect.Collation): the
+// default, filter.CollationPgCUTF8, needs PostgreSQL 17; filter.CollationC
+// serves PostgreSQL 14 to 16. New refuses a collation the server lacks.
+func Collation(c filter.PostgresCollation) Option {
+	return func(cfg *config) { cfg.dialect.Collation = c }
+}
+
+// ContainmentMaxValues bounds the `$in` sets a jsonb path compares by
+// containment (filter.PostgresDialect.ContainmentMaxValues): 0, the
+// default, is filter.DefaultContainmentMaxValues, and a negative value
+// compares no set by containment.
+func ContainmentMaxValues(n int) Option {
+	return func(cfg *config) { cfg.dialect.ContainmentMaxValues = n }
+}
+
+// SettleTimeout bounds each statement that settles an update's
+// transaction: COMMIT, ROLLBACK, RELEASE SAVEPOINT and ROLLBACK TO
+// SAVEPOINT. It must be positive; the default is
+// parse.DefaultSettleTimeout.
+func SettleTimeout(d time.Duration) Option {
+	return func(cfg *config) { cfg.settle = d }
+}
+
+// New opens the PostgreSQL provider over pool: it checks under ctx that the
+// server has the provider's collation, so no string comparison meets one it
+// lacks. pool is the application's, and stays open and owned by it; the
+// provider runs every resource's statements on it.
+func New(ctx context.Context, pool *pgxpool.Pool, opts ...Option) (*parse.Provider, error) {
+	if pool == nil {
+		return nil, errors.New("parsepgx: nil pool")
+	}
+	cfg := config{settle: parse.DefaultSettleTimeout}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.settle <= 0 {
+		return nil, fmt.Errorf("parsepgx: settle timeout %s: must be positive", cfg.settle)
+	}
+	err := checkCollation(ctx, pool, cfg.dialect.Collation)
 	if err != nil {
 		return nil, err
 	}
-
-	var read parse.ListRows[T]
-	b := &pgx.Batch{}
-	b.Queue(plan.Page.SQL, plan.Page.Args...).Query(func(rows pgx.Rows) error {
-		var err error
-		read.Items, err = collect(rows, r)
-		return parse.StatementFailed("page", err)
-	})
-	if plan.Count != nil {
-		b.Queue(plan.Count.SQL, plan.Count.Args...).QueryRow(func(row pgx.Row) error {
-			return parse.StatementFailed("count", row.Scan(&read.Total))
-		})
-	}
-	if plan.Facets != nil {
-		b.Queue(plan.Facets.SQL, plan.Facets.Args...).Query(func(rows pgx.Rows) error {
-			var err error
-			read.Facets, err = filter.ScanFacetUnion(rows)
-			return parse.StatementFailed("facets", err)
-		})
-	}
-	err = sendBatch(ctx, db, b)
-	if err != nil {
-		return nil, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
-	}
-
-	page, includes, err := r.ListPage(plan, read)
-	if err != nil {
-		return nil, err
-	}
-	err = queryIncludes(ctx, db, page, includes)
-	if err != nil {
-		return nil, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
-	}
-	return page, nil
+	p := parse.NewProvider(backend.Provider{Name: Name, Dialect: cfg.dialect, DB: database{pool: pool}, SettleTimeout: cfg.settle})
+	return p, nil
 }
 
-// Query runs st, a statement over r compiled for PostgreSQL that reads
-// r.Columns (a repository's own read of the table, or a plan's Current or
-// Reread), and returns its rows scanned through r's row contract.
-func Query[T any](ctx context.Context, db Querier, r *parse.Resource[T], st parse.Statement) ([]T, error) {
-	var rows []T
-	b := &pgx.Batch{}
-	b.Queue(st.SQL, st.Args...).Query(func(rs pgx.Rows) error {
-		var err error
-		rows, err = collect(rs, r)
-		return err
-	})
-	err := sendBatch(ctx, db, b)
-	if err != nil {
-		return nil, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
+// checkCollation refuses a collation the database cannot compare its
+// strings under, by comparing two strings under it as the plans' SQL does:
+// pg_c_utf8 is missing before PostgreSQL 17 and in a database not encoded
+// UTF8 (undefined_object, 42704).
+func checkCollation(ctx context.Context, pool *pgxpool.Pool, c filter.PostgresCollation) error {
+	switch c {
+	case filter.CollationPgCUTF8, filter.CollationC:
+	default:
+		return fmt.Errorf("parsepgx: collation %d: no such collation", c)
 	}
-	return rows, nil
+	const undefinedObject = "42704"
+	var ok bool
+	err := pool.QueryRow(ctx, "SELECT 'a' COLLATE "+c.String()+" < 'b'").Scan(&ok)
+	pgErr, answered := errors.AsType[*pgconn.PgError](err)
+	if answered && pgErr.Code == undefinedObject {
+		return fmt.Errorf("parsepgx: collation %s: %s; on PostgreSQL 14 to 16 open the provider with Collation(filter.CollationC)", c, pgErr.Message)
+	}
+	if err != nil {
+		return fmt.Errorf("parsepgx: checking collation %s: %w", c, err)
+	}
+	return nil
 }
 
-// queryIncludes reads the related IDs of the page's rows, one statement per
-// included relation, in one batch.
-func queryIncludes[T any](ctx context.Context, db Querier, page *filter.Page[T], queries []filter.IncludeQuery) error {
-	if len(queries) == 0 {
-		return nil
-	}
-	b := &pgx.Batch{}
-	for _, q := range queries {
-		b.Queue(q.SQL, q.Args...).Query(func(rows pgx.Rows) error {
-			res, err := q.Scan(rows)
-			if err != nil {
-				return parse.StatementFailed("include "+q.Field, err)
-			}
-			page.SetInclude(q.Field, res)
-			return nil
-		})
-	}
-	return sendBatch(ctx, db, b)
+// Tx is tx, a transaction the application began on the provider's pool, as
+// one a resource runs in (parse.Resource.In), so that the application's
+// statements and parse's commit together. An update in it runs under a
+// savepoint. Commit or roll back tx itself, or through the returned Tx.
+func Tx(tx pgx.Tx) *parse.Tx {
+	wrapped := parse.NewTx(backend.Transaction{Provider: Name, Tx: transaction{tx: tx}})
+	return wrapped
 }
 
-// Update applies plan and reports its target rows as the update left them,
-// split into the rows whose columns it wrote and the rows it left, and how
-// many junction rows its membership changes touched (parse.Resource.FollowUp);
-// neither split holding a row means the target is not found. The update
-// runs in one transaction — a savepoint when db is a pgx.Tx (transact) —
-// settled only once every row has scanned, so an error means nothing it
-// wrote is kept, unless errors.Is(err, parse.ErrCommitUnknown); opts bound
-// the settle (parse.WithSettleTimeout). A guarded plan (SkipUnchanged:
-// plan.Current set) sends Current before Owner in one batch, so Current's
-// lock holds every target while Owner compares them. A patch of document
-// members (plan.Conflict set) sends Current and Conflict, whose row fails
-// the update before Owner is sent (UpdatePlan.ConflictError), then Owner.
-// A plain update of a target that can hold several rows (plan.Lock set)
-// sends Lock before Owner in one batch, so its rows lock in key order before
-// the UPDATE would take them in the order its plan reads them.
-//
-// A plan that changes relation memberships then changes them for the keys
-// of the rows the owner statement returned (changed, then unchanged), never
-// the requested keys, then, for a resource with computed columns
-// (parse.ReadExpr), reads those rows again (Resource.Reread), so a column
-// over a relation's pairs reads them as the update left them.
-func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse.UpdatePlan, opts ...parse.ExecOption) (parse.UpdateResult[T], error) {
-	err := r.CheckPlan(plan, filter.PostgresDialect{})
-	if err != nil {
-		return parse.UpdateResult[T]{}, err
-	}
-	cfg, err := parse.NewExecConfig(opts...)
-	if err != nil {
-		return parse.UpdateResult[T]{}, err
-	}
-	var res parse.UpdateResult[T]
-	err = transact(ctx, cfg, db, func(tx pgx.Tx) error {
-		follow, err := queryTargets(ctx, tx, r, plan)
-		if err != nil {
-			return err
-		}
-		res = follow.Result
-		if len(follow.Relations) == 0 {
-			return nil
-		}
-		// The membership changes and the rereads after them go in one batch.
-		b := &pgx.Batch{}
-		for _, s := range follow.Relations {
-			b.Queue(s.SQL, s.Args...).Exec(func(tag pgconn.CommandTag) error {
-				res.RelationRows += tag.RowsAffected()
-				return nil
-			})
-		}
-		reread := func(stmt *parse.Statement, side *[]T) {
-			if stmt == nil {
-				return
-			}
-			b.Queue(stmt.SQL, stmt.Args...).Query(func(rs pgx.Rows) error {
-				var err error
-				*side, err = collect(rs, r)
-				return parse.StatementFailed("reread", err)
-			})
-		}
-		reread(follow.RereadChanged, &res.Changed)
-		reread(follow.RereadUnchanged, &res.Unchanged)
-		return parse.StatementFailed("relations", sendBatch(ctx, tx, b))
-	})
-	if err != nil {
-		return parse.UpdateResult[T]{}, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
-	}
-	return res, nil
+// database is the provider's pool.
+type database struct {
+	pool *pgxpool.Pool
 }
 
-// queryTargets runs plan's owner statement and returns what the update
-// runs next (parse.Resource.FollowUp), the target rows split as the owner
-// statement left them. A plan's Current goes first in the same batch of the
-// update's transaction: its lock holds every target while the guarded
-// update compares them, so the rows it read and the update did not return
-// are exactly the unchanged ones.
-func queryTargets[T any](ctx context.Context, db Querier, resource *parse.Resource[T], plan *parse.UpdatePlan) (*parse.UpdateFollowUp[T], error) {
-	var current, owner []T
-	b := &pgx.Batch{}
-	if plan.Current != nil {
-		b.Queue(plan.Current.SQL, plan.Current.Args...).Query(func(r pgx.Rows) error {
-			var err error
-			current, err = collect(r, resource)
-			return parse.StatementFailed("current", err)
-		})
-	}
-	if plan.Conflict != nil {
-		// Owner goes in a batch of its own, so a conflict sends no write.
-		var unmet *int64
-		b.Queue(plan.Conflict.SQL, plan.Conflict.Args...).Query(func(r pgx.Rows) error {
-			defer r.Close()
-			if r.Next() {
-				var op int64
-				err := r.Scan(&op)
-				if err != nil {
-					return parse.StatementFailed("conflict", err)
-				}
-				unmet = &op
-			}
-			return parse.StatementFailed("conflict", r.Err())
-		})
-		err := sendBatch(ctx, db, b)
-		if err != nil {
-			return nil, err
-		}
-		if unmet != nil {
-			return nil, plan.ConflictError(*unmet)
-		}
-		b = &pgx.Batch{}
-	}
-	if plan.Lock != nil {
-		b.Queue(plan.Lock.SQL, plan.Lock.Args...).Query(func(r pgx.Rows) error {
-			r.Close()
-			return parse.StatementFailed("lock", r.Err())
-		})
-	}
-	b.Queue(plan.Owner.SQL, plan.Owner.Args...).Query(func(r pgx.Rows) error {
-		var err error
-		owner, err = collect(r, resource)
-		return parse.StatementFailed("owner", err)
-	})
-	err := sendBatch(ctx, db, b)
-	if err != nil {
-		return nil, err
-	}
-	return resource.FollowUp(plan, owner, current)
+func (d database) Send(ctx context.Context, table string, steps ...backend.Step) error {
+	return send(ctx, table, d.pool, steps)
 }
 
-// UpdateBatch applies plan in one transaction — a savepoint when db is one —
-// held as Update holds its own, opts included.
-// Every chunk's Current goes first, in one batch, locking its targets in key
-// order; each chunk's rows must be exactly its keys
-// (parse.Resource.CheckBatchCurrent: parse.ErrUpdateBatchTargets otherwise,
-// and nothing is written). Every Owner then goes in a second batch. The
-// result (parse.Resource.BatchResult) holds as Changed the rows the owners
-// wrote, chunk by chunk, and as Unchanged the locked rows a SkipUnchanged
-// owner left as they were.
-func UpdateBatch[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse.UpdateBatchPlan, opts ...parse.ExecOption) (parse.UpdateResult[T], error) {
-	err := r.CheckPlan(plan, filter.PostgresDialect{})
+// Transact runs apply in a transaction of its own, settled only once apply
+// has returned, every row read and scanned: an error means nothing apply
+// wrote is kept, but for parse.ErrCommitUnknown (commitFailed). Once apply
+// succeeds the update is finished whatever ctx does since, so a reported
+// error never hides an applied update; each settling statement therefore
+// runs under its own settle context (backend.Settle), as pgx sends nothing
+// on a done context. A panic in apply settles as an error does on its way
+// out, so no transaction stays open on the connection.
+func (d database) Transact(ctx context.Context, table string, settle time.Duration, apply func(backend.Conn) error) error {
+	tx, err := d.pool.Begin(ctx)
 	if err != nil {
-		return parse.UpdateResult[T]{}, err
-	}
-	cfg, err := parse.NewExecConfig(opts...)
-	if err != nil {
-		return parse.UpdateResult[T]{}, err
-	}
-	if len(plan.Chunks) == 0 {
-		return parse.UpdateResult[T]{}, nil
-	}
-	var res parse.UpdateResult[T]
-	err = transact(ctx, cfg, db, func(tx pgx.Tx) error {
-		current := make([][]T, len(plan.Chunks))
-		b := &pgx.Batch{}
-		for i, chunk := range plan.Chunks {
-			b.Queue(chunk.Current.SQL, chunk.Current.Args...).Query(func(rs pgx.Rows) error {
-				var err error
-				current[i], err = collect(rs, r)
-				return parse.StatementFailed("current", err)
-			})
-		}
-		err := sendBatch(ctx, tx, b)
-		if err != nil {
-			return err
-		}
-		err = r.CheckBatchCurrent(plan, current)
-		if err != nil {
-			return err
-		}
-		owner := make([][]T, len(plan.Chunks))
-		b = &pgx.Batch{}
-		for i, chunk := range plan.Chunks {
-			if chunk.Owner == nil {
-				continue
-			}
-			b.Queue(chunk.Owner.SQL, chunk.Owner.Args...).Query(func(rs pgx.Rows) error {
-				var err error
-				owner[i], err = collect(rs, r)
-				return parse.StatementFailed("owner", err)
-			})
-		}
-		if b.Len() > 0 {
-			err := sendBatch(ctx, tx, b)
-			if err != nil {
-				return err
-			}
-		}
-		res, err = r.BatchResult(plan, current, owner)
-		return err
-	})
-	if err != nil {
-		return parse.UpdateResult[T]{}, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
-	}
-	return res, nil
-}
-
-// transact runs apply in a transaction of its own when db is no
-// transaction, and under a savepoint of the caller's pgx.Tx otherwise, and
-// settles it only once apply has returned, every row read and scanned. Its
-// contract is parsesql's: an error means nothing apply wrote is kept and the
-// caller's transaction is still usable, but for parse.ErrCommitUnknown
-// (commitFailed); once apply succeeds the update is finished whatever ctx
-// does since, so a reported error never hides an applied update. Each
-// settling statement — the commit, the release or the undo — therefore runs
-// under its own settle context (parse.ExecConfig.SettleContext): pgx sends
-// nothing on a done context, which would leave a savepoint's writes in the
-// caller's transaction. A panic in apply settles as an error does on its way
-// out, so no transaction stays open on the connection. The savepoint is
-// taken by hand rather than through pgx's nested Begin, whose failed release
-// can no longer be rolled back.
-func transact(ctx context.Context, cfg parse.ExecConfig, db DB, apply func(pgx.Tx) error) error {
-	caller, inTx := db.(pgx.Tx)
-	if inTx {
-		return underSavepoint(ctx, cfg, caller, apply)
-	}
-	tx, err := db.Begin(ctx)
-	if err != nil {
-		return parse.StatementFailed("begin", err)
+		return parse.StatementFailed(table, "begin", err)
 	}
 	returned := false
 	defer func() {
@@ -348,21 +147,100 @@ func transact(ctx context.Context, cfg parse.ExecConfig, db DB, apply func(pgx.T
 			// The panic goes on to the caller, so the rollback's error has
 			// nowhere to go; a rollback that fails closes the connection,
 			// and the server rolls back with it.
-			_ = settle(ctx, cfg, tx.Rollback)
+			_ = backend.Settle(ctx, settle, tx.Rollback)
 		}
 	}()
-	err = apply(tx)
+	err = apply(transaction{tx: tx})
 	returned = true
 	if err != nil {
 		// A transaction pgx already closed (its connection lost) kept
 		// nothing to roll back.
-		rollback := settle(ctx, cfg, tx.Rollback)
+		rollback := backend.Settle(ctx, settle, tx.Rollback)
 		if !errors.Is(rollback, pgx.ErrTxClosed) {
-			err = errors.Join(err, parse.StatementFailed("rollback", rollback))
+			err = errors.Join(err, parse.StatementFailed(table, "rollback", rollback))
 		}
 		return err
 	}
-	return commitFailed(settle(ctx, cfg, tx.Commit))
+	return commitFailed(table, backend.Settle(ctx, settle, tx.Commit))
+}
+
+// Begin begins a transaction that lasts until Commit or Rollback: pgx reads
+// ctx for the BEGIN alone.
+func (d database) Begin(ctx context.Context) (backend.Tx, error) {
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return nil, parse.StatementFailed("", "begin", err)
+	}
+	begun := transaction{tx: tx}
+	return begun, nil
+}
+
+// transaction is a transaction on the provider's pool.
+type transaction struct {
+	tx pgx.Tx
+}
+
+func (t transaction) Send(ctx context.Context, table string, steps ...backend.Step) error {
+	return send(ctx, table, t.tx, steps)
+}
+
+// Transact runs apply in the transaction after a savepoint, released once
+// apply succeeds and rolled back to otherwise, or as a panic in apply
+// unwinds. The savepoint is taken by hand rather than through pgx's nested
+// Begin, whose failed release can no longer be rolled back.
+func (t transaction) Transact(ctx context.Context, table string, settle time.Duration, apply func(backend.Conn) error) error {
+	_, err := t.tx.Exec(ctx, "SAVEPOINT "+savepoint)
+	if err != nil {
+		return parse.StatementFailed(table, "savepoint", err)
+	}
+	returned := false
+	defer func() {
+		if !returned {
+			// The panic goes on to the caller; the undo's error has nowhere
+			// to go.
+			_ = t.undoSavepoint(ctx, table, settle)
+		}
+	}()
+	err = apply(t)
+	returned = true
+	if err != nil {
+		return errors.Join(err, t.undoSavepoint(ctx, table, settle))
+	}
+	err = t.settleExec(ctx, settle, "RELEASE SAVEPOINT "+savepoint)
+	if err != nil {
+		return errors.Join(parse.StatementFailed(table, "release savepoint", err), t.undoSavepoint(ctx, table, settle))
+	}
+	return nil
+}
+
+func (t transaction) Commit(ctx context.Context) error {
+	return commitFailed("", t.tx.Commit(ctx))
+}
+
+func (t transaction) Rollback(ctx context.Context) error {
+	err := t.tx.Rollback(ctx)
+	if errors.Is(err, pgx.ErrTxClosed) {
+		return nil
+	}
+	return parse.StatementFailed("", "rollback", err)
+}
+
+// undoSavepoint rolls the transaction back to the update's savepoint and
+// releases it, so the transaction keeps nothing the update wrote and stays
+// usable, a failed statement's abort included.
+func (t transaction) undoSavepoint(ctx context.Context, table string, settle time.Duration) error {
+	rollback := t.settleExec(ctx, settle, "ROLLBACK TO SAVEPOINT "+savepoint)
+	release := t.settleExec(ctx, settle, "RELEASE SAVEPOINT "+savepoint)
+	return parse.StatementFailed(table, "rollback to savepoint", errors.Join(rollback, release))
+}
+
+// settleExec runs statement, one that settles the update, on the
+// transaction under a settle context of its own.
+func (t transaction) settleExec(ctx context.Context, settle time.Duration, statement string) error {
+	return backend.Settle(ctx, settle, func(ctx context.Context) error {
+		_, err := t.tx.Exec(ctx, statement)
+		return err
+	})
 }
 
 // commitFailed is a failed COMMIT's error, saying whether it may have taken.
@@ -372,77 +250,57 @@ func transact(ctx context.Context, cfg parse.ExecConfig, db DB, apply func(pgx.T
 // pgx reports a COMMIT it never sent as safe to retry. Any other failure —
 // the connection lost or the settle timeout run out while the COMMIT was in
 // flight, or a FATAL that ends the session — leaves the outcome unknown.
-func commitFailed(err error) error {
+// table names the update whose transaction it commits ("" for a Tx).
+func commitFailed(table string, err error) error {
 	if err == nil {
 		return nil
 	}
-	failed := parse.StatementFailed("commit", err)
 	pgErr, answered := errors.AsType[*pgconn.PgError](err)
 	refused := answered && pgErr.SeverityUnlocalized == "ERROR"
 	if refused || errors.Is(err, pgx.ErrTxCommitRollback) || pgconn.SafeToRetry(err) {
-		return failed
+		return parse.StatementFailed(table, "commit", err)
 	}
-	return fmt.Errorf("%w: %w", parse.ErrCommitUnknown, failed)
+	return parse.StatementFailed(table, "commit", fmt.Errorf("%w: %w", parse.ErrCommitUnknown, err))
 }
 
-// underSavepoint is transact in the caller's transaction tx: apply runs
-// after a savepoint, released once apply succeeds and rolled back to
-// otherwise, or as a panic in apply unwinds.
-func underSavepoint(ctx context.Context, cfg parse.ExecConfig, tx pgx.Tx, apply func(pgx.Tx) error) error {
-	_, err := tx.Exec(ctx, "SAVEPOINT "+savepoint)
-	if err != nil {
-		return parse.StatementFailed("savepoint", err)
-	}
-	returned := false
-	defer func() {
-		if !returned {
-			// The panic goes on to the caller; the undo's error has nowhere
-			// to go.
-			_ = undoSavepoint(ctx, cfg, tx)
+// batcher sends statement batches: *pgxpool.Pool and pgx.Tx.
+type batcher interface {
+	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
+}
+
+// send sends steps in one batch and reads every result through its step,
+// stopping at the first that fails, its failure named as the step. A step
+// that panics leaves the rest of the batch unread and the connection busy
+// (and a pool's connection unreleased); reading the rest as the panic
+// unwinds frees it for the settle that follows.
+func send(ctx context.Context, table string, db batcher, steps []backend.Step) error {
+	b := &pgx.Batch{}
+	// done counts the steps read through, so a failure the batch reports on
+	// Close, such as an Exec's, names the step it stopped at.
+	done := 0
+	for _, step := range steps {
+		queued := b.Queue(step.SQL, step.Args...)
+		if step.Read == nil {
+			queued.Exec(func(tag pgconn.CommandTag) error {
+				if step.Changed != nil {
+					step.Changed(tag.RowsAffected())
+				}
+				done++
+				return nil
+			})
+			continue
 		}
-	}()
-	err = apply(tx)
-	returned = true
-	if err != nil {
-		return errors.Join(err, undoSavepoint(ctx, cfg, tx))
+		queued.Query(func(rs pgx.Rows) error {
+			err := step.Read(rows{rs})
+			rs.Close()
+			err = errors.Join(err, rs.Err())
+			if err != nil {
+				return parse.StatementFailed(table, step.Name, err)
+			}
+			done++
+			return nil
+		})
 	}
-	err = settleExec(ctx, cfg, tx, "RELEASE SAVEPOINT "+savepoint)
-	if err != nil {
-		return errors.Join(parse.StatementFailed("release savepoint", err), undoSavepoint(ctx, cfg, tx))
-	}
-	return nil
-}
-
-// undoSavepoint rolls the caller's transaction back to the update's
-// savepoint and releases it, so the transaction keeps nothing the update
-// wrote and stays usable, a failed statement's abort included.
-func undoSavepoint(ctx context.Context, cfg parse.ExecConfig, tx pgx.Tx) error {
-	rollback := settleExec(ctx, cfg, tx, "ROLLBACK TO SAVEPOINT "+savepoint)
-	release := settleExec(ctx, cfg, tx, "RELEASE SAVEPOINT "+savepoint)
-	return parse.StatementFailed("rollback to savepoint", errors.Join(rollback, release))
-}
-
-// settleExec runs statement, one that settles the update, on tx.
-func settleExec(ctx context.Context, cfg parse.ExecConfig, tx pgx.Tx, statement string) error {
-	return settle(ctx, cfg, func(ctx context.Context) error {
-		_, err := tx.Exec(ctx, statement)
-		return err
-	})
-}
-
-// settle runs call, one settling statement, under a settle context of its
-// own, so a statement that ran out of time leaves the next its full bound.
-func settle(ctx context.Context, cfg parse.ExecConfig, call func(context.Context) error) error {
-	settleCtx, cancel := cfg.SettleContext(ctx)
-	defer cancel()
-	return call(settleCtx)
-}
-
-// sendBatch sends b and reads every result through b's callbacks. A
-// callback that panics leaves the rest of the batch unread and the
-// connection busy (and a pool's connection unreleased); reading the rest as
-// the panic unwinds frees it for the settle that follows.
-func sendBatch(ctx context.Context, db Querier, b *pgx.Batch) error {
 	results := db.SendBatch(ctx, b)
 	closed := false
 	defer func() {
@@ -452,5 +310,26 @@ func sendBatch(ctx context.Context, db Querier, b *pgx.Batch) error {
 	}()
 	err := results.Close()
 	closed = true
-	return err
+	if err == nil {
+		return nil
+	}
+	_, named := errors.AsType[*parse.StatementError](err)
+	if named || done >= len(steps) {
+		return err
+	}
+	return parse.StatementFailed(table, steps[done].Name, err)
+}
+
+// rows are a statement's rows, which report the columns PostgreSQL types
+// json or jsonb once the first row is read.
+type rows struct{ pgx.Rows }
+
+func (r rows) Documents() []string {
+	var names []string
+	for _, f := range r.FieldDescriptions() {
+		if f.DataTypeOID == pgtype.JSONOID || f.DataTypeOID == pgtype.JSONBOID {
+			names = append(names, f.Name)
+		}
+	}
+	return names
 }

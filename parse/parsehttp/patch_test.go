@@ -24,7 +24,7 @@ type note struct {
 // ParsePatch reads the body in the grammar the request's Content-Type
 // names.
 func TestParsePatch_ReadsTheRequestsMediaType(t *testing.T) {
-	notes, err := parse.NewResource[note]("notes")
+	notes, err := parse.NewResource[note](onSQLite, "notes")
 	require.NoError(t, err)
 	request := func(contentType, body string) *http.Request {
 		r := httptest.NewRequest(http.MethodPatch, "/notes/1", strings.NewReader(body))

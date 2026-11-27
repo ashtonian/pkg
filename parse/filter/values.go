@@ -43,13 +43,7 @@ func fromWire(field *FieldSchema, op FilterOperator, value any) (any, error) {
 func wireMember(field *FieldSchema, value any) (any, error) {
 	v, err := core.FromWire(field.Wire, field.DataType, value)
 	if err != nil {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeValueTypeMismatch.String(),
-			Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-			Details: map[string]any{"field": field.ExternalName},
-			Cause:   err,
-		}
+		return nil, valueMismatch(field, err)
 	}
 	return v, nil
 }
@@ -89,18 +83,11 @@ func (p *FilterParser) normalizeOperand(field *FieldSchema, op FilterOperator, v
 	case op == OpIn || op == OpNin:
 		arr, ok := core.AnySlice(value)
 		if !ok {
-			return nil, &core.ParseError{
-				Kind:    core.ParseErrorKindFilter,
-				Code:    ECodeInvalidArray.String(),
-				Message: fmt.Sprintf("field '%s': $%s requires an array value", field.ExternalName, op),
-			}
+			return nil, fieldError(ECodeInvalidArray, field.ExternalName, fmt.Sprintf("$%s requires an array value", op))
 		}
 		if len(arr) > p.config.MaxArraySize {
-			return nil, &core.ParseError{
-				Kind:    core.ParseErrorKindFilter,
-				Code:    ECodeArrayTooLarge.String(),
-				Message: fmt.Sprintf("array size %d exceeds maximum %d", len(arr), p.config.MaxArraySize),
-			}
+			return nil, core.NewError(ECodeArrayTooLarge, fmt.Sprintf("array size %d exceeds maximum %d", len(arr), p.config.MaxArraySize),
+				core.WithField(field.ExternalName))
 		}
 		out := make([]any, len(arr))
 		for i, item := range arr {
@@ -121,19 +108,17 @@ func (p *FilterParser) normalizeOperand(field *FieldSchema, op FilterOperator, v
 // pattern. Enum and custom validators do not apply: the value is a
 // fragment, not a field value.
 func (p *FilterParser) normalizeText(field *FieldSchema, value any, pattern bool) (any, error) {
-	v, err := core.NormalizeScalar(core.FieldTypeString, reflect.Invalid, value)
+	stored, _, err := core.StoredValue(value)
+	var v any
+	if err == nil {
+		v, err = core.NormalizeScalar(core.FieldTypeString, reflect.Invalid, stored)
+	}
 	if err == nil && pattern {
 		s, _ := v.(string) // FieldTypeString normalizes to a string
 		_, err = likeTokens(s)
 	}
 	if err != nil {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeValueTypeMismatch.String(),
-			Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-			Details: map[string]any{core.DetailField: field.ExternalName},
-			Cause:   err,
-		}
+		return nil, valueMismatch(field, err)
 	}
 	return v, nil
 }
@@ -144,53 +129,24 @@ func (p *FilterParser) normalizeText(field *FieldSchema, value any, pattern bool
 // `$null` tests for a missing value.
 func (p *FilterParser) normalizeDocument(field *FieldSchema, value any) (any, error) {
 	if value == nil {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeValueTypeMismatch.String(),
-			Message: fmt.Sprintf("field '%s': null is not a comparable document; use $null", field.ExternalName),
-			Details: map[string]any{core.DetailField: field.ExternalName},
-		}
+		return nil, fieldError(ECodeValueTypeMismatch, field.ExternalName, "null is not a comparable document; use $null")
 	}
 	if err := portableNumbers(value); err != nil {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeValueTypeMismatch.String(),
-			Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-			Details: map[string]any{core.DetailField: field.ExternalName},
-		}
+		return nil, valueMismatch(field, err)
 	}
 	doc, err := core.NormalizeJSON(value)
 	if err != nil {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeValueTypeMismatch.String(),
-			Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-			Details: map[string]any{core.DetailField: field.ExternalName},
-			Cause:   err,
-		}
+		return nil, valueMismatch(field, err)
 	}
 	if err := portableNumbers(doc); err != nil {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeValueTypeMismatch.String(),
-			Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-			Details: map[string]any{core.DetailField: field.ExternalName},
-		}
+		return nil, valueMismatch(field, err)
 	}
 	depth, nodes := jsonShape(doc)
 	if depth > p.config.MaxDepth {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeDepthExceeded.String(),
-			Message: fmt.Sprintf("field '%s': document depth %d exceeds maximum %d", field.ExternalName, depth, p.config.MaxDepth),
-		}
+		return nil, fieldError(ECodeDepthExceeded, field.ExternalName, fmt.Sprintf("document depth %d exceeds maximum %d", depth, p.config.MaxDepth))
 	}
 	if nodes > p.config.MaxArraySize {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeArrayTooLarge.String(),
-			Message: fmt.Sprintf("field '%s': document has %d values, maximum %d", field.ExternalName, nodes, p.config.MaxArraySize),
-		}
+		return nil, fieldError(ECodeArrayTooLarge, field.ExternalName, fmt.Sprintf("document has %d values, maximum %d", nodes, p.config.MaxArraySize))
 	}
 	return doc, nil
 }
@@ -204,11 +160,8 @@ func (p *FilterParser) normalizeElements(field *FieldSchema, value any) (any, er
 		arr = []any{value}
 	}
 	if len(arr) > p.config.MaxArraySize {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeArrayTooLarge.String(),
-			Message: fmt.Sprintf("array size %d exceeds maximum %d", len(arr), p.config.MaxArraySize),
-		}
+		return nil, core.NewError(ECodeArrayTooLarge, fmt.Sprintf("array size %d exceeds maximum %d", len(arr), p.config.MaxArraySize),
+			core.WithField(field.ExternalName))
 	}
 	// Enum values constrain elements; Validate judges a whole field value.
 	elem := &FieldSchema{ExternalName: field.ExternalName, DataType: field.Elem, NumberKind: field.NumberKind, EnumValues: field.EnumValues}
@@ -223,12 +176,7 @@ func (p *FilterParser) normalizeElements(field *FieldSchema, value any) (any, er
 	// SQLite stores arrays as JSON text and compares their elements as JSON
 	// numbers, so elements share the document domain.
 	if err := portableNumbers(out); err != nil {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeValueTypeMismatch.String(),
-			Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-			Details: map[string]any{core.DetailField: field.ExternalName},
-		}
+		return nil, valueMismatch(field, err)
 	}
 	return out, nil
 }
@@ -280,44 +228,34 @@ func (p *FilterParser) normalizeMember(field *FieldSchema, value any) (any, erro
 		if field.DataType == core.FieldTypeUUID {
 			code = ECodeInvalidUUID
 		}
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    code.String(),
-			Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-			Details: map[string]any{core.DetailField: field.ExternalName},
-			Cause:   err,
-		}
+		return nil, fieldError(code, field.ExternalName, err.Error(), core.WithCause(err))
 	}
 	if len(field.EnumValues) > 0 {
 		if err := validateEnum(field.EnumValues, v); err != nil {
-			return nil, &core.ParseError{
-				Kind:    core.ParseErrorKindFilter,
-				Code:    ECodeInvalidEnumValue.String(),
-				Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-				Details: map[string]any{core.DetailField: field.ExternalName},
-			}
+			return nil, fieldError(ECodeInvalidEnumValue, field.ExternalName, err.Error())
 		}
 	}
 	if field.Validate != nil {
 		if err := field.Validate(v); err != nil {
-			return nil, &core.ParseError{
-				Kind:    core.ParseErrorKindFilter,
-				Code:    ECodeValueTypeMismatch.String(),
-				Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-				Details: map[string]any{core.DetailField: field.ExternalName},
-				Cause:   err,
-			}
+			return nil, valueMismatch(field, err)
 		}
 	}
 	return v, nil
 }
 
 // normalizeScalar converts one value to the canonical Go type for
-// field.DataType via core.NormalizeScalar. Timestamps additionally accept
+// field.DataType via core.NormalizeScalar, after reading it as the
+// database holds it (core.StoredValue): a policy's or a caller's Go value
+// may be a driver.Valuer, which stands for the value it writes, and a
+// decoded request value is its own. Timestamps additionally accept
 // relative tokens (`now-7d`), resolved against the parser clock; a
 // token-shaped value that cannot resolve is an error, never a literal passed
 // through to SQL.
 func (p *FilterParser) normalizeScalar(field *FieldSchema, value any) (any, error) {
+	value, _, err := core.StoredValue(value)
+	if err != nil {
+		return nil, err
+	}
 	if field.DataType == core.FieldTypeTimestamp {
 		if s, ok := value.(string); ok {
 			resolved, isToken, err := ResolveRelativeTime(s, p.now())

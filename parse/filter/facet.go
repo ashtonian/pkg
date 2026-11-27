@@ -79,12 +79,12 @@ func FacetBuckets(field *FieldSchema, counts map[string]int64, limit int) []Face
 			out = append(out, FacetBucket{Key: k, Count: n})
 		}
 	}
-	keys := strings.Compare
-	if field != nil && isNumber(facetValueType(field)) {
-		keys = compareNumberKeys
+	keyType := core.TypeInfo{Type: core.FieldTypeString}
+	if field != nil {
+		keyType = core.TypeInfo{Type: facetValueType(field), NumberKind: field.NumberKind}
 	}
 	slices.SortFunc(out, func(a, b FacetBucket) int {
-		return cmp.Or(cmp.Compare(b.Count, a.Count), keys(a.Key, b.Key))
+		return cmp.Or(cmp.Compare(b.Count, a.Count), compareFacetKeys(keyType, a.Key, b.Key))
 	})
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
@@ -109,21 +109,19 @@ func isNumber(t core.FieldType) bool {
 	return t == core.FieldTypeInt || t == core.FieldTypeFloat || t == core.FieldTypeDecimal
 }
 
-// compareNumberKeys orders two keys of a numeric facet by the numbers they
-// name, as CompareKeyValues orders numbers: exactly by value, then by text.
-// A float key that names no decimal, such as "Infinity", orders by its
-// float value, NaN greatest, as PostgreSQL orders double precision; a key
-// that names no number orders after every number.
-func compareNumberKeys(a, b string) int {
-	if c, ok := core.CompareDecimals(a, b); ok {
+// compareFacetKeys orders two keys of a terms facet whose values are of
+// type t as their values order (core.CompareCanonicalTexts), then by text,
+// so two keys naming one number ("1.5", "1.50") still order. FacetBuckets
+// takes any counts: a key that names no value of t orders after every key
+// that does.
+func compareFacetKeys(t core.TypeInfo, a, b string) int {
+	c, err := core.CompareCanonicalTexts(t, a, b)
+	if err == nil {
 		return cmp.Or(c, strings.Compare(a, b))
 	}
-	x, xerr := strconv.ParseFloat(a, 64)
-	y, yerr := strconv.ParseFloat(b, 64)
-	if xerr != nil || yerr != nil {
-		return cmp.Or(compareFalseFirst(xerr != nil, yerr != nil), strings.Compare(a, b))
-	}
-	return cmp.Or(compareFalseFirst(math.IsNaN(x), math.IsNaN(y)), cmp.Compare(x, y), strings.Compare(a, b))
+	_, aerr := core.CompareCanonicalTexts(t, a, a)
+	_, berr := core.CompareCanonicalTexts(t, b, b)
+	return cmp.Or(compareFalseFirst(aerr != nil, berr != nil), strings.Compare(a, b))
 }
 
 // compareFalseFirst orders false before true.

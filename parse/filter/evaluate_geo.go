@@ -16,14 +16,13 @@ import (
 // geometry storage is PostGIS's alone: E2115, as on SQLite.
 func evaluateGeo(n *FilterNode, row Row) (Truth, error) {
 	f := n.Field
-	if err := validateGeoValue(n.Value); err != nil {
+	err := validateGeoValue(f, n.Value)
+	if err != nil {
 		return False, err
 	}
 	if cfg := f.GeoConfig; cfg != nil && cfg.StorageType != GeoStorageJSONB {
-		return False, &core.ParseError{
-			Kind: core.ParseErrorKindFilter, Code: ECodeGeoNotSupported.String(),
-			Message: fmt.Sprintf("geo operator '%s' on native %s storage is not supported by the reference evaluator", n.Op, cfg.StorageType),
-		}
+		return False, core.NewError(ECodeGeoNotSupported, fmt.Sprintf("geo operator '%s' on native %s storage is not supported by the reference evaluator", n.Op, cfg.StorageType),
+			core.WithField(f.ExternalName))
 	}
 	holds, err := geoPredicate(n.Op, n.Value)
 	if err != nil {

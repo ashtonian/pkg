@@ -29,7 +29,7 @@ type gadget struct {
 func gadgets(t *testing.T) *parse.Resource[gadget] {
 	t.Helper()
 	clock := func() time.Time { return time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC) }
-	r, err := parse.NewResource[gadget]("gadgets", parse.AcceptParams("tenant"), parse.ParserOptions(core.WithClock(clock)))
+	r, err := parse.NewResource[gadget](onSQLite, "gadgets", parse.AcceptParams("tenant"), parse.ParserOptions(core.WithClock(clock)))
 	require.NoError(t, err)
 	return r
 }

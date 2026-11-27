@@ -263,10 +263,17 @@ func (c *LookupCond) validateTypes() error {
 	}
 	for _, row := range values {
 		for i, v := range row {
-			if i >= len(c.Types) || isNullValue(v) {
+			if i >= len(c.Types) {
 				continue
 			}
-			_, err := core.NormalizeScalar(c.Types[i].Type, c.Types[i].NumberKind, projectedValue(v))
+			stored, err := lookupStored(compared[i], v)
+			if err != nil {
+				return err
+			}
+			if stored == nil {
+				continue
+			}
+			_, err = core.NormalizeScalar(c.Types[i].Type, c.Types[i].NumberKind, projectedValue(stored))
 			if err != nil {
 				return invalidLookup(fmt.Sprintf("lookup column %q: %v", compared[i], err))
 			}
@@ -296,8 +303,14 @@ func (c *LookupCond) validateKey() error {
 		if len(k) != len(c.Columns) {
 			return invalidLookup(fmt.Sprintf("lookup key (%s): key %d has %d values", key, i, len(k)))
 		}
-		if slices.ContainsFunc(k, isNullValue) {
-			return invalidLookup(fmt.Sprintf("lookup key (%s): key %d holds NULL, which equals no row", key, i))
+		for j, v := range k {
+			stored, err := lookupStored(c.Columns[j], v)
+			if err != nil {
+				return err
+			}
+			if stored == nil {
+				return invalidLookup(fmt.Sprintf("lookup key (%s): key %d holds NULL, which equals no row", key, i))
+			}
 		}
 	}
 	return nil
@@ -345,12 +358,22 @@ func (c *LookupCond) validate() error {
 	}
 	switch c.Op {
 	case LookupOpEq:
-		if isNullValue(c.Value) {
+		stored, err := lookupStored(c.Column, c.Value)
+		if err != nil {
+			return err
+		}
+		if stored == nil {
 			return invalidLookup(fmt.Sprintf("lookup column %q compares with NULL; use WhereNull", c.Column))
 		}
 	case LookupOpIn:
-		if slices.ContainsFunc(c.Values, isNullValue) {
-			return invalidLookup(fmt.Sprintf("lookup column %q lists NULL; use WhereNull", c.Column))
+		for _, v := range c.Values {
+			stored, err := lookupStored(c.Column, v)
+			if err != nil {
+				return err
+			}
+			if stored == nil {
+				return invalidLookup(fmt.Sprintf("lookup column %q lists NULL; use WhereNull", c.Column))
+			}
 		}
 	case LookupOpNull, LookupOpNotNull:
 	case LookupOpMember:

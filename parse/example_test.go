@@ -3,13 +3,16 @@
 package parse_test
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/parseprovider"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -21,13 +24,13 @@ func Example() {
 		Name   string `json:"name"   db:"name"   parse:"filter,sort,patch"`
 		Status string `json:"status" db:"status" parse:"filter,patch" enum:"active,offline"`
 	}
-	tp, err := parse.NewResource[Device]("devices")
+	tp, err := parse.NewResource[Device](onPostgres, "devices")
 	if err != nil {
 		panic(err)
 	}
 
 	// A list request: filter, sort and page size compile to SQL fragments.
-	lq, err := tp.ListQuery(filter.PostgresDialect{})
+	lq, err := tp.ListQuery()
 	if err != nil {
 		panic(err)
 	}
@@ -67,7 +70,7 @@ func ExampleNewResource_filter() {
 		Status string `json:"status" parse:"filter,patch" filter_ops:"eq,ne" patch_ops:"replace" enum:"active,offline"`
 	}
 
-	tp, err := parse.NewResource[Device]("devices")
+	tp, err := parse.NewResource[Device](onPostgres, "devices")
 	if err != nil {
 		fmt.Println("error:", err)
 		return
@@ -93,7 +96,7 @@ func ExampleResource_ApplyPatch() {
 		Status string `json:"status" parse:"patch" patch_ops:"replace" enum:"active,inactive"`
 	}
 
-	tp, err := parse.NewResource[Item]("items")
+	tp, err := parse.NewResource[Item](onPostgres, "items")
 	if err != nil {
 		fmt.Println("error:", err)
 		return
@@ -153,7 +156,7 @@ func ExampleNewResource_facetedListPage() {
 		CreatedAt string  `json:"created_at" parse:"filter,sort"         filter_ops:"gt,lt,gte,lte" sort_default:"desc" indexed:"true"`
 	}
 
-	tp, err := parse.NewResource[Product]("products")
+	tp, err := parse.NewResource[Product](onPostgres, "products")
 	if err != nil {
 		fmt.Println("error:", err)
 		return
@@ -169,13 +172,13 @@ func ExampleNewResource_facetedListPage() {
 	fmt.Println("category label:", schema.Filter.Fields["category"].Label)
 
 	// Query param parsing.
-	qp := filter.NewQueryParamParser(tp.FilterSchema())
+	qp, _ := filter.NewQueryParamParser(tp.FilterSchema())
 	ast, _ := qp.Parse(url.Values{"category": {"electronics"}, "price_gte": {"50"}})
 	fmt.Println("\n=== Query Params ===")
 	fmt.Println("parsed:", ast.Root != nil)
 
 	// List query with count + facets.
-	lq, _ := tp.ListQuery(filter.PostgresDialect{})
+	lq, _ := tp.ListQuery()
 	result, _ := lq.Build(
 		filter.ListFilterAST(ast),
 		filter.ListSort("-created_at"),
@@ -226,7 +229,7 @@ func ExampleNewResource_conventions() {
 		Name string `bson:"name" parse:"filter,patch" filter_ops:"eq" patch_ops:"replace" sql:"device_name"`
 	}
 
-	tp, err := parse.NewResource[Device]("device", parse.PrimaryKey("device_id"), parse.ParserOptions(core.WithGeneratorOptions(
+	tp, err := parse.NewResource[Device](onPostgres, "device", parse.PrimaryKey("device_id"), parse.ParserOptions(core.WithGeneratorOptions(
 		core.WithFieldNameTag("bson"),
 		core.WithColumnTag("sql"),
 	)))
@@ -256,8 +259,8 @@ func ExampleResource_ListQuery_customComposition() {
 		Status string `json:"status" parse:"filter" filter_ops:"eq"`
 	}
 
-	tp := parse.MustResource[Item]("items")
-	lq, _ := tp.ListQuery(filter.PostgresDialect{})
+	tp := parse.MustResource[Item](onPostgres, "items")
+	lq, _ := tp.ListQuery()
 	result, _ := lq.Build(filter.ListFilter(`{"status":"active"}`))
 
 	// Compose with custom SQL using the returned parts.
@@ -270,4 +273,258 @@ func ExampleResource_ListQuery_customComposition() {
 	// Output:
 	// has custom: true
 	// has filter: true
+}
+
+type QuickDevice struct {
+	ID       string `json:"id"        db:"id"        parse:"filter,sort"`
+	TenantID string `json:"tenant_id" db:"tenant_id"`
+	Name     string `json:"name"      db:"name"      parse:"filter,sort,patch"`
+	Status   string `json:"status"    db:"status"    parse:"filter,patch" enum:"active,offline"`
+}
+
+// The README's quick start: a list request read and a patch applied under
+// the server's scope, on the in-memory SQLite database the provider
+// settings' defaults name.
+func Example_quickStart() {
+	ctx := context.Background()
+	db, err := parseprovider.Open(ctx, parseprovider.Config{
+		Provider:      "sqlite",
+		DSN:           ":memory:",
+		SettleTimeout: parse.DefaultSettleTimeout,
+		SQLite:        parseprovider.SQLiteConfig{MaxOpenConns: 1, BusyTimeout: 5 * time.Second},
+	})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer func() { _ = db.Close() }()
+	sqlDB, _ := db.SQLite()
+	_, err = sqlDB.ExecContext(ctx, `CREATE TABLE devices (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL);
+		INSERT INTO devices VALUES ('d1', 't1', 'switch', 'active'), ('d2', 't1', 'router', 'active'),
+			('d3', 't1', 'spare', 'active'), ('d4', 't1', 'desk', 'offline'), ('d5', 't2', 'core', 'active')`)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	devices := parse.MustResource[QuickDevice](db.Provider(), "devices", parse.TenantColumn("tenant_id"), parse.PageSize(25, 100))
+	scope := parse.Scope{Tenant: "t1"}
+
+	q, _ := url.ParseQuery(`status=active&filter={"name":{"$ne":"spare"}}&sort=name&page_size=10`)
+	req, err := devices.ParseList(q)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	page, err := devices.List(ctx, req, scope)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	for _, d := range page.Items {
+		fmt.Println(d.ID, d.Name)
+	}
+
+	patch, err := devices.ParseMergePatch([]byte(`{"status":"offline"}`))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	res, err := devices.Update(ctx, patch, parse.ByID("d1"), scope)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(res.Changed[0].ID, res.Changed[0].Status)
+
+	// d5 is another tenant's: the scope does not reach it, so it is not found.
+	other, err := devices.Update(ctx, patch, parse.ByID("d5"), scope)
+	fmt.Println(len(other.Changed)+len(other.Unchanged), err)
+	// Output:
+	// d2 router
+	// d1 switch
+	// d1 offline
+	// 0 <nil>
+}
+
+type Device struct {
+	ID       string `json:"id"        db:"id"        parse:"filter,sort"`
+	TenantID string `json:"tenant_id" db:"tenant_id"`
+	Name     string `json:"name"      db:"name"      parse:"filter,sort,patch"`
+	Status   string `json:"status"    db:"status"    parse:"filter,patch" enum:"active,offline"`
+}
+
+// A list request — flat and JSON filters, sort, page size — compiled for
+// PostgreSQL under the server's tenant: the key is the final keyset column,
+// and the page reads one row more than it returns to know there is a next.
+func ExampleResource_BuildList() {
+	devices := parse.MustResource[Device](onPostgres, "devices", parse.TenantColumn("tenant_id"), parse.PageSize(25, 100))
+
+	q, _ := url.ParseQuery(`status=active&filter={"name":{"$ne":"spare"}}&sort=name&page_size=10`)
+	req, err := devices.ParseList(q)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	plan, err := devices.BuildList(req, parse.Scope{Tenant: "t1"})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(plan.Page.SQL)
+	fmt.Println(plan.Page.Args)
+	// Output:
+	// SELECT "devices"."id", "devices"."tenant_id", "devices"."name", "devices"."status" FROM "devices" WHERE (("devices"."name" <> $1 AND "devices"."status" = $2) AND "devices"."tenant_id" = $3) ORDER BY "devices"."name" COLLATE pg_c_utf8 ASC, "devices"."id" COLLATE pg_c_utf8 ASC LIMIT 11
+	// [spare active t1]
+}
+
+// A merge patch applied to one device, compiled for PostgreSQL under the
+// server's tenant: the SET placeholders come first, then the tenant floor and
+// the target, and the statement returns the row as the update left it.
+func ExampleResource_BuildUpdate() {
+	devices := parse.MustResource[Device](onPostgres, "devices", parse.TenantColumn("tenant_id"))
+
+	parsed, err := devices.ParseMergePatch([]byte(`{"status":"offline"}`))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	plan, err := devices.BuildUpdate(parsed, parse.ByID("d1"), parse.Scope{Tenant: "t1"})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(plan.Owner.SQL)
+	fmt.Println(plan.Owner.Args)
+	// Output:
+	// UPDATE "devices" SET "status" = $1 WHERE ("devices"."tenant_id" = $2 AND "devices"."id" = $3) RETURNING "devices"."id", "devices"."tenant_id", "devices"."name", "devices"."status"
+	// [offline t1 d1]
+}
+
+// SkipUnchanged writes only a device the patch changes: the WHERE also
+// compares the status with the value it is set to, reusing its placeholder.
+// Current, run first in the update's transaction, reads and locks the target
+// as it stands, so a device it returns and the update does not is found and
+// unchanged; neither returning it means it is not found.
+func ExampleSkipUnchanged() {
+	devices := parse.MustResource[Device](onPostgres, "devices", parse.TenantColumn("tenant_id"))
+
+	parsed, err := devices.ParseMergePatch([]byte(`{"status":"offline"}`))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	plan, err := devices.BuildUpdate(parsed, parse.ByID("d1"), parse.Scope{Tenant: "t1"}, parse.SkipUnchanged())
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(plan.Owner.SQL)
+	fmt.Println(plan.Owner.Args)
+	fmt.Println(plan.Current.SQL)
+	fmt.Println(plan.Current.Args)
+	// Output:
+	// UPDATE "devices" SET "status" = $1 WHERE ("devices"."tenant_id" = $2 AND "devices"."id" = $3) AND ("status" IS DISTINCT FROM $1 OR "status"::text COLLATE "C" IS DISTINCT FROM ($1)::text) RETURNING "devices"."id", "devices"."tenant_id", "devices"."name", "devices"."status"
+	// [offline t1 d1]
+	// SELECT "devices"."id", "devices"."tenant_id", "devices"."name", "devices"."status" FROM "devices" WHERE ("devices"."tenant_id" = $1 AND "devices"."id" = $2) FOR UPDATE
+	// [t1 d1]
+}
+
+type Command struct {
+	ID       string `json:"id"        db:"id"        parse:"filter,sort"`
+	TenantID string `json:"tenant_id" db:"tenant_id"`
+	DeviceID string `json:"device_id" db:"device_id" parse:"filter"`
+	Status   string `json:"status"    db:"status"    parse:"filter"`
+	Attempts int64  `json:"attempts"  db:"attempts"  parse:"filter"`
+}
+
+// Devices have commands and tags: a request filters devices by their
+// commands with the commands' own filter, every predicate inside one $some
+// on one command, held to the tenant; a many-to-many's target filter joins
+// the target to the pair table inside the subquery.
+func ExampleResource_Relate() {
+	devices := parse.MustResource[Device](onPostgres, "devices", parse.TenantColumn("tenant_id"))
+	commands := parse.MustResource[Command](onPostgres, "commands", parse.TenantColumn("tenant_id"))
+	tags := parse.MustResource[Tag](onPostgres, "tags", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed()))
+	devices.MustRelate("tags", parse.ManyToMany(tags, parse.Junction{Table: "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"}, parse.Indexed()))
+	commands.MustRelate("device", parse.BelongsTo(devices, "device_id"))
+
+	for _, f := range []string{
+		`{"commands":{"$some":{"status":"pending","attempts":{"$gt":2}}}}`,
+		`{"commands":{"$none":{"status":"failed"}}}`,
+		`{"tags":{"$some":{"label":"red"}}}`,
+	} {
+		req, err := devices.ParseList(url.Values{"filter": {f}})
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		plan, err := devices.BuildList(req, parse.Scope{Tenant: "t1"})
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		fmt.Println(f)
+		fmt.Println(plan.Fragment, plan.Page.Args)
+	}
+	// Output:
+	// {"commands":{"$some":{"status":"pending","attempts":{"$gt":2}}}}
+	// WHERE (EXISTS (SELECT 1 FROM "commands" WHERE "commands"."device_id" = "devices"."id" AND "commands"."tenant_id" = $1 AND ("commands"."attempts" > $2 AND "commands"."status" = $3)) AND "devices"."tenant_id" = $4) ORDER BY "devices"."id" COLLATE pg_c_utf8 ASC LIMIT 51 [t1 2 pending t1]
+	// {"commands":{"$none":{"status":"failed"}}}
+	// WHERE (NOT EXISTS (SELECT 1 FROM "commands" WHERE "commands"."device_id" = "devices"."id" AND "commands"."tenant_id" = $1 AND "commands"."status" = $2) AND "devices"."tenant_id" = $3) ORDER BY "devices"."id" COLLATE pg_c_utf8 ASC LIMIT 51 [t1 failed t1]
+	// {"tags":{"$some":{"label":"red"}}}
+	// WHERE (EXISTS (SELECT 1 FROM "device_tags" "rel1__" JOIN "tags" ON "tags"."id" = "rel1__"."tag_id" WHERE "rel1__"."device_id" = "devices"."id" AND "rel1__"."tenant_id" = $1 AND "tags"."tenant_id" = $2 AND "tags"."deleted_at" IS NULL AND "tags"."label" = $3) AND "devices"."tenant_id" = $4) ORDER BY "devices"."id" COLLATE pg_c_utf8 ASC LIMIT 51 [t1 t1 red t1]
+}
+
+type StockItem struct {
+	WarehouseID string `json:"warehouse_id" db:"warehouse_id" parse:"filter,sort"`
+	SKU         string `json:"sku"          db:"sku"          parse:"filter,sort"`
+	Qty         int64  `json:"qty"          db:"qty"          parse:"filter,sort,patch"`
+}
+
+// A resource keyed by two columns: a list's keyset ends on both, so a page
+// resumes after exactly one row; an update reaches one row by its whole
+// key, and several rows by a set of keys bound as one parameter.
+func ExamplePrimaryKey() {
+	stock := parse.MustResource[StockItem](onPostgres, "stock", parse.PrimaryKey("warehouse_id", "sku"))
+
+	q, _ := url.ParseQuery(`filter={"qty":{"$gt":0}}&sort=-qty&page_size=2`)
+	req, err := stock.ParseList(q)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	list, err := stock.BuildList(req, parse.Scope{})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(list.Page.SQL)
+	fmt.Println(list.Page.Args)
+
+	parsed, err := stock.ParseMergePatch([]byte(`{"qty":7}`))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	for _, target := range []parse.Target{
+		parse.ByKey(parse.Key{"w1", "a"}),
+		parse.ByKeys(parse.Key{"w1", "a"}, parse.Key{"w2", "a"}),
+	} {
+		update, err := stock.BuildUpdate(parsed, target, parse.Scope{})
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		fmt.Println(update.Owner.SQL)
+		fmt.Println(update.Owner.Args)
+	}
+	// Output:
+	// SELECT "stock"."warehouse_id", "stock"."sku", "stock"."qty" FROM "stock" WHERE "stock"."qty" > $1 ORDER BY "stock"."qty" DESC, "stock"."warehouse_id" COLLATE pg_c_utf8 DESC, "stock"."sku" COLLATE pg_c_utf8 DESC LIMIT 3
+	// [0]
+	// UPDATE "stock" SET "qty" = $1 WHERE ("stock"."warehouse_id" = $2 AND "stock"."sku" = $3) RETURNING "stock"."warehouse_id", "stock"."sku", "stock"."qty"
+	// [7 w1 a]
+	// UPDATE "stock" SET "qty" = $1 WHERE ("stock"."warehouse_id", "stock"."sku") IN (SELECT "k"."warehouse_id", "k"."sku" FROM jsonb_populate_recordset(NULL::"stock", $2) AS "k") RETURNING "stock"."warehouse_id", "stock"."sku", "stock"."qty"
+	// [7 [{"sku":"a","warehouse_id":"w1"},{"sku":"a","warehouse_id":"w2"}]]
 }

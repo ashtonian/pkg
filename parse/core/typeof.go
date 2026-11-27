@@ -105,8 +105,8 @@ type TypeInfo struct {
 	NumberKind reflect.Kind
 }
 
-// TypeOf classifies a Go field type (pointers stripped). The classification
-// is the storage model every backend shares:
+// TypeOf classifies the Go type of a field's column (pointers stripped).
+// The classification is the storage model every backend shares:
 //
 //	string / int / float / bool kinds   string, int, float, bool
 //	a 16-byte array writing other text  string, compared as its text
@@ -115,13 +115,32 @@ type TypeInfo struct {
 //	LocalTime, Interval                 time, interval
 //	Inet, CIDR, MACAddr                 inet, cidr, macaddr
 //	a decimal type (IsDecimalType)      decimal — PostgreSQL numeric; NUMERIC or REAL on SQLite
+//	a nullable wrapper (NullWrapperOf)  its value's type: sql.NullInt64 int, sql.NullTime timestamp
 //	slice or array of a scalar above,
 //	other than decimal                  array — a PostgreSQL native array (TEXT[], BIGINT[], INET[], …); JSON text on SQLite
 //	map, interface, json.RawMessage,
 //	slice of anything else              json — a document: PostgreSQL jsonb; JSON text on SQLite
 //	struct                              object — a JSON document with a fixed shape
 //	[]byte, chan, func, …               any — no filter or patch semantics
+//
+// A document's members and elements are typed by MemberTypeOf.
 func TypeOf(t reflect.Type) TypeInfo {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	w, wrapped := NullWrapperOf(t)
+	if wrapped {
+		return TypeOf(w.ValueType())
+	}
+	return MemberTypeOf(t)
+}
+
+// MemberTypeOf classifies the Go type of a JSON document's member or
+// element as TypeOf classifies a column's, except that a nullable wrapper is
+// the struct it is: a driver stores the wrapper's value through its Valuer,
+// which encoding/json does not call, and a document holds what encoding/json
+// writes ({"Int64":1,"Valid":true} for an sql.NullInt64).
+func MemberTypeOf(t reflect.Type) TypeInfo {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}

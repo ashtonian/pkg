@@ -3,7 +3,6 @@
 package filter_test
 
 import (
-	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -42,27 +41,6 @@ func Example() {
 	// Output:
 	// ("devices"."labels" @> $1::jsonb AND "devices"."status" = ANY($2)) [{"env":"prod"} [active]]
 	// 3 SQLite args
-}
-
-// ExampleDialectFromDSN selects the dialect of a connection string's
-// database. CockroachDB is refused, and the error never quotes the DSN.
-func ExampleDialectFromDSN() {
-	for _, dsn := range []string{
-		"postgres://app@db.example.com/app",
-		"file:app.db",
-		"crdb://root:secret@db.example.com:26257/app",
-	} {
-		d, err := filter.DialectFromDSN(dsn)
-		if errors.Is(err, filter.ErrUnknownDSN) {
-			fmt.Println(err)
-			continue
-		}
-		fmt.Printf("%T\n", d)
-	}
-	// Output:
-	// filter.PostgresDialect
-	// filter.SQLiteDialect
-	// parse: unsupported DSN: scheme "crdb": CockroachDB is not supported
 }
 
 func ExampleNewSQLBuilder() {
@@ -176,7 +154,11 @@ func ExampleNewQueryParamParser() {
 		},
 	}
 
-	qp := filter.NewQueryParamParser(schema)
+	qp, err := filter.NewQueryParamParser(schema)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
 	ast, err := qp.Parse(url.Values{
 		"status":    {"active"},
 		"price_gte": {"50"},

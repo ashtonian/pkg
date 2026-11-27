@@ -1,6 +1,7 @@
 // The README's Server Contract table is the client's half of the contract
 // with a Go server: it has one row per public method, and the example
-// server's Routes table serves every request the table sends.
+// server's Routes table serves every request the table sends. Routes no
+// client method calls, such as the readiness probe, name no call.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -37,9 +38,10 @@ describe("server contract table", () => {
 
   it("is served by the example server", () => {
     const sent = contract.flatMap((row) => (row.sends ? [`${row.method} ${row.sends}`] : []));
-    const served = rows(read("../../../examples/server/README.md"), "Routes").map(([route, call]) => {
+    const served = rows(read("../../../examples/server/README.md"), "Routes").flatMap(([route, call]) => {
+      const method = firstCode(call);
       const verb = httpMethod.exec(firstCode(route))?.[1] ?? "";
-      return `${firstCode(call)} ${verb}`;
+      return method ? [`${method} ${verb}`] : [];
     });
     expect(sent.length).toBeGreaterThan(0);
     expect(new Set(served)).toEqual(new Set(sent));

@@ -1,5 +1,5 @@
-github.com/ashtonian/pkg/gowalker v0.9.0 h1:F/1L/j2xP5KO8cPxtae9dcTM4wQVcDv/wHFQEiGW7ys=
-github.com/ashtonian/pkg/gowalker v0.9.0/go.mod h1:xJM4ID4zwmfvussuRaLJMGn+3bUeNGLlETMCdOfmn0o=
+github.com/ashtonian/pkg/gowalker v0.10.0 h1:t02FUxGfYgBiaB8MZ8L/+ZnGaErpnmxFo6ZVb26lS+g=
+github.com/ashtonian/pkg/gowalker v0.10.0/go.mod h1:xJM4ID4zwmfvussuRaLJMGn+3bUeNGLlETMCdOfmn0o=
 github.com/ashtonian/pkg/jsonvalue v0.1.0 h1:6eMnJyohNfMXkzFqD6etKKMv5+fNStyE3+4bagbKcvI=
 github.com/ashtonian/pkg/jsonvalue v0.1.0/go.mod h1:bt3GZ4sYHK2uHQXRc+/msoqE1lVvyeLF3rz6m5QjP5M=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

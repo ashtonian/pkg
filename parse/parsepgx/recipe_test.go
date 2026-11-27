@@ -3,7 +3,8 @@
 package parsepgx_test
 
 // The README's pgx recipe: one tenant's list and update endpoints on
-// net/http. Both lanes compile it; TestRecipe serves it against PostgreSQL.
+// net/http, on a provider over a pgx pool. Both lanes compile it;
+// TestRecipe serves it against PostgreSQL.
 
 import (
 	"context"
@@ -17,12 +18,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/parsehttp"
 	"github.com/ashtonian/pkg/parse/parsepgx"
 )
 
-// Device is the recipe's resource. Its db tags drive parse's SQL, pgx's row
+// Device is the recipe's resource. Its db tags drive parse's SQL, the row
 // scanning and the page cursors.
 type Device struct {
 	ID       uuid.UUID `json:"id"        db:"id"        parse:"filter,sort"`
@@ -31,14 +31,18 @@ type Device struct {
 	Status   string    `json:"status"    db:"status"    parse:"filter,facet,patch" enum:"active,offline" facet:"terms:10"`
 }
 
-var devices = parse.MustResource[Device]("devices", parse.TenantColumn("tenant_id"), parse.PageSize(25, 100))
+// newDevices is the devices resource on p, whose database it runs on for
+// its whole life.
+func newDevices(p *parse.Provider) (*parse.Resource[Device], error) {
+	return parse.NewResource[Device](p, "devices", parse.TenantColumn("tenant_id"), parse.PageSize(25, 100))
+}
 
 // deviceAPI serves the devices of the tenant a request is authenticated
 // for; tenant reads it from the authentication, never from the request.
 type deviceAPI struct {
-	db     parsepgx.DB
-	tenant func(*http.Request) (uuid.UUID, error)
-	log    *slog.Logger
+	devices *parse.Resource[Device]
+	tenant  func(*http.Request) (uuid.UUID, error)
+	log     *slog.Logger
 }
 
 type tenantKey struct{}
@@ -56,14 +60,26 @@ func authenticatedTenant(r *http.Request) (uuid.UUID, error) {
 // The recipe's endpoints on a mux, behind authentication that puts the
 // request's tenant in its context.
 func Example() {
-	pool, err := pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
+	ctx := context.Background()
+	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
 	if err != nil {
-		slog.Error("open database", slog.Any("error", err))
+		log.Error("opening database", slog.Any("error", err))
 		return
 	}
 	defer pool.Close()
+	provider, err := parsepgx.New(ctx, pool)
+	if err != nil {
+		log.Error("opening parse provider", slog.Any("error", err))
+		return
+	}
+	devices, err := newDevices(provider)
+	if err != nil {
+		log.Error("declaring devices", slog.Any("error", err))
+		return
+	}
 
-	api := &deviceAPI{db: pool, tenant: authenticatedTenant, log: slog.Default()}
+	api := &deviceAPI{devices: devices, tenant: authenticatedTenant, log: log}
 	mux := http.NewServeMux()
 	api.routes(mux)
 }
@@ -80,19 +96,14 @@ func (a *deviceAPI) list(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	req, err := parsehttp.ParseList(r, devices)
+	req, err := parsehttp.ParseList(r, a.devices)
 	if err != nil {
 		a.fail(w, r, err)
 		return
 	}
-	plan, err := devices.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: tenant.String()})
+	page, err := a.devices.List(r.Context(), req, parse.Scope{Tenant: tenant.String()})
 	if err != nil {
-		a.fail(w, r, err) // an invalid cursor is the request's error
-		return
-	}
-	page, err := parsepgx.QueryPage(r.Context(), a.db, devices, plan)
-	if err != nil {
-		a.fail(w, r, err)
+		a.fail(w, r, err) // an invalid cursor is the request's error, anything else the server's
 		return
 	}
 	a.reply(w, r, page)
@@ -110,17 +121,12 @@ func (a *deviceAPI) update(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	p, err := parsehttp.ParsePatch(r, devices)
+	p, err := parsehttp.ParsePatch(r, a.devices)
 	if err != nil {
 		a.fail(w, r, err)
 		return
 	}
-	plan, err := devices.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID(id), parse.Scope{Tenant: tenant.String()})
-	if err != nil {
-		a.fail(w, r, err)
-		return
-	}
-	res, err := parsepgx.Update(r.Context(), a.db, devices, plan)
+	res, err := a.devices.Update(r.Context(), p, parse.ByID(id), parse.Scope{Tenant: tenant.String()})
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -153,7 +159,8 @@ func (a *deviceAPI) fail(w http.ResponseWriter, r *http.Request, err error) {
 // reply encodes v whole before writing it, so a value that cannot be
 // encoded is still answered with a status of its own.
 func (a *deviceAPI) reply(w http.ResponseWriter, r *http.Request, v any) {
-	if err := parsehttp.WriteJSON(w, r, http.StatusOK, v, a.report()); err != nil {
+	err := parsehttp.WriteJSON(w, r, http.StatusOK, v, a.report())
+	if err != nil {
 		a.log.ErrorContext(r.Context(), "encoding devices response", slog.String("path", r.URL.Path), slog.Any("error", err))
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}

@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -19,7 +20,13 @@ import (
 // renumber of `$1` never substring-corrupts a multi-digit `$10` / `$11`.
 var rawPlaceholderRe = regexp.MustCompile(`\$(\d+)`)
 
-// Dialect generates database-specific SQL.
+// Dialect generates database-specific SQL: every piece of SQL parse writes
+// whose form differs between databases is one of its methods, for filters,
+// lists, facets and includes here, for patches (the methods
+// patch.SQLDialect and patch.RelationDialect name), and for a row scan
+// (StoresAsText). Nothing chooses SQL by which dialect it has, so a SQL
+// provider is one type implementing Dialect; PostgresDialect and
+// SQLiteDialect are the two there are.
 type Dialect interface {
 	dialect.Dialect
 
@@ -41,12 +48,6 @@ type Dialect interface {
 	// Used by BuildFacetQuery when composing the single CTE + UNION ALL
 	// facet plan; the filter scan must happen exactly once.
 	CTEMaterializeHint() string
-
-	// NativeRowCompare reports whether keyset seeks may use a native
-	// row-value comparison `(a, b) > ($1, $2)` (used only when no key is
-	// nullable and every key walks the same direction). Dialects without it
-	// get the lexicographic OR-expansion.
-	NativeRowCompare() bool
 
 	// CodePointOrder returns expr under code-point (bytewise) collation, the
 	// order string comparisons, keyset walks and the memory backend share; a
@@ -114,6 +115,13 @@ type Dialect interface {
 	// one of a set, by containment, which an index on the document serves;
 	// ok is false where the dialect reads the element table instead.
 	containsElement(f *FieldSchema, cond *FilterNode, bind func(any) string) (sql string, ok bool, err error)
+	// codePointPair is column and operand, an element pair of a row-value
+	// comparison, compared by code point (CodePointOrder). column is a bare
+	// column, which declares at most an implicit collation, so either side
+	// may carry the explicit one; the dialect puts it where its planner
+	// still seeks an index on the column. A key read through an expression
+	// is collated on the expression instead (keyExpr).
+	codePointPair(column, operand string) (string, string)
 	// setRows binds a set's members as one parameter and reads them back
 	// as rows of one column, v, of the type FieldExpr reads field as.
 	setRows(field *FieldSchema, members []any, bind func(any) string) (string, error)
@@ -145,6 +153,15 @@ type Dialect interface {
 	// database holds equal have one: a timestamp at the database's
 	// precision.
 	StoredKeyValue(t core.TypeInfo, v any) (any, error)
+	// readsAsNull reports a page boundary value v of a key of type t that
+	// the database reads as NULL, so the boundary seeks as a NULL one: a
+	// float's NaN where a float column stores NaN as NULL, a decimal's NaN
+	// or infinity (core.NonFinite) where a decimal column holds none.
+	readsAsNull(t core.FieldType, v any) bool
+	// pathNumberBound renders a seek's bound for an int or float path key,
+	// bound at ph as the member's canonical decimal text (KeyValue), as the
+	// dialect compares the member the key orders by.
+	pathNumberBound(ph string) string
 
 	// numberKey renders an int, float or decimal field's value as its
 	// terms facet key: the canonical decimal text (core.DecimalText)
@@ -165,37 +182,32 @@ type Dialect interface {
 	// search renders a free-text search of schema's fields for query, its
 	// parameters numbered after startIdx.
 	search(schema *SearchSchema, query string, startIdx int) (*searchCondition, error)
-}
 
-// ErrUnknownDSN is returned by DialectFromDSN for a DSN that names no
-// database parse compiles SQL for, CockroachDB included.
-var ErrUnknownDSN = dialect.ErrUnknownDSN
+	// The SQL a patch writes, documented method by method where patch
+	// consumes it (patch.SQLDialect, patch.RelationDialect): a changed
+	// column's condition, written whole or by its members, an RFC 7396
+	// merge, a native array append, a JSON document member's read, set,
+	// removal and preconditions, and the rows a pair table's insert reads
+	// when no target table holds its values.
+	ChangedCondition(column, expr string, t core.TypeInfo) (string, error)
+	ChangedDocumentCondition(column, doc string) (string, error)
+	MergePatch(doc string, storage core.SQLType, patch map[string]any, bind func(any) string) (string, error)
+	ArrayAppend(array string, element any, bind func(any) string) (string, error)
+	MemberDocument(expr string) (string, error)
+	SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) (string, error)
+	RemoveMember(doc string, member []string, bind func(any) string) (string, error)
+	HasMember(doc string, member []string, bind func(any) string) (string, error)
+	IsObject(doc string, member []string, bind func(any) string) (string, error)
+	RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *core.PairTenant, bind func(any) string) (core.PairRows, error)
 
-// DialectFromDSN returns the Dialect of a database DSN, decided by its form
-// alone: PostgresDialect for a postgres:// or postgresql:// URL;
-// SQLiteDialect for a sqlite:// or sqlite3:// URL, a file: URI, :memory:,
-// or an absolute, ./ or ../ path to a .db, .sqlite or .sqlite3 file. It
-// refuses forms other drivers' DSNs take: CockroachDB's cockroach:// and
-// crdb://, where PostgresDialect's SQL has never been verified; a bare name
-// such as app.db, which keyword/value, MySQL and Oracle DSNs also end as;
-// //host/… and a one-segment /name.db. A form is evidence, not proof:
-// another driver's DSN that takes an accepted one, such as a postgres://
-// URL to a CockroachDB cluster or a MySQL user named file, selects that
-// form's dialect. Construct the dialect for a refused DSN. The error names
-// the scheme, never the DSN.
-func DialectFromDSN(dsn string) (Dialect, error) {
-	base, err := dialect.FromDSN(dsn)
-	if err != nil {
-		return nil, err
-	}
-	switch k := dialect.KindOf(base); k {
-	case dialect.KindPostgres:
-		return PostgresDialect{}, nil
-	case dialect.KindSQLite:
-		return SQLiteDialect{}, nil
-	default:
-		return nil, dialect.Unsupported(k, "DialectFromDSN")
-	}
+	// StoresAsText reports whether the database stores a value of type t,
+	// in a column declared no JSON type, as text a row scan decodes rather
+	// than the driver's own value. A scan decodes two such texts: a
+	// timestamp's canonical text (core.FormatTimestamp) and a document's or
+	// an array's JSON, as SQLite stores them and MarshalValue writes them.
+	// parse.RowScanner refuses a dialect reporting true for any other type
+	// a field the driver cannot scan itself holds.
+	StoresAsText(t core.FieldType) bool
 }
 
 // DecimalOperand is what a decimal value is read from: a column, a document
@@ -291,10 +303,12 @@ func comparison(expr string, op FilterOperator, value any, bind func(any) string
 }
 
 // membership renders `$in` / `$nin` through render, which receives the
-// set's members, none NULL and at least one, bound as one parameter so a
-// statement's parameter count is independent of the set's size. An empty
-// set matches nothing (`$in`) or everything (`$nin`), NULL or not. A NULL
-// member makes a miss Unknown, as it does in `x IN (…, NULL)`.
+// set's members, each as a parameter binds it (core.StoredValue), none
+// NULL and at least one, bound as one parameter so a statement's parameter
+// count is independent of the set's size. An empty set matches nothing
+// (`$in`) or everything (`$nin`), NULL or not. A NULL member — nil, a nil
+// pointer or a NULL Valuer — makes a miss Unknown, as it does in
+// `x IN (…, NULL)`, on every dialect: no typed array need hold it.
 func membership(op FilterOperator, value any, render func(members []any, in bool) (string, error)) (string, error) {
 	arr, ok := core.AnySlice(value)
 	if !ok {
@@ -307,9 +321,13 @@ func membership(op FilterOperator, value any, render func(members []any, in bool
 		return "1=1", nil
 	}
 	members := make([]any, 0, len(arr))
-	for _, m := range arr {
-		if m != nil {
-			members = append(members, m)
+	for i, m := range arr {
+		stored, null, err := core.StoredValue(m)
+		if err != nil {
+			return "", fmt.Errorf("$%s member %d: %w", op, i, err)
+		}
+		if !null {
+			members = append(members, stored)
 		}
 	}
 	if len(members) == 0 {
@@ -341,7 +359,7 @@ func textValue(op FilterOperator, value any) (string, error) {
 }
 
 // unsupportedOperator is the error for an operator the field type does not
-// define; parsed filters never reach it (checkOperators), programmatic
+// define; parsed filters never reach it (CheckOperators), programmatic
 // ASTs can.
 func unsupportedOperator(field *FieldSchema, op FilterOperator) error {
 	return fmt.Errorf("operator %q is not defined for %s field %q", op, field.DataType, field.ExternalName)
@@ -612,15 +630,10 @@ func NewSQLBuilder(schema *ResourceSchema, dialect Dialect, opts ...SQLBuilderOp
 // a programmatic AST, the dialect — is a plain error wrapping its cause,
 // such as ErrRelatedPolicyRequired or ErrPolicyInvalid.
 func (b *SQLBuilder) Build(ast *FilterAST) (*SQLResult, error) {
-	exprs, err := b.schema.ComputedSQL(b.dialect)
-	if err != nil {
-		return nil, err
-	}
-	return b.build(ast, exprs)
+	return b.build(ast, b.schema.ComputedSQL())
 }
 
-// build is Build with the schema's computed columns resolved for the
-// builder's dialect.
+// build is Build with the schema's computed columns read (ComputedSQL).
 func (b *SQLBuilder) build(ast *FilterAST, exprs columnExprs) (*SQLResult, error) {
 	if err := checkStartParam(b.startParam); err != nil {
 		return nil, err
@@ -641,9 +654,6 @@ func (b *SQLBuilder) build(ast *FilterAST, exprs columnExprs) (*SQLResult, error
 	if err != nil {
 		if pe, ok := errors.AsType[*core.ParseError](err); ok {
 			return nil, pe
-		}
-		if ce, ok := errors.AsType[*computedError](err); ok {
-			return nil, ce.err
 		}
 		return nil, fmt.Errorf("filter: building SQL: %w", err)
 	}
@@ -863,18 +873,11 @@ func checkPairKeyOp(f *FieldSchema, op FilterOperator) error {
 	return invalidRelation(f, fmt.Sprintf("compares a key of several columns, which $%s cannot name; it takes $null", op))
 }
 
-// nullableDateValue is the SQL boundary: typed nil pointers are SQL NULL,
-// while request normalization separately refuses null scalar operands.
-func nullableDateValue(value any) (any, error) {
-	if value == nil {
-		return nil, nil
-	}
-	rv := reflect.ValueOf(value)
-	for rv.Kind() == reflect.Pointer {
-		if rv.IsNil() {
-			return nil, nil
-		}
-		rv = rv.Elem()
-	}
-	return core.NormalizeScalar(core.FieldTypeDate, reflect.Invalid, rv.Interface())
+// boundScalar is value, bound to a column of type t, as the column holds
+// it (core.StoredScalar): a pointer followed, a Valuer read as the value it
+// writes, then the type's canonical value; nil for SQL NULL, which request
+// normalization refuses for a scalar operand on its own.
+func boundScalar(t core.FieldType, value any) (any, error) {
+	v, _, err := core.StoredScalar(t, reflect.Invalid, value)
+	return v, err
 }

@@ -2,6 +2,7 @@ package parse
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -16,6 +17,7 @@ import (
 // tenancy, soft deletion and filter schema.
 type RelatedResource interface {
 	Table() string
+	Provider() *Provider
 	PrimaryKeyColumns() []string
 	TenantColumnName() string
 	DeletedColumnName() string
@@ -33,17 +35,17 @@ type RelatedResource interface {
 	admits(column string, need columnAccess) error
 }
 
-func (r *Resource[T]) liveFilterSchema() *filter.ResourceSchema { return r.filterSchema }
+func (r *resourceCore) liveFilterSchema() *filter.ResourceSchema { return r.filterSchema }
 
-func (r *Resource[T]) isView() bool { return r.view }
+func (r *resourceCore) isView() bool { return r.view }
 
-func (r *Resource[T]) columnType(name string) (reflect.Type, bool) {
+func (r *resourceCore) columnType(name string) (reflect.Type, bool) {
 	t, ok := r.tableColumns[name]
 	return t, ok
 }
 
 // columnWire is the wire form of the field holding column (core.Field.Wire).
-func (r *Resource[T]) columnWire(name string) core.Wire {
+func (r *resourceCore) columnWire(name string) core.Wire {
 	if f, ok := r.columnFields[name]; ok {
 		return f.Wire()
 	}
@@ -179,17 +181,19 @@ func Describe(label, description string) RelationOption {
 // Relate declares a relation named name on r: requests filter by it with
 // the target's own filter (`$some`, `$none`, `$is`, `$is_not`) or by the
 // target's key; the target's computed columns (ReadExpr) compile there as
-// the target's expressions for the owner's dialect. Columns are checked
+// the target's expressions. The target must be built on r's provider
+// (ErrProviderMismatch): a relation joins tables of one database. Columns are checked
 // against both resources' types, and the tenant columns r and every
 // resource relating to it then reach, at any depth, against each other:
 // one request binds one tenant to all of them. Declare every relation
 // before the resources serve requests; Relate changes the tenant key of
 // every resource that reaches r, so it is not safe for concurrent use with
-// any of them. A WithPaths view, a value for one request, neither declares
-// a relation nor is one's target: relate the resources it is derived from.
-func (r *Resource[T]) Relate(name string, rel Relation) error {
+// any of them. A view (WithPaths, In), a value for one request, neither
+// declares a relation nor is one's target: relate the resources it is
+// derived from.
+func (r *resourceCore) Relate(name string, rel Relation) error {
 	if r.view {
-		return fmt.Errorf("parse: %s: relation %q: a WithPaths view declares no relations; relate the resource it is derived from", r.table, name)
+		return fmt.Errorf("parse: %s: relation %q: a view (WithPaths, In) declares no relations; relate the resource it is derived from", r.table, name)
 	}
 	if !core.IsIdentifier(name) {
 		return fmt.Errorf("parse: %s: relation name %q is not an identifier", r.table, name)
@@ -201,11 +205,6 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if _, ok := fs.SystemFields[name]; ok {
 		return fmt.Errorf("parse: %s: relation %q names a system field", r.table, name)
 	}
-	for _, own := range r.ownParams() {
-		if slices.Contains(filter.FlatParamFields(own.name), name) {
-			return fmt.Errorf("parse: %s: relation %q: %s would be a flat filter on it", r.table, name, own)
-		}
-	}
 	// Refused here rather than as ambiguous later: a relation under a name
 	// policies already resolve would change what those policies constrain.
 	if _, ok, _ := fs.PolicyField(name); ok {
@@ -215,7 +214,10 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		return fmt.Errorf("parse: %s: relation %q has no target", r.table, name)
 	}
 	if rel.target.isView() {
-		return fmt.Errorf("parse: %s: relation %q: the target is a WithPaths view, a value for one request; relate the resource it is derived from", r.table, name)
+		return fmt.Errorf("parse: %s: relation %q: the target is a view (WithPaths, In), a value for one request; relate the resource it is derived from", r.table, name)
+	}
+	if rel.target.Provider() != r.provider {
+		return fmt.Errorf("parse: %s: relation %q: target %s: %w", r.table, name, rel.target.Table(), ErrProviderMismatch)
 	}
 	rs, err := r.relationSchema(name, rel)
 	if err != nil {
@@ -294,11 +296,6 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		return err
 	}
 	t := rel.target
-	// The last check: past it nothing fails, so the graph never holds a
-	// relation the resource does not declare.
-	if err := r.tenantNode.relate(t.tenantGraph(), rel.policy); err != nil {
-		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
-	}
 	field := &filter.FieldSchema{
 		ExternalName:     name,
 		AllowedOperators: relationOperators(rel.kind, len(keys)),
@@ -318,6 +315,21 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		// A key of several columns is no one value: the field compares
 		// none, and includes and facets name each key by its text.
 		field.DataType = core.FieldTypeArray
+	}
+	// The schema with the relation, as WithPaths checks the fields it adds:
+	// a parameter the endpoint reads itself may not be a flat filter on it.
+	related := *fs
+	related.Fields = maps.Clone(fs.Fields)
+	related.Fields[name] = field
+	err = r.checkQueryParams(&related)
+	if err != nil {
+		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+	}
+	// The last check: past it nothing fails, so the graph never holds a
+	// relation the resource does not declare.
+	err = r.tenantNode.relate(t.tenantGraph(), rel.policy)
+	if err != nil {
+		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
 	}
 	fs.Fields[name] = field
 	if membership != nil {
@@ -349,7 +361,7 @@ func relationOperators(kind core.RelationKind, width int) []filter.FilterOperato
 
 // correlationFields are the owner's fields for columns, in order
 // (correlationField).
-func (r *Resource[T]) correlationFields(columns []string) []*filter.FieldSchema {
+func (r *resourceCore) correlationFields(columns []string) []*filter.FieldSchema {
 	out := make([]*filter.FieldSchema, len(columns))
 	for i, c := range columns {
 		out[i] = r.correlationField(c)
@@ -359,7 +371,7 @@ func (r *Resource[T]) correlationFields(columns []string) []*filter.FieldSchema 
 
 // correlationField is the owner's field for column: its system field, a
 // filter field over the column, or one typed from T.
-func (r *Resource[T]) correlationField(column string) *filter.FieldSchema {
+func (r *resourceCore) correlationField(column string) *filter.FieldSchema {
 	fs := r.filterSchema
 	if f, ok := fs.SystemFields[column]; ok {
 		return f
@@ -382,7 +394,7 @@ func (r *Resource[T]) correlationField(column string) *filter.FieldSchema {
 // the type compares. target is nil for a pair table declared by tag, whose
 // target keys the field's element type declares (filter.GenerateSchema
 // refuses one that is no scalar).
-func (r *Resource[T]) checkRelationKeys(name string, rs *core.RelationSchema, target RelatedResource) error {
+func (r *resourceCore) checkRelationKeys(name string, rs *core.RelationSchema, target RelatedResource) error {
 	type column struct {
 		table, name string
 		typ         reflect.Type
@@ -439,7 +451,7 @@ func keyKind(t core.FieldType) core.FieldType {
 
 // MustRelate is Relate for startup declarations; it panics on a
 // declaration error.
-func (r *Resource[T]) MustRelate(name string, rel Relation) {
+func (r *resourceCore) MustRelate(name string, rel Relation) {
 	if err := r.Relate(name, rel); err != nil {
 		panic(err)
 	}
@@ -447,7 +459,7 @@ func (r *Resource[T]) MustRelate(name string, rel Relation) {
 
 // relationSchema checks rel's columns against r and its target and
 // describes the correlation.
-func (r *Resource[T]) relationSchema(name string, rel Relation) (*core.RelationSchema, error) {
+func (r *resourceCore) relationSchema(name string, rel Relation) (*core.RelationSchema, error) {
 	t := rel.target
 	fail := func(format string, args ...any) error {
 		return fmt.Errorf("parse: %s: relation %q: %s", r.table, name, fmt.Sprintf(format, args...))

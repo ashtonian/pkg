@@ -77,7 +77,8 @@ func TestClock_OneReadingPerRequest(t *testing.T) {
 		assertOneInstant(t, leafValues(ast.Root), 2)
 	})
 	t.Run("flat parameters", func(t *testing.T) {
-		qp := NewQueryParamParser(clockSchema(), QueryParamFieldsOnly(), QueryParamConfig(&core.ParserConfig{Clock: steppingClock()}))
+		qp, err := NewQueryParamParser(clockSchema(), QueryParamFieldsOnly(), QueryParamConfig(&core.ParserConfig{Clock: steppingClock()}))
+		require.NoError(t, err)
 		ast, err := qp.Parse(url.Values{"at_gte": {"now"}, "at_lte": {"now"}})
 		require.NoError(t, err)
 		assertOneInstant(t, leafValues(ast.Root), 2)

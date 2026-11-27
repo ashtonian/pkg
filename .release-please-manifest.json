@@ -7,7 +7,7 @@
   "httpx/codec/msgpack": "0.3.0",
   "httpx/codec/proto": "0.2.1",
   "httpx/compress/brotli": "0.2.0",
-  "gowalker": "0.9.0",
+  "gowalker": "0.10.0",
   "jsonvalue": "0.1.0",
   "gitx": "0.1.2",
   "httpx/oauth2": "0.1.0",

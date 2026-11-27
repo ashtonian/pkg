@@ -274,10 +274,7 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 	}
 	// The sort keys and search fields read computed columns as the filter
 	// does; the builder resolves its own.
-	exprs, err := lq.filterSchema.ComputedSQL(lq.dialect)
-	if err != nil {
-		return nil, err
-	}
+	exprs := lq.filterSchema.ComputedSQL()
 	search := columnExprs(exprs).search(lq.searchSchema)
 	builder := &SQLBuilder{schema: lq.filterSchema, dialect: lq.dialect, startParam: cfg.startParam, scope: cfg.scope.over(lq.dialect, lq.filterSchema), related: related}
 	filterSQL, err := builder.build(ast, exprs)
@@ -414,11 +411,8 @@ func (lq *ListQuery) cursorKeys(sort *SortResult) ([]CursorKey, error) {
 	keys := Keyset(sort, lq.keys...)
 	for _, k := range keys {
 		if k.Column == "" {
-			return nil, &core.ParseError{
-				Kind:    core.ParseErrorKindSort,
-				Code:    ECodeSortFieldNotAllowed.String(),
-				Message: fmt.Sprintf("sort field '%s' is computed and cannot be used with cursor pagination", k.Name),
-			}
+			return nil, core.NewError(ECodeSortFieldNotAllowed, fmt.Sprintf("sort field '%s' is computed and cannot be used with cursor pagination", k.Name),
+				core.WithField(k.Name))
 		}
 	}
 	return keys, nil

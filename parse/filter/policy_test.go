@@ -213,9 +213,9 @@ func TestPolicyConstraints_EmptyTreesAreEmpty(t *testing.T) {
 func TestPolicyFault_HoldsNoParseError(t *testing.T) {
 	cause := errors.New("bad value")
 	for name, err := range map[string]error{
-		"plain cause":      &core.ParseError{Code: ECodeValueTypeMismatch.String(), Message: "m", Cause: cause},
-		"ParseError cause": &core.ParseError{Code: ECodeValueTypeMismatch.String(), Message: "m", Cause: newFilterError(ECodeInvalidUUID, "inner")},
-		"wrapped":          fmt.Errorf("context: %w", &core.ParseError{Code: ECodeInvalidOperator.String(), Message: "m"}),
+		"plain cause":      core.NewError(ECodeValueTypeMismatch, "m", core.WithCause(cause)),
+		"ParseError cause": core.NewError(ECodeValueTypeMismatch, "m", core.WithCause(core.NewError(ECodeInvalidUUID, "inner"))),
+		"wrapped":          fmt.Errorf("context: %w", core.NewError(ECodeInvalidOperator, "m")),
 	} {
 		t.Run(name, func(t *testing.T) {
 			fault := policyFault("owner", err)
@@ -225,5 +225,5 @@ func TestPolicyFault_HoldsNoParseError(t *testing.T) {
 			assert.False(t, isParseError)
 		})
 	}
-	assert.ErrorIs(t, policyFault("owner", &core.ParseError{Code: "E2073", Message: "m", Cause: cause}), cause, "a plain cause stays in the chain")
+	assert.ErrorIs(t, policyFault("owner", core.NewError(ECodeValueTypeMismatch, "m", core.WithCause(cause))), cause, "a plain cause stays in the chain")
 }

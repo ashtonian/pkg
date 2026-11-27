@@ -1,10 +1,14 @@
 // Package dialect is the SQL dialect kind parse compiles for: the
-// placeholder and identifier rules of PostgreSQL and SQLite. The filter
-// and patch dialects embed it and add their SQL.
+// placeholder, identifier and literal rules of PostgreSQL and SQLite.
+// filter's dialects embed a kind and add their SQL as methods, which
+// filter.Dialect and the interfaces patch consumes name: SQL differs by
+// database only there. A kind is also what a DSN names (KindOfDSN), which
+// parseprovider holds to the provider its configuration selects.
 //
 // The set is closed. Dialect has an unexported method, so only this
-// package's Postgres and SQLite, and the types embedding them, implement it,
-// and a switch on a dialect's Kind names every case.
+// package's Postgres and SQLite, and the types embedding them, implement
+// it. A new SQL provider is a kind here and a type in filter implementing
+// filter.Dialect.
 package dialect
 
 import (
@@ -14,7 +18,7 @@ import (
 	"strings"
 )
 
-// ErrUnknownDSN is returned by FromDSN for a DSN that names no database
+// ErrUnknownDSN is returned by KindOfDSN for a DSN that names no database
 // parse compiles SQL for.
 var ErrUnknownDSN = errors.New("parse: unsupported DSN")
 
@@ -22,7 +26,7 @@ var ErrUnknownDSN = errors.New("parse: unsupported DSN")
 // placeholders and identifier quoting.
 type Dialect interface {
 	// Name is the dialect's name for messages: "postgres" or "sqlite".
-	// SQL is chosen by KindOf, never by name.
+	// SQL is chosen by the dialect's methods, never by name.
 	Name() string
 	// Placeholder is the nth parameter's placeholder (1-based): "$1" on
 	// PostgreSQL, "?1" on SQLite.
@@ -30,6 +34,10 @@ type Dialect interface {
 	// QuoteIdent quotes an identifier with double quotes, doubling any
 	// quote inside it.
 	QuoteIdent(name string) string
+	// QuoteLiteral quotes s as a string literal that reads as s whatever
+	// the session's settings, for text a statement writes rather than
+	// binds: a JSON path's member names.
+	QuoteLiteral(s string) string
 	// MaxParams is the most parameters one statement binds.
 	MaxParams() int
 
@@ -58,15 +66,16 @@ func (k Kind) String() string {
 	return "Kind(" + strconv.Itoa(int(k)) + ")"
 }
 
-// Unsupported is the error of a switch on a kind that has no case for k:
-// a statement builder's bug, since every Dialect has one of the two kinds.
+// Unsupported is the error of a switch on a kind that has no case for k: a
+// bug, since every Dialect has one of the kinds the switch names.
 func Unsupported(k Kind, what string) error {
 	return fmt.Errorf("parse: %s has no form for dialect %s", what, k)
 }
 
 const supportedDSNs = "want a postgres:// or postgresql:// URL, a sqlite:// or sqlite3:// URL, a file: URI, :memory:, or an absolute, ./ or ../ path to a .db, .sqlite or .sqlite3 file"
 
-// FromDSN is the dialect of a connection string, decided by its form alone.
+// KindOfDSN is the database a connection string names, decided by its form
+// alone.
 // A postgres:// or postgresql:// URL is PostgreSQL. SQLite is a sqlite:// or
 // sqlite3:// URL, a file: URI (lower case, as SQLite reads it), :memory:,
 // or a path to a .db, .sqlite or .sqlite3 file, before any ?query, that is
@@ -88,23 +97,23 @@ const supportedDSNs = "want a postgres:// or postgresql:// URL, a sqlite:// or s
 // DSN that takes one, such as a MySQL user named file (file:pw@tcp(h)/db),
 // selects SQLite, as a postgres:// URL to CockroachDB selects PostgreSQL.
 //
-// Construct the dialect for a refused DSN. Errors name the scheme and never
-// the DSN, which may carry a password.
-func FromDSN(dsn string) (Dialect, error) {
+// Errors name the scheme and never the DSN, which may carry a password.
+func KindOfDSN(dsn string) (Kind, error) {
 	// A bare file: is SQLite's temporary database.
 	if strings.HasPrefix(dsn, "file:") {
-		return SQLite{}, nil
+		return KindSQLite, nil
 	}
-	if scheme, _, ok := strings.Cut(dsn, "://"); ok && isURIScheme(scheme) {
+	scheme, isURL := URLScheme(dsn)
+	if isURL {
 		switch strings.ToLower(scheme) {
 		case "postgres", "postgresql":
-			return Postgres{}, nil
+			return KindPostgres, nil
 		case "sqlite", "sqlite3":
-			return SQLite{}, nil
+			return KindSQLite, nil
 		case "cockroach", "crdb":
-			return nil, fmt.Errorf("%w: scheme %q: CockroachDB is not supported", ErrUnknownDSN, scheme)
+			return 0, fmt.Errorf("%w: scheme %q: CockroachDB is not supported", ErrUnknownDSN, scheme)
 		default:
-			return nil, fmt.Errorf("%w: scheme %q: %s", ErrUnknownDSN, scheme, supportedDSNs)
+			return 0, fmt.Errorf("%w: scheme %q: %s", ErrUnknownDSN, scheme, supportedDSNs)
 		}
 	}
 	// A query, such as the modernc driver's ?_pragma=, follows the name; the
@@ -118,9 +127,19 @@ func FromDSN(dsn string) (Dialect, error) {
 		name = dsn[:start+i]
 	}
 	if name == ":memory:" || isSQLitePath(name) {
-		return SQLite{}, nil
+		return KindSQLite, nil
 	}
-	return nil, fmt.Errorf("%w: %s", ErrUnknownDSN, supportedDSNs)
+	return 0, fmt.Errorf("%w: %s", ErrUnknownDSN, supportedDSNs)
+}
+
+// URLScheme is the scheme of dsn when it is a URL, scheme://…, whose scheme
+// is an RFC 3986 scheme of two or more characters (isURIScheme).
+func URLScheme(dsn string) (string, bool) {
+	scheme, _, ok := strings.Cut(dsn, "://")
+	if !ok || !isURIScheme(scheme) {
+		return "", false
+	}
+	return scheme, true
 }
 
 // isURIScheme reports whether s is an RFC 3986 scheme of two or more

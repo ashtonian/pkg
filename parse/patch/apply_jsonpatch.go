@@ -7,7 +7,6 @@ import (
 	jsonpatch "github.com/evanphx/json-patch/v5"
 
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/internal/rfc6902"
 )
 
 // jsonPatchRun applies runs of RFC 6902 operations to a document with
@@ -17,6 +16,8 @@ import (
 // throughout. One copy budget covers every step of a patch.
 type jsonPatchRun struct {
 	codec core.Codec
+	// operations are the parsed patch's, which a run's indexes name.
+	operations []*PatchOperation
 	// copyBudget bounds the bytes copies add (0: unlimited); copied is
 	// what the patch's copies have added so far.
 	copyBudget int64
@@ -29,17 +30,21 @@ func (r *jsonPatchRun) apply(doc map[string]any, ops []map[string]any, indexes [
 	// Copies are applied individually, so charge their source size rather than
 	// document growth (overwriting an existing value may not grow it at all).
 	for k, op := range ops {
-		if from, hasFrom := op[rfc6902.From].(string); hasFrom && op[rfc6902.Op] == string(PatchOpCopy) {
-			if value, ok := pointerValue(doc, from); ok {
-				encoded, err := r.codec.Encode(value)
-				if err != nil {
-					return nil, fmt.Errorf("patch: encoding copy source: %w", err)
-				}
-				r.copied += int64(len(encoded))
-				if r.copyBudget > 0 && r.copied > r.copyBudget {
-					return nil, copyBudgetError(indexes[k], r.copyBudget)
-				}
-			}
+		from, hasFrom := op[memberFrom].(string)
+		if !hasFrom || op[memberOp] != string(PatchOpCopy) {
+			continue
+		}
+		value, ok := pointerValue(doc, from)
+		if !ok {
+			continue
+		}
+		encoded, err := r.codec.Encode(value)
+		if err != nil {
+			return nil, fmt.Errorf("patch: encoding copy source: %w", err)
+		}
+		r.copied += int64(len(encoded))
+		if r.copyBudget > 0 && r.copied > r.copyBudget {
+			return nil, copyBudgetError(indexes[k], r.copyBudget)
 		}
 	}
 	doc, ops, restore, err := r.escapeEmptyKeys(doc, ops)
@@ -62,7 +67,7 @@ func (r *jsonPatchRun) apply(doc map[string]any, ops []map[string]any, indexes [
 	opts.SupportNegativeIndices = false // RFC 6901: array indices are non-negative
 	patched, err := decoded.ApplyWithOptions(docJSON, opts)
 	if err != nil {
-		return nil, failedOperation(decoded, docJSON, opts, indexes, err)
+		return nil, r.failedOperation(decoded, docJSON, opts, indexes, err)
 	}
 	var out map[string]any
 	if err := r.codec.Decode(patched, &out); err != nil {
@@ -73,8 +78,10 @@ func (r *jsonPatchRun) apply(doc map[string]any, ops []map[string]any, indexes [
 
 // failedOperation is the error of the run's first operation that fails,
 // which json-patch's error for the whole run does not name: the run is
-// replayed one operation at a time up to it.
-func failedOperation(ops jsonpatch.Patch, doc []byte, opts *jsonpatch.ApplyOptions, indexes []int, runErr error) error {
+// replayed one operation at a time up to it. It names the parsed
+// operation's path, not the step's: an array_append runs as an add at
+// path/-.
+func (r *jsonPatchRun) failedOperation(ops jsonpatch.Patch, doc []byte, opts *jsonpatch.ApplyOptions, indexes []int, runErr error) error {
 	index, cause := indexes[0], runErr
 	for k := range ops {
 		next, err := jsonpatch.Patch{ops[k]}.ApplyWithOptions(doc, opts)
@@ -84,20 +91,14 @@ func failedOperation(ops jsonpatch.Patch, doc []byte, opts *jsonpatch.ApplyOptio
 		}
 		doc = next
 	}
-	failed := &core.ParseError{
-		Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-		Message: fmt.Sprintf("applying operation %d: %v", index, cause),
-		Index:   new(index), Cause: cause,
-	}
+	failed := core.NewError(ECodePatchValueInvalid, fmt.Sprintf("applying operation %d: %v", index, cause),
+		core.WithPath(r.operations[index].Path), core.WithIndex(index), core.WithCause(cause))
 	return failed
 }
 
 func copyBudgetError(offset int, budget int64) error {
-	return &core.ParseError{
-		Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-		Message: fmt.Sprintf("operation %d: copy operations exceed the %d-byte budget", offset, budget),
-		Index:   new(offset),
-	}
+	return core.NewError(ECodePatchValueInvalid, fmt.Sprintf("operation %d: copy operations exceed the %d-byte budget", offset, budget),
+		core.WithIndex(offset))
 }
 
 // escapeEmptyKeys isolates json-patch's special treatment of an empty object
@@ -111,7 +112,7 @@ func (r *jsonPatchRun) escapeEmptyKeys(doc map[string]any, ops []map[string]any)
 	needsEscape := false
 	used := make(map[string]bool)
 	for _, op := range ops {
-		for _, key := range []string{rfc6902.Path, rfc6902.From} {
+		for _, key := range []string{memberPath, memberFrom} {
 			if pointer, ok := op[key].(string); ok {
 				tokens, err := core.ParsePointer(pointer)
 				if err != nil {
@@ -153,27 +154,30 @@ func (r *jsonPatchRun) escapeEmptyKeys(doc map[string]any, ops []map[string]any)
 	}
 	collect(doc)
 	for _, op := range wire {
-		collect(op[rfc6902.Value])
+		collect(op[memberValue])
 	}
 	sentinel := "\x00"
 	for used[sentinel] {
 		sentinel += "\x00"
 	}
 	for _, op := range wire {
-		for _, key := range []string{rfc6902.Path, rfc6902.From} {
-			if pointer, ok := op[key].(string); ok {
-				// Split the encoded pointer so escaped slashes and tildes stay intact.
-				tokens := strings.Split(pointer, "/")
-				for i := 1; i < len(tokens); i++ {
-					if tokens[i] == "" {
-						tokens[i] = sentinel
-					}
-				}
-				op[key] = strings.Join(tokens, "/")
+		for _, key := range []string{memberPath, memberFrom} {
+			pointer, ok := op[key].(string)
+			if !ok {
+				continue
 			}
+			// Split the encoded pointer so escaped slashes and tildes stay intact.
+			tokens := strings.Split(pointer, "/")
+			for i := 1; i < len(tokens); i++ {
+				if tokens[i] == "" {
+					tokens[i] = sentinel
+				}
+			}
+			op[key] = strings.Join(tokens, "/")
 		}
-		if value, ok := op[rfc6902.Value]; ok {
-			op[rfc6902.Value] = renameKey(value, "", sentinel)
+		value, ok := op[memberValue]
+		if ok {
+			op[memberValue] = renameKey(value, "", sentinel)
 		}
 	}
 	restore := func(v map[string]any) map[string]any { return renameMapKey(v, sentinel, "") }

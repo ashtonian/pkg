@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // A Precondition is what one JSON Patch operation on a member of a JSON
@@ -34,7 +32,8 @@ type Precondition struct {
 // RenderPreconditions renders pre for d. all is true of a row exactly when
 // every precondition holds of its stored documents; firstUnmet is the Op of
 // the first that does not, or NULL when all hold. Both use the same
-// placeholders, which bind binds and returns.
+// placeholders, which bind binds and returns. A precondition naming no
+// member is an error: BuildPatchSQL makes none.
 func RenderPreconditions(d SQLDialect, pre []Precondition, bind func(any) string) (all, firstUnmet string, err error) {
 	if len(pre) == 0 {
 		return "", "", nil
@@ -43,11 +42,15 @@ func RenderPreconditions(d SQLDialect, pre []Precondition, bind func(any) string
 	var unmet strings.Builder
 	unmet.WriteString("CASE")
 	for i, p := range pre {
-		conds[i], err = p.condition(d, bind)
-		if err != nil {
-			return "", "", err
+		if len(p.Member) == 0 {
+			return "", "", fmt.Errorf("patch: precondition of operation %d (%s) names no member of column %s", p.Op, p.Path, p.Column)
 		}
-		fmt.Fprintf(&unmet, " WHEN NOT %s THEN %d", conds[i], p.Op)
+		cond, err := p.condition(d, bind)
+		if err != nil {
+			return "", "", dialectError("precondition", p.Path, err)
+		}
+		conds[i] = cond
+		fmt.Fprintf(&unmet, " WHEN NOT %s THEN %d", cond, p.Op)
 	}
 	unmet.WriteString(" END")
 	return "(" + strings.Join(conds, " AND ") + ")", unmet.String(), nil
@@ -57,44 +60,15 @@ func RenderPreconditions(d SQLDialect, pre []Precondition, bind func(any) string
 // member is read by object keys only: PostgreSQL's #> would index an array
 // with a token that reads as an integer, which documentPaths refuses where
 // an array can stand, and SQLite's quoted labels never index one.
-func (p Precondition) condition(d dialect.Dialect, bind func(any) string) (string, error) {
-	col := d.QuoteIdent(p.Column)
-	parent := p.Member[:len(p.Member)-1]
-	switch k := dialect.KindOf(d); k {
-	case dialect.KindPostgres:
-		doc := col + "::jsonb"
-		if p.Exists {
-			return "((" + doc + " #> " + bind(slices.Clone(p.Member)) + "::text[]) IS NOT NULL)", nil
-		}
-		if len(parent) > 0 {
-			doc = "(" + doc + " #> " + bind(slices.Clone(parent)) + "::text[])"
-		}
-		return "COALESCE(jsonb_typeof(" + doc + ") = 'object', FALSE)", nil
-	case dialect.KindSQLite:
-		if p.Exists {
-			return "(json_type(" + col + ", " + bind(sqlitePath(p.Member)) + ") IS NOT NULL)", nil
-		}
-		typ := "json_type(" + col + ")"
-		if len(parent) > 0 {
-			typ = "json_type(" + col + ", " + bind(sqlitePath(parent)) + ")"
-		}
-		return "COALESCE(" + typ + " = 'object', FALSE)", nil
-	default:
-		return "", dialect.Unsupported(k, "a document member operation")
+func (p Precondition) condition(d SQLDialect, bind func(any) string) (string, error) {
+	doc, err := d.MemberDocument(d.QuoteIdent(p.Column))
+	if err != nil {
+		return "", err
 	}
-}
-
-// sqlitePath is the SQLite JSON path of member, each token a quoted object
-// label with its quotes and backslashes escaped.
-func sqlitePath(member []string) string {
-	var b strings.Builder
-	b.WriteString("$")
-	for _, token := range member {
-		b.WriteString(`."`)
-		b.WriteString(strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(token))
-		b.WriteString(`"`)
+	if p.Exists {
+		return d.HasMember(doc, p.Member, bind)
 	}
-	return b.String()
+	return d.IsObject(doc, p.Member[:len(p.Member)-1], bind)
 }
 
 // memberTokens are the tokens of op's path below the field its column
@@ -163,11 +137,7 @@ func documentType(t core.FieldType) bool {
 }
 
 func notCompilable(op *PatchOperation, why string) error {
-	err := &core.ParseError{
-		Kind: core.ParseErrorKindPatch, Code: ECodeOpNotSQLCompilable.String(),
-		Message: why + " — apply via ApplyValidatedPatch",
-		Path:    op.Path,
-	}
+	err := core.NewError(ECodeOpNotSQLCompilable, why+" — apply via ApplyValidatedPatch", core.WithPath(op.Path))
 	return err
 }
 
@@ -255,20 +225,16 @@ type memberFact struct {
 }
 
 // documentExpr folds the operations of the document column col, some of
-// which write a member, and returns the path schema its change predicate
-// compares the column as: the whole-value operation's when the document is
-// known, else a JSON document's, since the fold's expression is jsonb on
-// PostgreSQL whatever the column's JSON type.
-func (b *setBuilder) documentExpr(col string, ops []*PatchOperation) (string, *PathSchema, error) {
-	f := &documentFold{b: b, col: col, facts: map[string]memberFact{}}
-	switch k := dialect.KindOf(b.dialect); k {
-	case dialect.KindPostgres:
-		f.expr = b.dialect.QuoteIdent(col) + "::jsonb"
-	case dialect.KindSQLite:
-		f.expr = b.dialect.QuoteIdent(col)
-	default:
-		return "", nil, dialect.Unsupported(k, "a document member operation")
+// which write a member. When an operation writes the document whole and
+// the members fold onto its value in Go, the column is written whole, as
+// that operation's path declares it; otherwise its members are written
+// over the stored document.
+func (b *setBuilder) documentExpr(col string, ops []*PatchOperation) (columnWrite, error) {
+	doc, err := b.dialect.MemberDocument(b.dialect.QuoteIdent(col))
+	if err != nil {
+		return columnWrite{}, dialectError("document", fieldPath(ops[0]), err)
 	}
+	f := &documentFold{b: b, col: col, expr: doc, facts: map[string]memberFact{}}
 	whole := -1
 	for i, op := range ops {
 		if len(memberTokens(op)) == 0 {
@@ -279,25 +245,27 @@ func (b *setBuilder) documentExpr(col string, ops []*PatchOperation) (string, *P
 		f.overwritten = i < whole
 		err := f.apply(op)
 		if err != nil {
-			return "", nil, err
+			return columnWrite{}, err
 		}
 	}
 	if !f.known {
-		storedDocument := &PathSchema{DataType: core.FieldTypeJSON, SQLType: core.SQLJSON}
-		return f.expr, storedDocument, nil
+		members := columnWrite{expr: f.expr, members: true}
+		return members, nil
 	}
 	value := f.doc
 	if !f.folded {
 		value, _ = wholeValue(f.base)
 	}
 	if value == nil {
-		return "NULL", f.base.Schema, nil
+		cleared := columnWrite{expr: "NULL", schema: f.base.Schema}
+		return cleared, nil
 	}
 	val, err := marshalIfComplex(value, f.base.Schema, f.b.dialect)
 	if err != nil {
-		return "", nil, fmt.Errorf("marshaling value for %s: %w", f.base.Path, err)
+		return columnWrite{}, fmt.Errorf("marshaling value for %s: %w", f.base.Path, err)
 	}
-	return f.b.bind(val), f.base.Schema, nil
+	bound := columnWrite{expr: f.b.bind(val), schema: f.base.Schema}
+	return bound, nil
 }
 
 func (f *documentFold) apply(op *PatchOperation) error {
@@ -343,7 +311,7 @@ func (f *documentFold) apply(op *PatchOperation) error {
 	if !f.overwritten {
 		err := f.compile(op.Op, member, value)
 		if err != nil {
-			return fmt.Errorf("%s for %s: %w", op.Op, op.Path, err)
+			return dialectError(string(op.Op), op.Path, err)
 		}
 	}
 	f.record(op.Op, member, value)
@@ -425,38 +393,28 @@ func (f *documentFold) record(op PatchOp, member []string, value any) {
 	f.facts[key] = memberFact{absent: op == PatchOpRemove, value: value}
 }
 
-// compile applies op to the stored document's expression: jsonb_set and #-
-// on PostgreSQL, json_set and json_remove on SQLite. Both set an object's
-// member whether or not it exists, which the preconditions make an add's or
-// a replace's.
+// compile applies op to the stored document's expression
+// (SQLDialect.SetMember, RemoveMember). A set writes an object's member
+// whether or not it exists, which the preconditions make an add's or a
+// replace's.
 func (f *documentFold) compile(op PatchOp, member []string, value any) error {
-	bind := f.b.bind
-	var doc []byte
-	if op != PatchOpRemove {
-		var err error
-		doc, err = json.Marshal(value)
+	if op == PatchOpRemove {
+		expr, err := f.b.dialect.RemoveMember(f.expr, member, f.b.bind)
 		if err != nil {
 			return err
 		}
+		f.expr = expr
+		return nil
 	}
-	switch k := dialect.KindOf(f.b.dialect); k {
-	case dialect.KindPostgres:
-		path := bind(slices.Clone(member)) + "::text[]"
-		if op == PatchOpRemove {
-			f.expr = "(" + f.expr + " #- " + path + ")"
-		} else {
-			f.expr = "jsonb_set(" + f.expr + ", " + path + ", " + bind(string(doc)) + "::jsonb, true)"
-		}
-	case dialect.KindSQLite:
-		path := bind(sqlitePath(member))
-		if op == PatchOpRemove {
-			f.expr = "json_remove(" + f.expr + ", " + path + ")"
-		} else {
-			f.expr = "json_set(" + f.expr + ", " + path + ", json(" + bind(string(doc)) + "))"
-		}
-	default:
-		return dialect.Unsupported(k, "a document member operation")
+	doc, err := json.Marshal(value)
+	if err != nil {
+		return err
 	}
+	expr, err := f.b.dialect.SetMember(f.expr, member, doc, f.b.bind)
+	if err != nil {
+		return err
+	}
+	f.expr = expr
 	return nil
 }
 
@@ -471,10 +429,7 @@ func (p Precondition) Err() error {
 	if !p.Exists {
 		msg = fmt.Sprintf("operation %d: %s has no object to be added to", p.Op, p.Path)
 	}
-	err := &core.ParseError{
-		Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-		Message: msg, Path: p.Path, Index: new(p.Op),
-	}
+	err := core.NewError(ECodePatchValueInvalid, msg, core.WithPath(p.Path), core.WithIndex(p.Op))
 	return err
 }
 

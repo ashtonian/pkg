@@ -170,7 +170,7 @@ func TestWriteList_NarrowsToTheMasksJSONMembers(t *testing.T) {
 		Title string `bson:"title"            db:"title"`
 		Score int    `bson:"score" json:"-"  db:"score"`
 	}
-	records, err := parse.NewResource[record]("records", parse.ParserOptions(core.WithGeneratorOptions(core.WithFieldNameTag("bson"))))
+	records, err := parse.NewResource[record](onSQLite, "records", parse.ParserOptions(core.WithGeneratorOptions(core.WithFieldNameTag("bson"))))
 	require.NoError(t, err)
 	page := &filter.Page[record]{Items: []record{{ID: "r1", Title: "a", Score: 3}}}
 	for _, tt := range []struct {

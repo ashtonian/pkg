@@ -151,10 +151,12 @@ func newPathField(doc *FieldSchema, segs []string, d PathDecl, kind reflect.Kind
 		f.Elem = d.Elem
 		f.Element = newElement(f)
 	}
-	if err := checkOperators(f); err != nil {
+	err := CheckOperators(f)
+	if err != nil {
 		return nil, err
 	}
-	if err := setPathFacet(f, d.Facet); err != nil {
+	err = setPathFacet(f, d.Facet)
+	if err != nil {
 		return nil, err
 	}
 	return f, nil
@@ -226,7 +228,7 @@ func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want 
 		if m.Wire() != "" {
 			return nil, nil, quotedMemberError(strings.Join(segs, "."))
 		}
-		info := core.TypeOf(m.Type())
+		info := core.MemberTypeOf(m.Type())
 		elem, elemKind, isArray := scalarElements(m.Type())
 		switch {
 		case pathTypes[info.Type] || isArray:
@@ -281,7 +283,7 @@ func scalarElements(t reflect.Type) (core.FieldType, reflect.Kind, bool) {
 	if (t.Kind() != reflect.Slice && t.Kind() != reflect.Array) || t.Elem().Kind() == reflect.Uint8 {
 		return "", reflect.Invalid, false
 	}
-	info := core.TypeOf(t.Elem())
+	info := core.MemberTypeOf(t.Elem())
 	if !pathTypes[info.Type] {
 		return "", reflect.Invalid, false
 	}

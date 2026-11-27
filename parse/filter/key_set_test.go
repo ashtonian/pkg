@@ -270,7 +270,7 @@ func TestKeyConstraint_EmptySetAdmitsNoRow(t *testing.T) {
 // while one column compiles through the expression as Field does.
 func TestKeyConstraint_RefusesAComputedColumnOfSeveral(t *testing.T) {
 	schema := stockSchema()
-	schema.Computed = []filter.ComputedColumn{{Column: "sku", Expr: func(filter.Dialect) (string, error) { return `lower("stock_items"."code")`, nil }}}
+	schema.Computed = []filter.ComputedColumn{{Column: "sku", SQL: `lower("stock_items"."code")`}}
 	apply := func(c *filter.PolicyConstraint) (*filter.FilterAST, error) {
 		return filter.ApplyPolicyConstraints(schema, nil, &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{c}})
 	}

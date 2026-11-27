@@ -32,12 +32,8 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	if err != nil {
 		return "", unresolvableRelation(node.Field, err.Error())
 	}
-	// The target's predicates read its computed columns as the owner's
-	// dialect does; one the dialect refuses fails the build.
-	exprs, err := target.resolve(b.dialect)
-	if err != nil {
-		return "", err
-	}
+	// The target's predicates read its computed columns.
+	exprs := target.ComputedSQL()
 	depth := b.depth + 1
 	visible := append([]string{b.schema.Name}, b.visible...)
 	bind := s.binder(b.dialect)
@@ -236,8 +232,6 @@ func unresolvableRelation(f *FieldSchema, why string) error {
 // invalidRelation is the request's fault on relation f: an operator it
 // chose that the relation cannot take.
 func invalidRelation(f *FieldSchema, msg string) error {
-	return &core.ParseError{
-		Kind: core.ParseErrorKindFilter, Code: ECodeInvalidRelation.String(),
-		Message: fmt.Sprintf("relation '%s' %s", f.ExternalName, msg), Details: map[string]any{core.DetailField: f.ExternalName},
-	}
+	return core.NewError(ECodeInvalidRelation, fmt.Sprintf("relation '%s' %s", f.ExternalName, msg),
+		core.WithField(f.ExternalName))
 }

@@ -60,7 +60,7 @@ For a virtual relation hidden from the base row JSON, add `relation_name:"tag_id
 4. Execute its SQL and read the rows with the query's `Scan`, which groups target IDs by owner and lists the owners whose IDs were cut at the cap in `Truncated`. An owner is named by its key's text, `core.KeyText`: a one-column key's value, a longer key's compact JSON array of its columns' texts (`["1","a"]`), which the statement writes for the row as Go writes it for the key.
 5. Attach the result to `filter.Page[T].Relations`, whose JSON name is `_relations`.
 
-Includes return IDs, not nested child objects. The default cap is 100 distinct targets per owner; change it with `filter.WithMaxIncludePerRelation`. The query reads one more than the cap, so `Scan` knows a cut list from a complete one; put `Truncated` in the page's `Truncated[field]` (`_truncated` on the wire). `Resource.IncludeQueries` and `parsepgx.QueryPage` do this for you. The caller owns execution and transaction consistency.
+Includes return IDs, not nested child objects. The default cap is 100 distinct targets per owner; change it with `filter.WithMaxIncludePerRelation`. The query reads one more than the cap, so `Scan` knows a cut list from a complete one; put `Truncated` in the page's `Truncated[field]` (`_truncated` on the wire). `Resource.List` does this for you; `Resource.IncludeQueries` gives the statements to an application that runs them itself. The caller owns execution and transaction consistency.
 
 ## Update membership
 

@@ -21,11 +21,8 @@ func ParseList[T any](r *http.Request, res *parse.Resource[T]) (*parse.ListReque
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodPost:
 	default:
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindFilter, Code: filter.ECodeInvalidListParam.String(),
-			Message: fmt.Sprintf("a list is read with GET, HEAD or POST, not %s", r.Method),
-			Details: map[string]any{core.DetailParameter: "method"},
-		}
+		return nil, core.NewError(filter.ECodeInvalidListParam, fmt.Sprintf("a list is read with GET, HEAD or POST, not %s", r.Method),
+			core.WithParameter("method"))
 	}
 	q, err := Query(r)
 	if err != nil {
@@ -45,11 +42,8 @@ func ParseList[T any](r *http.Request, res *parse.Resource[T]) (*parse.ListReque
 func Query(r *http.Request) (url.Values, error) {
 	q, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindFilter, Code: filter.ECodeInvalidListParam.String(),
-			Message: fmt.Sprintf("the query string does not decode: %v", err),
-			Cause:   err,
-		}
+		return nil, core.NewError(filter.ECodeInvalidListParam, fmt.Sprintf("the query string does not decode: %v", err),
+			core.WithCause(err))
 	}
 	return q, nil
 }

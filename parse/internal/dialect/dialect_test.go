@@ -29,7 +29,7 @@ func TestDialects(t *testing.T) {
 	}
 }
 
-func TestFromDSN(t *testing.T) {
+func TestKindOfDSN(t *testing.T) {
 	for _, tc := range []struct{ dsn, want string }{
 		{"postgres://u:p@h/db", "postgres"},
 		{"postgresql://h/db", "postgres"},
@@ -66,14 +66,14 @@ func TestFromDSN(t *testing.T) {
 		{"C://data/app.db", "sqlite"},
 	} {
 		t.Run(tc.dsn, func(t *testing.T) {
-			d, err := FromDSN(tc.dsn)
+			k, err := KindOfDSN(tc.dsn)
 			require.NoError(t, err)
-			assert.Equal(t, tc.want, d.Name())
+			assert.Equal(t, tc.want, k.String())
 		})
 	}
 }
 
-func TestFromDSNRefuses(t *testing.T) {
+func TestKindOfDSNRefuses(t *testing.T) {
 	const cockroach = "parse: unsupported DSN: scheme %q: CockroachDB is not supported"
 	for _, tc := range []struct {
 		name string
@@ -106,9 +106,9 @@ func TestFromDSNRefuses(t *testing.T) {
 		{"empty", "", "parse: unsupported DSN: " + supportedDSNs},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			d, err := FromDSN(tc.dsn)
+			k, err := KindOfDSN(tc.dsn)
 			require.ErrorIs(t, err, ErrUnknownDSN)
-			assert.Nil(t, d)
+			assert.Zero(t, k)
 			assert.Equal(t, tc.want, err.Error())
 		})
 	}

@@ -1,19 +1,12 @@
 package parse
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 	"slices"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
-
-// ErrTenantInvalid is a Scope.Tenant a tenant column the request reaches
-// cannot hold: text that is not a UUID for a UUID column, or not a decimal
-// integer in range for an integer column. Like ErrTenantRequired, it is the
-// server's mistake, never the request's.
-var ErrTenantInvalid = errors.New("Scope.Tenant is not a value of the tenant column's type")
 
 // tenantColumn is a resource's TenantColumn and its Go type.
 type tenantColumn struct {
@@ -226,7 +219,7 @@ func (n *tenantNode) reached() []*tenantColumn {
 // binds it: checked and normalized once, here, against every tenant column
 // the resource reaches. Nil when the scope has none; ErrTenantRequired when
 // the resource has a tenant column.
-func (r *Resource[T]) bindTenant(text string) (any, error) {
+func (r *resourceCore) bindTenant(text string) (any, error) {
 	if text == "" {
 		if r.tenant != "" {
 			return nil, fmt.Errorf("parse: %s: %w", r.table, ErrTenantRequired)
@@ -240,4 +233,4 @@ func (r *Resource[T]) bindTenant(text string) (any, error) {
 	return v, nil
 }
 
-func (r *Resource[T]) tenantGraph() *tenantNode { return r.tenantNode }
+func (r *resourceCore) tenantGraph() *tenantNode { return r.tenantNode }

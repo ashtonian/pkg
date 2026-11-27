@@ -1,8 +1,9 @@
 //go:build unit || integration
 
-// Package dbtest opens real databases for parse's result-based tests: SQL
-// the builders emit is executed and the returned rows / stored values are
-// asserted, never the SQL text alone.
+// Package dbtest opens real databases for parse's result-based tests and
+// reads their rows back (QueryRows, Exec): SQL the builders emit is
+// executed and the returned rows / stored values are asserted, never the
+// SQL text alone.
 package dbtest
 
 import (

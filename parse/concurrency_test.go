@@ -1,10 +1,5 @@
 //go:build unit || concurrency
 
-// The tests that run parse code on several goroutines. Parse starts none of
-// its own, so only these can fail under race: the concurrency tag lets
-// make test-parse-race build them alone, without instrumenting the package's
-// other tests (tools/test_ci_parse_race.py requires the tag on such files).
-
 package parse_test
 
 import (
@@ -19,6 +14,8 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -42,7 +39,7 @@ func TestSchemaRegistryConcurrentSnapshots(t *testing.T) {
 	for w := range 8 {
 		workers.Go(func() {
 			for i := range 50 {
-				res, err := parse.NewResource[registrySnapshotEntity](fmt.Sprintf("items_%d_%d", w, i))
+				res, err := parse.NewResource[registrySnapshotEntity](onPostgres, fmt.Sprintf("items_%d_%d", w, i))
 				if err == nil {
 					err = parse.RegisterResource(r, res)
 				}
@@ -64,7 +61,7 @@ func TestSchemaRegistryConcurrentSnapshots(t *testing.T) {
 }
 
 func TestParseFilterWithCostIsolatesResourceBudget(t *testing.T) {
-	resource, err := parse.NewResource[filterBudgetDocument]("budget_documents")
+	resource, err := parse.NewResource[filterBudgetDocument](onPostgres, "budget_documents")
 	require.NoError(t, err)
 	const query = `{"enabled":true,"labels":{"$contains":{"role":"worker"}}}`
 	_, err = resource.ParseFilter(query)
@@ -90,19 +87,28 @@ func TestParseFilterWithCostIsolatesResourceBudget(t *testing.T) {
 	})
 }
 
-// Concurrent builds for two dialects, of a target and of an owner whose
-// relation filter compiles it, each read their own dialect's expressions.
+// Concurrent builds on two providers, of a target and of an owner whose
+// relation filter compiles it, each read their own provider's dialect's
+// expressions.
 func TestReadExpr_ConcurrentBuilds(t *testing.T) {
-	accounts := newComputedAccounts(accessGroups, groupIDsExpr)
-	tenants := newAccountTenants(accounts)
-	req, err := accounts.ParseList(url.Values{
-		filter.ParamFilter: {`{"email":{"$ne":""}}`},
-		filter.ParamSort:   {"-member_count"},
-		filter.ParamFacets: {"member_count"},
-	})
-	require.NoError(t, err)
-	ownerReq, err := tenants.ParseList(url.Values{filter.ParamFilter: {`{"accounts":{"$some":{"email":{"$ne":""},"groups":{"$some":{"size":2}}}}}`}})
-	require.NoError(t, err)
+	type computedSet struct {
+		accounts      *parse.Resource[parsetest.ComputedAccount]
+		tenants       *parse.Resource[parsetest.AccountTenant]
+		req, ownerReq *parse.ListRequest
+	}
+	sets := make([]computedSet, len(computedDialects()))
+	for i, tt := range computedDialects() {
+		_, accounts, tenants, _ := parsetest.NewComputedResources(providertest.Compile(tt.dialect))
+		req, err := accounts.ParseList(url.Values{
+			filter.ParamFilter: {`{"email":{"$ne":""}}`},
+			filter.ParamSort:   {"-member_count"},
+			filter.ParamFacets: {"member_count"},
+		})
+		require.NoError(t, err)
+		ownerReq, err := tenants.ParseList(url.Values{filter.ParamFilter: {`{"accounts":{"$some":{"email":{"$ne":""},"groups":{"$some":{"size":2}}}}}`}})
+		require.NoError(t, err)
+		sets[i] = computedSet{accounts: accounts, tenants: tenants, req: req, ownerReq: ownerReq}
+	}
 	plans := make([]*parse.ListPlan, 64)
 	errs := make([]error, len(plans))
 	start := make(chan struct{})
@@ -110,11 +116,11 @@ func TestReadExpr_ConcurrentBuilds(t *testing.T) {
 	for i := range plans {
 		wg.Go(func() {
 			<-start
-			d := computedDialects[i%2].dialect
+			set := sets[i%2]
 			if i%4 < 2 {
-				plans[i], errs[i] = accounts.BuildList(d, req, parse.Scope{Tenant: "t1"})
+				plans[i], errs[i] = set.accounts.BuildList(set.req, parse.Scope{Tenant: "t1"})
 			} else {
-				plans[i], errs[i] = tenants.BuildList(d, ownerReq, parse.Scope{Tenant: "t1"})
+				plans[i], errs[i] = set.tenants.BuildList(set.ownerReq, parse.Scope{Tenant: "t1"})
 			}
 		})
 	}
@@ -122,12 +128,12 @@ func TestReadExpr_ConcurrentBuilds(t *testing.T) {
 	wg.Wait()
 	for i, plan := range plans {
 		require.NoError(t, errs[i])
-		tt := computedDialects[i%2]
+		tt := computedDialects()[i%2]
 		assert.Contains(t, plan.Page.SQL, "("+tt.email+") <> ")
 		if i%4 < 2 {
 			assert.Contains(t, plan.Page.SQL, "("+tt.groupIDs+`) AS "group_ids"`)
 		} else {
-			assert.Contains(t, plan.Page.SQL, "("+groupSizeExpr+") = ")
+			assert.Contains(t, plan.Page.SQL, "("+parsetest.GroupSizeExpr+") = ")
 		}
 	}
 }

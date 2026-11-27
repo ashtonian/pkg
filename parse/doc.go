@@ -10,14 +10,25 @@
 //
 //	import "github.com/ashtonian/pkg/parse/core"
 //
-// # Resource
+// # Provider and Resource
 //
-// Resource combines filter, patch, sort, and search parsing for a resource:
+// A Provider is the database every resource built on it runs on: SQLite
+// (parsesql) or PostgreSQL (parsepgx), one API on either, which
+// parseprovider opens from the application's configuration at startup.
+// A Resource combines filter, patch, sort, and search parsing for a table
+// on its provider, and runs what it parses there:
 //
-//	products, err := parse.NewResource[Product]("products")
-//	result, err := products.ParseFilter(`{"status":"active"}`)
+//	db, err := parseprovider.Open(ctx, settings.DB)
+//	products, err := parse.NewResource[Product](db.Provider(), "products")
+//	req, err := products.ParseList(r.URL.Query())
+//	page, err := products.List(ctx, req, parse.Scope{Tenant: tenant})
+//	parsed, err := products.ParseMergePatch(body)
+//	res, err := products.Update(ctx, parsed, parse.ByID(id), parse.Scope{Tenant: tenant})
 //	patched, err := products.ApplyPatch(body, existing)
-//	lq, err := products.ListQuery(filter.PostgresDialect{})
+//
+// In runs a resource in a transaction the provider began (Provider.Begin)
+// or the application's own (parsesql.Tx, parsepgx.Tx), so parse's writes
+// commit with the application's.
 //
 // # SchemaRegistry
 //

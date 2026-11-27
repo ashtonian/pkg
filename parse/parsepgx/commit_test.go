@@ -36,13 +36,26 @@ func TestCommitFailed_SaysWhetherTheCommitMayHaveTaken(t *testing.T) {
 		{"the settle timeout run out in flight", context.DeadlineExceeded, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := commitFailed(tc.err)
+			err := commitFailed("products", tc.err)
 			require.ErrorIs(t, err, tc.err)
 			failed, ok := errors.AsType[*parse.StatementError](err)
 			require.True(t, ok, "%v", err)
+			assert.Equal(t, "products", failed.Table, "the resource whose update commits")
 			assert.Equal(t, "commit", failed.Statement)
+			require.ErrorContains(t, err, "parse: products: commit: ")
 			assert.Equal(t, tc.unknown, errors.Is(err, parse.ErrCommitUnknown))
+			if tc.unknown {
+				assert.ErrorContains(t, err, "parse: products: commit: commit outcome unknown: ")
+			}
 		})
 	}
-	require.NoError(t, commitFailed(nil))
+	require.NoError(t, commitFailed("products", nil))
+
+	// A transaction's own commit (parse.Tx) belongs to no resource.
+	err := commitFailed("", io.ErrUnexpectedEOF)
+	failed, ok := errors.AsType[*parse.StatementError](err)
+	require.True(t, ok, "%v", err)
+	assert.Empty(t, failed.Table)
+	assert.Equal(t, "commit", failed.Statement)
+	require.ErrorIs(t, err, parse.ErrCommitUnknown)
 }

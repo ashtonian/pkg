@@ -14,6 +14,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
 // Every timestamp normalizes to text of one width that normalizes to
@@ -76,7 +77,7 @@ func TestNormalizeScalar_RefusesTimestampsOutsideRFC3339AndTheFourDigitYears(t *
 		assert.Equal(t, core.CodeValueTypeMismatch.String(), perr.Code, "%v: %s", in, perr.Message)
 	}
 
-	events, err := parse.NewResource[event]("events")
+	events, err := parse.NewResource[event](providertest.Compile(filter.SQLiteDialect{}), "events")
 	require.NoError(t, err)
 	for _, in := range inputs[:8] {
 		_, err := events.MergePatchMap(map[string]any{"at": in})

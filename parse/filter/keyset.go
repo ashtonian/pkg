@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"database/sql/driver"
 	"encoding"
 	"errors"
 	"fmt"
@@ -121,11 +120,18 @@ func (p CursorPlan) Token(reverse bool, get func(column string) (any, error)) (*
 }
 
 // KeyValue is a row's canonical value for key k, given raw, the row's value
-// at k.Column: CursorValue of it, or for a path key the member the path rule
-// extracts from the column's document, read as PathValue reads it (nil when
-// absent). A decimal key's value is its canonical text
-// (core.DecimalText), whatever form its column scans to. Cursors and a
-// memory backend's ordering read keys through it alike.
+// at k.Column, or for a path key the member the path rule extracts from the
+// column's document, read as PathValue reads it (nil when absent). A key of
+// a scalar type (core.IsKeyType) reads it as its type's stored value
+// (core.StoredScalar), whatever its column scans to — a date key's
+// time.Time as its day, a decimal key's text, INTEGER or REAL as its
+// canonical text — so ValidateCursor accepts the value it mints; a key of
+// no scalar type (a codec's) reads it through CursorValue. An int or float
+// path's number member is its canonical decimal text, exactly as its JSON
+// number holds it, since PostgreSQL orders the member as numeric; a JSON
+// number beyond core.MaxDecimalDigits digits is no number member, so its
+// key is NULL, as the SQL reads it. Cursors and a memory backend's
+// ordering read keys through it alike.
 func KeyValue(k CursorKey, raw any) (any, error) {
 	if k.Path != nil {
 		root, err := decodeDocument(raw)
@@ -138,38 +144,34 @@ func KeyValue(k CursorKey, raw any) (any, error) {
 		}
 		raw = member
 	}
-	v, err := CursorValue(raw)
-	if err != nil || v == nil || k.DataType != core.FieldTypeDecimal {
-		return v, err
+	if !core.IsKeyType(k.DataType) {
+		return CursorValue(raw)
 	}
-	text, err := core.DecimalText(v)
+	t := k.valueType()
+	v, _, err := core.StoredScalar(t.Type, t.NumberKind, raw)
 	if err != nil {
-		return nil, fmt.Errorf("cursor: decimal key: %w", err)
+		return nil, fmt.Errorf("cursor: %s key: %w", k.DataType, err)
 	}
-	return text, nil
+	return v, nil
 }
 
-// CursorValue reduces a row value to the canonical form a token carries and
-// SQL binds: nil, string, bool, int64, uint64 or float64. Pointers are
-// dereferenced (nil → NULL), decimals (core.IsDecimalType) become their
-// canonical text, driver.Valuer values are resolved, times become RFC 3339
-// UTC strings (the form SQLite stores), and text-marshalling types such as
-// uuid.UUID become their text. Anything else cannot resume a page and is an
-// error, never an omitted cursor.
+// CursorValue reduces a value of a key of no scalar type (KeyValue) to the
+// canonical form a token carries and SQL binds: nil, string, bool, int64,
+// uint64 or float64, NaN and the infinities included, which a float column
+// may hold. The value is read
+// as the database holds it first (core.StoredValue: pointers followed, a
+// driver.Valuer read, NULL as nil); then decimals (core.IsDecimalType)
+// become their canonical text, times RFC 3339 UTC strings (the form SQLite
+// stores), and text-marshalling types such as uuid.UUID their text.
+// Anything else cannot resume a page and is an error, never an omitted
+// cursor.
 func CursorValue(v any) (any, error) {
-	for {
-		rv := reflect.ValueOf(v)
-		if !rv.IsValid() {
-			return nil, nil
-		}
-		if rv.Kind() == reflect.Pointer {
-			if rv.IsNil() {
-				return nil, nil
-			}
-			v = rv.Elem().Interface()
-			continue
-		}
-		break
+	v, null, err := core.StoredValue(v)
+	if err != nil {
+		return nil, fmt.Errorf("cursor: %w", err)
+	}
+	if null {
+		return nil, nil
 	}
 	switch t := v.(type) {
 	case string, bool, int64:
@@ -180,8 +182,6 @@ func CursorValue(v any) (any, error) {
 		return nil, errors.New("cursor: byte-slice keys are not supported")
 	case core.Decimal:
 		return cursorDecimalValue(t)
-	case driver.Valuer:
-		return cursorDriverValue(t)
 	case encoding.TextMarshaler:
 		return cursorTextValue(t)
 	}
@@ -200,11 +200,7 @@ func CursorValue(v any) (any, error) {
 		}
 		return int64(u), nil
 	case reflect.Float32, reflect.Float64:
-		f := rv.Float()
-		if math.IsNaN(f) || math.IsInf(f, 0) {
-			return nil, errors.New("cursor: non-finite float key")
-		}
-		return f, nil
+		return rv.Float(), nil
 	case reflect.Struct:
 		if core.IsDecimalType(rv.Type()) {
 			return cursorDecimalValue(v) // its pointer has the method set
@@ -212,27 +208,16 @@ func CursorValue(v any) (any, error) {
 		// Sort schema generation also accepts pointer-receiver scalar
 		// codecs. A value extracted from a row need not be addressable;
 		// give the codec a copy instead of losing its pointer methods.
-		pt := reflect.PointerTo(rv.Type())
-		if pt.Implements(valuerType) || pt.Implements(textMarshalerType) {
+		if reflect.PointerTo(rv.Type()).Implements(textMarshalerType) {
 			pv := reflect.New(rv.Type())
 			pv.Elem().Set(rv)
-			switch p := pv.Interface().(type) {
-			case driver.Valuer:
-				return cursorDriverValue(p)
-			case encoding.TextMarshaler:
+			p, ok := pv.Interface().(encoding.TextMarshaler)
+			if ok {
 				return cursorTextValue(p)
 			}
 		}
 	}
 	return nil, fmt.Errorf("cursor: unsupported key type %s", gowalker.TypeText(reflect.TypeOf(v)))
-}
-
-func cursorDriverValue(v driver.Valuer) (any, error) {
-	dv, err := v.Value()
-	if err != nil {
-		return nil, fmt.Errorf("cursor: resolving %s: %w", gowalker.TypeText(reflect.TypeOf(v)), err)
-	}
-	return CursorValue(dv)
 }
 
 func cursorDecimalValue(v any) (any, error) {
@@ -251,51 +236,33 @@ func cursorTextValue(v encoding.TextMarshaler) (any, error) {
 	return string(b), nil
 }
 
-// CompareKeyValues orders two canonical key values (see CursorValue) under
-// the keyset model: NULL greatest, numbers and decimals exactly, timestamps
-// by instant, strings bytewise, false before true. Direction is not
-// applied.
-func CompareKeyValues(k CursorKey, a, b any) int {
-	switch {
-	case a == nil && b == nil:
-		return 0
-	case a == nil:
-		return 1
-	case b == nil:
-		return -1
+// CompareKeyValues orders two key values (KeyValue) of key k in the
+// keyset's order, its type's one order (core.CompareCanonical): NULL
+// greatest, numbers and decimals exactly, timestamps by instant, strings
+// by code point, false before true. Direction is not applied. Two values
+// k's type cannot compare are an error, never ordered by their text.
+func CompareKeyValues(k CursorKey, a, b any) (int, error) {
+	c, err := core.CompareCanonical(k.valueType(), a, b)
+	if err != nil {
+		return 0, fmt.Errorf("comparing values of key %q: %w", k.Name, err)
 	}
-	if k.DataType == core.FieldTypeDecimal {
-		if c, ok := core.CompareDecimals(a, b); ok {
-			return c
-		}
+	return c, nil
+}
+
+// numberPath reports an int or float path key, whose values are its
+// members' canonical decimal text (KeyValue).
+func (k CursorKey) numberPath() bool {
+	return k.Path != nil && (k.DataType == core.FieldTypeInt || k.DataType == core.FieldTypeFloat)
+}
+
+// valueType is the type k's values (KeyValue) are of: a path's member's
+// (memberType), a decimal for a number path, otherwise k's own.
+func (k CursorKey) valueType() core.TypeInfo {
+	if k.Path != nil {
+		return memberType(k.DataType)
 	}
-	if c, ok := core.CompareNumbers(a, b); ok {
-		return c
-	}
-	as, aok := a.(string)
-	bs, bok := b.(string)
-	if aok && bok {
-		if k.DataType == core.FieldTypeTimestamp {
-			at, aerr := time.Parse(time.RFC3339Nano, as)
-			bt, berr := time.Parse(time.RFC3339Nano, bs)
-			if aerr == nil && berr == nil {
-				return at.Compare(bt)
-			}
-		}
-		return strings.Compare(as, bs)
-	}
-	ab, aok := a.(bool)
-	bb, bok := b.(bool)
-	if aok && bok {
-		switch {
-		case ab == bb:
-			return 0
-		case !ab:
-			return -1
-		}
-		return 1
-	}
-	return strings.Compare(fmt.Sprint(a), fmt.Sprint(b))
+	info := core.TypeInfo{Type: k.DataType, NumberKind: k.NumberKind}
+	return info
 }
 
 // effectiveDirection is the direction a key is walked in: flipped for a
@@ -333,17 +300,36 @@ func keyDecimal(d Dialect, k CursorKey) DecimalOperand {
 	return DecimalColumn(k.sql(d))
 }
 
-// keyExpr is a key's ordering expression: text keys — strings, and a path's
-// timestamp and UUID members — order by code point, as filters and the
-// memory backend compare; decimals order through Dialect.DecimalOrder.
+// keyExpr is a key's ordering expression: text keys (codePointKey) order
+// by code point, as filters and the memory backend compare; decimals order
+// through Dialect.DecimalOrder.
 func keyExpr(d Dialect, k CursorKey) string {
 	switch {
-	case k.DataType == core.FieldTypeString || (k.Path != nil && (k.DataType == core.FieldTypeTimestamp || k.DataType == core.FieldTypeUUID)):
+	case codePointKey(k):
 		return d.CodePointOrder(keyValue(d, k))
 	case k.DataType == core.FieldTypeDecimal:
 		return d.DecimalOrder(keyDecimal(d, k))
 	}
 	return keyValue(d, k)
+}
+
+// bareColumn reports whether k's seek element is its column itself, as an
+// index on the column holds it: not a mapper's or a computed column's Expr,
+// not a path, and not the column read through a function, such as a
+// decimal's order key or a date's reading. A text column is bare: the
+// dialect puts its code-point collation where the planner still seeks the
+// column (codePointPair).
+func bareColumn(d Dialect, k CursorKey) bool {
+	if k.Expr != "" || k.Path != nil {
+		return false
+	}
+	return codePointKey(k) || keyExpr(d, k) == k.sql(d)
+}
+
+// codePointKey reports whether k orders as text by code point: a string,
+// or a path's timestamp or UUID member, which a document holds as text.
+func codePointKey(k CursorKey) bool {
+	return k.DataType == core.FieldTypeString || (k.Path != nil && (k.DataType == core.FieldTypeTimestamp || k.DataType == core.FieldTypeUUID))
 }
 
 // OrderByKeys renders the ORDER BY clause that walks keys forwards, or
@@ -393,21 +379,36 @@ func SeekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 	return seekPredicate(d, keys, token, bind), nil
 }
 
-// seekPredicate renders "rows strictly after the token" in the walk order:
-// the lexicographic expansion OR over depth i of (key_0 = v_0 AND … AND
+// seekPredicate renders "rows strictly after the token" in the walk order.
+// Keys that all walk one direction, none nullable and no value NULL, take a
+// row-value comparison, (key_0, …, key_n) > (v_0, …, v_n), which every
+// dialect has (SQLite from 3.15.0, below the release parse supports) and
+// which seeks an index on the keys to the cursor's row; led by a key that is
+// no bare column (bareColumn), it also bounds key_0 on its own. Others take
+// the lexicographic expansion, OR over depth i of (key_0 = v_0 AND … AND
 // key_i after v_i), NULL-aware. bind binds one value and returns its
 // placeholder; every non-null token value is bound once and its placeholder
-// reused across depths. A native row-value comparison is used when the
-// dialect supports it and no key or value involves NULL.
+// reused across depths. A boundary the database reads as NULL, a float's
+// NaN or a decimal's NaN or infinity on SQLite, is a NULL boundary
+// (readsAsNull); a number path's decimal text is read as the dialect
+// compares the member (pathNumberBound).
 func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any) string) string {
+	values := make([]any, len(keys))
 	phs := make([]string, len(keys))
-	native := d.NativeRowCompare() && len(keys) > 1
+	native := len(keys) > 1
 	for i, k := range keys {
 		v := token.Fields[i].Value
+		if d.readsAsNull(k.DataType, v) {
+			v = nil
+		}
+		values[i] = v
 		if v != nil {
 			phs[i] = bind(v)
-			if k.DataType == core.FieldTypeDecimal {
+			switch {
+			case k.DataType == core.FieldTypeDecimal:
 				phs[i] = d.DecimalOrder(DecimalParam(phs[i]))
+			case k.numberPath():
+				phs[i] = d.pathNumberBound(phs[i])
 			}
 		}
 		if k.Nullable || v == nil || effectiveDirection(k, token.Reverse) != effectiveDirection(keys[0], token.Reverse) {
@@ -417,24 +418,40 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 	if native {
 		exprs := make([]string, len(keys))
 		for i, k := range keys {
+			// Only a bare column is left for the dialect to place the
+			// collation: an expression may carry its own, which on SQLite
+			// outranks the operand's.
+			if codePointKey(k) && bareColumn(d, k) {
+				exprs[i], phs[i] = d.codePointPair(keyValue(d, k), phs[i])
+				continue
+			}
 			exprs[i] = keyExpr(d, k)
 		}
 		op := ">"
 		if effectiveDirection(keys[0], token.Reverse) == SortDesc {
 			op = "<"
 		}
-		return "(" + strings.Join(exprs, ", ") + ") " + op + " (" + strings.Join(phs, ", ") + ")"
+		seek := "(" + strings.Join(exprs, ", ") + ") " + op + " (" + strings.Join(phs, ", ") + ")"
+		if bareColumn(d, keys[0]) {
+			return seek
+		}
+		// SQLite seeks a row value's index only from a bare leading column;
+		// led by an expression, such as a decimal's parse_decimal_key, the
+		// comparison scans the index, and so does the OR expansion over
+		// three keys or more. The row value implies the bound, which an
+		// index on the expression seeks on every dialect.
+		return "(" + exprs[0] + " " + op + "= " + phs[0] + " AND " + seek + ")"
 	}
 
 	var branches []string
 	for i, k := range keys {
-		after := afterExpr(keyExpr(d, k), k.Nullable, token.Fields[i].Value, phs[i], effectiveDirection(k, token.Reverse))
+		after := afterExpr(keyExpr(d, k), k.Nullable, values[i], phs[i], effectiveDirection(k, token.Reverse))
 		if after == "" {
 			continue // nothing orders after a NULL boundary on this key
 		}
 		parts := make([]string, 0, i+1)
 		for j := range i {
-			if token.Fields[j].Value == nil {
+			if values[j] == nil {
 				parts = append(parts, keyValue(d, keys[j])+" IS NULL")
 			} else {
 				parts = append(parts, keyExpr(d, keys[j])+" = "+phs[j])
@@ -448,6 +465,27 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 	}
 	return "(" + strings.Join(branches, " OR ") + ")"
 }
+
+// readsAsNull reports false: float8 and numeric hold NaN and the
+// infinities, NaN after +Infinity and equal to NaN.
+func (PostgresDialect) readsAsNull(core.FieldType, any) bool { return false }
+
+// readsAsNull reports a float's NaN, which SQLite stores as NULL, and a
+// decimal key's NaN or infinity: a decimal column holds a number literal,
+// and parse_decimal reads any other text as NULL.
+func (SQLiteDialect) readsAsNull(t core.FieldType, v any) bool {
+	f, isFloat := v.(float64)
+	return (isFloat && math.IsNaN(f)) || (t == core.FieldTypeDecimal && core.NonFinite(t, v))
+}
+
+// pathNumberBound reads the bound through DecimalOrder: a number member
+// orders as numeric, exactly.
+func (d PostgresDialect) pathNumberBound(ph string) string { return d.DecimalOrder(DecimalParam(ph)) }
+
+// pathNumberBound casts the bound AS NUMERIC: an INTEGER where its text is
+// one within 64 bits, otherwise the REAL nearest it, as json_extract reads
+// a number member.
+func (SQLiteDialect) pathNumberBound(ph string) string { return "CAST(" + ph + " AS NUMERIC)" }
 
 // afterExpr is "expr orders strictly after v" in direction dir, with NULL
 // greatest; "" means no value orders after v.
@@ -484,36 +522,14 @@ func ValidateCursor(token *PageToken, keys []CursorKey) error {
 		}
 	}
 	if mismatch {
-		return &core.ParseError{
-			Kind:    core.ParseErrorKindSchema,
-			Code:    ECodeInvalidCursor.String(),
-			Message: "cursor does not match the active sort",
-		}
+		return core.NewError(ECodeInvalidCursor, "cursor does not match the active sort")
 	}
 	values := make([]any, len(keys))
 	for i, k := range keys {
-		v, err := CursorValue(token.Fields[i].Value)
-		if err == nil {
-			if v == nil {
-				if !k.Nullable {
-					err = errors.New("null is not allowed")
-				}
-			} else if k.Path != nil && (k.DataType == core.FieldTypeInt || k.DataType == core.FieldTypeFloat) {
-				v, err = pathNumber(v)
-			} else {
-				v, err = core.NormalizeScalar(k.DataType, k.NumberKind, v)
-			}
-		}
-		if s, ok := v.(string); ok && err == nil {
-			err = core.CheckText(s)
-		}
+		v, err := cursorKeyValue(k, token.Fields[i].Value)
 		if err != nil {
-			return &core.ParseError{
-				Kind:    core.ParseErrorKindSchema,
-				Code:    ECodeInvalidCursor.String(),
-				Message: fmt.Sprintf("invalid cursor value for field %q", k.Name),
-				Cause:   err,
-			}
+			return core.NewError(ECodeInvalidCursor, fmt.Sprintf("invalid cursor value for field %q", k.Name),
+				core.WithCause(err))
 		}
 		values[i] = v
 	}
@@ -521,6 +537,38 @@ func ValidateCursor(token *PageToken, keys []CursorKey) error {
 		token.Fields[i].Value = v
 	}
 	return nil
+}
+
+// cursorKeyValue is a token's value for key k, normalized as a value k's
+// column holds (core.NormalizeStored): a float column's NaN or infinity,
+// on which a page may end, is kept.
+func cursorKeyValue(k CursorKey, raw any) (any, error) {
+	v, err := CursorValue(raw)
+	switch {
+	case err != nil:
+		return nil, err
+	case v == nil:
+		if !k.Nullable {
+			return nil, errors.New("null is not allowed")
+		}
+		return nil, nil
+	case k.numberPath():
+		// An earlier release's token carries an int64 or float64: it resumes.
+		return core.NormalizeScalar(core.FieldTypeDecimal, reflect.Invalid, v)
+	}
+	v, err = core.NormalizeStored(k.DataType, k.NumberKind, v)
+	if err != nil {
+		return nil, err
+	}
+	text, isText := v.(string)
+	if !isText {
+		return v, nil
+	}
+	err = core.CheckText(text)
+	if err != nil {
+		return nil, err
+	}
+	return text, nil
 }
 
 // --- Tokens ---
@@ -553,7 +601,14 @@ type PageToken struct {
 // lacks decodes as the zero value. Adding, removing or retyping a member of
 // either is therefore a format change and takes a new generation. Without
 // one, during a rolling deploy a replica on the older release refuses the
-// newer release's cursors as malformed, or misreads them.
+// newer release's cursors as malformed, or misreads them. A member's value
+// an older release refuses changes no member: that release answers the
+// token with E2082 and the client starts again, as it would from a
+// generation the release does not read, while every other token still
+// resumes. A float key's NaN or infinity, which a release that predates
+// carrying them refuses to decode, is "invalid cursor data"; a number
+// path's decimal text, which a release that predates it refuses for the
+// key, is "invalid cursor value for field".
 const cursorGeneration uint32 = 3
 
 // maxCursorLen bounds a cursor both ways: DecodeCursor rejects a longer
@@ -577,11 +632,7 @@ func EncodeCursor(token *PageToken) (string, error) {
 		for i, f := range token.Fields {
 			names[i] = f.Name
 		}
-		return "", &core.ParseError{
-			Kind:    core.ParseErrorKindSort,
-			Code:    ECodeCursorTooLarge.String(),
-			Message: fmt.Sprintf("the sort values at this page boundary (%s) encode to a %d-byte cursor, over the %d-byte limit; sort by a shorter field", strings.Join(names, ", "), len(cur), maxCursorLen),
-		}
+		return "", core.NewError(ECodeCursorTooLarge, fmt.Sprintf("the sort values at this page boundary (%s) encode to a %d-byte cursor, over the %d-byte limit; sort by a shorter field", strings.Join(names, ", "), len(cur), maxCursorLen))
 	}
 	return cur, nil
 }
@@ -591,10 +642,7 @@ func EncodeCursor(token *PageToken) (string, error) {
 // rejected as malformed.
 func DecodeCursor(encoded string) (*PageToken, error) {
 	invalid := func(msg string, cause error) error {
-		return &core.ParseError{
-			Kind: core.ParseErrorKindSchema, Code: ECodeInvalidCursor.String(),
-			Message: msg, Cause: cause,
-		}
+		return core.NewError(ECodeInvalidCursor, msg, core.WithCause(cause))
 	}
 	if encoded == "" {
 		return nil, invalid("cursor is empty", nil)
