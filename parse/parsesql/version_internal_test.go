@@ -7,8 +7,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
 func TestCheckVersion(t *testing.T) {
@@ -44,11 +42,11 @@ func TestCheckVersion(t *testing.T) {
 	}
 }
 
-// TestOpen_RefusesAnOlderSQLite opens the provider over the bundled SQLite
+// TestNew_RefusesAnOlderSQLite opens the provider over the bundled SQLite
 // with the release it needs raised past the bundled one, so the bundled
 // library stands in for an older one.
-func TestOpen_RefusesAnOlderSQLite(t *testing.T) {
-	db := dbtest.SQLite(t)
+func TestNew_RefusesAnOlderSQLite(t *testing.T) {
+	db := MemoryDB(t)
 	var bundled string
 	require.NoError(t, db.QueryRowContext(t.Context(), "SELECT sqlite_version()").Scan(&bundled))
 
@@ -61,7 +59,7 @@ func TestOpen_RefusesAnOlderSQLite(t *testing.T) {
 		{name: "a later release", need: "99.0.0", refused: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := open(t.Context(), db, tt.need, nil)
+			p, err := newProvider(t.Context(), db, tt.need, nil)
 			if !tt.refused {
 				require.NoError(t, err)
 				assert.Equal(t, Name, p.Name())
@@ -78,6 +76,6 @@ func TestOpen_RefusesAnOlderSQLite(t *testing.T) {
 func TestNew_RefusesItsArguments(t *testing.T) {
 	_, err := New(t.Context(), nil)
 	require.ErrorContains(t, err, "parsesql: nil database")
-	_, err = New(t.Context(), dbtest.SQLite(t), SettleTimeout(0))
+	_, err = New(t.Context(), MemoryDB(t), SettleTimeout(0))
 	require.ErrorContains(t, err, "parsesql: settle timeout 0s: must be positive")
 }

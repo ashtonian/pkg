@@ -1,7 +1,7 @@
 // Package geo is the geometry parse evaluates geo filters with where
 // PostGIS does not: the WGS 84 geodesic distance PostGIS measures geography
 // with, and the planar point-in-polygon test it applies to geometry in
-// SRID 4326. filter.Evaluate calls it directly; parsesqlite registers it as
+// SRID 4326. filter.Evaluate calls it directly; parsesql registers it as
 // SQLite functions under the names below, which filter.SQLiteDialect calls.
 package geo
 

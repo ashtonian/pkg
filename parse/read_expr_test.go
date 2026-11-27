@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"context"
 	"net/url"
 	"strings"
 	"testing"
@@ -15,7 +14,6 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
@@ -361,36 +359,6 @@ func TestReadExpr_RelationCycles(t *testing.T) {
 	}
 }
 
-// The relation's includes and facets compile its target's policy for the
-// owner's dialect too. They read the target under an alias, so a policy on
-// a computed column fails the build instead of reading a stored column the
-// table lacks.
-func TestReadExpr_RelationIncludesCompileTheTargetsPolicy(t *testing.T) {
-	scope := parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
-		"accounts": {Constraints: []*filter.PolicyConstraint{{Field: "member_count", Operator: filter.OpGte, Value: 1}}},
-	}}
-	provider, db := providertest.SQLite(t)
-	dbtest.Exec(t, db, parsetest.ComputedAccountFixture()...)
-	_, accounts, tenants, _ := parsetest.NewComputedResources(provider)
-	req, err := tenants.ParseList(url.Values{filter.ParamInclude: {"shared_accounts"}})
-	require.NoError(t, err)
-	plan, err := tenants.BuildList(req, scope)
-	require.NoError(t, err)
-	_, err = tenants.IncludeQueries(plan, []parse.Key{{"t1"}})
-	require.ErrorContains(t, err, "field member_count is not a column of accounts and cannot be filtered through a relation")
-
-	// A membership change holds its pairs to the targets the same policy
-	// admits, once the owner statement has returned the group, and so
-	// writes nothing.
-	groups := parsetest.NewAccessGroups(provider)
-	groups.MustRelate("accounts", parse.ManyToMany(accounts, parse.Through("account_groups", "group_id", "account_id"), parse.Writable(), parse.PolicyScoped()))
-	p, err := groups.ParseMergePatch([]byte(`{"accounts":[1]}`))
-	require.NoError(t, err)
-	_, err = groups.Update(t.Context(), p, parse.ByID(20), scope)
-	require.ErrorContains(t, err, "field member_count is not a column of accounts and cannot be filtered through a relation")
-	assert.Equal(t, []string{"1:10", "1:20", "2:20", "3:30"}, dbtest.QueryRows[string](t, db, `SELECT account_id || ':' || group_id FROM account_groups ORDER BY 1`))
-}
-
 // pageSQL is the page statement r builds for filterJSON.
 func pageSQL[T any](t *testing.T, r *parse.Resource[T], filterJSON string, scope parse.Scope) string {
 	t.Helper()
@@ -426,36 +394,6 @@ func TestReadExpr_UpdatesNeitherStampNorIncrementComputedColumns(t *testing.T) {
 			}
 		})
 	}
-}
-
-// An update reads its owners again only when its relation statements may
-// have changed what a computed column reads: after them, in its
-// transaction, held to the update's tenant.
-func TestReadExpr_UpdateRereadsAfterRelationChanges(t *testing.T) {
-	db := dbtest.SQLiteHooked(t)
-	provider := providertest.SQLiteOn(t, db)
-	dbtest.Exec(t, db, parsetest.ComputedAccountFixture()...)
-	_, accounts, _, _ := parsetest.NewComputedResources(provider)
-	scope := parse.Scope{Tenant: "t1"}
-	var statements []string
-	ctx := dbtest.OnStatement(t.Context(), func(_ context.Context, query string) { statements = append(statements, query) })
-	reread := "SELECT " + strings.Join(accounts.Columns(), ", ") + ` FROM "accounts" WHERE `
-
-	_, err := accounts.Update(ctx, computedPatch(t, accounts, `{"name":"x"}`), parse.ByID(1), scope)
-	require.NoError(t, err)
-	require.NotEmpty(t, statements)
-	for _, query := range statements {
-		assert.False(t, strings.HasPrefix(query, reread), "no relation statements: Owner's rows are current: %s", query)
-	}
-
-	statements = nil
-	res, err := accounts.Update(ctx, computedPatch(t, accounts, `{"groups":[30]}`), parse.ByID(1), scope)
-	require.NoError(t, err)
-	last := statements[len(statements)-1]
-	assert.True(t, strings.HasPrefix(last, reread), "the reread follows the relation statements: %s", last)
-	assert.Contains(t, last, `"accounts"."tenant_id" = `)
-	require.Len(t, res.Unchanged, 1)
-	assert.Equal(t, []int64{30}, res.Unchanged[0].GroupIDs, "the pairs the relation statements left")
 }
 
 // A server policy names a computed column requests cannot filter by — a

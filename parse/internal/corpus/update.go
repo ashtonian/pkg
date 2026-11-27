@@ -4,6 +4,7 @@ package corpus
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,8 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"uuid"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -133,10 +134,12 @@ func runMemberUpdates(t *testing.T, b sqlBackend) {
 		target  parse.Target
 		failing int // the index in rows of the target row the patch fails on
 		unmet   int
+		path    string
 	}{
-		{"the operation a row fails is the update's error", `[{"op":"replace","path":"/attrs/color","value":"x"},{"op":"remove","path":"/attrs/zz"}]`, parse.ByID(int64(1)), 0, 1},
-		{"one target row of two fails, and neither is written", `[{"op":"remove","path":"/attrs/old"}]`, parse.ByIDs(int64(1), int64(2)), 1, 0},
-		{"an add below a member that is not an object", `[{"op":"add","path":"/attrs/color/x","value":1}]`, parse.ByID(int64(2)), 1, 0},
+		{"the operation a row fails is the update's error", `[{"op":"replace","path":"/attrs/color","value":"x"},{"op":"remove","path":"/attrs/zz"}]`, parse.ByID(int64(1)), 0, 1, "/attrs/zz"},
+		{"a replace of a member the row lacks", `[{"op":"replace","path":"/attrs/size","value":"red"}]`, parse.ByID(int64(2)), 1, 0, "/attrs/size"},
+		{"one target row of two fails, and neither is written", `[{"op":"remove","path":"/attrs/old"}]`, parse.ByIDs(int64(1), int64(2)), 1, 0, "/attrs/old"},
+		{"an add below a member that is not an object", `[{"op":"add","path":"/attrs/color/x","value":1}]`, parse.ByID(int64(2)), 1, 0, "/attrs/color/x"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := setup(t)
@@ -148,6 +151,7 @@ func runMemberUpdates(t *testing.T, b sqlBackend) {
 			assert.Equal(t, core.CodePatchValueInvalid.String(), pe.Code)
 			require.NotNil(t, pe.Index)
 			assert.Equal(t, tc.unmet, *pe.Index)
+			assert.Equal(t, tc.path, pe.Path)
 			assert.JSONEq(t, jsonOf(t, rows), jsonOf(t, stored(t, r)), "no row is written")
 
 			_, err = r.ApplyValidatedPatch(parsed, rows[tc.failing])
@@ -703,7 +707,7 @@ func buildUpdateAnEmptyPatchIsAScopedRead(t *testing.T, engine Engine) {
 // update's transaction ends, so a second writer waits for them. PostgreSQL
 // alone locks rows: SQLite's write transactions serialize.
 func buildUpdateRelationChangeLocksItsOwners(t *testing.T, engine Engine) {
-	b := sqlBackendOf(Postgres)
+	b := sqlBackendOf(engine)
 	provider, db := loadGadgets(t, b)
 	r := parsetest.Gadgets(t, provider)
 	ctx := t.Context()
@@ -728,9 +732,9 @@ func buildUpdateRelationChangeLocksItsOwners(t *testing.T, engine Engine) {
 	_, err = other.ExecContext(ctx, `SET LOCAL lock_timeout = '200ms'`)
 	require.NoError(t, err)
 	_, err = other.ExecContext(ctx, plan.Owner.SQL, plan.Owner.Args...)
-	var pgErr *pgconn.PgError
+	var pgErr sqlStateError
 	require.ErrorAs(t, err, &pgErr, "a second writer waits for the owner rows")
-	assert.Equal(t, "55P03", pgErr.Code, "lock_not_available")
+	assert.Equal(t, "55P03", pgErr.SQLState(), "lock_not_available")
 	require.NoError(t, other.Rollback())
 
 	res, err := scoped.Update(ctx, p, parse.ByID("g1"), parse.Scope{Tenant: "t1"})
@@ -975,5 +979,211 @@ func skipUnchangedRelations(t *testing.T, engine Engine) {
 			assert.Empty(t, res.Changed)
 			assert.Equal(t, []string{"n1"}, sortedIDs(res.Unchanged, noteID))
 		})
+	})
+}
+
+type uuidRow struct {
+	ID   uuid.UUID `db:"id"`
+	Name string    `json:"name" db:"name" parse:"patch"`
+}
+
+// A batch's keys are canonical: a UUID key names its row as the column
+// holds it, one that names no row is a missing target, and two spellings of
+// one key are one key given twice.
+func updateBatchCanonicalKeys(t *testing.T, engine Engine) {
+	runOn(t, engine, func(t *testing.T, b sqlBackend) {
+		id := uuid.MustParse("018c018c-0123-7123-8123-0123456789ab")
+		provider, db := b.open(t)
+		b.load(t, db, sqlTable{name: "uuid_rows", key: []string{"id"}, columns: []sqlColumn{column[uuid.UUID]("id"), column[string]("name").required()}},
+			[][]any{{id, "old"}})
+		r, err := parse.NewResource[uuidRow](provider, "uuid_rows")
+		require.NoError(t, err)
+		p, err := r.ParseMergePatch([]byte(`{"name":"new"}`))
+		require.NoError(t, err)
+		res, err := r.UpdateBatch(t.Context(), []parse.RowUpdate{{Key: parse.Key{id}, Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
+		require.NoError(t, err)
+		assert.Equal(t, []uuidRow{{ID: id, Name: "new"}}, res.Changed)
+		_, err = r.UpdateBatch(t.Context(), []parse.RowUpdate{{Key: parse.Key{uuid.MustParse("018c018c-0123-7123-8123-0123456789ac")}, Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
+		require.ErrorIs(t, err, parse.ErrUpdateBatchTargets)
+		_, err = r.BuildUpdateBatch([]parse.RowUpdate{{Key: parse.Key{id}, Patch: p}, {Key: parse.Key{strings.ToUpper(id.String())}, Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
+		require.Error(t, err)
+	})
+}
+
+type batchDevice struct {
+	ID       string `json:"id"        db:"id"        parse:"filter"`
+	TenantID int64  `json:"tenant_id" db:"tenant_id"`
+	Name     string `json:"name"      db:"name"      parse:"filter,patch"`
+}
+
+// A batch target that is not there is the server's error: it matches
+// ErrUpdateBatchTargets, names the resource once after parse's prefix, and
+// is no request error.
+func updateBatchMissingTargetNamesItsResourceOnce(t *testing.T, engine Engine) {
+	runOn(t, engine, func(t *testing.T, b sqlBackend) {
+		p, db := b.open(t)
+		dbtest.Exec(t, db, `CREATE TABLE devices (id TEXT PRIMARY KEY, tenant_id BIGINT NOT NULL, name TEXT NOT NULL)`)
+		devices := parse.MustResource[batchDevice](p, "devices", parse.TenantColumn("tenant_id"))
+		rename, err := devices.ParseMergePatch([]byte(`{"name":"x"}`))
+		require.NoError(t, err)
+		_, err = devices.UpdateBatch(t.Context(), []parse.RowUpdate{{Key: parse.Key{"a"}, Patch: rename}}, parse.Scope{Tenant: "1"}, parse.UpdateBatchLimits{})
+		require.ErrorIs(t, err, parse.ErrUpdateBatchTargets)
+		msg := err.Error()
+		assert.True(t, strings.HasPrefix(msg, "parse: devices: "), msg)
+		assert.Equal(t, 1, strings.Count(msg, "parse:"), msg)
+		assert.Equal(t, 1, strings.Count(msg, "devices"), msg)
+		assert.NotContains(t, parse.ErrUpdateBatchTargets.Error(), "parse:")
+		_, isParseError := errors.AsType[*core.ParseError](err)
+		assert.False(t, isParseError, "the server's mistake, never the request's")
+	})
+}
+
+type pointerKeyed struct {
+	ID   *string `json:"id"   db:"id"   parse:"filter"`
+	Name string  `json:"name" db:"name" parse:"filter,patch"`
+}
+
+// optionalCode is a key codec that writes NULL for its zero value.
+type optionalCode string
+
+func (c optionalCode) Value() (driver.Value, error) {
+	if c == "" {
+		return nil, nil
+	}
+	return string(c), nil
+}
+
+func (c *optionalCode) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		*c = ""
+	case string:
+		*c = optionalCode(v)
+	default:
+		return fmt.Errorf("optionalCode: %T", src)
+	}
+	return nil
+}
+
+type valuerKeyed struct {
+	ID   optionalCode `json:"id"   db:"id"   parse:"filter"`
+	Name string       `json:"name" db:"name" parse:"filter,patch"`
+}
+
+// keyedTable holds rows a and b, both named new, on a fresh database of b.
+// Its id column is no primary key, so it can hold NULL.
+func keyedTable(t *testing.T, b sqlBackend) (*parse.Provider, *sql.DB) {
+	t.Helper()
+	p, db := b.open(t)
+	dbtest.Exec(t, db, `CREATE TABLE keyed (id TEXT UNIQUE, name TEXT NOT NULL)`,
+		`INSERT INTO keyed VALUES ('a', 'old'), ('b', 'new')`)
+	return p, db
+}
+
+// renameSkipping applies {"name":"new"} to target under SkipUnchanged.
+func renameSkipping[T any](t *testing.T, r *parse.Resource[T], target func(*parse.Resource[T]) parse.Target) (parse.UpdateResult[T], error) {
+	t.Helper()
+	rename, err := r.ParseMergePatch([]byte(`{"name":"new"}`))
+	require.NoError(t, err)
+	return r.Update(t.Context(), rename, target(r), parse.Scope{}, parse.SkipUnchanged())
+}
+
+func byName[T any](t *testing.T) func(*parse.Resource[T]) parse.Target {
+	return func(r *parse.Resource[T]) parse.Target {
+		f, err := r.ParseFilterMap(map[string]any{"name": "new"})
+		require.NoError(t, err)
+		return parse.ByFilter(f)
+	}
+}
+
+// An update under SkipUnchanged splits the rows it read by their keys'
+// values: rows scanned apart hold distinct pointers to one key, and a key
+// column the database holds as NULL, as a nil pointer or a Valuer that
+// writes nil, is a row without a key.
+func skipUnchangedRowKeys(t *testing.T, engine Engine) {
+	runOn(t, engine, func(t *testing.T, b sqlBackend) {
+		t.Run("pointer keys compare by value", func(t *testing.T) {
+			p, db := keyedTable(t, b)
+			r, err := parse.NewResource[pointerKeyed](p, "keyed")
+			require.NoError(t, err)
+			res, err := renameSkipping(t, r, func(*parse.Resource[pointerKeyed]) parse.Target { return parse.ByIDs("a", "b") })
+			require.NoError(t, err)
+			require.Len(t, res.Changed, 1)
+			assert.Equal(t, "a", *res.Changed[0].ID)
+			require.Len(t, res.Unchanged, 1)
+			assert.Equal(t, "b", *res.Unchanged[0].ID)
+
+			dbtest.Exec(t, db, `INSERT INTO keyed VALUES (NULL, 'new')`)
+			_, err = renameSkipping(t, r, byName[pointerKeyed](t))
+			assert.ErrorContains(t, err, "has no key")
+		})
+		t.Run("a row whose key is NULL is refused", func(t *testing.T) {
+			p, db := keyedTable(t, b)
+			r, err := parse.NewResource[valuerKeyed](p, "keyed")
+			require.NoError(t, err)
+			res, err := renameSkipping(t, r, func(*parse.Resource[valuerKeyed]) parse.Target { return parse.ByIDs("a", "b") })
+			require.NoError(t, err)
+			assert.Equal(t, []valuerKeyed{{ID: "a", Name: "new"}}, res.Changed)
+			assert.Equal(t, []valuerKeyed{{ID: "b", Name: "new"}}, res.Unchanged)
+
+			dbtest.Exec(t, db, `INSERT INTO keyed VALUES (NULL, 'new')`)
+			_, err = renameSkipping(t, r, byName[valuerKeyed](t))
+			require.ErrorContains(t, err, "keyed: a row has no key: key column id holds no value")
+		})
+	})
+}
+
+type clockType struct {
+	ID        string    `json:"id"         db:"id"         parse:"filter,sort"`
+	CreatedAt time.Time `json:"created_at" db:"created_at" parse:"filter"`
+}
+
+type clockItem struct {
+	ID        string    `json:"id"         db:"id"         parse:"filter,sort"`
+	Name      string    `json:"name"       db:"name"       parse:"filter,patch"`
+	CreatedAt time.Time `json:"created_at" db:"created_at" parse:"filter"`
+}
+
+// An update reads its resource's clock once: its membership change admits
+// the related rows the target's policy admits at the plan's instant, not at
+// a later reading.
+func updateClockMembershipAtThePlansInstant(t *testing.T, engine Engine) {
+	runOn(t, engine, func(t *testing.T, b sqlBackend) {
+		at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		stepping := func() time.Time {
+			at = at.Add(time.Hour)
+			return at
+		}
+		p, db := b.open(t)
+		types := parse.MustResource[clockType](p, "clock_types")
+		items, err := parse.NewResource[clockItem](p, "clock_items", parse.ParserOptions(core.WithClock(stepping)))
+		require.NoError(t, err)
+		items.MustRelate("shared_types", parse.ManyToMany(types, parse.Through("clock_item_types", "item_id", "type_id"), parse.PolicyScoped(), parse.Writable()))
+		scope := parse.Scope{
+			Policy: &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: "created_at", Operator: filter.OpLt, Value: "now+1h"}}},
+			Related: map[string]*filter.PolicyConstraints{
+				"clock_types": {Constraints: []*filter.PolicyConstraint{{Field: "created_at", Operator: filter.OpLt, Value: "now+2h"}}},
+			},
+		}
+		parsed, err := items.ParseMergePatch([]byte(`{"name":"x","shared_types":["k0","k1"]}`))
+		require.NoError(t, err)
+		// The update's plan takes the clock's next reading. k0 is visible at
+		// that instant (created before now+2h); k1 only at a later reading.
+		instant := at.Add(time.Hour)
+		b.load(t, db, sqlTable{name: "clock_items", key: []string{"id"}, columns: []sqlColumn{
+			column[string]("id"), column[string]("name").required(), column[time.Time]("created_at").required(),
+		}}, [][]any{{"i1", "old", instant.Add(-time.Hour)}})
+		b.load(t, db, sqlTable{name: "clock_types", key: []string{"id"}, columns: []sqlColumn{column[string]("id"), column[time.Time]("created_at").required()}},
+			[][]any{{"k0", instant.Add(time.Hour)}, {"k1", instant.Add(150 * time.Minute)}})
+		b.create(t, db, sqlTable{name: "clock_item_types", key: []string{"item_id", "type_id"}, columns: []sqlColumn{
+			column[string]("item_id").required(), column[string]("type_id").required(),
+		}})
+
+		res, err := items.Update(t.Context(), parsed, parse.ByID("i1"), scope)
+		require.NoError(t, err)
+		assert.Equal(t, instant, at, "the update read the clock once")
+		assert.Equal(t, int64(1), res.RelationRows)
+		assert.Equal(t, []string{"i1:k0"}, dbtest.QueryRows[string](t, db, `SELECT item_id || ':' || type_id FROM clock_item_types ORDER BY 1`),
+			"a membership change admits the related rows at the plan's instant")
 	})
 }

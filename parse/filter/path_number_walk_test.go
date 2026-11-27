@@ -12,41 +12,16 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 )
-
-// SQLite reads a number member as the INTEGER or REAL json_extract
-// returns, so members one float64 apart tie and break on the id: the
-// walk resumes at each boundary in that order.
-func TestPathNumberWalk_SQLite(t *testing.T) {
-	runPathNumberWalks(t, sqliteMeasures(t), sqliteMeasureOrder())
-}
-
-// SQLite agrees with Evaluate on which members are numbers, and on every
-// comparison the REAL json_extract reads decides as the exact value does.
-func TestPathNumberFilters_SQLite(t *testing.T) {
-	runPathNumberFilters(t, sqliteMeasures(t), []string{
-		`{"n":{"$null":true}}`, `{"n":{"$null":false}}`, `{"n":{"$gt":0.5}}`, `{"n":{"$lt":0.5}}`,
-		`{"n":{"$gte":1e300}}`, `{"n":{"$lte":-1e300}}`, `{"ns":{"$some":{"$gt":0.5}}}`, `{"ns":{"$null":true}}`,
-	})
-}
-
-func TestPathNumberFacets_SQLite(t *testing.T) {
-	runPathNumberFacets(t, sqliteMeasures(t))
-}
-
-func sqliteMeasures(t *testing.T) measureDB {
-	measures := measureDB{db: dbtest.SQLite(t), dialect: filter.SQLiteDialect{}, docType: "TEXT"}
-	return measures
-}
 
 // A memory backend orders a float path's members by the values its
 // cursor carries (KeyValue, CompareKeyValues): exactly, as PostgreSQL
 // orders them.
 func TestPathNumberKeyValues_OrderAsPostgres(t *testing.T) {
-	keys := filter.Keyset(&filter.SortResult{Fields: []filter.SortField{{Name: "n", Direction: filter.SortAsc, Schema: measureSorts("").Fields["n"]}}},
+	keys := filter.Keyset(&filter.SortResult{Fields: []filter.SortField{{Name: "n", Direction: filter.SortAsc, Schema: parsetest.MeasureSorts().Fields["n"]}}},
 		filter.CursorKey{Name: "id", Table: "measures", Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64})
-	seeds := measureSeeds()
+	seeds := parsetest.MeasureSeeds()
 	values := map[int64][]any{}
 	for _, seed := range seeds {
 		token, err := filter.CursorPlan{Keys: keys}.Token(false, func(column string) (any, error) {
@@ -72,5 +47,5 @@ func TestPathNumberKeyValues_OrderAsPostgres(t *testing.T) {
 		}
 		return 0
 	})
-	assert.Equal(t, postgresMeasureOrder(), ids)
+	assert.Equal(t, parsetest.PostgresMeasureOrder(), ids)
 }

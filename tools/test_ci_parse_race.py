@@ -5,8 +5,10 @@ call t.Parallel can fail under the race detector. Pull requests run parse's
 unit tests without race, then `make test-parse-race`: race over the files the
 concurrency build tag selects. The integration lane always runs under race.
 A unit-only file with concurrent tests and no concurrency tag would be raced
-only by the nightly run. The modules nested in parse (the client and the server
-example) are not part of that build: their own targets always run under race.
+only by the nightly run. parse's provider modules (PARSE_MODULES) run in those
+targets beside parse. The other modules nested in parse (the client and the
+server example) are not part of that build: their own targets always run under
+race.
 """
 from pathlib import Path
 import re
@@ -14,6 +16,7 @@ import subprocess
 import unittest
 
 import make_dry_run
+from test_ci_release_checks import make_list
 
 ROOT = Path(__file__).resolve().parents[1]
 RACE_LANE_TAG = "concurrency"
@@ -60,8 +63,10 @@ def nested_modules():
 
 
 def parse_test_files():
-    nested = nested_modules()
-    return [path for path in tracked("parse/*_test.go") if not any(path.is_relative_to(m) for m in nested)]
+    """The test files parse's targets build: parse's and its provider modules'."""
+    lane = {ROOT / module for module in make_list("PARSE_MODULES")}
+    apart = [m for m in nested_modules() if m not in lane]
+    return [path for path in tracked("parse/*_test.go") if not any(path.is_relative_to(m) for m in apart)]
 
 
 class ParseRaceLane(unittest.TestCase):
@@ -74,6 +79,7 @@ class ParseRaceLane(unittest.TestCase):
 
     def test_nested_modules_race_every_test(self):
         targets = {"parse/client": "test-parse-client", "parse/examples/server": "parse-example-check"}
+        targets |= {module: "test-parse-race-all" for module in make_list("PARSE_MODULES") if module != "parse"}
         nested = sorted(str(path.relative_to(ROOT)) for path in nested_modules())
         self.assertEqual(nested, sorted(targets), "name the target that tests each nested module")
         for module, target in targets.items():

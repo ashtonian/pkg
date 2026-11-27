@@ -8,7 +8,7 @@ parse validates requests, compiles them under the server's scope, and runs them 
 
 | Existing application | Use |
 |---|---|
-| A list or update endpoint | A provider (`parseprovider.Open`), `parse.NewResource[T](provider, table)`, `List`, `Update` |
+| A list or update endpoint | A provider (`parsesql.Open` or `parsepgx.Open`, or `parseprovider.Open` to choose one by configuration), `parse.NewResource[T](provider, table)`, `List`, `Update` |
 | A typed repository with its own statements | `Resource.Query` with `Columns`, or `ListQuery` / `ListPlan.Fragment` to compose the request into its SQL |
 | Writes of its own that must commit with parse's | `Provider.Begin`, or its own transaction through `parsesql.Tx` / `parsepgx.Tx`, then `Resource.In` ([Transactions](#transactions)) |
 | An existing SELECT or UPDATE builder | `filter.NewSQLBuilder` and placeholder offsets |
@@ -19,10 +19,13 @@ parse validates requests, compiles them under the server's scope, and runs them 
 
 ## Providers
 
-A provider is the database every resource built on it runs on: SQLite or PostgreSQL, one API on either, chosen once at startup. They are alternatives for different runtime requirements — an embedded file or in-memory database, or a server — never layered or run side by side, and nothing moves data between them. [`parseprovider`](../parseprovider/README.md) opens the one a configuration names (`provider`, `dsn`, connection limits, the settle timeout), so the same binary runs on either:
+A provider is the database every resource built on it runs on: SQLite or PostgreSQL, one API on either, chosen once at startup. They are alternatives for different runtime requirements — an embedded file or in-memory database, or a server — never layered or run side by side, and nothing moves data between them. Each provider is a module of its own, released with parse at one version, that owns its settings and how it opens: [`parsesql`](../parsesql/README.md) (`parsesql.Config`, `parsesql.Open`) and [`parsepgx`](../parsepgx/README.md) (`parsepgx.Config`, `parsepgx.Open`). An application requires the module of each provider it runs on, so a binary carries only those drivers. One that runs on either, chosen by its configuration, links both and opens the one named through [`parseprovider`](../parseprovider/README.md):
 
 ```go
-db, err := parseprovider.Open(ctx, settings.DB) // settings loaded with github.com/ashtonian/pkg/config
+// settings loaded with github.com/ashtonian/pkg/config: the provider's name,
+// and each provider's own settings.
+db, err := parseprovider.Open(ctx, settings.DB.Provider,
+	parsesql.Choice(settings.DB.SQLite), parsepgx.Choice(settings.DB.Postgres))
 defer db.Close()
 devices, err := parse.NewResource[Device](db.Provider(), "devices", parse.TenantColumn("tenant_id"))
 ```
@@ -50,7 +53,7 @@ The plans' arguments are typed slices and scalars, so every pgx `QueryExecMode` 
 
 [`parsesql`](../parsesql/README.md) is the SQLite provider on a `*sql.DB` of `modernc.org/sqlite`. The [example server](../examples/server/) runs on it by default: its [handlers](../examples/server/server.go) demonstrate combined filters, list pages, schema discovery, facets, and merge patches, and its tests execute the requests against SQLite.
 
-SQLite has no row lock, so an update holds its targets only in a write transaction, and `database/sql` begins transactions in the mode the connection string names: `parseprovider` opens the database with `_txlock=immediate` and `_busy_timeout`, so a second writer waits for the first rather than failing with `SQLITE_BUSY`. A database opened by hand needs both (`sql.Open("sqlite", "./app.db?_txlock=immediate&_busy_timeout=5000")`), one connection for `:memory:`, which is a database per connection, and `parsesqlite.Register()` before it opens one: SQLite plans compare decimals, bound an int or float path's number members and decide geo filters through the functions it registers ([`parsesqlite`](../parsesqlite/README.md)).
+SQLite has no row lock, so an update holds its targets only in a write transaction, and `database/sql` begins transactions in the mode the connection string names: `parsesql.Open` opens the database with `_txlock=immediate` and `_busy_timeout`, so a second writer waits for the first rather than failing with `SQLITE_BUSY`. A database opened by hand needs both (`sql.Open("sqlite", "./app.db?_txlock=immediate&_busy_timeout=5000")`), one connection for `:memory:`, which is a database per connection, and `parsesql.Register()` before it opens one: SQLite plans compare decimals, bound an int or float path's number members and decide geo filters through the functions it registers ([`parsesql` functions](../parsesql/README.md#functions)).
 
 Each provider has its own capabilities as well as its own SQL. Read [backend semantics](queries.md#type-capabilities), especially search, case folding, and geo differences. A custom SQL expression must be appropriate for the provider's database.
 
@@ -125,7 +128,7 @@ q, err := client.ListParams{
 
 Patches are a struct of `client.Nullable` members with the `omitzero` option (a merge patch), or a `[]client.Operation` (a JSON Patch, which also adds and removes relation members). The client sends only what the grammar can express and leaves every other check to the server; its tests hold it to the same filter and patch corpora as the TypeScript SDK.
 
-The answers decode into the client's types, generic over the row type: `client.Page[Product]` for a list, `client.FacetsAnswer` for its facets, `client.PatchAnswer[Product]` for a patch of one row or a batch, `client.Schema` for the schema document. A refused request reads with `client.DecodeError(status, body)`, an `*client.Error` matched with `errors.As` whose code is an `errors.Is` target (`client.CodeUnknownField`). The client's tests decode every answer this package's handlers recorded (`testdata/sdk_wire.json`) and encode it back unchanged. The client README's [For generated SDKs](../client/README.md#for-generated-sdks) says what a generator emits per resource.
+The answers decode into the client's types, generic over the row type: `client.Page[Product]` for a list, `client.FacetsAnswer` for its facets, `client.PatchAnswer[Product]` for a patch of one row or a batch, `client.Schema` for the schema document. A refused request reads with `client.DecodeError(status, body)`, an `*client.Error` matched with `errors.As` whose code is an `errors.Is` target (`client.CodeUnknownField`). The client's tests decode every answer this package's handlers recorded on every engine (`testdata/sdk_wire.json`, regenerated with `go test -tags=integration -run 'TestCorpus/SDKWire' ./parsesql -update`) and encode it back unchanged. The client README's [For generated SDKs](../client/README.md#for-generated-sdks) says what a generator emits per resource.
 
 ## Custom schemas and SQL expressions
 

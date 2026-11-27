@@ -3,6 +3,7 @@ import { registerPlugin } from 'release-please';
 import { parseConventionalCommits } from 'release-please/build/src/commit.js';
 import { ROOT_PROJECT_PATH } from 'release-please/build/src/manifest.js';
 import { ManifestPlugin } from 'release-please/build/src/plugin.js';
+import { LinkedVersions } from 'release-please/build/src/plugins/linked-versions.js';
 import { CommitExclude } from 'release-please/build/src/util/commit-exclude.js';
 import { CommitSplit } from 'release-please/build/src/util/commit-split.js';
 import { messageProblems } from './commit-messages.mjs';
@@ -115,6 +116,43 @@ export class FirstParentPlugin extends ManifestPlugin {
   }
 }
 
+// FirstParentLinkedVersions is release-please's linked-versions plugin with
+// the group's version computed from the commits first-parent keeps in each
+// member, as each member's own release computes it. linked-versions computes
+// it from the raw commits in its preconfigure, before any processCommits, so a
+// breaking subject over a branch of fixes, or a branch commit whose change a
+// later one took back, would raise every member of the group past the
+// version first-parent gives any of them. It runs after first-parent's
+// preconfigure, which keys each path's commits for processCommits.
+export class FirstParentLinkedVersions extends LinkedVersions {
+  constructor(linked, firstParent) {
+    super(linked.github, linked.targetBranch, linked.repositoryConfig, linked.groupName, [...linked.components], {
+      merge: linked.merge,
+      logger: linked.logger,
+    });
+    this.firstParent = firstParent;
+  }
+
+  // linked-versions asks each strategy for its release pull request; each is
+  // handed a view of its strategy whose release reads first-parent's commits,
+  // and a strategy it leaves as it was comes back as itself.
+  async preconfigure(strategiesByPath, commitsByPath, releasesByPath) {
+    const strategyOf = new Map();
+    const views = {};
+    for (const [path, strategy] of Object.entries(strategiesByPath)) {
+      const view = Object.create(strategy, {
+        buildReleasePullRequest: {
+          value: (commits, ...rest) => strategy.buildReleasePullRequest(this.firstParent.processCommits(commits), ...rest),
+        },
+      });
+      strategyOf.set(view, strategy);
+      views[path] = view;
+    }
+    const configured = await super.preconfigure(views, commitsByPath, releasesByPath);
+    return Object.fromEntries(Object.entries(configured).map(([path, strategy]) => [path, strategyOf.get(strategy) ?? strategy]));
+  }
+}
+
 // processCommits is not told which path it handles, so types rank by one set
 // of changelog-sections, which every path must share.
 function sharedChangelogSections(repositoryConfig) {
@@ -163,7 +201,9 @@ const quiet = { error() {}, warn() {}, info() {}, debug() {}, trace() {} };
 // Trailers such as Co-authored-by parse as entries whose type is no word.
 const isConventional = entry => /^[a-z]+$/.test(entry.type);
 
-const listKey = commits => commits.map(commit => commit.sha).join(' ');
+// linked-versions appends a commit with no sha to a member it releases only to
+// keep the group's version (Release-As); the path's key leaves it out.
+const listKey = commits => commits.filter(commit => commit.sha !== '').map(commit => commit.sha).join(' ');
 
 // branchSummaries maps each merge to its non-merge branch commits, reverted
 // ones aside: their shas, the types release-please's parser gives them,

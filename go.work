@@ -13,6 +13,8 @@ use (
 	./gitx
 	./parse
 	./parse/client
+	./parse/parsepgx
+	./parse/parsesql
 	./config
 	./config/kongprovider
 	./httpx

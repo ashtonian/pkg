@@ -255,7 +255,7 @@ func TestGeoSQL_Postgres_WithinPolygon(t *testing.T) {
 	assert.Equal(t, []any{"POLYGON((0 0, 1 1, 1 0, 0 0))"}, result.Args)
 }
 
-// --- SQL: SQLite, through parsesqlite's geo functions ---
+// --- SQL: SQLite, through parsesql's geo functions ---
 
 // SQLite passes a JSONB point's text and member names to a parse_geo
 // function, with the operand bound.

@@ -3,7 +3,8 @@
 // (filter.Param*): keyset-paginated lists with JSON or flat-parameter
 // filters, read from a GET's query string or a POST's JSON body, facets
 // over OPTIONS, JSON Merge Patch updates and schema discovery, on the
-// database its db settings name (parseprovider): an in-memory SQLite
+// database its db settings name, which parseprovider opens among the
+// providers the binary links (parsesql, parsepgx): an in-memory SQLite
 // database by default, or PostgreSQL. It is a module of its own, outside
 // the repository's Go workspace; from its directory:
 //
@@ -13,7 +14,7 @@
 //
 // On PostgreSQL:
 //
-//	PARSE_SERVER_DB_PROVIDER=postgres PARSE_SERVER_DB_DSN='postgres://user:password@127.0.0.1:5432/app' GOWORK=off go run .
+//	PARSE_SERVER_DB_PROVIDER=postgres PARSE_SERVER_DB_POSTGRES_DSN='postgres://user:password@127.0.0.1:5432/app' GOWORK=off go run .
 package main
 
 import (
@@ -38,7 +39,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/parsepgx"
 	"github.com/ashtonian/pkg/parse/parseprovider"
+	"github.com/ashtonian/pkg/parse/parsesql"
 )
 
 const (
@@ -59,7 +62,15 @@ type serverSettings struct {
 	IdleTimeout       time.Duration `koanf:"idle_timeout" default:"60s" validate:"gt=0" desc:"HTTP keep-alive idle deadline"`
 	// DB has no flags: the environment or the settings file sets it, so a
 	// DSN's password stays out of the process list and shell history.
-	DB parseprovider.Config `koanf:"db" kong:"-"`
+	DB dbSettings `koanf:"db" kong:"-"`
+}
+
+// dbSettings name the provider the server runs on, and set up each provider
+// it links; Open uses the named provider's settings alone.
+type dbSettings struct {
+	Provider string          `koanf:"provider" default:"sqlite" validate:"oneof=sqlite postgres" desc:"Database parse runs on: sqlite or postgres"`
+	SQLite   parsesql.Config `koanf:"sqlite"`
+	Postgres parsepgx.Config `koanf:"postgres"`
 }
 
 func main() {
@@ -236,8 +247,8 @@ func serve(ctx context.Context, stop context.CancelFunc, settings *serverSetting
 }
 
 // openDB opens the database cfg names and seeds its products.
-func openDB(ctx context.Context, cfg parseprovider.Config) (*parseprovider.Database, error) {
-	db, err := parseprovider.Open(ctx, cfg)
+func openDB(ctx context.Context, cfg dbSettings) (parseprovider.Database, error) {
+	db, err := parseprovider.Open(ctx, cfg.Provider, parsesql.Choice(cfg.SQLite), parsepgx.Choice(cfg.Postgres))
 	if err != nil {
 		return nil, err
 	}
@@ -312,16 +323,14 @@ var (
 // seed creates the products table when it is missing and adds the
 // demonstration products it does not hold, so a database that persists
 // keeps the changes made to them across restarts.
-func seed(ctx context.Context, db *parseprovider.Database) error {
-	sqlite, ok := db.SQLite()
-	if ok {
-		return sqliteSeed.run(ctx, sqliteExec(sqlite))
+func seed(ctx context.Context, db parseprovider.Database) error {
+	switch opened := db.(type) {
+	case *parsesql.Database:
+		return sqliteSeed.run(ctx, sqliteExec(opened.DB()))
+	case *parsepgx.Database:
+		return postgresSeed.run(ctx, poolExec(opened.Pool()))
 	}
-	pool, ok := db.Postgres()
-	if ok {
-		return postgresSeed.run(ctx, poolExec(pool))
-	}
-	return fmt.Errorf("seeding products: provider %s holds no database", db.Provider().Name())
+	return fmt.Errorf("seeding products: provider %s: no products schema for it", db.Provider().Name())
 }
 
 // execFunc runs one statement.

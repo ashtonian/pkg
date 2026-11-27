@@ -4,13 +4,14 @@ package core_test
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -62,6 +63,62 @@ type validInt64 struct {
 	Valid bool
 }
 
+// validInstant is a wrapper shaped as pgx's pgtype.Timestamptz: a value, a
+// modifier and the flag.
+type validInstant struct {
+	Time             time.Time
+	InfinityModifier int8
+	Valid            bool
+}
+
+func (v *validInstant) Scan(src any) error {
+	if src == nil {
+		*v = validInstant{}
+		return nil
+	}
+	at, ok := src.(time.Time)
+	if !ok {
+		return fmt.Errorf("scanning %T into validInstant", src)
+	}
+	*v = validInstant{Time: at, Valid: true}
+	return nil
+}
+
+func (v validInstant) Value() (driver.Value, error) {
+	if !v.Valid {
+		return nil, nil
+	}
+	return v.Time, nil
+}
+
+// validBytes16 is a wrapper shaped as pgx's pgtype.UUID: its value a bare
+// [16]byte.
+type validBytes16 struct {
+	Bytes [16]byte
+	Valid bool
+}
+
+func (v *validBytes16) Scan(src any) error {
+	if src == nil {
+		*v = validBytes16{}
+		return nil
+	}
+	b, ok := src.([]byte)
+	if !ok || len(b) != 16 {
+		return fmt.Errorf("scanning %T into validBytes16", src)
+	}
+	*v = validBytes16{Valid: true}
+	copy(v.Bytes[:], b)
+	return nil
+}
+
+func (v validBytes16) Value() (driver.Value, error) {
+	if !v.Valid {
+		return nil, nil
+	}
+	return v.Bytes[:], nil
+}
+
 // A nullable wrapper's column holds its value, NULL while Valid is false:
 // the column is typed as the value's type, wherever the wrapper comes from.
 // A document holds what encoding/json writes for the wrapper, its fields, so
@@ -84,11 +141,8 @@ func TestTypeOf_NullableWrapper(t *testing.T) {
 		{"sql.Null[core.Date]", reflect.TypeFor[sql.Null[core.Date]](), core.TypeInfo{Type: core.FieldTypeDate}, core.TypeInfo{Type: core.FieldTypeObject}},
 		{"google uuid.NullUUID", reflect.TypeFor[uuid.NullUUID](), core.TypeInfo{Type: core.FieldTypeUUID}, core.TypeInfo{Type: core.FieldTypeObject}},
 		{"decimal.NullDecimal", reflect.TypeFor[decimal.NullDecimal](), core.TypeInfo{Type: core.FieldTypeDecimal}, core.TypeInfo{Type: core.FieldTypeObject}},
-		{"pgtype.Int8", reflect.TypeFor[pgtype.Int8](), core.TypeInfo{Type: core.FieldTypeInt, NumberKind: reflect.Int64}, core.TypeInfo{Type: core.FieldTypeObject}},
-		{"pgtype.Text", reflect.TypeFor[pgtype.Text](), core.TypeInfo{Type: core.FieldTypeString}, core.TypeInfo{Type: core.FieldTypeObject}},
-		{"pgtype.Bool", reflect.TypeFor[pgtype.Bool](), core.TypeInfo{Type: core.FieldTypeBool}, core.TypeInfo{Type: core.FieldTypeObject}},
 		// More than a value and its flag: no one value.
-		{"pgtype.Timestamptz", reflect.TypeFor[pgtype.Timestamptz](), core.TypeInfo{Type: core.FieldTypeObject}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"a value, a modifier and the flag", reflect.TypeFor[validInstant](), core.TypeInfo{Type: core.FieldTypeObject}, core.TypeInfo{Type: core.FieldTypeObject}},
 		{"a wrapper's fields without a Scanner", reflect.TypeFor[validInt64](), core.TypeInfo{Type: core.FieldTypeObject}, core.TypeInfo{Type: core.FieldTypeObject}},
 		{"a slice of wrappers is a document", reflect.TypeFor[[]sql.NullString](), core.TypeInfo{Type: core.FieldTypeJSON}, core.TypeInfo{Type: core.FieldTypeJSON}},
 		{"int64", reflect.TypeFor[int64](), core.TypeInfo{Type: core.FieldTypeInt, NumberKind: reflect.Int64}, core.TypeInfo{Type: core.FieldTypeInt, NumberKind: reflect.Int64}},
@@ -99,9 +153,9 @@ func TestTypeOf_NullableWrapper(t *testing.T) {
 			assert.Equal(t, tt.member, core.MemberTypeOf(tt.typ), "member")
 		})
 	}
-	// pgtype.UUID is a wrapper whose value is a bare [16]byte, which is
+	// A wrapper whose value is a bare [16]byte, as pgtype.UUID is, holds
 	// binary, not a UUID type: the README states the limit.
-	assert.Equal(t, core.TypeInfo{Type: core.FieldTypeAny}, core.TypeOf(reflect.TypeFor[pgtype.UUID]()), "pgtype.UUID")
+	assert.Equal(t, core.TypeInfo{Type: core.FieldTypeAny}, core.TypeOf(reflect.TypeFor[validBytes16]()), "a [16]byte wrapper")
 }
 
 func TestNormalizeJSON(t *testing.T) {

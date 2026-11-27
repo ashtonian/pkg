@@ -3,7 +3,6 @@
 package filter_test
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -14,8 +13,6 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/stretchr/testify/require"
-
-	_ "modernc.org/sqlite"
 )
 
 func TestPageSetInclude_ReplacesAndClearsOneField(t *testing.T) {
@@ -230,69 +227,5 @@ func TestParseIncludes(t *testing.T) {
 		if !errors.As(err, &pe) || pe.Code != code {
 			t.Errorf("ParseIncludes(%q) = %v; want %s", param, err, code)
 		}
-	}
-}
-
-type widgetEdges struct {
-	ID      string   `db:"id" json:"id" parse:"filter"`
-	Targets []string `db:"-" json:"-" parse:"filter,include,facet" filter_ops:"eq,in" relation:"widget_edges,from_id,to_id"`
-}
-
-// Two typed edges between one owner and one target are one pair: the
-// include names the target once and the facet counts the owner once.
-func TestRelation_TypedEdgesCountOnce(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	if _, buildErr := db.Exec(`CREATE TABLE widgets (id TEXT PRIMARY KEY);
-		CREATE TABLE widget_edges (from_id TEXT, to_id TEXT, kind TEXT);
-		INSERT INTO widgets VALUES ('w1');
-		INSERT INTO widget_edges VALUES ('w1','t1','feeds'), ('w1','t1','powers'), ('w1','t2','feeds');`); buildErr != nil {
-		t.Fatal(buildErr)
-	}
-	schema, err := filter.GenerateFilterSchema[widgetEdges](core.NewSchemaGenerator(core.WithSQLTableName("widgets")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	withOwnerKeys(schema)
-
-	q, err := filter.BuildIncludeQuery(schema.Fields["targets"], filter.SQLiteDialect{}, []core.Key{{"w1"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows, err := db.Query(q.SQL, q.Args...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := q.Scan(rows)
-	require.NoError(t, rows.Close())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := res.IDs["w1"]; !slices.Equal(got, []string{"t1", "t2"}) {
-		t.Errorf("include = %v, want [t1 t2]", got)
-	}
-
-	fq, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil, []filter.FacetRequest{{Field: "targets"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	frows, err := db.Query(fq.SQL, fq.Args...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	facets, err := filter.ScanFacetUnion(frows)
-	require.NoError(t, frows.Close())
-	if err != nil {
-		t.Fatal(err)
-	}
-	counts := map[string]int64{}
-	for _, b := range facets[0].Buckets {
-		counts[b.Key] = b.Count
-	}
-	if counts["t1"] != 1 || counts["t2"] != 1 {
-		t.Errorf("facet counts = %v, want one owner per target", counts)
 	}
 }

@@ -15,6 +15,8 @@ import (
 	"testing"
 	"testing/iotest"
 
+	"github.com/ashtonian/pkg/parse/parsepgx/internal/pgtest"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
@@ -22,7 +24,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/parsehttp"
 )
 
@@ -31,7 +32,7 @@ import (
 // reaches no other tenant's.
 func TestRecipe(t *testing.T) {
 	ctx := testContext(t)
-	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
+	c := &catalog{config: pgtest.PostgresPoolConfig(t)}
 	pool := c.open(t, ctx, pgx.QueryExecModeCacheStatement)
 	_, err := pool.Exec(ctx, `CREATE TABLE devices (id uuid PRIMARY KEY, tenant_id uuid NOT NULL, name text NOT NULL, status text NOT NULL)`)
 	require.NoError(t, err)

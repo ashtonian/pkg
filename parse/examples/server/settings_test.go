@@ -49,19 +49,20 @@ func TestSettings_DatabaseDefaultsToInMemorySQLite(t *testing.T) {
 	settings, err := settingsFrom(t)
 	require.NoError(t, err)
 	assert.Equal(t, "sqlite", settings.DB.Provider)
-	assert.Equal(t, ":memory:", settings.DB.DSN)
-	assert.Equal(t, 10*time.Second, settings.DB.SettleTimeout)
+	assert.Equal(t, ":memory:", settings.DB.SQLite.DSN)
+	assert.Equal(t, 10*time.Second, settings.DB.SQLite.SettleTimeout)
 	assert.Equal(t, 1, settings.DB.SQLite.MaxOpenConns)
 	assert.Equal(t, 5*time.Second, settings.DB.SQLite.BusyTimeout)
 
 	t.Setenv("PARSE_SERVER_DB_PROVIDER", "postgres")
-	t.Setenv("PARSE_SERVER_DB_DSN", "postgres://app@db.example.com/app")
+	t.Setenv("PARSE_SERVER_DB_POSTGRES_DSN", "postgres://app@db.example.com/app")
 	t.Setenv("PARSE_SERVER_DB_POSTGRES_MAX_CONNS", "4")
 	t.Setenv("PARSE_SERVER_DB_POSTGRES_COLLATION", "C")
 	settings, err = settingsFrom(t)
 	require.NoError(t, err)
 	assert.Equal(t, "postgres", settings.DB.Provider)
-	assert.Equal(t, "postgres://app@db.example.com/app", settings.DB.DSN)
+	assert.Equal(t, "postgres://app@db.example.com/app", settings.DB.Postgres.DSN)
+	assert.Equal(t, 10*time.Second, settings.DB.Postgres.SettleTimeout)
 	assert.Equal(t, int32(4), settings.DB.Postgres.MaxConns)
 	assert.Equal(t, "C", settings.DB.Postgres.Collation)
 	assert.Equal(t, time.Hour, settings.DB.Postgres.MaxConnLifetime)
@@ -70,8 +71,8 @@ func TestSettings_DatabaseDefaultsToInMemorySQLite(t *testing.T) {
 // The database is set by the environment or the settings file, never by a
 // flag, so a DSN's password stays out of the process list.
 func TestSettings_TheDatabaseHasNoFlags(t *testing.T) {
-	_, err := settingsFrom(t, "--db-dsn=postgres://app@db.example.com/app")
-	require.ErrorContains(t, err, "unknown flag --db-dsn")
+	_, err := settingsFrom(t, "--db-postgres-dsn=postgres://app@db.example.com/app")
+	require.ErrorContains(t, err, "unknown flag --db-postgres-dsn")
 }
 
 func TestSettings_RejectsAnUnknownProvider(t *testing.T) {
@@ -142,7 +143,8 @@ func TestSettings_AReloadChangesTheLogLevelLive(t *testing.T) {
 // The startup entry is written at any level, with the service, its version,
 // the effective level and the settings.
 func TestLogStart_WritesTheStartupEntryPastTheLevel(t *testing.T) {
-	t.Setenv("PARSE_SERVER_DB_DSN", "file:products.db?mode=rwc&password-like=hunter2")
+	t.Setenv("PARSE_SERVER_DB_SQLITE_DSN", "file:products.db?mode=rwc&password-like=hunter2")
+	t.Setenv("PARSE_SERVER_DB_POSTGRES_DSN", "postgres://app:hunter3@db.example.com/app")
 	settings, err := settingsFrom(t, "--request-timeout=7s")
 	require.NoError(t, err)
 	var logs bytes.Buffer
@@ -166,5 +168,6 @@ func TestLogStart_WritesTheStartupEntryPastTheLevel(t *testing.T) {
 	db, ok := entry.Config["db"].(map[string]any)
 	require.True(t, ok, "the db settings are in the entry")
 	assert.Equal(t, "sqlite", db["provider"])
-	assert.NotContains(t, logs.String(), "hunter2", "the DSN is redacted")
+	assert.NotContains(t, logs.String(), "hunter2", "the SQLite DSN is redacted")
+	assert.NotContains(t, logs.String(), "hunter3", "the PostgreSQL DSN is redacted")
 }

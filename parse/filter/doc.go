@@ -62,8 +62,8 @@
 // a path's set unnested; SQLite reads the set with json_each. SQLite has no
 // exact decimal type and no geometry, so it compares and orders decimals,
 // bounds an int or float path's number members and decides geo filters
-// through deterministic functions the database must have: [github.com/ashtonian/pkg/parse/parsesqlite.Register] registers
-// them, and [github.com/ashtonian/pkg/parse/parsesqlite.Functions] lists
+// through deterministic functions the database must have: [github.com/ashtonian/pkg/parse/parsesql.Register] registers
+// them, and [github.com/ashtonian/pkg/parse/parsesql.Functions] lists
 // them for another driver. The plans need at least
 // [github.com/ashtonian/pkg/parse/parsesql.MinSQLiteVersion], whose JSON
 // paths read every quoted label as written, so they write and test a

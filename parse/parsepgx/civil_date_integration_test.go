@@ -7,9 +7,10 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/ashtonian/pkg/parse/parsepgx/internal/pgtest"
+
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
@@ -22,7 +23,7 @@ type datedRow struct {
 }
 
 func TestCivilDateNativeRowsAndCursor(t *testing.T) {
-	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
+	c := &catalog{config: pgtest.PostgresPoolConfig(t)}
 	ctx := testContext(t)
 	setup := c.open(t, ctx, pgx.QueryExecModeCacheStatement)
 	_, err := setup.Exec(ctx, `CREATE TABLE dated_rows (id TEXT PRIMARY KEY, day DATE); INSERT INTO dated_rows VALUES ('a','2026-10-26'),('b','2028-02-29'),('c',NULL)`)

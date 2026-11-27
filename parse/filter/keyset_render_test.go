@@ -10,7 +10,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
 // rankKeys orders by a computed score, highest first, then by id: a
@@ -92,9 +91,4 @@ func TestSeekPredicate_BindsEachValueOnce(t *testing.T) {
 			assert.NotContains(t, where, "'", "values are bound, never spliced")
 		})
 	}
-}
-
-// Keyset walks over computed and member keys on SQLite.
-func TestKeysetRender_SQLite(t *testing.T) {
-	runKeysetRender(t, renderDB{db: dbtest.SQLite(t), dialect: filter.SQLiteDialect{}, docType: "TEXT"})
 }

@@ -165,3 +165,37 @@ func TestJSONFieldsOf_RefusesUnreadableTags(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "field Doc")
 }
+
+// docSelfA and docSelfB each write themselves; docCollide embeds both, so
+// it inherits neither MarshalJSON and encoding/json writes it by its fields.
+type docSelfA struct{ X int }
+
+func (docSelfA) MarshalJSON() ([]byte, error) { return []byte(`"a"`), nil }
+
+type docSelfB struct {
+	Y int `json:"y"`
+}
+
+func (docSelfB) MarshalJSON() ([]byte, error) { return []byte(`"b"`), nil }
+
+type docCollide struct {
+	docSelfA
+	docSelfB
+	Z int `json:"z"`
+}
+
+// JSONFieldsOf names a self-coding type's fields, which a list response
+// masks, where a document's shape (shapes.Document) stops at the type.
+func TestJSONFieldsOf_NamesTheFieldsOfATypeThatCodesItself(t *testing.T) {
+	fields, err := JSONFieldsOf(reflect.TypeFor[docSelfB]())
+	require.NoError(t, err)
+	_, ok := fields.External("y")
+	assert.True(t, ok)
+	both, err := JSONFieldsOf(reflect.TypeFor[docCollide]())
+	require.NoError(t, err)
+	var names []string
+	for f := range both.Fields() {
+		names = append(names, f.External())
+	}
+	assert.ElementsMatch(t, []string{"X", "y", "z"}, names)
+}

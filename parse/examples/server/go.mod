@@ -6,13 +6,15 @@ require (
 	github.com/alecthomas/kong v1.17.0
 	github.com/ashtonian/pkg/config v0.14.0
 	github.com/ashtonian/pkg/config/kongprovider v0.6.0
-	github.com/ashtonian/pkg/parse v0.17.1
+	github.com/ashtonian/pkg/parse v0.18.0
+	github.com/ashtonian/pkg/parse/parsepgx v0.18.0
+	github.com/ashtonian/pkg/parse/parsesql v0.18.0
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/stretchr/testify v1.12.1
 )
 
 require (
-	github.com/ashtonian/pkg/gowalker v0.9.0 // indirect
+	github.com/ashtonian/pkg/gowalker v0.10.0 // indirect
 	github.com/ashtonian/pkg/jsonvalue v0.1.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
@@ -50,4 +52,8 @@ require (
 )
 
 // The example runs against the Parse working tree it sits in.
-replace github.com/ashtonian/pkg/parse => ../..
+replace (
+	github.com/ashtonian/pkg/parse => ../..
+	github.com/ashtonian/pkg/parse/parsepgx => ../../parsepgx
+	github.com/ashtonian/pkg/parse/parsesql => ../../parsesql
+)

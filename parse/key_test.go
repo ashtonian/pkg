@@ -3,9 +3,6 @@
 package parse_test
 
 import (
-	"database/sql"
-	"database/sql/driver"
-	"strings"
 	"testing"
 	"time"
 	"uuid"
@@ -18,9 +15,6 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
-	"github.com/ashtonian/pkg/parse/internal/providertest"
-	"github.com/ashtonian/pkg/parse/patch"
 )
 
 // keyTextRow has a column of each scalar type a key's text is read as.
@@ -309,64 +303,13 @@ func TestCompositeKey_UpdateTargets(t *testing.T) {
 	assert.ErrorIs(t, err, parse.ErrNoTarget)
 }
 
-// stockDB is a provider on a fresh SQLite database whose stock_rows hold
-// every warehouse's every SKU, so either column alone matches two rows and
-// only the pair names one.
-func stockDB(t *testing.T) (*parse.Provider, *sql.DB) {
-	t.Helper()
-	p, db := providertest.SQLite(t)
-	_, err := db.ExecContext(t.Context(), `CREATE TABLE stock_rows (warehouse_id TEXT NOT NULL, sku TEXT NOT NULL, tenant_id TEXT NOT NULL,
-		qty INTEGER NOT NULL, counted_at TEXT, deleted_at TEXT, PRIMARY KEY (warehouse_id, sku))`)
-	require.NoError(t, err)
-	for _, row := range [][2]string{{"w1", "a"}, {"w1", "b"}, {"w2", "a"}, {"w2", "b"}} {
-		_, err := db.ExecContext(t.Context(), `INSERT INTO stock_rows (warehouse_id, sku, tenant_id, qty, counted_at) VALUES (?, ?, 't1', 0, '2026-01-02T03:04:05Z')`, row[0], row[1])
-		require.NoError(t, err)
-	}
-	return p, db
-}
-
-func stockQuantities(t *testing.T, db *sql.DB) map[string]int64 {
-	t.Helper()
-	rows, err := db.QueryContext(t.Context(), `SELECT warehouse_id, sku, qty FROM stock_rows`)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, rows.Close()) }()
-	out := map[string]int64{}
-	for rows.Next() {
-		var w, sku string
-		var qty int64
-		require.NoError(t, rows.Scan(&w, &sku, &qty))
-		out[w+"/"+sku] = qty
-	}
-	require.NoError(t, rows.Err())
-	return out
-}
-
-// An update by key, by keys and a batch each change exactly the rows their
-// keys name.
-func TestCompositeKey_UpdatesReachTheirRows(t *testing.T) {
+// A batch locks its rows in key order, whatever order its rows were given
+// in, and a key given twice is refused. The rows each update reaches are
+// the corpus's CompositeKeyUpdates.
+func TestCompositeKey_BatchLocksRowsInKeyOrder(t *testing.T) {
 	scope := parse.Scope{Tenant: "t1"}
-
-	p, db := stockDB(t)
-	r := stockRows(t, p)
+	r := stockRows(t, onSQLite)
 	seven, err := r.ParseMergePatch([]byte(`{"qty":7}`))
-	require.NoError(t, err)
-	res, err := r.Update(t.Context(), seven, parse.ByKey(parse.Key{"w1", "b"}), scope)
-	require.NoError(t, err)
-	require.Len(t, res.Changed, 1)
-	assert.Equal(t, map[string]int64{"w1/a": 0, "w1/b": 7, "w2/a": 0, "w2/b": 0}, stockQuantities(t, db))
-
-	p, db = stockDB(t)
-	r = stockRows(t, p)
-	seven, err = r.ParseMergePatch([]byte(`{"qty":7}`))
-	require.NoError(t, err)
-	res, err = r.Update(t.Context(), seven, parse.ByKeys(parse.Key{"w1", "b"}, parse.Key{"w2", "a"}, parse.Key{"w9", "a"}), scope)
-	require.NoError(t, err)
-	assert.Len(t, res.Changed, 2)
-	assert.Equal(t, map[string]int64{"w1/a": 0, "w1/b": 7, "w2/a": 7, "w2/b": 0}, stockQuantities(t, db))
-
-	p, db = stockDB(t)
-	r = stockRows(t, p)
-	seven, err = r.ParseMergePatch([]byte(`{"qty":7}`))
 	require.NoError(t, err)
 	one, err := r.ParseMergePatch([]byte(`{"qty":1}`))
 	require.NoError(t, err)
@@ -376,67 +319,7 @@ func TestCompositeKey_UpdatesReachTheirRows(t *testing.T) {
 	require.Len(t, batch.Chunks, 1)
 	assert.Equal(t, []parse.Key{{"w1", "b"}, {"w2", "a"}}, batch.Chunks[0].Keys, "rows lock in key order")
 	assert.Contains(t, batch.Chunks[0].Current.SQL, `ORDER BY "stock_rows"."warehouse_id" COLLATE BINARY, "stock_rows"."sku" COLLATE BINARY`)
-	res, err = r.UpdateBatch(t.Context(), rows, scope, parse.UpdateBatchLimits{})
-	require.NoError(t, err)
-	assert.Len(t, res.Changed, 2)
-	assert.Equal(t, map[string]int64{"w1/a": 0, "w1/b": 7, "w2/a": 1, "w2/b": 0}, stockQuantities(t, db))
 
 	_, err = r.BuildUpdateBatch([]parse.RowUpdate{{Key: parse.Key{"w1", "b"}, Patch: one}, {Key: parse.Key{"w1", "b"}, Patch: seven}}, scope, parse.UpdateBatchLimits{})
 	assert.ErrorContains(t, err, "update batch row 1 key: duplicate key")
-}
-
-// skuCode is a key whose stored value is not its Go value: the driver
-// writes Value(), upper-cased, and scans the text back as it is.
-type skuCode string
-
-func (c skuCode) Value() (driver.Value, error) { return strings.ToUpper(string(c)), nil }
-
-type skuItem struct {
-	ID   skuCode  `json:"id"   db:"id"  parse:"filter,sort"`
-	Qty  int64    `json:"qty"  db:"qty" parse:"patch"`
-	Tags []string `json:"tags" db:"-"   parse:"patch" relation:"sku_tags,sku_id,tag_id"`
-}
-
-// A key is normalized by one rule (core.NormalizeKey) wherever it binds: a
-// Valuer key stands for the value it writes, as an update's target, as the
-// owner of the relation rows it writes and as a relation's member, so each
-// names the row the driver stored.
-func TestValuerKey_BindsAsTheValueItWrites(t *testing.T) {
-	ctx := t.Context()
-	provider, db := providertest.SQLite(t)
-	items, err := parse.NewResource[skuItem](provider, "sku_items")
-	require.NoError(t, err)
-	for _, stmt := range []string{
-		`CREATE TABLE sku_items (id TEXT PRIMARY KEY, qty INTEGER NOT NULL)`,
-		`CREATE TABLE sku_tags (sku_id TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (sku_id, tag_id))`,
-	} {
-		_, err = db.ExecContext(ctx, stmt)
-		require.NoError(t, err, stmt)
-	}
-	_, err = db.ExecContext(ctx, `INSERT INTO sku_items VALUES (?, 0)`, skuCode("ab"))
-	require.NoError(t, err)
-
-	parsed, err := items.ParsePatch([]byte(`[{"op":"replace","path":"/qty","value":7},{"op":"add","path":"/tags","value":["t1"]}]`))
-	require.NoError(t, err)
-	res, err := items.Update(ctx, parsed, parse.ByKey(parse.Key{skuCode("ab")}), parse.Scope{})
-	require.NoError(t, err)
-	require.Len(t, res.Changed, 1, "the target names the stored row")
-
-	var qty int64
-	require.NoError(t, db.QueryRowContext(ctx, `SELECT qty FROM sku_items WHERE id = 'AB'`).Scan(&qty))
-	assert.Equal(t, int64(7), qty)
-
-	assert.Equal(t, []string{"AB:t1"}, dbtest.QueryRows[string](t, db, `SELECT sku_id || ':' || tag_id FROM sku_tags`), "an owner key read back binds as the target did")
-
-	rel := &core.RelationSchema{JoinTable: "sku_tags", SourceColumns: []string{"tag_id"}, TargetColumns: []string{"sku_id"},
-		SourceTypes: []core.TypeInfo{{Type: core.FieldTypeString}}, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeString}}}
-	members, err := patch.RenderRelationOp(patch.RelationPatchOp{Field: "items", Schema: rel, Verb: patch.RelationVerbRemove, Values: []any{skuCode("ab")}},
-		filter.SQLiteDialect{}, []core.Key{{"t1"}}, patch.RenderRelationOpOptions{})
-	require.NoError(t, err)
-	require.Len(t, members, 1)
-	removed, err := db.ExecContext(ctx, members[0].SQL, members[0].Args...)
-	require.NoError(t, err)
-	n, err := removed.RowsAffected()
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), n, "the member names the pair the update wrote")
 }

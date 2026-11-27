@@ -12,9 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/parsetest"
-	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
 // relateInOrder declares relations in order, or reversed, and returns the
@@ -546,7 +544,7 @@ func TestRelate_TenantKeysAgree(t *testing.T) {
 		assert.ErrorIs(t, err, parse.ErrTenantInvalid)
 	})
 
-	t.Run("pair tables, includes and membership writes bind the typed key", func(t *testing.T) {
+	t.Run("includes bind the typed key", func(t *testing.T) {
 		junction := parse.Junction{Table: "device_commands", Source: []string{"device_id"}, Target: []string{"command_id"}, Tenant: "tenant_id"}
 		devices := parse.MustResource[int32TenantDevice](onPostgres, "devices", parse.TenantColumn("tenant_id"))
 		devices.MustRelate("commands", parse.ManyToMany(commands, junction, parse.Includable(), parse.Writable()))
@@ -560,28 +558,5 @@ func TestRelate_TenantKeysAgree(t *testing.T) {
 		require.Len(t, includes, 1)
 		assert.Contains(t, includes[0].Args, int64(44))
 		assert.NotContains(t, includes[0].Args, "44")
-
-		// The pair table declares no column types, so each pair holds what
-		// the membership statements bound: the tenant as text would be
-		// stored as text, and would delete no pair it replaces.
-		provider, db := providertest.SQLite(t)
-		dbtest.Exec(t, db,
-			`CREATE TABLE devices (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, name TEXT NOT NULL)`,
-			`CREATE TABLE commands (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, device_id INTEGER NOT NULL, status TEXT NOT NULL)`,
-			`CREATE TABLE device_commands (device_id, command_id, tenant_id)`,
-			`INSERT INTO devices VALUES (1, 44, 'alpha')`,
-			`INSERT INTO commands VALUES (7, 44, 1, 'sent'), (8, 44, 1, 'sent')`,
-			`INSERT INTO device_commands VALUES (1, 8, 44)`,
-		)
-		stored := parse.MustResource[int32TenantDevice](provider, "devices", parse.TenantColumn("tenant_id"))
-		stored.MustRelate("commands", parse.ManyToMany(parse.MustResource[parsetest.TenantKeyCommand](provider, "commands", parse.TenantColumn("tenant_id")),
-			junction, parse.Includable(), parse.Writable()))
-		p, err := stored.ParseMergePatch([]byte(`{"commands":[7]}`))
-		require.NoError(t, err)
-		res, err := stored.Update(t.Context(), p, parse.ByID(1), parse.Scope{Tenant: "44"})
-		require.NoError(t, err)
-		assert.Equal(t, int64(2), res.RelationRows, "the pair to 8 removed, the pair to 7 added")
-		assert.Equal(t, [][]any{{int64(1), int64(7), "integer", int64(44)}},
-			dbtest.QueryRows[[]any](t, db, `SELECT device_id, command_id, typeof(tenant_id), tenant_id FROM device_commands`))
 	})
 }

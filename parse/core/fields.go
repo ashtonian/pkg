@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/ashtonian/pkg/gowalker"
+	"github.com/ashtonian/pkg/parse/internal/shapes"
 )
 
 // StructFields is a struct type's fields, walked once and
@@ -87,9 +88,9 @@ type Field struct {
 	tags     Tags
 	enum     []string
 	bounds   Bounds
-	// unexportedEmbed is the first unexported embedded pointer on route,
-	// nil when there is none (CheckWritable).
-	unexportedEmbed reflect.Type
+	// unwritable is CheckWritable's answer, decided when the walk is built
+	// (shapes.CheckWritable).
+	unwritable error
 }
 
 // GoName returns the Go field name.
@@ -143,12 +144,7 @@ func (f *Field) RelationName() string {
 // copy of its parent, so neither a reader filling a fresh value, where the
 // pointer is nil, nor a writer that must not write the parent it shares with
 // the caller, as a patch must not, can set the field.
-func (f *Field) CheckWritable() error {
-	if f.unexportedEmbed == nil {
-		return nil
-	}
-	return fmt.Errorf("field %s: a write reaches it through the unexported embedded %s, which reflection can neither allocate nor copy; export the type or embed it by value", f.goName, gowalker.TypeText(f.unexportedEmbed))
-}
+func (f *Field) CheckWritable() error { return f.unwritable }
 
 // Value reads the field from v, a value of the walked struct type. A nil
 // embedded pointer on the route is an error: the field is not there.
@@ -356,7 +352,7 @@ func StructFieldsOf(t reflect.Type, nameTag, columnTag string) (*StructFields, e
 	}
 	s, err := c.Get(t)
 	if err != nil {
-		return nil, walkError(t, err)
+		return nil, shapes.WalkError(t, err)
 	}
 	return s, nil
 }
@@ -399,27 +395,6 @@ func fieldEngine(nameTag string) (*gowalker.Engine, error) {
 	return stored, nil
 }
 
-// walkError names the fields of a name conflict.
-func walkError(t reflect.Type, err error) error {
-	if conflict, ok := errors.AsType[*gowalker.NameConflict](err); ok {
-		first, second := promotedName(conflict.First), promotedName(conflict.Second)
-		return fmt.Errorf("%s: fields %s and %s are both named %q at one depth, so encoding/json writes neither; rename one", gowalker.TypeText(t), first, second, conflict.Name)
-	}
-	return fmt.Errorf("%s: %w", gowalker.TypeText(t), err)
-}
-
-// promotedName is a field's Go name behind the embedded fields it is
-// promoted through, so two promoted ID fields read as Audit.ID and Base.ID.
-func promotedName(f *gowalker.Field) string {
-	var b strings.Builder
-	for _, parent := range f.InlineParents() {
-		b.WriteString(parent.Name)
-		b.WriteByte('.')
-	}
-	b.WriteString(f.GoField().Name)
-	return b.String()
-}
-
 func isStructType(t reflect.Type) bool {
 	if t.Kind() == reflect.Pointer && t.Name() == "" {
 		t = t.Elem()
@@ -453,7 +428,7 @@ func buildStructFields(s *gowalker.Schema, k fieldsKey) (*StructFields, error) {
 			return nil, fmt.Errorf("field %s: %w", sf.Name, err)
 		}
 		out.misspelt = append(out.misspelt, misspeltTagKeys(d, k)...)
-		f := &Field{goName: sf.Name, typ: sf.Type, route: d.Index, tags: tags, enum: enum, bounds: bounds, unexportedEmbed: unexportedEmbed(out.typ, d.Index)}
+		f := &Field{goName: sf.Name, typ: sf.Type, route: d.Index, tags: tags, enum: enum, bounds: bounds, unwritable: shapes.CheckWritable(d.Field)}
 		if d.State == gowalker.Named {
 			f.external = d.Field.Name()
 			out.external[f.external] = f
@@ -467,24 +442,6 @@ func buildStructFields(s *gowalker.Schema, k fieldsKey) (*StructFields, error) {
 		out.fields = append(out.fields, f)
 	}
 	return out, nil
-}
-
-// unexportedEmbed returns the first unexported embedded pointer on route, a
-// field's index path through the struct type t, or nil when there is none.
-// An unexported embedded struct held by value is no obstacle: reflection
-// sets the exported fields promoted from it, as encoding/json does.
-func unexportedEmbed(t reflect.Type, route []int) reflect.Type {
-	for _, x := range route[:len(route)-1] {
-		if t.Kind() == reflect.Pointer {
-			t = t.Elem()
-		}
-		sf := t.Field(x)
-		if sf.Type.Kind() == reflect.Pointer && !sf.IsExported() {
-			return sf.Type
-		}
-		t = sf.Type
-	}
-	return nil
 }
 
 // A taggedText is a tag key readTags reads as text, with the field of Tags

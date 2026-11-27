@@ -31,18 +31,18 @@ import (
 type backend struct {
 	name string
 	// config is the db settings of a fresh database.
-	config func(t *testing.T) parseprovider.Config
+	config func(t *testing.T) dbSettings
 }
 
 // The backends: SQLite in memory, and PostgreSQL on a fresh schema of the
 // server PARSE_POSTGRES_DSN names. Without that variable the PostgreSQL
 // subtests skip, unless PARSE_REQUIRE_PG=1 fails them instead.
 var backends = []backend{
-	{name: "sqlite", config: func(t *testing.T) parseprovider.Config {
-		return dbSettings(t, map[string]any{})
+	{name: "sqlite", config: func(t *testing.T) dbSettings {
+		return dbSettingsOf(t, map[string]any{})
 	}},
-	{name: "postgres", config: func(t *testing.T) parseprovider.Config {
-		return dbSettings(t, map[string]any{"provider": "postgres", "dsn": freshSchema(t)})
+	{name: "postgres", config: func(t *testing.T) dbSettings {
+		return dbSettingsOf(t, map[string]any{"provider": "postgres", "postgres": map[string]any{"dsn": freshSchema(t)}})
 	}},
 }
 
@@ -54,11 +54,11 @@ func eachBackend(t *testing.T, test func(t *testing.T, b backend)) {
 	}
 }
 
-// dbSettings are the db settings values set over their defaults, loaded and
-// checked as the server loads them.
-func dbSettings(t *testing.T, values map[string]any) parseprovider.Config {
+// dbSettingsOf are the db settings values set over their defaults, loaded
+// and checked as the server loads them.
+func dbSettingsOf(t *testing.T, values map[string]any) dbSettings {
 	t.Helper()
-	cfg, err := config.Decode[parseprovider.Config](t.Context(), values)
+	cfg, err := config.Decode[dbSettings](t.Context(), values)
 	require.NoError(t, err)
 	return *cfg
 }
@@ -100,7 +100,7 @@ func freshSchema(t *testing.T) string {
 }
 
 // open opens a fresh, seeded database, closed once the test ends.
-func (b backend) open(t *testing.T) *parseprovider.Database {
+func (b backend) open(t *testing.T) parseprovider.Database {
 	t.Helper()
 	return openAt(t, b.config(t))
 }
@@ -113,7 +113,7 @@ func (b backend) server(t *testing.T) *httptest.Server {
 
 // openAt opens the database cfg names, seeded, and closes it once the test
 // ends; closing it sooner is harmless, as Close may be called again.
-func openAt(t *testing.T, cfg parseprovider.Config) *parseprovider.Database {
+func openAt(t *testing.T, cfg dbSettings) parseprovider.Database {
 	t.Helper()
 	db, err := openDB(t.Context(), cfg)
 	require.NoError(t, err)
@@ -137,7 +137,7 @@ func TestOpenDB_SeedKeepsWhatTheDatabaseHolds(t *testing.T) {
 	eachBackend(t, func(t *testing.T, b backend) {
 		cfg := b.config(t)
 		if cfg.Provider == "sqlite" {
-			cfg.DSN = filepath.Join(t.TempDir(), "products.db")
+			cfg.SQLite.DSN = filepath.Join(t.TempDir(), "products.db")
 		}
 		db := openAt(t, cfg)
 		srv := serverOn(t, db)
@@ -198,7 +198,7 @@ func TestRun_ServesOnTheConfiguredDatabase(t *testing.T) {
 		cfg := b.config(t)
 		if cfg.Provider != "sqlite" {
 			t.Setenv("PARSE_SERVER_DB_PROVIDER", cfg.Provider)
-			t.Setenv("PARSE_SERVER_DB_DSN", cfg.DSN)
+			t.Setenv("PARSE_SERVER_DB_POSTGRES_DSN", cfg.Postgres.DSN)
 		}
 		out, in := io.Pipe()
 		level := new(slog.LevelVar)

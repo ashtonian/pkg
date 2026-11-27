@@ -12,6 +12,7 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/ordertest"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 )
 
 // A keyset orders key values as their type's case orders them, in every
@@ -55,7 +56,7 @@ func TestKeyValue_CursorsRoundTripEverySpelling(t *testing.T) {
 			key := filter.CursorKey{Name: "v", Column: "v", DataType: c.Type.Type, NumberKind: c.Type.NumberKind, Nullable: true, Direction: filter.SortAsc}
 			for _, x := range c.Values {
 				for _, a := range x.Spellings {
-					resumed := resumeKeyValue(t, key, a)
+					resumed := parsetest.ResumeKeyValue(t, key, a)
 					got, err := filter.CompareKeyValues(key, resumed, x.Spellings[0])
 					require.NoError(t, err, "%#v resumed as %#v", a, resumed)
 					assert.Zero(t, got, "%#v resumed as %#v", a, resumed)

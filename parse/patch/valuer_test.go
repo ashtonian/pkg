@@ -15,7 +15,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/patchtest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -106,30 +106,20 @@ func TestPatch_AnSQLNullColumnClearsToNull(t *testing.T) {
 	}
 }
 
-// SQLite stores a timestamp as its canonical text.
-func TestPatch_NullableWrapperColumnsSQLite(t *testing.T) {
-	runNullableWrapperPatches(t, wrapperDB{db: dbtest.SQLite(t), dialect: filter.SQLiteDialect{}, timestampType: "DATETIME", stamp: func(at sql.NullTime) any {
-		if !at.Valid {
-			return nil
-		}
-		return core.FormatTimestamp(at.Time)
-	}})
-}
-
 // A test reads a nullable wrapper column as the column holds it, its value
 // or null, as the replace after it writes it.
 func TestPatch_ATestReadsAWrapperColumnsValue(t *testing.T) {
 	gen := core.NewSchemaGenerator()
-	schema, err := patch.GeneratePatchSchema[rankedVisit](gen)
+	schema, err := patch.GeneratePatchSchema[patchtest.RankedVisit](gen)
 	require.NoError(t, err)
-	applier, err := patch.NewApplier[rankedVisit](gen, nil)
+	applier, err := patch.NewApplier[patchtest.RankedVisit](gen, nil)
 	require.NoError(t, err)
-	seen := rankedVisit{ID: 1, Score: sql.NullInt64{Int64: 3, Valid: true}, SeenAt: sql.NullTime{Time: rankedSeen(), Valid: true}}
-	unseen := rankedVisit{ID: 1, Score: sql.NullInt64{Int64: 3, Valid: true}}
+	seen := patchtest.RankedVisit{ID: 1, Score: sql.NullInt64{Int64: 3, Valid: true}, SeenAt: sql.NullTime{Time: patchtest.RankedSeen(), Valid: true}}
+	unseen := patchtest.RankedVisit{ID: 1, Score: sql.NullInt64{Int64: 3, Valid: true}}
 	rescored := sql.NullInt64{Int64: 8, Valid: true}
 	for _, tt := range []struct {
 		name   string
-		target rankedVisit
+		target patchtest.RankedVisit
 		test   string
 		holds  bool
 	}{

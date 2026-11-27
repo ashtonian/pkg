@@ -3,7 +3,11 @@ import test from 'node:test';
 import { parseConventionalCommits } from 'release-please/build/src/commit.js';
 import { DefaultChangelogNotes } from 'release-please/build/src/changelog-notes/default.js';
 import { buildPlugin } from 'release-please/build/src/factories/plugin-factory.js';
-import { FIRST_PARENT, FirstParentPlugin, registerFirstParent } from './plugin.mjs';
+import { buildStrategy } from 'release-please/build/src/factory.js';
+import { LinkedVersions } from 'release-please/build/src/plugins/linked-versions.js';
+import { TagName } from 'release-please/build/src/util/tag-name.js';
+import { Version } from 'release-please/build/src/version.js';
+import { FIRST_PARENT, FirstParentLinkedVersions, FirstParentPlugin, registerFirstParent } from './plugin.mjs';
 
 const github = { repository: { owner: 'o', repo: 'r', defaultBranch: 'main' } };
 const quiet = { debug() {}, info() {}, warn() {}, error() {}, trace() {} };
@@ -355,4 +359,73 @@ test('without preconfigure, each merge counts at least as its subject, with a wa
 
   assert.deepEqual([header.type, header.breaking], ['feat', true]);
   assert.match(warnings.join('\n'), /no release path has these commits/);
+});
+
+// A pull request batching a breaking httpx change with a fix to parse, which
+// releases with parse/parsesql at one version; parse/parsesql gained only a
+// test, which cuts no release of its own. Returns the version each path's
+// release pull request gets, and what the plugins warned.
+async function linkedRelease(linkedPlugin) {
+  const warned = [];
+  const logger = { ...quiet, warn: message => warned.push(message) };
+  const subject = 'feat(httpx)!: batch (#400)';
+  const branch = [
+    ['b1', 'feat(httpx)!: negotiate codecs', ['httpx/codec.go']],
+    ['b2', 'fix(parse): close the rows', ['parse/list.go']],
+    ['b3', 'test(parse/parsesql): check the README', ['parse/parsesql/readme_test.go']],
+  ];
+  const history = landedBatch(subject, branch);
+  const release = { releaseType: 'go', bumpMinorPreMajor: true, includeComponentInTag: true, tagSeparator: '/' };
+  const config = {
+    httpx: { ...release, component: 'httpx' },
+    parse: { ...release, component: 'parse', excludePaths: ['parse/parsesql'] },
+    'parse/parsesql': { ...release, component: 'parse/parsesql' },
+  };
+  const commitsByPath = {
+    httpx: raw(subject, branch, ['b1']),
+    parse: raw(subject, branch, ['b2']),
+    'parse/parsesql': raw(subject, branch, ['b3']),
+  };
+  const releasesByPath = Object.fromEntries(Object.keys(config).map(path => [path, {
+    tag: new TagName(Version.parse('0.18.0'), config[path].component, '/', true), sha: 'r0', notes: '',
+  }]));
+  const strategiesByPath = {};
+  for (const path of Object.keys(config)) {
+    strategiesByPath[path] = await buildStrategy({ ...config[path], github, path, targetBranch: 'main' });
+  }
+  const firstParent = new FirstParentPlugin(github, 'main', config, history, logger);
+  const linked = new LinkedVersions(github, 'main', config, 'parse', ['parse', 'parse/parsesql'], { merge: false, logger: quiet });
+  const strategies = await firstParent.preconfigure(strategiesByPath, commitsByPath, releasesByPath);
+  const configured = await linkedPlugin(linked, firstParent).preconfigure(strategies, commitsByPath, releasesByPath);
+  const versions = {};
+  for (const [path, strategy] of Object.entries(configured)) {
+    const commits = firstParent.processCommits(parseConventionalCommits(commitsByPath[path], quiet));
+    const pr = await strategy.buildReleasePullRequest(commits, releasesByPath[path]);
+    versions[path] = pr?.version?.toString();
+  }
+  return { versions, warned };
+}
+
+// first-parent releases httpx as the breaking change and parse as the fix
+// its branch holds there, and the linked group follows parse:
+// parse/parsesql's test cuts no release, so linked-versions appends the
+// commit that releases it at the group's version, which first-parent still
+// finds the path's commits beside. linked-versions alone reads the merge's
+// "!" among the raw commits: it releases parse as a breaking change, and
+// counts parse/parsesql as releasing, so it adds no commit there, and
+// first-parent's notes for it are empty: the group splits.
+test('a linked group takes the version first-parent gives its members', async () => {
+  const followed = await linkedRelease((linked, firstParent) => new FirstParentLinkedVersions(linked, firstParent));
+  assert.deepEqual(followed.versions, { httpx: '0.19.0', parse: '0.18.1', 'parse/parsesql': '0.18.1' });
+  assert.deepEqual(followed.warned.filter(w => w.includes('no release path')), []);
+  const unprocessed = await linkedRelease(linked => linked);
+  assert.deepEqual(unprocessed.versions, { httpx: '0.19.0', parse: '0.19.0', 'parse/parsesql': undefined }, 'linked-versions alone reads the raw commits');
+});
+
+test('the runner links versions through first-parent', () => {
+  const firstParent = new FirstParentPlugin(github, 'main', { parse: {} }, { mergeOf: new Map(), messageOf: new Map() }, quiet);
+  const linked = new LinkedVersions(github, 'main', { parse: {} }, 'g', ['parse'], { merge: false, logger: quiet });
+  const wrapped = new FirstParentLinkedVersions(linked, firstParent);
+  assert.ok(wrapped instanceof LinkedVersions);
+  assert.deepEqual([wrapped.groupName, [...wrapped.components], wrapped.merge], ['g', ['parse'], false]);
 });

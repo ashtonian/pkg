@@ -629,3 +629,45 @@ func runListBodyTransport(t *testing.T, b sqlBackend) {
 	}
 	assert.Equal(t, []int{5, 2, 6, 1, 3, 4}, walked, "name ascending, then rank descending; z is filtered out")
 }
+
+// mustListQuery is the list query over fs and ss compiling for d.
+func mustListQuery(t testing.TB, fs *filter.ResourceSchema, ss *filter.SortSchema, d filter.Dialect) *filter.ListQuery {
+	t.Helper()
+	lq, err := filter.NewListQuery(fs, ss, d)
+	require.NoError(t, err)
+	return lq
+}
+
+// A list's main fragment keeps the parameter offset it was asked for, while
+// its count and facet statements, which run standalone, number their own
+// parameters from the first: each runs as built.
+func listOffsetDoesNotOffsetStandaloneQueries(t *testing.T, engine Engine) {
+	runOn(t, engine, func(t *testing.T, b sqlBackend) {
+		bound := 50.0
+		schema := &filter.ResourceSchema{Name: "items", PrimaryKey: []string{"id"}, SystemFields: map[string]*filter.FieldSchema{
+			"id": {ExternalName: "id", Table: "items", Column: "id", DataType: core.FieldTypeString},
+		}, Fields: map[string]*filter.FieldSchema{
+			"status": {ExternalName: "status", Table: "items", Column: "status", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq}, Facetable: true},
+			"price": {ExternalName: "price", Table: "items", Column: "price", DataType: core.FieldTypeFloat, Facetable: true, FacetSchema: &filter.FacetSchema{
+				Type: filter.FacetTypeRange, Ranges: []filter.FacetRange{{Key: "low", Max: &bound}, {Key: "high", Min: &bound}},
+			}},
+		}}
+		search := &filter.SearchSchema{Language: "english", Fields: []filter.SearchField{{Name: "status", Table: "items", Column: "status"}}}
+		result, err := mustListQuery(t, schema, nil, b.dialect).WithSearchSchema(search).Build(
+			filter.ListFilter(`{"status":"active"}`), filter.ListSearch("active"),
+			filter.ListStartParam(3), filter.ListWithCount(true), filter.ListFacets("status", "price"),
+		)
+		require.NoError(t, err)
+		require.Contains(t, result.Where, b.dialect.Placeholder(4), "main fragment preserves the requested offset")
+		require.Contains(t, result.CountSQL, b.dialect.Placeholder(1))
+		require.NotContains(t, result.CountSQL, b.dialect.Placeholder(4))
+
+		db := b.db(t)
+		dbtest.Exec(t, db,
+			"CREATE TABLE items (id TEXT PRIMARY KEY, status TEXT, price REAL)",
+			"INSERT INTO items VALUES ('a', 'active', 10), ('b', 'active', 60), ('c', 'inactive', 10)")
+		require.Equal(t, []int64{2}, dbtest.QueryRows[int64](t, db, result.CountSQL, result.CountArgs...))
+		facets := queryFacets(t, db, result.Facets.SQL, result.Facets.Args...)
+		require.Equal(t, map[string]map[string]int64{"status": {"active": 2}, "price": {"low": 1, "high": 1}}, bucketCounts(facets))
+	})
+}

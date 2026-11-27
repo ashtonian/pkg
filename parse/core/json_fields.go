@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/gowalker"
+	"github.com/ashtonian/pkg/parse/internal/shapes"
 )
 
 // JSONFieldsOf walks struct type t (or a pointer to one) as encoding/json
@@ -26,7 +27,7 @@ func JSONFieldsOf(t reflect.Type) (*StructFields, error) {
 	}
 	fields, err := jsonFields.Get(t)
 	if err != nil {
-		return nil, walkError(t, err)
+		return nil, shapes.WalkError(t, err)
 	}
 	return fields, nil
 }
@@ -34,7 +35,7 @@ func JSONFieldsOf(t reflect.Type) (*StructFields, error) {
 // jsonFields keeps every struct type JSONFieldsOf has walked: types are
 // finite and never unloaded.
 var jsonFields = gowalker.NewTypeCache(
-	gowalker.MustNew(gowalker.WithJSONFields(JSONTagKey), gowalker.DropTies(), gowalker.WithUnboundedCache()),
+	shapes.NewJSONEngine(nil),
 	func(s *gowalker.Schema) (*StructFields, error) {
 		out := &StructFields{typ: s.Type(), external: map[string]*Field{}, view: s.Root()}
 		for _, d := range s.Root().Declarations() {
@@ -42,7 +43,7 @@ var jsonFields = gowalker.NewTypeCache(
 				continue
 			}
 			_, options, _ := strings.Cut(d.GoField.Tag.Get(JSONTagKey), ",")
-			f := &Field{goName: d.GoField.Name, typ: d.GoField.Type, route: d.Index, external: d.Field.Name(), tags: Tags{FieldNameOptions: options}, unexportedEmbed: unexportedEmbed(out.typ, d.Index)}
+			f := &Field{goName: d.GoField.Name, typ: d.GoField.Type, route: d.Index, external: d.Field.Name(), tags: Tags{FieldNameOptions: options}, unwritable: shapes.CheckWritable(d.Field)}
 			out.fields = append(out.fields, f)
 			out.external[f.external] = f
 		}

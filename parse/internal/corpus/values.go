@@ -73,7 +73,7 @@ func civilDateSQL(t *testing.T, engine Engine) {
 // over every column type a decimal is held in: PostgreSQL numeric, with and
 // without a declared scale, and SQLite NUMERIC and REAL.
 func decimalSQL(t *testing.T, engine Engine) {
-	columnTypes := map[Engine][]string{SQLite: {"NUMERIC", "REAL"}, Postgres: {"NUMERIC", "NUMERIC(12,4)"}}
+	columnTypes := map[Kind][]string{SQLite: {"NUMERIC", "REAL"}, Postgres: {"NUMERIC", "NUMERIC(12,4)"}}
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		for _, columnType := range columnTypes[b.engine] {
 			t.Run(columnType, func(t *testing.T) { runDecimalSQL(t, b.with(storing(core.FieldTypeDecimal, columnType))) })
@@ -126,7 +126,7 @@ func runDecimalSQL(t *testing.T, b sqlBackend) {
 
 // PostgreSQL holds and compares decimals beyond float64's precision.
 func decimalSQLPostgresIsExact(t *testing.T, engine Engine) {
-	b := sqlBackendOf(Postgres)
+	b := sqlBackendOf(engine)
 	provider, db := b.open(t)
 	b.create(t, db, ledgerTable())
 	_, err := db.ExecContext(t.Context(), `INSERT INTO ledger_lines VALUES ('a','0.1',NULL), ('b','0.10000000000000001',NULL),
@@ -180,7 +180,7 @@ func float32FilterAndPatchSQLiteParity(t *testing.T, engine Engine) {
 	}
 	p, err := parse.NewResource[row](providertest.Compile(filter.SQLiteDialect{}), "ratios")
 	require.NoError(t, err)
-	db := dbtest.SQLite(t)
+	db := sqlBackendOf(engine).db(t)
 	_, err = db.ExecContext(t.Context(), "CREATE TABLE ratios (id INTEGER PRIMARY KEY, ratio REAL)")
 	require.NoError(t, err)
 	_, err = db.ExecContext(t.Context(), "INSERT INTO ratios VALUES (1, ?)", float64(float32(0.1)))
@@ -501,7 +501,7 @@ func typedDocumentSQLiteParity(t *testing.T, engine Engine) {
 		{"typed map deletion", `{"doc":{"by_name":{"old":null}}}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := dbtest.SQLite(t)
+			db := sqlBackendOf(engine).db(t)
 			ctx := t.Context()
 			_, err := db.ExecContext(ctx, `CREATE TABLE docs (doc TEXT NOT NULL)`)
 			require.NoError(t, err)
@@ -528,6 +528,93 @@ func typedDocumentSQLiteParity(t *testing.T, engine Engine) {
 			var stored string
 			require.NoError(t, db.QueryRowContext(ctx, "SELECT doc FROM docs").Scan(&stored))
 			assert.JSONEq(t, string(encoded), stored, "SQL and Go agree")
+		})
+	}
+}
+
+type numericEntity struct {
+	ID    int64          `json:"id"    db:"id"    parse:"filter,sort"`
+	Small int8           `json:"small" db:"small" parse:"filter,patch"`
+	U8    uint8          `json:"u8"    db:"u8"    parse:"filter,patch"`
+	PU64  *uint64        `json:"pu64"  db:"pu64"  parse:"patch"`
+	PI    *int           `json:"pi"    db:"pi"    parse:"patch"`
+	Big   int64          `json:"big"   db:"big"   parse:"filter,patch" patch_ops:"replace,test"`
+	Ratio float32        `json:"ratio" db:"ratio" parse:"patch"`
+	Meta  map[string]any `json:"meta"  db:"meta"  parse:"patch"`
+}
+
+// An integer beyond float64's exact range reaches the database as the
+// client sent it: a patch binds and stores 2^53+1 itself, and a filter on it
+// selects that row, not its float64 neighbour, on every ingress.
+func exactIntegers(t *testing.T, engine Engine) {
+	runOn(t, engine, runExactIntegers)
+}
+
+func runExactIntegers(t *testing.T, b sqlBackend) {
+	// setup is the resource on a fresh database whose rows 1 to 3 hold 2^53
+	// and its two neighbours above.
+	setup := func(t *testing.T) (*parse.Resource[numericEntity], *sql.DB) {
+		t.Helper()
+		p, db := b.open(t)
+		dbtest.Exec(t, db, `CREATE TABLE numeric_entities (id BIGINT PRIMARY KEY, small BIGINT, u8 BIGINT, big BIGINT)`,
+			`INSERT INTO numeric_entities (id, big) VALUES (1, 9007199254740992), (2, 9007199254740993), (3, 9007199254740994)`)
+		r, err := parse.NewResource[numericEntity](p, "numeric_entities")
+		require.NoError(t, err)
+		return r, db
+	}
+
+	t.Run("a patch stores the integer it was sent", func(t *testing.T) {
+		r, db := setup(t)
+		parsed, err := r.ParseMergePatch([]byte(`{"big": 9007199254740993}`))
+		require.NoError(t, err)
+		res, err := patch.BuildPatchSQL(parsed, b.dialect)
+		require.NoError(t, err)
+		require.Equal(t, []any{int64(9007199254740993)}, res.Args)
+		_, err = db.ExecContext(t.Context(), "UPDATE numeric_entities SET "+res.SetClause+" WHERE id = 1", res.Args...)
+		require.NoError(t, err)
+		var stored int64
+		require.NoError(t, db.QueryRowContext(t.Context(), "SELECT big FROM numeric_entities WHERE id = 1").Scan(&stored))
+		assert.Equal(t, int64(9007199254740993), stored)
+	})
+
+	r, db := setup(t)
+	ingresses := map[string]func() (*filter.FilterAST, error){
+		"json eq": func() (*filter.FilterAST, error) {
+			f, err := r.ParseFilter(`{"big": 9007199254740993}`)
+			if err != nil {
+				return nil, err
+			}
+			return f.AST(), nil
+		},
+		"json in": func() (*filter.FilterAST, error) {
+			f, err := r.ParseFilter(`{"big": {"$in": [9007199254740993]}}`)
+			if err != nil {
+				return nil, err
+			}
+			return f.AST(), nil
+		},
+		"typed map": func() (*filter.FilterAST, error) {
+			f, err := r.ParseFilterMap(map[string]any{"big": map[string]any{"$in": []int64{9007199254740993}}})
+			if err != nil {
+				return nil, err
+			}
+			return f.AST(), nil
+		},
+		"query params": func() (*filter.FilterAST, error) {
+			qp, err := filter.NewQueryParamParser(r.FilterSchema())
+			if err != nil {
+				return nil, err
+			}
+			return qp.Parse(map[string][]string{"big": {"9007199254740993"}})
+		},
+	}
+	for name, parseFn := range ingresses {
+		t.Run("a filter by "+name+" selects the exact row", func(t *testing.T) {
+			ast, err := parseFn()
+			require.NoError(t, err)
+			res, err := filter.NewSQLBuilder(r.FilterSchema(), b.dialect).Build(ast)
+			require.NoError(t, err)
+			assert.Equal(t, []int64{2}, dbtest.QueryRows[int64](t, db, "SELECT id FROM numeric_entities WHERE "+res.Where, res.Args...))
 		})
 	}
 }

@@ -3,7 +3,6 @@
 package corpus
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -15,7 +14,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -28,7 +26,7 @@ import (
 )
 
 // Exact decimals on each backend: SQLite holds amounts as decimal text and
-// prices in JSON text, compared through parsesqlite's functions;
+// prices in JSON text, compared through parsesql's functions;
 // PostgreSQL numeric amounts and jsonb prices.
 func decimalMatrix(t *testing.T, engine Engine) {
 	runOn(t, engine, runDecimalMatrix)
@@ -352,39 +350,6 @@ func jsonIntegerEdgesSameRowsOnEveryBackend(t *testing.T, engine Engine) {
 	})
 }
 
-// Through a native pgx connection — the production driver — UUID
-// include keys come back in the canonical text items carry.
-func includeQueryNativePgxUUIDKeysAreCanonicalText(t *testing.T, engine Engine) {
-	ctx := context.Background()
-	conn, err := pgx.ConnectConfig(ctx, dbtest.PostgresConfig(t))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close(ctx) })
-	_, err = conn.Exec(ctx, `CREATE TABLE widget_tags (widget_id UUID, tag_id UUID)`)
-	require.NoError(t, err)
-	_, err = conn.Exec(ctx, `INSERT INTO widget_tags VALUES
-		('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000a'),
-		('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000b')`)
-	require.NoError(t, err)
-
-	field := &filter.FieldSchema{ExternalName: "tags", Includable: true, Relation: &core.RelationSchema{
-		JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"},
-		SourceTypes: []core.TypeInfo{{Type: core.FieldTypeUUID}}, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeUUID}},
-	}, RelatedBy: []*filter.FieldSchema{{ExternalName: "id", Table: "widgets", Column: "id", DataType: core.FieldTypeUUID}}}
-	q, err := filter.BuildIncludeQuery(field, filter.PostgresDialect{}, []core.Key{{"00000000-0000-0000-0000-000000000001"}}, filter.WithIncludeRelationScope(filter.RelationScope{Unscoped: true}))
-	require.NoError(t, err)
-
-	rows, err := conn.Query(ctx, q.SQL, q.Args...)
-	require.NoError(t, err)
-	defer rows.Close()
-
-	res, err := q.Scan(rows)
-	require.NoError(t, err)
-	got := res.IDs
-	assert.Equal(t, map[string][]string{
-		"00000000-0000-0000-0000-000000000001": {"00000000-0000-0000-0000-00000000000a", "00000000-0000-0000-0000-00000000000b"},
-	}, got)
-}
-
 // `$ilike` case on each backend. SQLite lower-cases ASCII letters only. On
 // PostgreSQL a pg_c_utf8 column lower-cases every letter, as the reference
 // evaluator does, and a C column ASCII letters only.
@@ -412,7 +377,7 @@ func runFoldMatrix(t *testing.T, b sqlBackend, unicode bool) {
 	filtertest.RunFold(t, unicode, b.filterIDs(db, schema))
 }
 
-// Stored points on each backend: JSON text read through parsesqlite's
+// Stored points on each backend: JSON text read through parsesql's
 // functions on SQLite, jsonb read as PostgreSQL casts its members on
 // PostGIS.
 func geoMatrix(t *testing.T, engine Engine) {
@@ -685,4 +650,84 @@ func quotedMatrix(t *testing.T, engine Engine) {
 		b.load(t, db, table, recordRows(t, table, filtertest.QuotedRecords()))
 		filtertest.RunQuoted(t, b.filterIDs(db, schema))
 	})
+}
+
+// A NULL operand or set member means on every engine what it means in SQL
+// and in filter.Evaluate (runNullOperands).
+func nullOperands(t *testing.T, engine Engine) {
+	runOn(t, engine, runNullOperands)
+}
+
+// nullColumn is a column the NULL operand cases compare: its field type,
+// the value its one row holds, and another value of its type.
+type nullColumn struct {
+	field       core.FieldType
+	held, other any
+}
+
+// runNullOperands holds a database and filter.Evaluate to SQL's answer for
+// a NULL operand or set member, whether nil, a nil pointer or a NULL
+// Valuer: a comparison with it is Unknown, and `IN` a set holding it is
+// True on an equal member and otherwise Unknown, so `NOT IN` is False or
+// Unknown. Each case runs against a string and an integer column.
+func runNullOperands(t *testing.T, b sqlBackend) {
+	db := b.db(t)
+	columns := map[string]nullColumn{
+		"string": {core.FieldTypeString, "a", "b"},
+		"int":    {core.FieldTypeInt, int64(7), int64(8)},
+	}
+	for name, c := range columns {
+		t.Run(name, func(t *testing.T) {
+			table := "null_operands_" + name
+			_, err := db.ExecContext(t.Context(), "CREATE TABLE "+table+" (id INTEGER PRIMARY KEY, v "+b.columnType(core.TypeInfo{Type: c.field})+")")
+			require.NoError(t, err)
+			_, err = db.ExecContext(t.Context(), "INSERT INTO "+table+" (id, v) VALUES (1, "+b.dialect.Placeholder(1)+")", c.held)
+			require.NoError(t, err)
+			field := &filter.FieldSchema{ExternalName: "v", Table: table, Column: "v", DataType: c.field}
+			schema := &filter.ResourceSchema{Name: table, Fields: map[string]*filter.FieldSchema{"v": field}}
+			row := filter.ColumnRow(func(column string) (any, bool) { return c.held, column == table+".v" })
+
+			for _, tc := range nullOperandCases(field, c) {
+				n := tc.n
+				res, err := filter.NewSQLBuilder(schema, b.dialect).Build(&filter.FilterAST{Root: n})
+				require.NoError(t, err, "$%s %#v", n.Op, n.Value)
+				answer := dbtest.QueryRows[string](t, db, "SELECT CASE WHEN ("+res.Where+") THEN 'true' WHEN NOT ("+res.Where+") THEN 'false' ELSE 'unknown' END FROM "+table, res.Args...)
+				assert.Equal(t, []string{tc.want.String()}, answer, "the statement: $%s %#v", n.Op, n.Value)
+
+				got, err := filter.Evaluate(n, row)
+				require.NoError(t, err, "$%s %#v", n.Op, n.Value)
+				assert.Equal(t, tc.want, got, "Evaluate: $%s %#v", n.Op, n.Value)
+			}
+		})
+	}
+}
+
+type nullOperandCase struct {
+	n    *filter.FilterNode
+	want filter.Truth
+}
+
+// nullOperandCases are each NULL spelling of c's type as a comparison's
+// operand and as a set member beside c's held and other values.
+func nullOperandCases(field *filter.FieldSchema, c nullColumn) []nullOperandCase {
+	nulls := []any{nil, (*string)(nil), sql.NullString{}}
+	if c.field == core.FieldTypeInt {
+		nulls = []any{nil, (*int64)(nil), sql.NullInt64{}}
+	}
+	var cases []nullOperandCase
+	add := func(op filter.FilterOperator, value any, want filter.Truth) {
+		cases = append(cases, nullOperandCase{&filter.FilterNode{Field: field, Op: op, Value: value}, want})
+	}
+	for _, null := range nulls {
+		for _, op := range []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpLt, filter.OpLte, filter.OpGt, filter.OpGte} {
+			add(op, null, filter.Unknown)
+		}
+		add(filter.OpIn, []any{null}, filter.Unknown)
+		add(filter.OpIn, []any{c.other, null}, filter.Unknown)
+		add(filter.OpIn, []any{null, c.held}, filter.True)
+		add(filter.OpNin, []any{null}, filter.Unknown)
+		add(filter.OpNin, []any{c.other, null}, filter.Unknown)
+		add(filter.OpNin, []any{null, c.held}, filter.False)
+	}
+	return cases
 }

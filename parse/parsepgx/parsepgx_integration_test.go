@@ -19,8 +19,8 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/parsepgx"
+	"github.com/ashtonian/pkg/parse/parsepgx/internal/pgtest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -71,7 +71,7 @@ type catalog struct {
 func newCatalog(t *testing.T) *catalog {
 	t.Helper()
 	ctx := testContext(t)
-	c := &catalog{config: dbtest.PostgresPoolConfig(t), tenantA: uuid.New(), tenantB: uuid.New(), ids: map[string]uuid.UUID{}}
+	c := &catalog{config: pgtest.PostgresPoolConfig(t), tenantA: uuid.New(), tenantB: uuid.New(), ids: map[string]uuid.UUID{}}
 	c.pool = c.open(t, ctx, pgx.QueryExecModeCacheStatement)
 	c.provider = provider(t, ctx, c.pool)
 	c.products = newProducts(c.provider)
@@ -159,7 +159,7 @@ func (c *catalog) names(ids ...uuid.UUID) []string {
 
 func testContext(t *testing.T) context.Context {
 	t.Helper()
-	return dbtest.Context(t)
+	return pgtest.Context(t)
 }
 
 // listRequest is query, a list request's query string, parsed by r.
@@ -677,7 +677,7 @@ func TestProvider_BeginHoldsOperationsUntilCommit(t *testing.T) {
 // The provider opens under either code-point collation PostgreSQL 17+
 // has, and names itself postgres.
 func TestNew_OpensUnderEitherCollation(t *testing.T) {
-	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
+	c := &catalog{config: pgtest.PostgresPoolConfig(t)}
 	ctx := testContext(t)
 	pool := c.open(t, ctx, pgx.QueryExecModeCacheStatement)
 	for _, opts := range [][]parsepgx.Option{nil, {parsepgx.Collation(filter.CollationC)}, {parsepgx.Collation(filter.CollationPgCUTF8)}} {
@@ -696,7 +696,7 @@ type credential struct {
 // A resource that does not read a sensitive column scans its pages and
 // update results with that field zero; the column never leaves the database.
 func TestReadColumns_LeaveSensitiveColumnsInTheDatabase(t *testing.T) {
-	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
+	c := &catalog{config: pgtest.PostgresPoolConfig(t)}
 	ctx := testContext(t)
 	pool := c.open(t, ctx, pgx.QueryExecModeCacheStatement)
 	_, err := pool.Exec(ctx, `CREATE TABLE credentials (id uuid PRIMARY KEY, tenant_id uuid NOT NULL, name text NOT NULL, secret_hash text NOT NULL)`)

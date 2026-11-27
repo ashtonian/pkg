@@ -2,99 +2,79 @@
 
 ## Overview
 
-Opens the parse provider an application's configuration names — SQLite ([`parsesql`](../parsesql/README.md)) or PostgreSQL ([`parsepgx`](../parsepgx/README.md)) — once, at startup. `Config` is the setting block, tagged for [`github.com/ashtonian/pkg/config`](../../config/README.md); `Open` checks every setting, opens the database with the connection limits the settings give, and returns a `Database`: the `*parse.Provider` to build resources on, and the database handle under it for the application's own SQL (its schema, its own statements, a transaction it shares with parse). The two providers are alternatives with one API: nothing here moves data between them, migrates from one to the other, or runs one beside the other.
+Opens the one parse provider an application's configuration names, among the providers its binary links, once, at startup. Each provider is a module of its own that owns its settings and how it opens: SQLite in [`parsesql`](../parsesql/README.md) (`parsesql.Config`, `parsesql.Open`) and PostgreSQL in [`parsepgx`](../parsepgx/README.md) (`parsepgx.Config`, `parsepgx.Open`). `main` hands `Open` a `Choice` for each provider it links, built from that provider's settings (`parsesql.Choice`, `parsepgx.Choice`), and the configured name; `Open` opens that one and returns it as a `Database`. This package imports no provider and no driver, so a binary carries only the drivers of the providers it passes: one that runs on SQLite alone requires `parsesql` and never links pgx.
+
+The providers are alternatives with one API, for different runtime requirements: nothing here moves data between them, migrates from one to the other, or runs one beside another. An application that runs on one provider only needs no selector: it calls that provider's `Open`.
 
 ```go
 type Settings struct {
-	DB parseprovider.Config `koanf:"db"`
+	DB struct {
+		Provider string          `koanf:"provider" default:"sqlite" validate:"oneof=sqlite postgres"`
+		SQLite   parsesql.Config `koanf:"sqlite"`
+		Postgres parsepgx.Config `koanf:"postgres"`
+	} `koanf:"db"`
 	// …
 }
 
 settings, err := config.Load[Settings](ctx, config.WithEnvPrefix("APP"))
-db, err := parseprovider.Open(ctx, settings.DB)
+db, err := parseprovider.Open(ctx, settings.DB.Provider,
+	parsesql.Choice(settings.DB.SQLite), parsepgx.Choice(settings.DB.Postgres))
 defer db.Close() // after the HTTP server has drained
 devices, err := parse.NewResource[Device](db.Provider(), "devices", parse.TenantColumn("tenant_id"))
 page, err := devices.List(ctx, req, scope)
 ```
 
-With no setting given the defaults open an in-memory SQLite database; `APP_DB_PROVIDER=postgres APP_DB_DSN=postgres://…` runs the same application on PostgreSQL.
+With no setting given the defaults open an in-memory SQLite database; `APP_DB_PROVIDER=postgres APP_DB_POSTGRES_DSN=postgres://…` runs the same binary on PostgreSQL. `parsepgx.Config`'s DSN has no default and no `validate` tag, so the settings load on SQLite with it unset; `parsepgx.Open` refuses it empty.
 
 ## Configuration
 
-Keys are relative to where the application places `Config` (`db.` above). Every setting has a default, `dsn` included, so the block loads with nothing set.
+This package has no settings of its own. The application holds the provider's name and each linked provider's `Config` where it chooses (`db.` above):
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `provider` | string | `sqlite` | The database parse runs on: `sqlite` or `postgres`. |
-| `dsn` | string (sensitive) | `:memory:` | The provider's connection string. sqlite: a file path that is absolute or starts `./` or `../` and ends `.db`, `.sqlite` or `.sqlite3`, a `file:` URI, or `:memory:`, with any driver parameters after `?` but `_txlock`, `_busy_timeout` and `_timeout`, which `Open` sets. postgres: a `postgres://` or `postgresql://` URL or a keyword/value string, without `pool_*` parameters, which the `postgres.*` settings set. Redacted in every config printout. |
-| `settle_timeout` | duration | `10s` | Bound on each statement that settles an update's transaction — commit, rollback, savepoint release and rollback — which runs past the request's cancellation (`parse.DefaultSettleTimeout`). |
-| `sqlite.max_open_conns` | int | `1` | Connections the SQLite database holds open, all kept idle and never closed for age. An in-memory database without `cache=shared` (`:memory:`, `file:…?mode=memory`) is a database per connection and must keep `1`; a file database in WAL mode reads concurrently on more. |
-| `sqlite.busy_timeout` | duration | `5s` | How long a statement waits for another connection's write lock before failing with `SQLITE_BUSY` (`_busy_timeout`). `0` fails at once. |
-| `postgres.collation` | string | `pg_c_utf8` | The code-point collation string sorts, keyset seeks and ranges compile under: `pg_c_utf8` (PostgreSQL 17+) or `C` (PostgreSQL 14 to 16). Declare text columns with the same collation so indexes serve them. |
-| `postgres.containment_max_values` | int | `0` | The largest `$in` set a jsonb path compares by containment, which a GIN index serves: `0` is `filter.DefaultContainmentMaxValues` (256), a negative value compares none. |
-| `postgres.max_conns` | int | `10` | Most connections the pool opens. |
-| `postgres.min_conns` | int | `0` | Connections the pool keeps open while idle; at most `postgres.max_conns`. |
-| `postgres.max_conn_lifetime` | duration | `1h` | Age at which the pool closes a connection once it is released. |
-| `postgres.max_conn_idle_time` | duration | `30m` | Idle time after which the pool closes a connection. |
-| `postgres.health_check_period` | duration | `1m` | How often the pool checks its idle connections and closes expired ones. |
-| `postgres.connect_timeout` | duration | `5s` | Bound on opening one connection, TLS and authentication included. |
+| `provider` (the application's) | string | the application's | The provider to open: a `Choice`'s name, `parsesql.Name` (`sqlite`) or `parsepgx.Name` (`postgres`). `Open` refuses one no choice has, listing those the binary links. |
+| `sqlite.*` | `parsesql.Config` | in-memory SQLite | [parsesql's settings](../parsesql/README.md#configuration): `dsn`, `max_open_conns`, `busy_timeout`, `settle_timeout`. |
+| `postgres.*` | `parsepgx.Config` | no DSN | [parsepgx's settings](../parsepgx/README.md#configuration): `dsn`, `settle_timeout`, `collation`, `containment_max_values`, the pool's limits and `connect_timeout`. |
 
-`Open` refuses, before connecting, a setting outside these ranges, naming its key: `parseprovider: sqlite.max_open_conns: 2: the DSN names an in-memory database without cache=shared, a database per connection; keep 1`.
+Only the named provider's settings are read: the others' `Open` never runs, so an unset PostgreSQL DSN beside a SQLite configuration is not an error. Each provider checks its own settings in `Open`, naming the key it refuses (`parsesql: max_open_conns: 2: …`).
 
 ## External Dependencies
 
-- SQLite: `modernc.org/sqlite` (pure Go, no cgo), with parse's SQL functions registered on it (`parsesqlite.Register`), at least the release `parsesql.MinSQLiteVersion` names.
-- PostgreSQL: a server, 17 or later for the default collation (14 to 16 with `postgres.collation: C`), reached through `github.com/jackc/pgx/v5/pgxpool`. PostGIS for geo filters.
+None of its own: the root module (`github.com/ashtonian/pkg/parse`), which requires no database driver. The drivers come with the provider modules the application requires: `modernc.org/sqlite` through `parsesql`, `github.com/jackc/pgx/v5` through `parsepgx`.
 
 ## API
 
-- `Config`, `SQLiteConfig`, `PostgresConfig`: the settings above.
-- `Open(ctx, cfg) (*Database, error)`: checks `cfg`, opens the database and the provider under `ctx` (it connects: `parsesql.New` reads `sqlite_version()`, `parsepgx.New` checks the collation), and returns them. On an error nothing stays open.
-- `Database.Provider() *parse.Provider`: build every resource on it (`parse.NewResource`).
-- `Database.SQLite() (*sql.DB, bool)`, `Database.Postgres() (*pgxpool.Pool, bool)`: the handle of the provider the configuration named, for the application's own SQL; the other reports false. A transaction the application begins on it joins parse through `parsesql.Tx` or `parsepgx.Tx` and `Resource.In`, or begin one through `Provider().Begin`.
-- `Database.Ping(ctx) error`: whether the database answers, for a readiness probe.
-- `Database.Close() error`: closes the database once the work on it is done; a pool's `Close` waits for every connection in use to be released.
-
-What `Open` does to the database:
-
-- sqlite: registers parse's functions with modernc.org/sqlite (once per process), opens the DSN with `_txlock=immediate` — every transaction begins as a write transaction, so no writer commits between an update's read and its write — and `_busy_timeout` from `sqlite.busy_timeout`, and keeps `sqlite.max_open_conns` connections open with no lifetime: SQLite's connections are in-process handles with no server session or network path to refresh, and an in-memory database lives only while a connection to it is open.
-- postgres: parses the DSN with pgx, sets the pool's limits from the `postgres.*` settings, and opens the pool; `parsepgx.New` then checks that the database compares strings under `postgres.collation`.
+- `Choice{Name, Open}`: a provider the binary links, by its name in configuration (`parse.Provider.Name`), and how it opens from the settings it was built with. `parsesql.Choice(cfg)` and `parsepgx.Choice(cfg)` build them; a `Choice` of another provider module, or one the application wraps (to seed a database it opens, say), is any `Open` that returns a `Database`.
+- `Open(ctx, name, choices...) (Database, error)`: opens the choice named `name` under `ctx` and returns what its `Open` returned, or its error as it is. It refuses, before opening anything, no choices, a choice with no name or no `Open`, a name given twice, and a name no choice has.
+- `Database`: what every provider's opened database is: `Provider() *parse.Provider`, to build every resource on (`parse.NewResource`); `Ping(ctx) error`, for a readiness probe; `Close() error`, once the work on it is done. Each provider's own type (`*parsesql.Database`, `*parsepgx.Database`) also hands out its handle for the application's own SQL (`DB() *sql.DB`, `Pool() *pgxpool.Pool`): its schema, its own statements, a transaction it shares with parse through `parsesql.Tx` or `parsepgx.Tx` and `Resource.In`. Code that needs the handle asserts the type the configuration chose (the [example server](../examples/server/main.go)'s `seed`).
 
 ## Build and test
 
 From the parse module directory:
 
 ```sh
-go test -tags unit ./parseprovider/                    # SQLite, and every refusal
-eval "$(make -s parse-postgres-up)"                    # a PostgreSQL server for the integration lane
-go test -tags integration ./parseprovider/             # PostgreSQL too
+go test -tags unit ./parseprovider/
 ```
 
-`TestConfig_TagsMatchTheProviders` holds the tags to the providers (`settle_timeout` to `parse.DefaultSettleTimeout`, `provider`'s values to `parsesql.Name` and `parsepgx.Name`), and `TestOpen_DefaultsRunOnInMemorySQLite` opens and runs a resource on the defaults alone.
+The tests run the selector over compile-only providers (`internal/providertest`): the named choice opens, its error returns as it is, and every refusal. Each provider's `Open` and `Choice` are tested in its own module (`parsesql`'s and `parsepgx`'s `open_test.go`, and `parsepgx`'s `open_integration_test.go` on a PostgreSQL server).
 
 ## Operations
 
-- *Health*: `Database.Ping` for readiness. A provider has no background work of its own; the pgx pool's health check closes expired connections every `postgres.health_check_period`.
-- *Metrics and logs*: none of its own. Instrument the pool (pgx tracers) or the driver, and label statement failures by `parse.StatementError.Statement`.
-- *Shutdown*: close the `Database` after the HTTP server has drained, so no request is still using a connection; a pool's `Close` blocks until every connection is released.
+- *Health*: the opened `Database`'s `Ping` for readiness. The selector does nothing after `Open` returns.
+- *Metrics and logs*: none. Log the opened provider's name (`db.Provider().Name()`) at startup.
+- *Shutdown*: close the `Database` after the HTTP server has drained, so no request is still using a connection; a PostgreSQL pool's `Close` blocks until every connection is released.
 - *Failure modes*:
-  - `parseprovider: provider: "…": want sqlite or postgres`: the provider setting names another database. CockroachDB and MySQL are not providers.
-  - `parseprovider: dsn: a postgres connection string for provider sqlite` (or the reverse): the DSN and the provider disagree; set both.
-  - `parseprovider: dsn: parse: unsupported DSN: …`: a sqlite DSN of a form no SQLite file name takes unambiguously (a bare `app.db` is also a keyword/value or MySQL DSN's tail); write `./app.db`. A URL of another scheme names it.
-  - `parseprovider: dsn: _txlock: Open sets it …`, `… pool_max_conns: the pool is set by the postgres.* settings`: remove the parameter from the DSN and use the setting.
-  - `parseprovider: dsn: not a PostgreSQL connection string pgx reads`: a malformed URL or keyword/value string (a port that is no number, an unclosed quote). The error never quotes the DSN, which may carry a password; check it by hand.
-  - `parseprovider: parsesql: SQLite … is older than 3.47.0`: see [parsesql's supported SQLite](../parsesql/README.md#supported-sqlite).
-  - `parseprovider: parsepgx: collation pg_c_utf8: …; on PostgreSQL 14 to 16 open the provider with Collation(filter.CollationC)`: set `postgres.collation: C`, or upgrade to PostgreSQL 17. A database whose encoding is not UTF8 lacks `pg_c_utf8` on any release.
-  - `parseprovider: parsepgx: checking collation …: failed to connect to …`: the server is unreachable within `postgres.connect_timeout`, or refused the credentials.
+  - `parseprovider: provider: "mysql": this binary links postgres, sqlite`: the configured name is no linked provider's. Check the setting, or require and pass the provider's module. CockroachDB and MySQL are not providers.
+  - `parseprovider: no provider to choose from`, `parseprovider: choice 0: no name`, `parseprovider: choice "sqlite": no Open`, `parseprovider: choice "sqlite": given twice`: `main` built its choices wrong; the configuration is not at fault.
+  - Any other error is the chosen provider's `Open`, returned as it is: `parsesql: …` ([parsesql operations](../parsesql/README.md#operations)) or `parsepgx: …` ([parsepgx operations](../parsepgx/README.md#operations)).
 
 ## Security
 
-The DSN is `sensitive`: config printouts, diffs and usage tables redact it, and no error `Open` returns quotes it (pgx's own parse errors, which can, are replaced). Credentials can come from a secret store through config's `secret` tag on the application's field. `Open` adds no credentials or network access of its own; TLS is the DSN's (`sslmode`).
+The selector reads no credentials and quotes no setting: the name it refuses is the configured provider name, never a DSN. Each provider's DSN is `sensitive` in its `Config`, redacted from config printouts, and never quoted in its errors.
 
 ## Code Map
 
 | File | Responsibility |
 |------|----------------|
-| [`parseprovider.go`](parseprovider.go) | `Config` and its blocks, `Open` and its checks, the SQLite DSN parameters and connection limits, the pgx pool configuration, `Database` |
-| [`open_test.go`](open_test.go) | The defaults, the write-transaction mode, shared in-memory databases, every refusal |
-| [`postgres_integration_test.go`](postgres_integration_test.go) | A pool on the test server with the configured limits, and a resource on it |
+| [`parseprovider.go`](parseprovider.go) | `Database`, `Choice`, `Open` and its refusals |
+| [`parseprovider_test.go`](parseprovider_test.go) | The named choice opens, its error returns as it is, every refusal |
