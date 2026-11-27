@@ -110,6 +110,7 @@ Set limits deliberately for your endpoint. [Configuration](schema-configuration.
 - SQLite compares and orders decimals through `parse_decimal_key` ([`parsesql`](../parsesql/README.md#functions)), one Go call per row and expression: equality, `$ne`, `$in` and `$nin` compare the column's key with each operand's, as ranges, sorts and keyset seeks do. One expression index, the key and then the keyset's tiebreaker, serves them all: `CREATE INDEX prices_amount_key ON prices (parse_decimal_key(amount), id)`, if every connection that writes the table has the functions registered, since the index's maintenance calls them. Two keys are equal exactly where the canonical texts `parse_decimal` returns are, for every value a column holds (`TestDecimalKey_EqualExactlyWhereTextIsEqual`). A decimal path's key is `parse_decimal_key(doc -> '$.price')`. Facet terms key decimal and float values through `parse_decimal` (a `float32` field's through `parse_decimal_float32`), one call per row. An int or float path's member is a number only within 1000 digits in plain notation: a literal of at most 1000 characters with no exponent is, without a call, and `parse_decimal` reads any other, one call per such member.
 - Facets and exact counts can scan a much larger population than the returned page. Request them only when needed.
 - Includes cap targets per owner, but the caller still executes and assembles them. Avoid loading an unbounded related object graph.
+- The memory provider has no index to design: a page sorted by the table's key, with no facet and no count of a filter, seeks from its cursor in O(log n + page size); an include reads each owner's pairs by a range of the pair table's key; every other list, count and facet reads every row of the table once ([parsememory costs](../parsememory/README.md#operations)).
 
 Inspect real query plans and benchmark with production-like cardinalities. The package does not choose indexes, cache plans, pool connections, or promise a throughput figure.
 
@@ -123,7 +124,7 @@ go test -tags=integration -race ./...
 go test -tags=unit -run '^$' -bench . ./...
 ```
 
-`./...` stops at the [example server](../examples/server/), a module of its own: `make parse-example-check` from the repository root tests it against this working tree.
+`./...` stops at each provider module ([`parsesql`](../parsesql/), [`parsepgx`](../parsepgx/), [`parsememory`](../parsememory/)) and the [example server](../examples/server/), modules of their own: run the same commands from each provider's directory, or `make test-parse-unit`, `make test-parse-race` and `make test-parse-integration` from the repository root for every parse module; `make parse-example-check` tests the example against this working tree, and `make test-parse-wasip1` runs the memory provider's unit tests under `GOOS=wasip1` on wazero.
 
 `go test` writes a CPU or memory profile for one package at a time. From the repository root, `tools/bench-parse.sh <dir>` runs each package's benchmarks on its own and writes `benchmarks.txt`, `cpu.pprof` and `allocs.pprof` under `<dir>/<package directory>/`, as CI does for main; `BENCH_COUNT` and `BENCH_TIME` set `-count` (default 3) and `-benchtime` (default 1s).
 
@@ -140,9 +141,11 @@ SQLite cases run locally. PostgreSQL and PostGIS tests run against the servers `
 | [parsepgx cancellation](../parsepgx/cancel_integration_test.go) | Concurrent relation updates of one owner; lists and updates cancelled or past their deadline mid-statement |
 | [Change predicate cases](../internal/corpus/patch.go) | `SkipUnchanged`'s comparisons per column kind, executed on SQLite and PostgreSQL |
 | [Composed update cases](../internal/corpus/patch_storage.go) | `ComposedPatch.Apply` over a row's stored values against each engine's `UPDATE`: the values written, the change verdict and the refusals, for every operation kind and column type |
-| [HTTP server](../examples/server/) | SQLite requests, pagination, facets, and patching |
+| [parsememory suite](../parsememory/parsememory_test.go) | The memory provider: declarations, writes, `max_rows`, transactions, refusals, key-ordered pages against a full pass, updates, a done context running nothing |
+| [parsememory concurrency](../parsememory/concurrency_test.go) | Under the race detector: one snapshot per list while batches commit, a failed update writing nothing, the writer's wait |
+| [HTTP server](../examples/server/) | Requests on SQLite, the memory provider and PostgreSQL: pagination, facets, and patching |
 | [Filter conformance](../filter/filtertest/) | Shared operator/type behavior for backend implementers |
-| [Database corpus](../internal/corpus/) | Every database-backed case, run by `parsesql`'s and `parsepgx`'s `TestCorpus` on their engine: executor contract, lists, keysets, facets, filters, keys, values, updates, policies, relations, tenancy, reserved identifiers, SQLite query plans, filter's builders on the database, patch SQL, string literals, PostGIS geo measures |
+| [Database corpus](../internal/corpus/) | Every database-backed case, run by `parsesql`'s and `parsepgx`'s `TestCorpus` on their engine, and by `parsememory`'s on its tables but for the cases that need SQL, each skipped naming why: executor contract, lists, keysets, facets, filters, keys, values, updates, policies, relations, tenancy, reserved identifiers, SQLite query plans, filter's builders on the database, patch SQL, string literals, PostGIS geo measures |
 | [SDK fixtures](../testdata/) | Go-to-TypeScript schema/filter/page contracts |
 
 For the SDK, run `make test-parse-sdk` from the repository root, which first checks the pinned pnpm, or run `pnpm install --frozen-lockfile`, `pnpm run check`, `pnpm run check:compat`, `pnpm run lint`, `pnpm test`, and `pnpm run build` from `sdk/ts`. Regenerate shared fixtures only when the contract change is intentional; the [SDK guide](../sdk/ts/README.md#testing) lists the commands.

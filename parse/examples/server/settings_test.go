@@ -44,7 +44,8 @@ func TestSettings_ExplicitFlagsOverrideEnvironmentWithoutMaskingIt(t *testing.T)
 }
 
 // With no settings the database is in-memory SQLite; the environment
-// selects PostgreSQL and sets its pool.
+// selects PostgreSQL and sets its pool, or the memory provider and its
+// bound.
 func TestSettings_DatabaseDefaultsToInMemorySQLite(t *testing.T) {
 	settings, err := settingsFrom(t)
 	require.NoError(t, err)
@@ -66,6 +67,21 @@ func TestSettings_DatabaseDefaultsToInMemorySQLite(t *testing.T) {
 	assert.Equal(t, int32(4), settings.DB.Postgres.MaxConns)
 	assert.Equal(t, "C", settings.DB.Postgres.Collation)
 	assert.Equal(t, time.Hour, settings.DB.Postgres.MaxConnLifetime)
+	assert.Equal(t, 100_000, settings.DB.Memory.MaxRows)
+
+	t.Setenv("PARSE_SERVER_DB_PROVIDER", "memory")
+	t.Setenv("PARSE_SERVER_DB_MEMORY_MAX_ROWS", "500")
+	settings, err = settingsFrom(t)
+	require.NoError(t, err)
+	assert.Equal(t, "memory", settings.DB.Provider)
+	assert.Equal(t, 500, settings.DB.Memory.MaxRows)
+}
+
+func TestSettings_RejectsAMemoryProviderHoldingNoRows(t *testing.T) {
+	t.Setenv("PARSE_SERVER_DB_PROVIDER", "memory")
+	t.Setenv("PARSE_SERVER_DB_MEMORY_MAX_ROWS", "0")
+	_, err := settingsFrom(t)
+	require.ErrorIs(t, err, config.ErrValidation)
 }
 
 // The database is set by the environment or the settings file, never by a

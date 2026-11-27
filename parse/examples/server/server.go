@@ -79,19 +79,24 @@ const (
 	readyRoute   = "GET /readyz"
 )
 
-// newServer serves the routes on db's provider, each request under
-// requestTimeout and logged once; newRequestID mints the ID of a request
-// that arrives without one.
-func newServer(db database, log *slog.Logger, requestTimeout time.Duration, newRequestID func() string) (http.Handler, error) {
-	if requestTimeout <= 0 {
-		return nil, fmt.Errorf("request timeout must be positive")
-	}
-	products, err := parse.NewResource[Product](db.Provider(), "products", parse.PageSize(defaultPageSize, maxPageSize))
+// newProducts is the products resource on p, built once at startup.
+func newProducts(p *parse.Provider) (*parse.Resource[Product], error) {
+	products, err := parse.NewResource[Product](p, "products", parse.PageSize(defaultPageSize, maxPageSize))
 	if err != nil {
 		return nil, fmt.Errorf("products resource: %w", err)
 	}
+	return products, nil
+}
+
+// newServer serves the routes on products, a resource of db's provider,
+// each request under requestTimeout and logged once; newRequestID mints
+// the ID of a request that arrives without one.
+func newServer(db database, products *parse.Resource[Product], log *slog.Logger, requestTimeout time.Duration, newRequestID func() string) (http.Handler, error) {
+	if requestTimeout <= 0 {
+		return nil, fmt.Errorf("request timeout must be positive")
+	}
 	reg := parse.NewSchemaRegistry()
-	err = parse.RegisterResource(reg, products)
+	err := parse.RegisterResource(reg, products)
 	if err != nil {
 		return nil, fmt.Errorf("schema registry: %w", err)
 	}
