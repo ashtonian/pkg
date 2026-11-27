@@ -45,6 +45,16 @@ func checkParsed(parsed *ParsedPatch) error {
 // T's JSON document, RFC 6902 operations with github.com/evanphx/json-patch
 // and merge objects with RFC 7396. It is safe for concurrent use.
 type Applier[T any] struct {
+	applier *applier
+}
+
+// applier is an Applier without T: its rules, and the apply path over a
+// reflect.Value of T. Go compiles a generic type's methods once for each
+// type argument, so Applier[T] keeps to converting from and to T, and a
+// program's patched types do not each compile the apply path again.
+type applier struct {
+	// typ is T.
+	typ   reflect.Type
 	codec core.Codec
 	// copyBudget bounds the bytes a patch's copies may add
 	// (ParserConfig.MaxPatchCopyBytes; 0 is unlimited).
@@ -80,15 +90,26 @@ type Applier[T any] struct {
 // T's patch schemas came from, and decoding with cfg's codec within its copy
 // budget. A nil cfg is core.DefaultConfig.
 func NewApplier[T any](gen *core.SchemaGenerator, cfg *core.ParserConfig) (*Applier[T], error) {
+	a, err := newApplier(gen, cfg, reflect.TypeFor[T]())
+	if err != nil {
+		return nil, err
+	}
+	typed := &Applier[T]{applier: a}
+	return typed, nil
+}
+
+// newApplier is NewApplier's applier for typ, T.
+func newApplier(gen *core.SchemaGenerator, cfg *core.ParserConfig, typ reflect.Type) (*applier, error) {
 	if gen == nil {
 		return nil, errors.New("patch: NewApplier needs the schema generator")
 	}
 	cfg = cfg.Effective()
-	walk, err := gen.StructFields(reflect.TypeFor[T]())
+	walk, err := gen.StructFields(typ)
 	if err != nil {
 		return nil, fmt.Errorf("patch: walking fields: %w", err)
 	}
-	a := &Applier[T]{
+	a := &applier{
+		typ:          typ,
 		codec:        cfg.GetCodec(),
 		copyBudget:   cfg.MaxPatchCopyBytes,
 		gen:          gen,
@@ -97,13 +118,13 @@ func NewApplier[T any](gen *core.SchemaGenerator, cfg *core.ParserConfig) (*Appl
 		hidden:       hiddenServerPaths(gen, walk),
 	}
 	a.unwritable = unwritableFields(a.fields)
-	a.presented = presentedForms[T](a.fieldNameTag, a.fields)
+	a.presented = presentedForms(typ, a.fieldNameTag, a.fields)
 	if a.fieldNameTag == core.JSONTagKey {
 		return a, nil
 	}
 	switch a.codec.(type) {
 	case core.StdlibJSON, *core.StdlibJSON:
-		a.codecNames, a.codecNamesErr = jsonCodecNames[T](gen, a.fields)
+		a.codecNames, a.codecNamesErr = jsonCodecNames(typ, gen, a.fields)
 	}
 	return a, nil
 }
@@ -144,11 +165,11 @@ func unwritableFields(fields map[string]*core.Field) []string {
 	return names
 }
 
-// presentedForms builds Applier.presented: a form for each visible field
+// presentedForms builds applier.presented: a form for each visible field
 // whose json or field-name tag can omit it. A codec names fields by one of
 // those tags, so the form carries both, without their omit options.
-func presentedForms[T any](fieldNameTag string, fields map[string]*core.Field) map[string]reflect.Type {
-	root := reflect.TypeFor[T]()
+func presentedForms(typ reflect.Type, fieldNameTag string, fields map[string]*core.Field) map[string]reflect.Type {
+	root := typ
 	for root.Kind() == reflect.Pointer {
 		root = root.Elem()
 	}
@@ -194,14 +215,14 @@ func presentedTag(tag reflect.StructTag, keys ...string) (reflect.StructTag, boo
 
 // presentOmitted writes into doc, the document of target, each top-level
 // field an operation names that the encoding omitted, as its presented
-// form (Applier.presented) encodes the value it holds. A pointer T encodes
+// form (applier.presented) encodes the value it holds. A pointer T encodes
 // its form through a pointer too, so a MarshalJSON with a pointer receiver
 // writes the field as it would in T.
-func (a *Applier[T]) presentOmitted(doc map[string]any, target T, ops []*PatchOperation) error {
+func (a *applier) presentOmitted(doc map[string]any, target reflect.Value, ops []*PatchOperation) error {
 	if len(a.presented) == 0 {
 		return nil
 	}
-	root := reflect.ValueOf(&target).Elem()
+	root := target
 	throughPointer := root.Kind() == reflect.Pointer
 	for root.Kind() == reflect.Pointer {
 		if root.IsNil() {
@@ -255,8 +276,8 @@ func (a *Applier[T]) presentOmitted(doc map[string]any, target T, ops []*PatchOp
 // (wrapperField) into doc as the column holds it, its value or null, where
 // the codec wrote the wrapper's own fields: test, copy and move read the
 // value replace writes, and the field is set back through assignWrapped.
-func (a *Applier[T]) presentWrapped(doc map[string]any, target T, ops []*PatchOperation) error {
-	root := reflect.ValueOf(&target).Elem()
+func (a *applier) presentWrapped(doc map[string]any, target reflect.Value, ops []*PatchOperation) error {
+	root := target
 	for root.Kind() == reflect.Pointer {
 		if root.IsNil() {
 			return nil
@@ -289,7 +310,7 @@ func (a *Applier[T]) presentWrapped(doc map[string]any, target T, ops []*PatchOp
 
 // wrappedDocument is the document value of v, a wrapper or a pointer to
 // one: its value as the codec writes it, nil while it is NULL.
-func (a *Applier[T]) wrappedDocument(w core.NullWrapper, v reflect.Value) (any, error) {
+func (a *applier) wrappedDocument(w core.NullWrapper, v reflect.Value) (any, error) {
 	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return nil, nil
@@ -311,7 +332,7 @@ func (a *Applier[T]) wrappedDocument(w core.NullWrapper, v reflect.Value) (any, 
 
 // assignWrapped sets dst, a wrapper field, from its document value: NULL
 // for nil, else the value decoded into the wrapper's value type.
-func (a *Applier[T]) assignWrapped(dst reflect.Value, w core.NullWrapper, doc any) error {
+func (a *applier) assignWrapped(dst reflect.Value, w core.NullWrapper, doc any) error {
 	if doc == nil {
 		dst.SetZero()
 		return nil
@@ -349,6 +370,10 @@ func wrapperField(f *core.Field) (core.NullWrapper, bool) {
 // are customized; a caller composing a schema and an applier itself checks
 // the finished schema, or Apply fails the write.
 func (a *Applier[T]) CheckSchema(schema *PatchSchema) error {
+	return a.applier.checkSchema(schema)
+}
+
+func (a *applier) checkSchema(schema *PatchSchema) error {
 	if schema == nil {
 		return nil
 	}
@@ -384,45 +409,58 @@ func hiddenServerPaths(gen *core.SchemaGenerator, walk *core.StructFields) map[s
 // leave the caller's value, and any pointer it kept to an embedded parent,
 // as they were. A patch no parser produced is ErrUnparsed.
 func (a *Applier[T]) Apply(parsed *ParsedPatch, target T) (T, error) {
-	var zero T
-	if err := checkParsed(parsed); err != nil {
+	out := target
+	err := a.applier.apply(parsed, reflect.ValueOf(&out).Elem())
+	if err != nil {
+		var zero T
 		return zero, err
 	}
-	rv := reflect.ValueOf(target)
-	if rv.Kind() == reflect.Pointer && rv.IsNil() {
-		return zero, errors.New("patch: cannot apply a patch to a nil pointer")
+	return out, nil
+}
+
+// apply is Apply, over out, a settable copy of the target that it patches:
+// what out shares with the target, a pointer target's value or an embedded
+// parent, it copies before writing (workingCopy).
+func (a *applier) apply(parsed *ParsedPatch, out reflect.Value) error {
+	err := checkParsed(parsed)
+	if err != nil {
+		return err
+	}
+	if out.Kind() == reflect.Pointer && out.IsNil() {
+		return errors.New("patch: cannot apply a patch to a nil pointer")
 	}
 	if canApplyDirect(parsed) {
-		return a.applyDirect(parsed, target)
+		return a.applyDirect(parsed, out)
 	}
 	// The document path round-trips T through its field-name tag, which a
 	// hidden server field is not part of: the op would silently not apply.
 	for _, op := range parsed.Operations {
 		if a.hidden[op.Path] {
-			return zero, fmt.Errorf("patch: %s is a server field without a %q name; set it with a top-level replace", op.Path, a.fieldNameTag)
+			return fmt.Errorf("patch: %s is a server field without a %q name; set it with a top-level replace", op.Path, a.fieldNameTag)
 		}
 	}
-	return a.applyDocument(parsed, target)
+	return a.applyDocument(parsed, out)
 }
 
 // workingCopy is the copy of a target that one Apply writes. It starts
 // shallow: an embedded pointer a field is promoted through still points into
 // the caller's value until field gives the copy its own parent.
-type workingCopy[T any] struct {
-	value T
-	// root is value's struct, addressable.
+type workingCopy struct {
+	// root is the copy's struct, addressable.
 	root reflect.Value
 	// owned are the embedded parents field allocated.
 	owned []unsafe.Pointer
 }
 
-func newWorkingCopy[T any](target T) *workingCopy[T] {
-	w := &workingCopy[T]{value: target}
-	w.root = reflect.ValueOf(&w.value).Elem()
-	if w.root.Kind() == reflect.Pointer {
-		pointee := reflect.New(w.root.Type().Elem())
-		pointee.Elem().Set(w.root.Elem())
-		w.root.Set(pointee)
+// newWorkingCopy makes out, a settable copy of the target, the copy one
+// Apply writes: a pointer target's value is copied first, so out points at
+// a value of its own.
+func newWorkingCopy(out reflect.Value) *workingCopy {
+	w := &workingCopy{root: out}
+	if out.Kind() == reflect.Pointer {
+		pointee := reflect.New(out.Type().Elem())
+		pointee.Elem().Set(out.Elem())
+		out.Set(pointee)
 		w.root = pointee.Elem()
 	}
 	return w
@@ -435,7 +473,7 @@ func newWorkingCopy[T any](target T) *workingCopy[T] {
 // write through it lands in the same copy. A field promoted through an
 // unexported embedded pointer, whose parent can be neither, is refused
 // before anything is written.
-func (w *workingCopy[T]) field(f *core.Field) (reflect.Value, error) {
+func (w *workingCopy) field(f *core.Field) (reflect.Value, error) {
 	err := f.CheckWritable()
 	if err != nil {
 		return reflect.Value{}, err
@@ -453,7 +491,7 @@ func (w *workingCopy[T]) field(f *core.Field) (reflect.Value, error) {
 // own points p, an embedded pointer in the copy, at a parent the copy owns.
 // field has refused every route through an unexported embedded pointer, so
 // p is settable.
-func (w *workingCopy[T]) own(p reflect.Value) error {
+func (w *workingCopy) own(p reflect.Value) error {
 	if !p.IsNil() && slices.Contains(w.owned, p.UnsafePointer()) {
 		return nil
 	}
@@ -488,23 +526,22 @@ func canApplyDirect(parsed *ParsedPatch) bool {
 
 // applyDirect sets struct fields directly via reflection, avoiding all
 // serialization.
-func (a *Applier[T]) applyDirect(parsed *ParsedPatch, target T) (T, error) {
-	var zero T
+func (a *applier) applyDirect(parsed *ParsedPatch, target reflect.Value) error {
 	out := newWorkingCopy(target)
 	for _, op := range parsed.Operations {
 		tokens, err := core.ParsePointer(op.Path)
 		if err != nil || len(tokens) != 1 {
-			return zero, fmt.Errorf("patch: direct apply: path %q is not a top-level field", op.Path)
+			return fmt.Errorf("patch: direct apply: path %q is not a top-level field", op.Path)
 		}
 		fieldName := tokens[0]
 		fv, err := a.writable(out, fieldName, op.Path)
 		if err != nil {
-			return zero, err
+			return err
 		}
 		value, cleared := wholeValue(op)
 		if op.Schema.SQLType.IsJSON() {
 			if err := assignStoredJSON(fv, value); err != nil {
-				return zero, core.NewError(ECodePatchValueInvalid, fmt.Sprintf("setting JSON field %s: %v", fieldName, err),
+				return core.NewError(ECodePatchValueInvalid, fmt.Sprintf("setting JSON field %s: %v", fieldName, err),
 					core.WithPath(op.Path), core.WithCause(err))
 			}
 			continue
@@ -522,10 +559,10 @@ func (a *Applier[T]) applyDirect(parsed *ParsedPatch, target T) (T, error) {
 		if err != nil {
 			invalid := core.NewError(ECodePatchValueInvalid, fmt.Sprintf("setting field %s: %v", fieldName, err),
 				core.WithPath(op.Path), core.WithCause(err))
-			return zero, invalid
+			return invalid
 		}
 	}
-	return out.value, nil
+	return nil
 }
 
 // writable is the working copy's field for a top-level patch path name,
@@ -535,7 +572,7 @@ func (a *Applier[T]) applyDirect(parsed *ParsedPatch, target T) (T, error) {
 // core.ParseError: construction refuses its path (GeneratePatchSchema,
 // CheckSchema), so only a schema completed by hand and never checked
 // reaches it, the server's fault and not the request's.
-func (a *Applier[T]) writable(w *workingCopy[T], name, path string) (reflect.Value, error) {
+func (a *applier) writable(w *workingCopy, name, path string) (reflect.Value, error) {
 	field, ok := a.fields[name]
 	if !ok {
 		return reflect.Value{}, core.NewError(ECodePatchFieldNotFound, fmt.Sprintf("schema-validated path %q has no matching %q-tagged struct field on %s", path, a.fieldNameTag, gowalker.TypeText(w.root.Type())),
@@ -688,7 +725,7 @@ func sharesMemory(t reflect.Type) bool {
 // checkDocumentFieldNames catches the default JSON codec paired with a
 // different schema tag before a document operation can silently hit another
 // key. Custom codecs must encode the configured field-name tag themselves.
-func (a *Applier[T]) checkDocumentFieldNames(parsed *ParsedPatch) error {
+func (a *applier) checkDocumentFieldNames(parsed *ParsedPatch) error {
 	if a.codecNamesErr != nil {
 		return a.codecNamesErr
 	}
@@ -717,8 +754,8 @@ func (a *Applier[T]) checkDocumentFieldNames(parsed *ParsedPatch) error {
 // jsonCodecNames maps each name in fields to the name encoding/json, the
 // default codec, writes the same Go field under: "" when its json tag hides
 // the field, "(none)" when it does not write the field at all.
-func jsonCodecNames[T any](gen *core.SchemaGenerator, fields map[string]*core.Field) (map[string]string, error) {
-	jsonWalk, err := core.StructFieldsOf(reflect.TypeFor[T](), core.JSONTagKey, gen.ColumnTagKey())
+func jsonCodecNames(typ reflect.Type, gen *core.SchemaGenerator, fields map[string]*core.Field) (map[string]string, error) {
+	jsonWalk, err := core.StructFieldsOf(typ, core.JSONTagKey, gen.ColumnTagKey())
 	if err != nil {
 		return nil, fmt.Errorf("patch: the JSON codec cannot name T's fields: %w", err)
 	}
@@ -748,26 +785,25 @@ func jsonCodecNames[T any](gen *core.SchemaGenerator, fields map[string]*core.Fi
 // json-patch and each RFC 7396 merge object with jsonmerge, then decode the
 // changed fields through their storage or request codec. Untouched fields
 // keep their values without another decoder invocation.
-func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
-	var zero T
+func (a *applier) applyDocument(parsed *ParsedPatch, target reflect.Value) error {
 	if err := a.checkDocumentFieldNames(parsed); err != nil {
-		return zero, err
+		return err
 	}
-	data, err := a.codec.Encode(target)
+	data, err := a.codec.Encode(target.Interface())
 	if err != nil {
-		return zero, fmt.Errorf("patch: encoding target: %w", err)
+		return fmt.Errorf("patch: encoding target: %w", err)
 	}
 	var doc map[string]any
 	if err = a.codec.Decode(data, &doc); err != nil {
-		return zero, fmt.Errorf("patch: decoding target to a document: %w", err)
+		return fmt.Errorf("patch: decoding target to a document: %w", err)
 	}
 	err = a.presentOmitted(doc, target, parsed.Operations)
 	if err != nil {
-		return zero, err
+		return err
 	}
 	err = a.presentWrapped(doc, target, parsed.Operations)
 	if err != nil {
-		return zero, err
+		return err
 	}
 
 	ops := parsed.Operations
@@ -780,11 +816,11 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 			// survive. Merge operations are top-level.
 			tokens, pointerErr := core.ParsePointer(op.Path)
 			if pointerErr != nil || len(tokens) != 1 {
-				return zero, fmt.Errorf("patch: merge path %q is not a top-level field", op.Path)
+				return fmt.Errorf("patch: merge path %q is not a top-level field", op.Path)
 			}
 			value, err := wireValue(op)
 			if err != nil {
-				return zero, err
+				return err
 			}
 			doc[tokens[0]] = jsonmerge.Apply(doc[tokens[0]], value)
 			i++
@@ -795,23 +831,23 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 			// so the test is decided here, against the document as it stands
 			// at this step.
 			if err = testValue(doc, op, i); err != nil {
-				return zero, err
+				return err
 			}
 			i++
 		case op.Op == PatchOpCopy || op.Op == PatchOpMove:
 			value, exists := pointerValue(doc, op.From)
 			if exists {
 				if err = validateTransferValue(op, value, a.codec, i); err != nil {
-					return zero, err
+					return err
 				}
 			}
 			w, err := wireOp(op)
 			if err != nil {
-				return zero, err
+				return err
 			}
 			doc, err = run.apply(doc, []map[string]any{w}, []int{i})
 			if err != nil {
-				return zero, err
+				return err
 			}
 			i++
 		case op.Op == PatchOpArrayAppend:
@@ -824,7 +860,7 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 			}
 			doc, err = run.apply(doc, steps, slices.Repeat([]int{i}, len(steps)))
 			if err != nil {
-				return zero, err
+				return err
 			}
 			i++
 		default:
@@ -836,7 +872,7 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 			for j < len(ops) && !ops[j].Merge && ops[j].Op != PatchOpTest && ops[j].Op != PatchOpArrayAppend && ops[j].Op != PatchOpCopy && ops[j].Op != PatchOpMove {
 				w, err := wireOp(ops[j])
 				if err != nil {
-					return zero, err
+					return err
 				}
 				wire = append(wire, w)
 				indexes = append(indexes, j)
@@ -844,7 +880,7 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 			}
 			doc, err = run.apply(doc, wire, indexes)
 			if err != nil {
-				return zero, err
+				return err
 			}
 			i = j
 		}
@@ -867,18 +903,18 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 		for _, path := range paths {
 			tokens, err := core.ParsePointer(path)
 			if err != nil || len(tokens) == 0 {
-				return zero, fmt.Errorf("patch: invalid field path %q", path)
+				return fmt.Errorf("patch: invalid field path %q", path)
 			}
 			name := tokens[0]
 			field, ok := a.fields[name]
 			if !ok {
-				return zero, core.NewError(ECodePatchFieldNotFound, fmt.Sprintf("patch path %q has no writable struct field", path),
+				return core.NewError(ECodePatchFieldNotFound, fmt.Sprintf("patch path %q has no writable struct field", path),
 					core.WithPath(path))
 			}
 			if _, seen := changed[name]; !seen {
 				info, err := a.gen.FieldType(field)
 				if err != nil {
-					return zero, fmt.Errorf("patch: field %s: %w", name, err)
+					return fmt.Errorf("patch: field %s: %w", name, err)
 				}
 				changed[name] = changedField{field: field, storage: info.SQLType}
 				names = append(names, name)
@@ -896,17 +932,17 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 			}
 		}
 	}
-	var result T
+	result := reflect.New(a.typ)
 	if len(native) > 0 {
 		out, err := a.codec.Encode(native)
 		if err != nil {
-			return zero, fmt.Errorf("patch: encoding patched document: %w", err)
+			return fmt.Errorf("patch: encoding patched document: %w", err)
 		}
-		err = a.codec.Decode(out, &result)
+		err = a.codec.Decode(out, result.Interface())
 		if err != nil {
-			unfit := core.NewError(ECodePatchValueInvalid, fmt.Sprintf("patched document does not fit %s: %v", gowalker.TypeText(reflect.TypeFor[T]()), err),
+			unfit := core.NewError(ECodePatchValueInvalid, fmt.Sprintf("patched document does not fit %s: %v", gowalker.TypeText(a.typ), err),
 				core.WithCause(err))
-			return zero, unfit
+			return unfit
 		}
 	}
 	out := newWorkingCopy(target)
@@ -914,11 +950,11 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 		change := changed[name]
 		d, err := a.writable(out, name, core.FormatPointer(name))
 		if err != nil {
-			return zero, err
+			return err
 		}
 		if change.storage.IsJSON() {
 			if err := assignStoredJSON(d, doc[name]); err != nil {
-				return zero, core.NewError(ECodePatchValueInvalid, fmt.Sprintf("setting JSON field %s: %v", name, err),
+				return core.NewError(ECodePatchValueInvalid, fmt.Sprintf("setting JSON field %s: %v", name, err),
 					core.WithPath(core.FormatPointer(name)), core.WithCause(err))
 			}
 			continue
@@ -927,12 +963,12 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 		if wrapped {
 			err := a.assignWrapped(d, w, doc[name])
 			if err != nil {
-				return zero, core.NewError(ECodePatchValueInvalid, fmt.Sprintf("setting field %s: %v", name, err),
+				return core.NewError(ECodePatchValueInvalid, fmt.Sprintf("setting field %s: %v", name, err),
 					core.WithPath(core.FormatPointer(name)), core.WithCause(err))
 			}
 			continue
 		}
-		src := reflect.ValueOf(result)
+		src := result.Elem()
 		if src.Kind() == reflect.Pointer {
 			if src.IsNil() {
 				d.SetZero()
@@ -947,7 +983,7 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 		}
 		d.Set(value)
 	}
-	return out.value, nil
+	return nil
 }
 
 // validateTransferValue validates a copy's or move's source value, resolved
