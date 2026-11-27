@@ -217,7 +217,8 @@ func (b sqlBackend) clock() string {
 // timestamp as SQLite's canonical text, an array as JSON text on SQLite.
 func (b sqlBackend) arg(t testing.TB, kind core.TypeInfo, v any) any {
 	t.Helper()
-	v = core.Deref(v)
+	v, err := core.Deref(v)
+	require.NoError(t, err)
 	if v == nil {
 		return nil
 	}

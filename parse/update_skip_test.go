@@ -3,6 +3,7 @@
 package parse_test
 
 import (
+	"database/sql/driver"
 	"strings"
 	"testing"
 
@@ -133,4 +134,32 @@ func TestUnchanged_ComparesPointerKeysByValue(t *testing.T) {
 
 	_, err = r.Unchanged(nil, []pointerKeyed{{}})
 	assert.ErrorContains(t, err, "has no key")
+}
+
+// optionalCode is a key codec that writes NULL for its zero value.
+type optionalCode string
+
+func (c optionalCode) Value() (driver.Value, error) {
+	if c == "" {
+		return nil, nil
+	}
+	return string(c), nil
+}
+
+type valuerKeyed struct {
+	ID   optionalCode `json:"id"   db:"id"   parse:"filter"`
+	Name string       `json:"name" db:"name" parse:"patch"`
+}
+
+// A key column the database holds as NULL — a Valuer that writes nil, as
+// a nil pointer — is a row without a key.
+func TestUnchanged_RefusesARowWhoseKeyIsNull(t *testing.T) {
+	r, err := parse.NewResource[valuerKeyed]("keyed")
+	require.NoError(t, err)
+	unchanged, err := r.Unchanged([]valuerKeyed{{ID: "a"}}, []valuerKeyed{{ID: "a"}, {ID: "b"}})
+	require.NoError(t, err)
+	assert.Equal(t, []valuerKeyed{{ID: "b"}}, unchanged)
+
+	_, err = r.Unchanged(nil, []valuerKeyed{{}})
+	require.ErrorContains(t, err, "parse: keyed: a row has no key: key column id holds no value")
 }

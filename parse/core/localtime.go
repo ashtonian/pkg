@@ -123,7 +123,8 @@ func localTimeOf(t time.Time) (LocalTime, error) {
 }
 
 // normalizeLocalTime is NormalizeScalar's FieldTypeTime: the canonical text
-// of a LocalTime or of a string.
+// of a LocalTime, a string, or a time.Time's wall clock (localTimeOf), as
+// pgx binds a time.Time to a TIME column and Scan reads one.
 func normalizeLocalTime(v any) (string, error) {
 	switch t := v.(type) {
 	case LocalTime:
@@ -131,6 +132,9 @@ func normalizeLocalTime(v any) (string, error) {
 		return string(parsed), err
 	case string:
 		parsed, err := ParseLocalTime(t)
+		return string(parsed), err
+	case time.Time:
+		parsed, err := localTimeOf(t)
 		return string(parsed), err
 	}
 	return "", fmt.Errorf("expected time of day string, got %s", gowalker.TypeText(reflect.TypeOf(v)))

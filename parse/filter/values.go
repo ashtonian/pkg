@@ -121,7 +121,11 @@ func (p *FilterParser) normalizeOperand(field *FieldSchema, op FilterOperator, v
 // pattern. Enum and custom validators do not apply: the value is a
 // fragment, not a field value.
 func (p *FilterParser) normalizeText(field *FieldSchema, value any, pattern bool) (any, error) {
-	v, err := core.NormalizeScalar(core.FieldTypeString, reflect.Invalid, value)
+	stored, _, err := core.StoredValue(value)
+	var v any
+	if err == nil {
+		v, err = core.NormalizeScalar(core.FieldTypeString, reflect.Invalid, stored)
+	}
 	if err == nil && pattern {
 		s, _ := v.(string) // FieldTypeString normalizes to a string
 		_, err = likeTokens(s)
@@ -313,11 +317,18 @@ func (p *FilterParser) normalizeMember(field *FieldSchema, value any) (any, erro
 }
 
 // normalizeScalar converts one value to the canonical Go type for
-// field.DataType via core.NormalizeScalar. Timestamps additionally accept
+// field.DataType via core.NormalizeScalar, after reading it as the
+// database holds it (core.StoredValue): a policy's or a caller's Go value
+// may be a driver.Valuer, which stands for the value it writes, and a
+// decoded request value is its own. Timestamps additionally accept
 // relative tokens (`now-7d`), resolved against the parser clock; a
 // token-shaped value that cannot resolve is an error, never a literal passed
 // through to SQL.
 func (p *FilterParser) normalizeScalar(field *FieldSchema, value any) (any, error) {
+	value, _, err := core.StoredValue(value)
+	if err != nil {
+		return nil, err
+	}
 	if field.DataType == core.FieldTypeTimestamp {
 		if s, ok := value.(string); ok {
 			resolved, isToken, err := ResolveRelativeTime(s, p.now())

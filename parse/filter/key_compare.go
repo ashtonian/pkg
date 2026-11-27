@@ -4,10 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -296,26 +294,17 @@ func keyInKeyword(member bool) string {
 func (SQLiteDialect) StoredKeyValue(_ core.TypeInfo, v any) (any, error) { return v, nil }
 
 // StoredKeyValue is a key column's canonical value (core.NormalizeScalar)
-// as PostgreSQL holds it: a timestamp to the microsecond, rounded as
-// PostgreSQL rounds the canonical text it reads, the fraction parsed as a
-// double and scaled with rint, ties to even. Two timestamps PostgreSQL
-// holds equal have one value. A time of day is canonical at microseconds
-// already (core.ParseLocalTime).
+// as PostgreSQL holds it: a timestamp to the microsecond
+// (core.MicrosecondTimestamp), so two timestamps PostgreSQL holds equal
+// have one value. A time of day is canonical at microseconds already
+// (core.ParseLocalTime).
 func (PostgresDialect) StoredKeyValue(t core.TypeInfo, v any) (any, error) {
 	if t.Type != core.FieldTypeTimestamp {
 		return v, nil
 	}
 	text, ok := v.(string)
-	at, err := time.Parse(time.RFC3339Nano, text)
-	if !ok || err != nil || core.FormatTimestamp(at) != text {
+	if !ok {
 		return nil, fmt.Errorf("timestamp key %v is not canonical text", v)
 	}
-	// The fraction with its point and nine digits, as PostgreSQL parses it.
-	const seconds = len("2006-01-02T15:04:05")
-	f, err := strconv.ParseFloat(text[seconds:len(text)-1], 64)
-	if err != nil {
-		return nil, fmt.Errorf("timestamp key %q: %w", text, err)
-	}
-	micros := time.Duration(math.RoundToEven(f*1e6)) * time.Microsecond
-	return core.FormatTimestamp(at.Truncate(time.Second).Add(micros)), nil
+	return core.MicrosecondTimestamp(text)
 }

@@ -2,7 +2,6 @@ package filter
 
 import (
 	"fmt"
-	"math"
 	"reflect"
 
 	"github.com/ashtonian/pkg/gowalker"
@@ -20,8 +19,8 @@ import (
 // boolean as true or false, a number as its canonical decimal text — a
 // path member's exactly as written, a float32 field's at float32
 // precision — a date as YYYY-MM-DD, a timestamp as core.FormatTimestamp and
-// a UUID lower-case and hyphenated, however it is spelled. A non-finite
-// float has none.
+// a UUID lower-case and hyphenated, however it is spelled. A float's or a
+// decimal's NaN or infinity has none.
 func FacetKeys(v any, f *FieldSchema) ([]string, error) {
 	if f.Path != nil {
 		return pathFacetKeys(v, f)
@@ -33,7 +32,10 @@ func FacetKeys(v any, f *FieldSchema) ([]string, error) {
 		}
 		return []string{key}, nil
 	}
-	v = core.Deref(v)
+	v, err := core.Deref(v)
+	if err != nil {
+		return nil, facetKeyError(f, err)
+	}
 	if v == nil {
 		return nil, nil
 	}
@@ -90,21 +92,13 @@ func pathFacetKeys(doc any, f *FieldSchema) ([]string, error) {
 
 // memberFacetKey is a decoded document member's key as a path of type t
 // reads it (pathMember): its canonical text (core.CanonicalText), a number
-// exactly as written.
+// member exactly as written.
 func memberFacetKey(v any, t core.FieldType) (string, bool, error) {
-	if t == core.FieldTypeInt || t == core.FieldTypeFloat {
-		n, ok := jsonNumber(v)
-		if !ok {
-			return "", false, nil
-		}
-		text, err := core.CanonicalText(core.TypeInfo{Type: core.FieldTypeDecimal}, n)
-		return text, err == nil, nil
-	}
 	m, present, err := pathMember(v, t)
 	if err != nil || !present {
 		return "", false, err
 	}
-	text, err := core.CanonicalText(core.TypeInfo{Type: t}, m)
+	text, err := core.CanonicalText(memberType(t), m)
 	if err != nil {
 		return "", false, err
 	}
@@ -114,30 +108,22 @@ func memberFacetKey(v any, t core.FieldType) (string, bool, error) {
 // valueFacetKey is a column value's key as a field of type t holds it: its
 // canonical text (core.CanonicalText), the text a terms facet's statement
 // keys the column by; kind is its Go numeric kind (reflect.Float32 keys at
-// float32 precision). NULL and a non-finite float have none.
+// float32 precision). The value is read as the column holds it
+// (core.StoredScalar). NULL and a float's or a decimal's NaN or infinity
+// (core.NonFinite) have none.
 func valueFacetKey(v any, t core.FieldType, kind reflect.Kind) (string, bool, error) {
 	if !facetKeyTypes[t] {
 		return "", false, fmt.Errorf("%s values have no facet key every backend reads alike", t)
 	}
-	v, null, err := core.StoredValue(v)
-	if err != nil || null || nonFinite(v) {
+	stored, present, err := core.StoredScalar(t, kind, v)
+	if err != nil || !present || core.NonFinite(t, stored) {
 		return "", false, err
 	}
-	key, err := core.CanonicalText(core.TypeInfo{Type: t, NumberKind: kind}, v)
+	key, err := core.CanonicalText(core.TypeInfo{Type: t, NumberKind: kind}, stored)
 	if err != nil {
 		return "", false, err
 	}
 	return key, true, nil
-}
-
-// nonFinite reports NaN or an infinity, which no facet keys.
-func nonFinite(v any) bool {
-	rv := reflect.ValueOf(v)
-	if rv.Kind() != reflect.Float32 && rv.Kind() != reflect.Float64 {
-		return false
-	}
-	f := rv.Float()
-	return math.IsNaN(f) || math.IsInf(f, 0)
 }
 
 func facetKeyError(f *FieldSchema, err error) error {

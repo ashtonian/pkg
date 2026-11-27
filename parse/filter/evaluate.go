@@ -113,13 +113,15 @@ func (r ColumnRow) Value(f *FieldSchema) (any, bool, error) {
 // or a driver.Valuer whose value is nil. A document is a Document's decoded
 // value, or decoded from its JSON text (string, []byte, json.RawMessage) or
 // encoding; an array's elements
-// normalize to f.Elem; a scalar is read as the database holds it
-// (core.StoredValue: drivers' Valuers read, decimals, times, dates and UUIDs
-// kept as their types) and normalized to f's type as a stored value
-// (core.NormalizeStored), so it compares as SQL compares it: a time.Time a
-// driver scans a DATE into as its day, a float's NaN after +Infinity.
+// normalize to f.Elem; a scalar is f's type's stored value
+// (core.StoredScalar: read as the database holds it, then normalized as a
+// stored value), so it compares as SQL compares it: a time.Time a driver
+// scans a DATE into as its day, a float's NaN after +Infinity.
 func ColumnValue(f *FieldSchema, v any) (any, bool, error) {
-	v = core.Deref(v)
+	v, err := core.Deref(v)
+	if err != nil {
+		return nil, false, fmt.Errorf("field %s: %w", f.ExternalName, err)
+	}
 	if v == nil || isNilReference(v) {
 		return nil, false, nil
 	}
@@ -154,23 +156,11 @@ func ColumnValue(f *FieldSchema, v any) (any, bool, error) {
 	case f.DataType == core.FieldTypeGeo || f.DataType == core.FieldTypeAny:
 		return v, true, nil
 	}
-	raw, null, err := core.StoredValue(v)
+	scalar, present, err := core.StoredScalar(f.DataType, f.NumberKind, v)
 	if err != nil {
 		return nil, false, fmt.Errorf("field %s: %w", f.ExternalName, err)
 	}
-	if null {
-		return nil, false, nil
-	}
-	// A Valuer may hold a number as its text.
-	rv := reflect.ValueOf(raw)
-	if rv.Kind() == reflect.String && (f.DataType == core.FieldTypeInt || f.DataType == core.FieldTypeFloat) {
-		raw = json.Number(rv.String())
-	}
-	scalar, err := core.NormalizeStored(f.DataType, f.NumberKind, raw)
-	if err != nil {
-		return nil, false, fmt.Errorf("field %s: %w", f.ExternalName, err)
-	}
-	return scalar, true, nil
+	return scalar, present, nil
 }
 
 // jsonArray decodes an array held as JSON text, as SQLite stores one.
@@ -444,7 +434,11 @@ func compareLeaf(f *FieldSchema, op FilterOperator, lit, v any, present bool) (T
 	}
 	switch op {
 	case OpEq, OpNe, OpGt, OpGte, OpLt, OpLte:
-		c, err := compareScalar(f, f.DataType, v, lit)
+		operand, null, err := storedOperand(f, lit)
+		if err != nil || null {
+			return Unknown, err
+		}
+		c, err := compareScalar(f, f.DataType, v, operand)
 		if err != nil {
 			return False, err
 		}
@@ -474,11 +468,15 @@ func membershipTruth(f *FieldSchema, op FilterOperator, lit, v any) (Truth, erro
 	}
 	in, null := False, false
 	for _, m := range set {
-		if m == nil {
+		member, isNull, err := storedOperand(f, m)
+		if err != nil {
+			return False, err
+		}
+		if isNull {
 			null = true
 			continue
 		}
-		c, err := compareScalar(f, f.DataType, v, m)
+		c, err := compareScalar(f, f.DataType, v, member)
 		if err != nil {
 			return False, err
 		}
@@ -496,13 +494,32 @@ func membershipTruth(f *FieldSchema, op FilterOperator, lit, v any) (Truth, erro
 	return in, nil
 }
 
+// storedOperand is a filter value as the statement binds it
+// (core.StoredValue), and whether it is SQL NULL: nil, a nil pointer or a
+// NULL Valuer, which no comparison holds for or against.
+func storedOperand(f *FieldSchema, lit any) (any, bool, error) {
+	operand, null, err := core.StoredValue(lit)
+	if err != nil {
+		return nil, false, fmt.Errorf("field %s: %w", f.ExternalName, err)
+	}
+	return operand, null, nil
+}
+
 // compareScalar orders a row value against a filter value of type t, both in
-// the canonical domain, in the type's one order (core.CompareCanonical).
+// the canonical domain, in the type's one order (core.CompareCanonical). A
+// document's number member, which a path's value and its array's elements
+// carry as a json.Number (PathValue), compares exactly, as a decimal
+// (memberType), as PostgreSQL compares it; a column's number is never one
+// (ColumnValue).
 func compareScalar(f *FieldSchema, t core.FieldType, v, lit any) (int, error) {
 	if !core.IsKeyType(t) {
 		return 0, fmt.Errorf("field %s: type %q has no scalar comparison", f.ExternalName, t)
 	}
-	c, err := core.CompareCanonical(core.TypeInfo{Type: t, NumberKind: f.NumberKind}, v, lit)
+	typ := core.TypeInfo{Type: t, NumberKind: f.NumberKind}
+	if _, member := v.(json.Number); member {
+		typ = memberType(t)
+	}
+	c, err := core.CompareCanonical(typ, v, lit)
 	if err != nil {
 		return 0, fmt.Errorf("field %s: %w", f.ExternalName, err)
 	}

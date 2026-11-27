@@ -120,12 +120,17 @@ func (p CursorPlan) Token(reverse bool, get func(column string) (any, error)) (*
 }
 
 // KeyValue is a row's canonical value for key k, given raw, the row's value
-// at k.Column: CursorValue of it, or for a path key the member the path rule
-// extracts from the column's document, read as PathValue reads it (nil when
-// absent). A decimal key's value is its canonical text
-// (core.DecimalText), whatever form its column scans to, and so is an int
-// or float path's member, exactly as its JSON number holds it, since
-// PostgreSQL orders the member as numeric. Cursors and a memory backend's
+// at k.Column, or for a path key the member the path rule extracts from the
+// column's document, read as PathValue reads it (nil when absent). A key of
+// a scalar type (core.IsKeyType) reads it as its type's stored value
+// (core.StoredScalar), whatever its column scans to — a date key's
+// time.Time as its day, a decimal key's text, INTEGER or REAL as its
+// canonical text — so ValidateCursor accepts the value it mints; a key of
+// no scalar type (a codec's) reads it through CursorValue. An int or float
+// path's number member is its canonical decimal text, exactly as its JSON
+// number holds it, since PostgreSQL orders the member as numeric; a JSON
+// number beyond core.MaxDecimalDigits digits is no number member, so its
+// key is NULL, as the SQL reads it. Cursors and a memory backend's
 // ordering read keys through it alike.
 func KeyValue(k CursorKey, raw any) (any, error) {
 	if k.Path != nil {
@@ -133,29 +138,27 @@ func KeyValue(k CursorKey, raw any) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if k.numberPath() {
-			return pathNumberText(root, k.Path.Segments)
-		}
 		member, present, err := decodedPathValue(root, k.Path.Segments, k.DataType, "")
 		if err != nil || !present {
 			return nil, err
 		}
 		raw = member
 	}
-	v, err := CursorValue(raw)
-	if err != nil || v == nil || k.DataType != core.FieldTypeDecimal {
-		return v, err
+	if !core.IsKeyType(k.DataType) {
+		return CursorValue(raw)
 	}
-	text, err := core.DecimalText(v)
+	t := k.valueType()
+	v, _, err := core.StoredScalar(t.Type, t.NumberKind, raw)
 	if err != nil {
-		return nil, fmt.Errorf("cursor: decimal key: %w", err)
+		return nil, fmt.Errorf("cursor: %s key: %w", k.DataType, err)
 	}
-	return text, nil
+	return v, nil
 }
 
-// CursorValue reduces a row value to the canonical form a token carries and
-// SQL binds: nil, string, bool, int64, uint64 or float64, NaN and the
-// infinities included, which a float column may hold. The value is read
+// CursorValue reduces a value of a key of no scalar type (KeyValue) to the
+// canonical form a token carries and SQL binds: nil, string, bool, int64,
+// uint64 or float64, NaN and the infinities included, which a float column
+// may hold. The value is read
 // as the database holds it first (core.StoredValue: pointers followed, a
 // driver.Valuer read, NULL as nil); then decimals (core.IsDecimalType)
 // become their canonical text, times RFC 3339 UTC strings (the form SQLite
@@ -251,11 +254,11 @@ func (k CursorKey) numberPath() bool {
 	return k.Path != nil && (k.DataType == core.FieldTypeInt || k.DataType == core.FieldTypeFloat)
 }
 
-// valueType is the type k's values (KeyValue) are of: a decimal for a
-// number path, otherwise k's own.
+// valueType is the type k's values (KeyValue) are of: a path's member's
+// (memberType), a decimal for a number path, otherwise k's own.
 func (k CursorKey) valueType() core.TypeInfo {
-	if k.numberPath() {
-		return core.TypeInfo{Type: core.FieldTypeDecimal}
+	if k.Path != nil {
+		return memberType(k.DataType)
 	}
 	return core.TypeInfo{Type: k.DataType, NumberKind: k.NumberKind}
 }
@@ -383,18 +386,18 @@ func SeekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 // the lexicographic expansion, OR over depth i of (key_0 = v_0 AND … AND
 // key_i after v_i), NULL-aware. bind binds one value and returns its
 // placeholder; every non-null token value is bound once and its placeholder
-// reused across depths. A float key's NaN is a NULL boundary on a dialect
-// that stores NaN as NULL (storesNaN); a number path's decimal text is read
-// as the dialect compares the member (pathNumberBound).
+// reused across depths. A boundary the database reads as NULL, a float's
+// NaN or a decimal's NaN or infinity on SQLite, is a NULL boundary
+// (readsAsNull); a number path's decimal text is read as the dialect
+// compares the member (pathNumberBound).
 func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any) string) string {
 	values := make([]any, len(keys))
 	phs := make([]string, len(keys))
 	native := len(keys) > 1
 	for i, k := range keys {
 		v := token.Fields[i].Value
-		f, isFloat := v.(float64)
-		if isFloat && math.IsNaN(f) && !d.storesNaN() {
-			v = nil // the rows this database holds NaN in hold NULL
+		if d.readsAsNull(k.DataType, v) {
+			v = nil
 		}
 		values[i] = v
 		if v != nil {
@@ -461,12 +464,17 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 	return "(" + strings.Join(branches, " OR ") + ")"
 }
 
-// storesNaN reports true: a float8 column holds NaN, which orders after
-// +Infinity and equals NaN.
-func (PostgresDialect) storesNaN() bool { return true }
+// readsAsNull reports false: float8 and numeric hold NaN and the
+// infinities, NaN after +Infinity and equal to NaN.
+func (PostgresDialect) readsAsNull(core.FieldType, any) bool { return false }
 
-// storesNaN reports false: SQLite stores a NaN it is given as NULL.
-func (SQLiteDialect) storesNaN() bool { return false }
+// readsAsNull reports a float's NaN, which SQLite stores as NULL, and a
+// decimal key's NaN or infinity: a decimal column holds a number literal,
+// and parse_decimal reads any other text as NULL.
+func (SQLiteDialect) readsAsNull(t core.FieldType, v any) bool {
+	f, isFloat := v.(float64)
+	return (isFloat && math.IsNaN(f)) || (t == core.FieldTypeDecimal && core.NonFinite(t, v))
+}
 
 // pathNumberBound reads the bound through DecimalOrder: a number member
 // orders as numeric, exactly.

@@ -187,7 +187,8 @@ func sqliteIntegers(field *FieldSchema, value any) error {
 	return nil
 }
 
-// sqliteSetMembers are a set's members as its JSON array holds them.
+// sqliteSetMembers are a set's members, none NULL (membership), as its
+// JSON array holds them.
 func sqliteSetMembers(field *FieldSchema, members []any) (any, error) {
 	if field.DataType == core.FieldTypeDecimal {
 		return typedSlice(members, core.DecimalText)
@@ -384,15 +385,15 @@ func geoUnsupported(d dialect.Dialect, op FilterOperator, shape string) error {
 
 // MarshalValue serializes a value for SQLite parameter binding.
 // JSON/Array/Object types are marshaled to JSON strings for TEXT storage.
-// A timestamp, and each element of a list of them, is its canonical text
-// (core.FormatTimestamp), which SQLite stores: UTC at a fixed width, so
-// text order is time order.
+// A date and a timestamp, and each element of a list of timestamps, bind
+// as their columns hold them (boundScalar): a Valuer read, a timestamp its
+// canonical text (core.FormatTimestamp), UTC at a fixed width, so text
+// order is time order, where the driver would store a time.Time as its own
+// text in its own offset.
 func (d SQLiteDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
 	switch t.Type {
-	case core.FieldTypeDate:
-		return nullableDateValue(value)
-	case core.FieldTypeTimestamp:
-		return timestampText(value)
+	case core.FieldTypeDate, core.FieldTypeTimestamp:
+		return boundScalar(t.Type, value)
 	}
 
 	if _, ok := value.(driver.Valuer); ok && !t.SQLType.IsJSON() {
@@ -422,27 +423,14 @@ func (SQLiteDialect) StoresAsText(t core.FieldType) bool {
 	return t == core.FieldTypeTimestamp || core.IsDocument(t) || t == core.FieldTypeArray
 }
 
-// timestampText is a timestamp's canonical text, from a time.Time, a
-// pointer to one, a driver.Valuer holding one (sql.NullTime) or RFC 3339
-// text; nil and NULL are NULL. The driver would store a time.Time as its
-// own text in the value's offset, which neither compares nor keys as the
-// instant.
-func timestampText(value any) (any, error) {
-	v, null, err := core.StoredValue(value)
-	if err != nil || null {
-		return nil, err
-	}
-	return core.NormalizeScalar(core.FieldTypeTimestamp, reflect.Invalid, v)
-}
-
 // timestampTexts is a list of timestamps, or a pointer to one, with each
 // element its canonical text: json.Marshal writes a time.Time in its own
 // offset, and an element reads as a timestamp only in UTC (PathExpr). A
 // nil list, or a value that is no list, is unchanged.
 func timestampTexts(value any) (any, error) {
-	list := core.Deref(value)
-	if list == nil {
-		return value, nil
+	list, err := core.Deref(value)
+	if err != nil || list == nil {
+		return value, err
 	}
 	if rv := reflect.ValueOf(list); rv.Kind() == reflect.Slice && rv.IsNil() {
 		return value, nil
@@ -453,7 +441,7 @@ func timestampTexts(value any) (any, error) {
 	}
 	out := make([]any, len(items))
 	for i, item := range items {
-		text, err := timestampText(item)
+		text, err := boundScalar(core.FieldTypeTimestamp, item)
 		if err != nil {
 			return nil, fmt.Errorf("timestamp element %d: %w", i, err)
 		}
@@ -561,7 +549,7 @@ func (SQLiteDialect) objectElement(alias string) string {
 func (SQLiteDialect) scalarElement(f *FieldSchema, alias string) *FieldSchema {
 	e := bound(elementOf(f))
 	e.Table, e.Column, e.Expr = "", "", ""
-	e.Path = &JSONPath{alias: alias, Storage: StorageJSONB, element: true}
+	e.Path = &JSONPath{alias: alias, Storage: StorageJSONB, element: true, columnElement: f.Path == nil}
 	return &e
 }
 
@@ -594,7 +582,7 @@ func (d SQLiteDialect) numberKey(f *FieldSchema) string {
 // fullkey.
 func (d SQLiteDialect) PathExpr(p *JSONPath, t core.FieldType) string {
 	kind, val, literal := sqlitePathMember(d, p)
-	return sqliteTypedMember(t, kind, val, literal)
+	return sqliteTypedMember(t, kind, val, literal, !p.columnElement)
 }
 
 // TwoValuedCondition has no second rendering on SQLite.

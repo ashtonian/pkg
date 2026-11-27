@@ -1,8 +1,9 @@
 // Package parsesqlite registers the SQL functions parse's SQLite dialect
 // calls, with the modernc.org/sqlite driver. SQLite has no exact decimal
 // type: a NUMERIC column or a json_extract result holds a double, so
-// filter.SQLiteDialect compares, orders and facets decimals through
-// deterministic functions instead. It has no geometry either, so geo
+// filter.SQLiteDialect compares, orders and facets decimals, and bounds an
+// int or float path's number members, through deterministic functions
+// instead. It has no geometry either, so geo
 // filters on a JSONB point call functions that decide them as PostGIS does.
 //
 //   - parse_decimal(x) is the canonical decimal text (core.DecimalText) of
@@ -16,6 +17,10 @@
 // number literal) or a document member as SQLite's `->` operator returns
 // it: a JSON number literal as written, or a JSON string literal holding a
 // decimal in plain notation, as filter.PathValue reads a decimal member.
+// An int or float path reads a number member through parse_decimal when
+// its literal has an exponent or runs past core.MaxDecimalDigits
+// characters, so a plan that filters, sorts or facets such a path needs
+// the functions too.
 // Anything else is NULL, so a filter treats it as missing.
 //
 //   - parse_geo_near(point, latKey, lonKey, lat, lon, meters) is 1 when the

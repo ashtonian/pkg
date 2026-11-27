@@ -1,12 +1,12 @@
 package core
 
 import (
-	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -80,7 +80,7 @@ func checkElementsText(elements []any) error {
 //   - FieldTypeInt       → int64 (signed kinds) or uint64 (unsigned), range-checked against kind
 //   - FieldTypeFloat     → finite float64, range-checked against kind
 //   - FieldTypeDecimal   → canonical decimal text (DecimalText)
-//   - FieldTypeString    → string (encoding.TextMarshaler accepted)
+//   - FieldTypeString    → string (encoding.TextMarshaler accepted, on the value or its pointer)
 //   - FieldTypeUUID      → canonical lowercase UUID string
 //   - FieldTypeBool      → bool
 //   - FieldTypeTimestamp → RFC 3339 UTC string with nanosecond precision, of fixed width (TimestampLayout); a UTC year outside 0001 to 9999 is an error (time.Time accepted)
@@ -88,23 +88,29 @@ func checkElementsText(elements []any) error {
 //     midnight, as a driver scans a SQL DATE)
 //   - FieldTypeTime, FieldTypeInterval, FieldTypeInet, FieldTypeCIDR,
 //     FieldTypeMACAddr   → the canonical text of LocalTime, Interval, Inet,
-//     CIDR and MACAddr (each type accepted, and netip.Addr, netip.Prefix
-//     and net.HardwareAddr where they hold the value)
+//     CIDR and MACAddr (each type accepted, a time.Time's wall clock for a
+//     time of day, and netip.Addr, netip.Prefix and net.HardwareAddr where
+//     they hold the value)
 //
 // Other data types pass through unchanged. Non-nil pointers are
 // dereferenced first, so typed Go input (*int64, *time.Time) normalizes like
 // its value, and a value of a named string, integer, float or bool type
-// normalizes as its kind's value does. A nil value is an error; callers decide separately whether a
+// normalizes as its kind's value does: a named string as the string it
+// holds, for every type a string spells. A nil value is an error; callers decide separately whether a
 // field admits null.
 func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
-	v = Deref(v)
+	v, err := Deref(v)
+	if err != nil {
+		return nil, err
+	}
+	if !IsKeyType(dt) {
+		return v, nil
+	}
 	if v == nil {
-		switch dt {
-		case FieldTypeString, FieldTypeUUID, FieldTypeInt, FieldTypeFloat, FieldTypeDecimal, FieldTypeBool, FieldTypeTimestamp, FieldTypeDate,
-			FieldTypeTime, FieldTypeInterval, FieldTypeInet, FieldTypeCIDR, FieldTypeMACAddr:
-			return nil, fmt.Errorf("expected %s, got null", dt)
-		}
-		return nil, nil
+		return nil, fmt.Errorf("expected %s, got null", dt)
+	}
+	if dt != FieldTypeInt && dt != FieldTypeFloat && dt != FieldTypeBool {
+		v = plainString(v)
 	}
 	switch dt {
 	case FieldTypeString:
@@ -139,10 +145,6 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 		}
 		return b, nil
 	case FieldTypeDate:
-		if date, ok := v.(Date); ok {
-			parsed, err := ParseDate(string(date))
-			return string(parsed), err
-		}
 		if text, ok := v.(string); ok {
 			date, err := ParseDate(text)
 			return string(date), err
@@ -175,23 +177,89 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	return v, nil
 }
 
+// plainString is v as a string when it is of a named string type (Date,
+// LocalTime, an application's `type Stamp string`), so the reader of every
+// type a string spells takes it as it takes the string it holds, which is
+// what a driver binds for it. A json.Number is a number, and any other
+// value is itself.
+func plainString(v any) any {
+	if _, ok := v.(json.Number); ok {
+		return v
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.String {
+		return v
+	}
+	return rv.String()
+}
+
 // NormalizeStored is NormalizeScalar for v, a value a column of type dt
 // holds rather than a request value: a float column's NaN or infinity is
-// kept, as a float64, where NormalizeScalar refuses one. A request value
-// is finite; a stored one need not be, since a table written outside parse
-// may hold NaN and both infinities (PostgreSQL's float8; SQLite stores the
-// infinities and holds NaN as NULL). Rows Evaluate reads and the values a
+// kept, as a float64, and a decimal column's, as the text PostgreSQL's
+// numeric writes it ("NaN", "Infinity", "-Infinity"), where
+// NormalizeScalar refuses one (NonFinite), and a bool column's integer 0
+// or 1 is false or true, as SQLite stores a boolean. A request value is
+// finite; a stored one need not be, since a table written outside parse
+// may hold NaN and both infinities (PostgreSQL's float8, and its numeric
+// from 14; SQLite stores a float's infinities, holds a float's NaN as
+// NULL, and has no decimal one). Rows Evaluate reads and the values a
 // cursor carries normalize through it.
 func NormalizeStored(dt FieldType, kind reflect.Kind, v any) (any, error) {
-	rv := reflect.ValueOf(Deref(v))
-	isFloat := rv.Kind() == reflect.Float32 || rv.Kind() == reflect.Float64
-	if dt == FieldTypeFloat && isFloat {
-		f := rv.Float()
-		if math.IsNaN(f) || math.IsInf(f, 0) {
-			return f, nil
+	held, err := Deref(v)
+	if err != nil {
+		return nil, err
+	}
+	rv := reflect.ValueOf(held)
+	switch {
+	case dt == FieldTypeFloat && NonFinite(dt, held):
+		return rv.Float(), nil
+	case dt == FieldTypeDecimal && NonFinite(dt, held):
+		return rv.String(), nil
+	case dt == FieldTypeBool:
+		b, ok := storedBool(rv)
+		if ok {
+			return b, nil
 		}
 	}
 	return NormalizeScalar(dt, kind, v)
+}
+
+// storedBool is the boolean an integer 0 or 1 stores; ok is false for any
+// other value.
+func storedBool(rv reflect.Value) (bool, bool) {
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		n := rv.Int()
+		return n == 1, n == 0 || n == 1
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		n := rv.Uint()
+		return n == 1, n == 0 || n == 1
+	}
+	return false, false
+}
+
+// StoredScalar is v, the value a row holds for a column of type dt — what a
+// driver scans it into, or an application's row field — in its canonical
+// form (NormalizeStored), and false for SQL NULL. v is read as the database
+// holds it first (StoredValue), so a time.Time a driver scans a DATE into is
+// its day and a Valuer's value is what it writes, and a number a driver or
+// Valuer gives as text (a numeric's) is read as that number. Evaluate's rows
+// and a keyset's cursors are read through it, so both hold a row's value as
+// the statement that reads it compares it.
+func StoredScalar(dt FieldType, kind reflect.Kind, v any) (any, bool, error) {
+	held, null, err := StoredValue(v)
+	if err != nil || null {
+		return nil, false, err
+	}
+	rv := reflect.ValueOf(held)
+	if rv.Kind() == reflect.String && (dt == FieldTypeInt || dt == FieldTypeFloat) {
+		held = json.Number(rv.String())
+	}
+	scalar, err := NormalizeStored(dt, kind, held)
+	if err != nil {
+		return nil, false, err
+	}
+	return scalar, true, nil
 }
 
 // TimestampLayout is the canonical timestamp text: RFC 3339 in UTC with
@@ -213,6 +281,26 @@ const (
 // the instants NormalizeScalar accepts.
 func FormatTimestamp(t time.Time) string {
 	return t.UTC().Format(TimestampLayout)
+}
+
+// MicrosecondTimestamp is text, a timestamp's canonical text
+// (FormatTimestamp), as a PostgreSQL TIMESTAMPTZ column holds it: rounded
+// to the microsecond as PostgreSQL rounds the text it reads, the fraction
+// with its point parsed as a double and scaled with rint, ties to even,
+// carrying into the next second. Two timestamps PostgreSQL holds equal
+// have one text.
+func MicrosecondTimestamp(text string) (string, error) {
+	at, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil || FormatTimestamp(at) != text {
+		return "", fmt.Errorf("timestamp %q is not canonical text", text)
+	}
+	const seconds = len("2006-01-02T15:04:05")
+	f, err := strconv.ParseFloat(text[seconds:len(text)-1], 64)
+	if err != nil {
+		return "", fmt.Errorf("timestamp %q fraction: %w", text, err)
+	}
+	micros := time.Duration(math.RoundToEven(f*1e6)) * time.Microsecond
+	return FormatTimestamp(at.Truncate(time.Second).Add(micros)), nil
 }
 
 // AnySlice returns v as []any when it is the decoder's []any or any typed
@@ -287,15 +375,18 @@ func rfc3339Text(s string) bool {
 }
 
 // text returns v as a string when it is one (including named string types),
-// or when it marshals to text (uuid.UUID, netip.Addr, …).
+// or when it marshals to text (uuid.UUID, netip.Addr, …), its pointer's
+// MarshalText included (textMarshalerOf): a value read from a row is a
+// copy, which keeps no pointer method.
 func text(v any) (string, bool) {
 	switch t := v.(type) {
 	case string:
 		return t, true
 	case json.Number: // a JSON number is not a string, whatever its Go kind
 		return "", false
-	case encoding.TextMarshaler:
-		b, err := t.MarshalText()
+	}
+	if tm, ok := textMarshalerOf(v); ok {
+		b, err := tm.MarshalText()
 		if err != nil {
 			return "", false
 		}

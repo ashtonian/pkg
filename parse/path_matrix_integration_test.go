@@ -4,9 +4,11 @@ package parse_test
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -120,10 +122,20 @@ func textOf(v any) any {
 }
 
 // sameValue compares a scanned SQL value with PathValue's: numbers by value
-// (drivers return int64, float64 or numeric text), booleans across 0/1.
+// (drivers return int64, float64 or numeric text), booleans across 0/1. A
+// number member, which PathValue reads exactly, is PostgreSQL's numeric
+// text and SQLite's INTEGER exactly, and SQLite's REAL as the double
+// json_extract rounds it to.
 func sameValue(got, want any) bool {
 	if got == nil || want == nil {
 		return got == nil && want == nil
+	}
+	if n, ok := want.(json.Number); ok {
+		if g, isFloat := got.(float64); isFloat {
+			wf, _ := strconv.ParseFloat(string(n), 64) // ±Inf beyond float64's range, as SQLite reads it
+			return g == wf
+		}
+		return sameDecimal(got, string(n))
 	}
 	switch w := want.(type) {
 	case bool:

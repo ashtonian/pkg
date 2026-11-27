@@ -86,9 +86,11 @@ func normalizeKeyValue(t TypeInfo, v any) (any, error) {
 
 // KeyTextOf is KeyText of key, each value read as its column's type,
 // paired by position with types: the canonical text (CanonicalText) of
-// each value of the key NormalizeKey gives. Two keys of the columns have one text
-// exactly when the database holds them equal, and it is the text a
-// statement names their row by.
+// each value of the key NormalizeKey gives. Two keys a database holds have
+// one text exactly when it holds them equal, and it is the text a
+// statement names their row by. PostgreSQL holds a timestamp at the
+// microsecond, so a key bound there is held as filter's
+// Dialect.StoredKeyValue gives it.
 func KeyTextOf(types []TypeInfo, key Key) (string, error) {
 	normalized, err := NormalizeKey(types, key)
 	if err != nil {

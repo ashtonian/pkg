@@ -15,24 +15,46 @@ import (
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
+func sqliteScores(t *testing.T, column string, field core.FieldType) scoreDB {
+	return scoreDB{db: dbtest.SQLite(t), dialect: filter.SQLiteDialect{}, column: column, field: field}
+}
+
 // SQLite orders a REAL column -Infinity, the finite values, +Infinity,
 // and stores NaN as NULL: pages end on the infinities and walk on, and
 // the NaN rows page as the NULL ones they are.
 func TestNonFiniteFloatWalk_SQLite(t *testing.T) {
 	t.Run("nullable", func(t *testing.T) {
-		runNonFiniteWalks(t, scoreDB{db: dbtest.SQLite(t), dialect: filter.SQLiteDialect{}, column: "REAL"}, true,
-			[]int64{3, 7, 9, 4, 2, 8, 1, 5, 6, 10})
+		runNonFiniteWalks(t, sqliteScores(t, "REAL", core.FieldTypeFloat), true, []int64{3, 7, 9, 4, 2, 8, 1, 5, 6, 10})
 	})
 	t.Run("not null", func(t *testing.T) {
-		runNonFiniteWalks(t, scoreDB{db: dbtest.SQLite(t), dialect: filter.SQLiteDialect{}, column: "REAL"}, false,
-			[]int64{3, 7, 9, 4, 2, 8})
+		runNonFiniteWalks(t, sqliteScores(t, "REAL", core.FieldTypeFloat), false, []int64{3, 7, 9, 4, 2, 8})
 	})
 }
 
 // Evaluate reads a REAL column's infinities as SQLite compares them, and
 // its NaN, which SQLite stores as NULL, as the NULL it reads back.
 func TestNonFiniteFloatFilter_SQLite(t *testing.T) {
-	runNonFiniteFilters(t, scoreDB{db: dbtest.SQLite(t), dialect: filter.SQLiteDialect{}, column: "REAL"})
+	runNonFiniteFilters(t, sqliteScores(t, "REAL", core.FieldTypeFloat))
+}
+
+// No NaN or infinity is a facet key, in the statement or in Go.
+func TestNonFiniteFloatFacet_SQLite(t *testing.T) {
+	runNonFiniteFacets(t, sqliteScores(t, "REAL", core.FieldTypeFloat), []filter.FacetBucket{{Key: "0", Count: 1}, {Key: "1.5", Count: 1}})
+}
+
+// SQLite has no decimal NaN or infinity: a decimal column holds a number
+// literal, and parse_decimal reads PostgreSQL's NaN and infinity texts,
+// which only a table written outside parse holds, as NULL. A page ending
+// on one is a NULL boundary there (the cursor carries the text), so the
+// rows page as the NULL ones the statement orders them as, and no facet
+// keys them.
+func TestNonFiniteDecimal_SQLiteReadsThemAsNull(t *testing.T) {
+	t.Run("walk", func(t *testing.T) {
+		runNonFiniteWalks(t, sqliteScores(t, "TEXT", core.FieldTypeDecimal), true, []int64{9, 4, 1, 2, 3, 5, 6, 7, 8, 10})
+	})
+	t.Run("facet", func(t *testing.T) {
+		runNonFiniteFacets(t, sqliteScores(t, "TEXT", core.FieldTypeDecimal), []filter.FacetBucket{{Key: "0", Count: 1}, {Key: "1.5", Count: 1}})
+	})
 }
 
 // A NaN boundary, which a database that stores NaN mints, is a NULL one
@@ -42,8 +64,8 @@ func TestNonFiniteFloatSeek_SQLiteNaNIsNull(t *testing.T) {
 	db := dbtest.SQLite(t)
 	_, err := db.ExecContext(t.Context(), "CREATE TABLE scores (id INTEGER PRIMARY KEY, score REAL)")
 	require.NoError(t, err)
-	for _, seed := range scoreSeeds {
-		_, err = db.ExecContext(t.Context(), "INSERT INTO scores (id, score) VALUES (?, ?)", seed.ID, seed.Score)
+	for _, seed := range floatSeeds {
+		_, err = db.ExecContext(t.Context(), "INSERT INTO scores (id, score) VALUES (?, ?)", seed.id, seed.score)
 		require.NoError(t, err)
 	}
 	key := filter.CursorKey{Name: "score", Table: "scores", Column: "score", DataType: core.FieldTypeFloat, NumberKind: reflect.Float64, Nullable: true, Direction: filter.SortAsc}

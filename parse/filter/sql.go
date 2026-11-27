@@ -153,10 +153,11 @@ type Dialect interface {
 	// database holds equal have one: a timestamp at the database's
 	// precision.
 	StoredKeyValue(t core.TypeInfo, v any) (any, error)
-	// storesNaN reports whether a float column holds NaN as NaN, ordered
-	// after +Infinity; a database that does not stores it as NULL, so a
-	// NaN page boundary seeks as a NULL one.
-	storesNaN() bool
+	// readsAsNull reports a page boundary value v of a key of type t that
+	// the database reads as NULL, so the boundary seeks as a NULL one: a
+	// float's NaN where a float column stores NaN as NULL, a decimal's NaN
+	// or infinity (core.NonFinite) where a decimal column holds none.
+	readsAsNull(t core.FieldType, v any) bool
 	// pathNumberBound renders a seek's bound for an int or float path key,
 	// bound at ph as the member's canonical decimal text (KeyValue), as the
 	// dialect compares the member the key orders by.
@@ -333,10 +334,12 @@ func comparison(expr string, op FilterOperator, value any, bind func(any) string
 }
 
 // membership renders `$in` / `$nin` through render, which receives the
-// set's members, none NULL and at least one, bound as one parameter so a
-// statement's parameter count is independent of the set's size. An empty
-// set matches nothing (`$in`) or everything (`$nin`), NULL or not. A NULL
-// member makes a miss Unknown, as it does in `x IN (…, NULL)`.
+// set's members, each as a parameter binds it (core.StoredValue), none
+// NULL and at least one, bound as one parameter so a statement's parameter
+// count is independent of the set's size. An empty set matches nothing
+// (`$in`) or everything (`$nin`), NULL or not. A NULL member — nil, a nil
+// pointer or a NULL Valuer — makes a miss Unknown, as it does in
+// `x IN (…, NULL)`, on every dialect: no typed array need hold it.
 func membership(op FilterOperator, value any, render func(members []any, in bool) (string, error)) (string, error) {
 	arr, ok := core.AnySlice(value)
 	if !ok {
@@ -349,9 +352,13 @@ func membership(op FilterOperator, value any, render func(members []any, in bool
 		return "1=1", nil
 	}
 	members := make([]any, 0, len(arr))
-	for _, m := range arr {
-		if m != nil {
-			members = append(members, m)
+	for i, m := range arr {
+		stored, null, err := core.StoredValue(m)
+		if err != nil {
+			return "", fmt.Errorf("$%s member %d: %w", op, i, err)
+		}
+		if !null {
+			members = append(members, stored)
 		}
 	}
 	if len(members) == 0 {
@@ -905,18 +912,11 @@ func checkPairKeyOp(f *FieldSchema, op FilterOperator) error {
 	return invalidRelation(f, fmt.Sprintf("compares a key of several columns, which $%s cannot name; it takes $null", op))
 }
 
-// nullableDateValue is the SQL boundary: typed nil pointers are SQL NULL,
-// while request normalization separately refuses null scalar operands.
-func nullableDateValue(value any) (any, error) {
-	if value == nil {
-		return nil, nil
-	}
-	rv := reflect.ValueOf(value)
-	for rv.Kind() == reflect.Pointer {
-		if rv.IsNil() {
-			return nil, nil
-		}
-		rv = rv.Elem()
-	}
-	return core.NormalizeScalar(core.FieldTypeDate, reflect.Invalid, rv.Interface())
+// boundScalar is value, bound to a column of type t, as the column holds
+// it (core.StoredScalar): a pointer followed, a Valuer read as the value it
+// writes, then the type's canonical value; nil for SQL NULL, which request
+// normalization refuses for a scalar operand on its own.
+func boundScalar(t core.FieldType, value any) (any, error) {
+	v, _, err := core.StoredScalar(t, reflect.Invalid, value)
+	return v, err
 }

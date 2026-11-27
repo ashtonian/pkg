@@ -44,3 +44,23 @@ func TestCompareKeyValues_RefusesWhatItsTypeCannotOrder(t *testing.T) {
 	_, err := filter.CompareKeyValues(filter.CursorKey{Name: "n", DataType: core.FieldTypeInt}, "7", int64(7))
 	require.ErrorContains(t, err, `comparing values of key "n": cannot compare int values string and int64`)
 }
+
+// Every spelling of a key type's value, the Go values drivers scan a column
+// into among them (a time.Time for a date, a time of day and a timestamp),
+// mints through KeyValue a cursor the next request accepts (EncodeCursor,
+// DecodeCursor, ValidateCursor) holding the value its case lists.
+func TestKeyValue_CursorsRoundTripEverySpelling(t *testing.T) {
+	for _, c := range ordertest.Cases() {
+		t.Run(c.Name, func(t *testing.T) {
+			key := filter.CursorKey{Name: "v", Column: "v", DataType: c.Type.Type, NumberKind: c.Type.NumberKind, Nullable: true, Direction: filter.SortAsc}
+			for _, x := range c.Values {
+				for _, a := range x.Spellings {
+					resumed := resumeKeyValue(t, key, a)
+					got, err := filter.CompareKeyValues(key, resumed, x.Spellings[0])
+					require.NoError(t, err, "%#v resumed as %#v", a, resumed)
+					assert.Zero(t, got, "%#v resumed as %#v", a, resumed)
+				}
+			}
+		})
+	}
+}
