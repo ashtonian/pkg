@@ -18,7 +18,7 @@ var facetParams = []string{filter.ParamFacets, filter.ParamFilter, filter.ParamS
 // refused as ParseList reads and refuses them. A list parameter that shapes
 // a page (cursor, sort, page_size, include_total, include, fields) is
 // E2067, never accepted and ignored. BuildFacets compiles the request.
-func (r *Resource[T]) ParseFacets(q url.Values) (*ListRequest, error) {
+func (r *resourceCore) ParseFacets(q url.Values) (*ListRequest, error) {
 	for _, name := range slices.Sorted(maps.Keys(q)) {
 		if filter.IsListParam(name) && !slices.Contains(facetParams, name) {
 			return nil, listParamError(name, fmt.Sprintf("a facets request takes no %s: it counts the filtered rows and has no page", name))
@@ -32,7 +32,7 @@ func (r *Resource[T]) ParseFacets(q url.Values) (*ListRequest, error) {
 // asking for the same facets: the same filter, search, tenant floor,
 // soft-delete masking and policy. A request naming no facets compiles to
 // nil.
-func (r *Resource[T]) BuildFacets(req *ListRequest, s Scope) (*filter.FacetQuery, error) {
+func (r *resourceCore) BuildFacets(req *ListRequest, s Scope) (*filter.FacetQuery, error) {
 	plan, err := r.BuildList(req, s)
 	if err != nil {
 		return nil, err

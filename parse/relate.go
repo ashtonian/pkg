@@ -35,17 +35,17 @@ type RelatedResource interface {
 	admits(column string, need columnAccess) error
 }
 
-func (r *Resource[T]) liveFilterSchema() *filter.ResourceSchema { return r.filterSchema }
+func (r *resourceCore) liveFilterSchema() *filter.ResourceSchema { return r.filterSchema }
 
-func (r *Resource[T]) isView() bool { return r.view }
+func (r *resourceCore) isView() bool { return r.view }
 
-func (r *Resource[T]) columnType(name string) (reflect.Type, bool) {
+func (r *resourceCore) columnType(name string) (reflect.Type, bool) {
 	t, ok := r.tableColumns[name]
 	return t, ok
 }
 
 // columnWire is the wire form of the field holding column (core.Field.Wire).
-func (r *Resource[T]) columnWire(name string) core.Wire {
+func (r *resourceCore) columnWire(name string) core.Wire {
 	if f, ok := r.columnFields[name]; ok {
 		return f.Wire()
 	}
@@ -191,7 +191,7 @@ func Describe(label, description string) RelationOption {
 // any of them. A view (WithPaths, In), a value for one request, neither
 // declares a relation nor is one's target: relate the resources it is
 // derived from.
-func (r *Resource[T]) Relate(name string, rel Relation) error {
+func (r *resourceCore) Relate(name string, rel Relation) error {
 	if r.view {
 		return fmt.Errorf("parse: %s: relation %q: a view (WithPaths, In) declares no relations; relate the resource it is derived from", r.table, name)
 	}
@@ -361,7 +361,7 @@ func relationOperators(kind core.RelationKind, width int) []filter.FilterOperato
 
 // correlationFields are the owner's fields for columns, in order
 // (correlationField).
-func (r *Resource[T]) correlationFields(columns []string) []*filter.FieldSchema {
+func (r *resourceCore) correlationFields(columns []string) []*filter.FieldSchema {
 	out := make([]*filter.FieldSchema, len(columns))
 	for i, c := range columns {
 		out[i] = r.correlationField(c)
@@ -371,7 +371,7 @@ func (r *Resource[T]) correlationFields(columns []string) []*filter.FieldSchema 
 
 // correlationField is the owner's field for column: its system field, a
 // filter field over the column, or one typed from T.
-func (r *Resource[T]) correlationField(column string) *filter.FieldSchema {
+func (r *resourceCore) correlationField(column string) *filter.FieldSchema {
 	fs := r.filterSchema
 	if f, ok := fs.SystemFields[column]; ok {
 		return f
@@ -394,7 +394,7 @@ func (r *Resource[T]) correlationField(column string) *filter.FieldSchema {
 // the type compares. target is nil for a pair table declared by tag, whose
 // target keys the field's element type declares (filter.GenerateSchema
 // refuses one that is no scalar).
-func (r *Resource[T]) checkRelationKeys(name string, rs *core.RelationSchema, target RelatedResource) error {
+func (r *resourceCore) checkRelationKeys(name string, rs *core.RelationSchema, target RelatedResource) error {
 	type column struct {
 		table, name string
 		typ         reflect.Type
@@ -451,7 +451,7 @@ func keyKind(t core.FieldType) core.FieldType {
 
 // MustRelate is Relate for startup declarations; it panics on a
 // declaration error.
-func (r *Resource[T]) MustRelate(name string, rel Relation) {
+func (r *resourceCore) MustRelate(name string, rel Relation) {
 	if err := r.Relate(name, rel); err != nil {
 		panic(err)
 	}
@@ -459,7 +459,7 @@ func (r *Resource[T]) MustRelate(name string, rel Relation) {
 
 // relationSchema checks rel's columns against r and its target and
 // describes the correlation.
-func (r *Resource[T]) relationSchema(name string, rel Relation) (*core.RelationSchema, error) {
+func (r *resourceCore) relationSchema(name string, rel Relation) (*core.RelationSchema, error) {
 	t := rel.target
 	fail := func(format string, args ...any) error {
 		return fmt.Errorf("parse: %s: relation %q: %s", r.table, name, fmt.Sprintf(format, args...))

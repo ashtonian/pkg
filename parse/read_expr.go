@@ -166,7 +166,7 @@ func (c *computedColumns) resolve(d filter.Dialect) ([]filter.ComputedColumn, er
 
 // checkComputedPatches refuses a patch path, in either patch schema, that
 // writes a computed column.
-func (r *Resource[T]) checkComputedPatches() error {
+func (r *resourceCore) checkComputedPatches() error {
 	if r.readExprs == nil {
 		return nil
 	}
@@ -184,4 +184,4 @@ func (r *Resource[T]) checkComputedPatches() error {
 }
 
 // computed reports whether column is read through an expression.
-func (r *Resource[T]) computed(column string) bool { return r.readExprs.has(column) }
+func (r *resourceCore) computed(column string) bool { return r.readExprs.has(column) }

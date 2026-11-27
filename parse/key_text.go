@@ -29,7 +29,7 @@ var ErrNoSuchKey = errors.New("no key of the key columns has this text")
 // ByKey's name a row alike. A text its column cannot hold is ErrNoSuchKey
 // naming the column; another number of texts than key columns is the
 // caller's ErrKeyInvalid.
-func (r *Resource[T]) ParseKey(texts ...string) (Key, error) {
+func (r *resourceCore) ParseKey(texts ...string) (Key, error) {
 	kc := r.keyColumns()
 	if len(texts) != len(kc.names) {
 		return nil, fmt.Errorf("parse: %s: %w: %d texts for the %d key columns (%s)",

@@ -220,7 +220,7 @@ func (p *UpdatePlan) HasRelations() bool { return len(p.relations) > 0 }
 // is ErrNoTarget, and a key the key columns cannot hold ErrKeyInvalid;
 // Governance or IncludeDeleted is ErrUpdateScope. Update runs the plan;
 // the SQL is the provider's dialect's.
-func (r *Resource[T]) BuildUpdate(p *patch.ParsedPatch, target Target, s Scope, opts ...UpdateOption) (*UpdatePlan, error) {
+func (r *resourceCore) BuildUpdate(p *patch.ParsedPatch, target Target, s Scope, opts ...UpdateOption) (*UpdatePlan, error) {
 	if err := r.ownsPatch(p, "patch"); err != nil {
 		return nil, err
 	}
@@ -317,7 +317,7 @@ func (r *Resource[T]) BuildUpdate(p *patch.ParsedPatch, target Target, s Scope, 
 
 // conflictStatement selects, from one target row the patch's preconditions
 // do not all hold for, the index of the first operation that fails there.
-func (r *Resource[T]) conflictStatement(target Target, scope updateScope, pre []patch.Precondition) (*Statement, error) {
+func (r *resourceCore) conflictStatement(target Target, scope updateScope, pre []patch.Precondition) (*Statement, error) {
 	d := r.dialect
 	where, args, err := r.updateWhere(target, scope, 0)
 	if err != nil {
@@ -400,7 +400,7 @@ func (r *Resource[T]) unchangedRows(changed, current []T) ([]T, error) {
 // targetKeys are keys, a target's, as the key columns hold them: the values
 // every statement binds. A key the columns cannot hold is ErrKeyInvalid,
 // refused as the key it is before any constraint binds it.
-func (r *Resource[T]) targetKeys(keys []Key) ([]Key, error) {
+func (r *resourceCore) targetKeys(keys []Key) ([]Key, error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}
@@ -422,7 +422,7 @@ func (r *Resource[T]) targetKeys(keys []Key) ([]Key, error) {
 // apart that hold equal keys, through pointers or not, share one. A key
 // column the database holds as NULL (core.StoredValue: a nil pointer, a
 // Valuer of nil) is a row without a key.
-func (r *Resource[T]) rowKey(row T) (any, error) {
+func (r *resourceCore) rowKey(row any) (any, error) {
 	k, err := r.Key(row)
 	if err != nil {
 		return nil, err
@@ -460,7 +460,7 @@ type updateScope struct {
 // is bound as bindTenant binds it. The clock is read once: Owner and
 // Current split one set of rows, so a policy token (`now-1h`) must admit
 // the same rows in each.
-func (r *Resource[T]) bindUpdateScope(s Scope) (updateScope, error) {
+func (r *resourceCore) bindUpdateScope(s Scope) (updateScope, error) {
 	if s.Governance != nil || s.IncludeDeleted {
 		return updateScope{}, fmt.Errorf("parse: %s: %w", r.table, ErrUpdateScope)
 	}
@@ -476,7 +476,7 @@ func (r *Resource[T]) bindUpdateScope(s Scope) (updateScope, error) {
 // after the SET clause's offset ones, compiled for d: the floor a list in
 // the same scope reads (filter.ComposeConstraints: the tenant, live rows,
 // the policy), ANDed with the target.
-func (r *Resource[T]) updateWhere(target Target, s updateScope, offset int) (string, []any, error) {
+func (r *resourceCore) updateWhere(target Target, s updateScope, offset int) (string, []any, error) {
 	pc := filter.ComposeConstraints(filter.RepositoryScope{TenantColumn: r.tenant, TenantID: s.tenant, DeleteColumn: r.deleted}, nil, s.policy)
 	var key *filter.PolicyConstraint
 	switch {
@@ -515,7 +515,7 @@ func (r *Resource[T]) updateWhere(target Target, s updateScope, offset int) (str
 // A replace or an add writes one junction row per owner and value, so a
 // ByFilter update that matches many rows writes as many pairs as its rows
 // times the patch's values: bound the target as the batch it is.
-func (r *Resource[T]) relationStatements(plan *UpdatePlan, ownerKeys []Key) ([]patch.RenderedRelationStatement, error) {
+func (r *resourceCore) relationStatements(plan *UpdatePlan, ownerKeys []Key) ([]patch.RenderedRelationStatement, error) {
 	if len(plan.relations) == 0 || len(ownerKeys) == 0 {
 		return nil, nil
 	}
@@ -554,7 +554,7 @@ func (r *Resource[T]) relationStatements(plan *UpdatePlan, ownerKeys []Key) ([]p
 // The rows are held to the update's tenant and nothing else: the keys are
 // the rows the update wrote, which RETURNING reports whatever their deleted
 // column or the policy now say.
-func (r *Resource[T]) rereadStatement(plan *UpdatePlan, ownerKeys []Key) (*Statement, error) {
+func (r *resourceCore) rereadStatement(plan *UpdatePlan, ownerKeys []Key) (*Statement, error) {
 	if len(plan.relations) == 0 || r.readExprs == nil || len(ownerKeys) == 0 {
 		return nil, nil
 	}
@@ -575,7 +575,7 @@ func (r *Resource[T]) rereadStatement(plan *UpdatePlan, ownerKeys []Key) (*State
 	return stmt, nil
 }
 
-func (r *Resource[T]) updateOptions(opts []UpdateOption) (updateConfig, []patch.PatchSQLOption, error) {
+func (r *resourceCore) updateOptions(opts []UpdateOption) (updateConfig, []patch.PatchSQLOption, error) {
 	var cfg updateConfig
 	for _, opt := range opts {
 		opt(&cfg)
@@ -621,7 +621,7 @@ func (r *Resource[T]) updateOptions(opts []UpdateOption) (updateConfig, []patch.
 // or the tenant column. NewResource refuses a patch path over either, so only
 // a server column (Stamp, Increment) can name one here; both builders hold
 // every write to the rule checkIdentityPatches states.
-func (r *Resource[T]) checkAssignments(assignments []patch.ColumnAssignment, builder string) error {
+func (r *resourceCore) checkAssignments(assignments []patch.ColumnAssignment, builder string) error {
 	for _, assignment := range assignments {
 		if slices.Contains(r.pk, assignment.Column) || (r.tenant != "" && assignment.Column == r.tenant) {
 			return fmt.Errorf("parse: %s: %s cannot change identity column %s", r.table, builder, assignment.Column)

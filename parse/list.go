@@ -143,7 +143,7 @@ type ListInput struct {
 // without search fields is E2067; a field filter, facet, include or field
 // mask name that names no field it can serve is E2071 (an include that is no
 // relation, E2083).
-func (r *Resource[T]) ParseListInput(in ListInput) (*ListRequest, error) {
+func (r *resourceCore) ParseListInput(in ListInput) (*ListRequest, error) {
 	req := &ListRequest{
 		cursor: in.Cursor, pageSize: r.pageSize,
 		includeTotal: in.IncludeTotal, includeDeleted: in.IncludeDeleted,
@@ -189,7 +189,7 @@ func (r *Resource[T]) ParseListInput(in ListInput) (*ListRequest, error) {
 	return req, nil
 }
 
-func (r *Resource[T]) facetName(name string) error {
+func (r *resourceCore) facetName(name string) error {
 	if f, ok := r.filterSchema.Fields[name]; ok && f.Facetable {
 		return nil
 	}
@@ -198,7 +198,7 @@ func (r *Resource[T]) facetName(name string) error {
 
 // maskName refuses a field mask name that is no field of the response,
 // without saying whether T has a field by that name its response withholds.
-func (r *Resource[T]) maskName(name string) error {
+func (r *resourceCore) maskName(name string) error {
 	_, ok := r.maskable[name]
 	if ok {
 		return nil
@@ -219,7 +219,7 @@ func unknownListField(msg, name string) *core.ParseError {
 // advertises (core.WithSearchParam), and a request naming both is E2067.
 // Every other parameter that AcceptParams does not name is a field filter,
 // so a misspelt filter is E2071 and cannot widen a list.
-func (r *Resource[T]) ParseList(q url.Values) (*ListRequest, error) {
+func (r *resourceCore) ParseList(q url.Values) (*ListRequest, error) {
 	in, err := r.listInput(q)
 	if err != nil {
 		return nil, err
@@ -230,7 +230,7 @@ func (r *Resource[T]) ParseList(q url.Values) (*ListRequest, error) {
 // listInput is the transport half of ParseList: text to numbers and booleans,
 // comma-separated names to lists, and the remaining parameters to field
 // filters.
-func (r *Resource[T]) listInput(q url.Values) (ListInput, error) {
+func (r *resourceCore) listInput(q url.Values) (ListInput, error) {
 	err := r.listParamsOnce(q)
 	if err != nil {
 		return ListInput{}, err
@@ -275,7 +275,7 @@ func (r *Resource[T]) listInput(q url.Values) (ListInput, error) {
 
 // parseListFilter is the JSON filter ANDed with the field filters, strictly:
 // a field filter naming no field is E2071.
-func (r *Resource[T]) parseListFilter(doc string, fields map[string][]string, now time.Time) (*filter.ParsedFilter, error) {
+func (r *resourceCore) parseListFilter(doc string, fields map[string][]string, now time.Time) (*filter.ParsedFilter, error) {
 	fp := filter.NewFilterParser(r.filterSchema, r.cfg).At(now)
 	jsonAST, err := fp.Parse(doc)
 	if err != nil {
@@ -299,14 +299,14 @@ func (r *Resource[T]) parseListFilter(doc string, fields map[string][]string, no
 	return filter.NewParsedFilterFor(r.filterSchema, ast), nil
 }
 
-func (r *Resource[T]) searchable() bool {
+func (r *resourceCore) searchable() bool {
 	return r.searchSchema != nil && len(r.searchSchema.Fields) > 0
 }
 
 // isListParam reports whether a query parameter is one of r's list
 // parameters: filter.Param*, or the search parameter its search schema
 // advertises.
-func (r *Resource[T]) isListParam(name string) bool {
+func (r *resourceCore) isListParam(name string) bool {
 	return filter.IsListParam(name) || (r.searchParam != "" && name == r.searchParam)
 }
 
@@ -314,7 +314,7 @@ func (r *Resource[T]) isListParam(name string) bool {
 // once. q.Get reads the first, so a second filter, sort or page size would
 // be dropped without a word; flat field filters give a repeat its meaning, a
 // set, and are not checked here.
-func (r *Resource[T]) listParamsOnce(q url.Values) error {
+func (r *resourceCore) listParamsOnce(q url.Values) error {
 	for _, name := range slices.Sorted(maps.Keys(q)) {
 		n := len(q[name])
 		if n > 1 && r.isListParam(name) {
@@ -328,7 +328,7 @@ func (r *Resource[T]) listParamsOnce(q url.Values) error {
 // the parameter every client sends, or from the parameter the search schema
 // advertises in its place (core.WithSearchParam). A request that names both
 // gives the search twice, which is E2067, as a repeated list parameter is.
-func (r *Resource[T]) searchValue(q url.Values) (string, error) {
+func (r *resourceCore) searchValue(q url.Values) (string, error) {
 	if r.searchParam == "" {
 		return q.Get(filter.ParamSearch), nil
 	}
@@ -346,7 +346,7 @@ func (r *Resource[T]) searchValue(q url.Values) (string, error) {
 // setSearchParam takes the query parameter the search schema advertises
 // (core.WithSearchParam; empty is filter.ParamSearch), which ParseList reads
 // as well as filter.ParamSearch.
-func (r *Resource[T]) setSearchParam() {
+func (r *resourceCore) setSearchParam() {
 	if r.searchSchema == nil {
 		return
 	}
@@ -364,7 +364,7 @@ func (r *Resource[T]) setSearchParam() {
 // is a list parameter or a flat filter on a request field of fs. ParseList
 // would read the one meaning and drop the other: a flat filter it skipped
 // would list every row its schema document says it narrows.
-func (r *Resource[T]) checkQueryParams(fs *filter.ResourceSchema) error {
+func (r *resourceCore) checkQueryParams(fs *filter.ResourceSchema) error {
 	p := r.searchParam
 	if p != "" && slices.Contains(r.accepted, p) {
 		return fmt.Errorf("search parameter %q is a parameter the endpoint reads itself (AcceptParams %q)", p, p)
@@ -404,7 +404,7 @@ func (p ownParam) String() string {
 
 // ownParams are r's search parameter, when its search schema advertises one
 // other than filter.ParamSearch, and its AcceptParams names.
-func (r *Resource[T]) ownParams() []ownParam {
+func (r *resourceCore) ownParams() []ownParam {
 	params := make([]ownParam, 0, len(r.accepted)+1)
 	if r.searchParam != "" {
 		params = append(params, ownParam{name: r.searchParam})
@@ -547,7 +547,7 @@ type ListPlan struct {
 // The SQL is the provider's dialect's. A nil req is a first page with no
 // filter; a request another resource parsed, a WithPaths view's or its
 // base's included, is ErrForeign.
-func (r *Resource[T]) BuildList(req *ListRequest, s Scope) (*ListPlan, error) {
+func (r *resourceCore) BuildList(req *ListRequest, s Scope) (*ListPlan, error) {
 	if req == nil {
 		req = &ListRequest{pageSize: r.pageSize, now: r.cfg.Now(), schema: r.filterSchema}
 	}
@@ -649,7 +649,7 @@ func (r *Resource[T]) PagePointers(items []*T, plan *ListPlan) (*filter.Page[*T]
 // statement reading its IDs for the page's owner keys (Key), scoped as the
 // list was. Read each one's rows with query.Scan, then attach the result
 // with page.SetInclude(query.Field, rows). No keys need no statements.
-func (r *Resource[T]) IncludeQueries(plan *ListPlan, ownerKeys []Key) ([]filter.IncludeQuery, error) {
+func (r *resourceCore) IncludeQueries(plan *ListPlan, ownerKeys []Key) ([]filter.IncludeQuery, error) {
 	if err := r.ownsPlan(plan); err != nil {
 		return nil, err
 	}

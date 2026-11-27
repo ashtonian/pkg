@@ -78,7 +78,7 @@ func (c UpdateBatchChunk) checkCurrent(keys []Key) error {
 // the resource did not parse is ErrForeign, and a row key the key column
 // cannot hold ErrKeyInvalid; relation changes and identity-column writes
 // fail before a plan is returned. UpdateBatch runs the plan.
-func (r *Resource[T]) BuildUpdateBatch(rows []RowUpdate, scope Scope, limits UpdateBatchLimits, opts ...UpdateOption) (*UpdateBatchPlan, error) {
+func (r *resourceCore) BuildUpdateBatch(rows []RowUpdate, scope Scope, limits UpdateBatchLimits, opts ...UpdateOption) (*UpdateBatchPlan, error) {
 	d := r.dialect
 	// One scope, and one instant, for every row's statements.
 	common, err := r.bindUpdateScope(scope)
@@ -184,7 +184,7 @@ type compiledRowUpdate struct {
 	args        []any
 }
 
-func (r *Resource[T]) compileRowUpdate(row RowUpdate, scope updateScope, options []patch.PatchSQLOption, offset int) (compiledRowUpdate, error) {
+func (r *resourceCore) compileRowUpdate(row RowUpdate, scope updateScope, options []patch.PatchSQLOption, offset int) (compiledRowUpdate, error) {
 	set, err := patch.BuildPatchSQL(row.Patch, r.dialect, append(slices.Clone(options), patch.WithStartParam(offset))...)
 	if err != nil {
 		return compiledRowUpdate{}, err
@@ -210,7 +210,7 @@ func (r *Resource[T]) compileRowUpdate(row RowUpdate, scope updateScope, options
 	return compiledRowUpdate{row: row, assignments: set.Assignments, where: where, change: set.ChangePredicate, args: append(set.Args, args...)}, nil
 }
 
-func (r *Resource[T]) renderUpdateBatch(rows []compiledRowUpdate, scope updateScope, key keyColumns, skipUnchanged bool) (UpdateBatchChunk, error) {
+func (r *resourceCore) renderUpdateBatch(rows []compiledRowUpdate, scope updateScope, key keyColumns, skipUnchanged bool) (UpdateBatchChunk, error) {
 	d := r.dialect
 	chunk := UpdateBatchChunk{Keys: make([]Key, len(rows)), key: key}
 	var currentWhere, changedWhere []string

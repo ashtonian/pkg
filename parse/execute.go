@@ -18,7 +18,7 @@ import (
 // sent, how their rows are read and how a transaction is held.
 
 // Provider is the provider the resource was built on (NewResource).
-func (r *Resource[T]) Provider() *Provider { return r.provider }
+func (r *resourceCore) Provider() *Provider { return r.provider }
 
 // In is r scoped to tx: its List, Facets, Query, Update and UpdateBatch run
 // in tx, so several operations, on several resources, commit or roll back
@@ -31,18 +31,27 @@ func (r *Resource[T]) Provider() *Provider { return r.provider }
 // another kind of provider, is ErrProviderMismatch; a wrapped transaction
 // of the right kind must be on r's database, which its driver cannot tell.
 func (r *Resource[T]) In(tx *Tx) (*Resource[T], error) {
-	if tx == nil {
-		return nil, fmt.Errorf("parse: %s: nil transaction", r.table)
-	}
-	if tx.provider != r.provider.name {
-		return nil, fmt.Errorf("parse: %s: %s transaction for a resource on %s: %w", r.table, tx.provider, r.provider.name, ErrProviderMismatch)
-	}
-	if tx.began != nil && tx.began != r.provider {
-		return nil, fmt.Errorf("parse: %s: transaction another %s provider began: %w", r.table, tx.provider, ErrProviderMismatch)
+	err := r.joins(tx)
+	if err != nil {
+		return nil, err
 	}
 	scoped := *r
 	scoped.conn, scoped.view = tx.tx, true
 	return &scoped, nil
+}
+
+// joins refuses a transaction the resource cannot run in (In).
+func (r *resourceCore) joins(tx *Tx) error {
+	if tx == nil {
+		return fmt.Errorf("parse: %s: nil transaction", r.table)
+	}
+	if tx.provider != r.provider.name {
+		return fmt.Errorf("parse: %s: %s transaction for a resource on %s: %w", r.table, tx.provider, r.provider.name, ErrProviderMismatch)
+	}
+	if tx.began != nil && tx.began != r.provider {
+		return fmt.Errorf("parse: %s: transaction another %s provider began: %w", r.table, tx.provider, ErrProviderMismatch)
+	}
+	return nil
 }
 
 // List compiles req under scope s (BuildList) and reads the page on the
@@ -101,7 +110,7 @@ func (r *Resource[T]) List(ctx context.Context, req *ListRequest, s Scope) (*fil
 // Facets compiles a facets request (ParseFacets) under scope s
 // (BuildFacets) and counts the rows it matches by each facet it names; nil
 // when it names none.
-func (r *Resource[T]) Facets(ctx context.Context, req *ListRequest, s Scope) (map[string][]filter.FacetBucket, error) {
+func (r *resourceCore) Facets(ctx context.Context, req *ListRequest, s Scope) (map[string][]filter.FacetBucket, error) {
 	query, err := r.BuildFacets(req, s)
 	if err != nil || query == nil {
 		return nil, err
@@ -309,21 +318,21 @@ func facetStep(q filter.FacetQuery, into *[]filter.FacetResult) backend.Step {
 // scanRows scans rows, a statement's over Columns, through the row
 // contract. A provider that reports which of the result's columns are
 // documents (backend.Rows.Documents) does so once the first row is read;
-// they decode as stored documents, so the scanner is built for them then.
+// they decode as stored documents, so their rules are built then.
 func (r *Resource[T]) scanRows(rows backend.Rows) ([]T, error) {
 	var (
-		out     []T
-		scanner *RowScanner[T]
+		out   []T
+		rules *rowRules
 	)
 	for rows.Next() {
-		if scanner == nil {
+		if rules == nil {
 			var err error
-			scanner, err = r.scannerFor(rows.Documents())
+			rules, err = r.rulesFor(rows.Documents())
 			if err != nil {
 				return nil, err
 			}
 		}
-		item, err := scanner.scan(rows.Scan)
+		item, err := scanRow[T](rules, rows.Scan)
 		if err != nil {
 			return nil, err
 		}
@@ -336,14 +345,18 @@ func (r *Resource[T]) scanRows(rows backend.Rows) ([]T, error) {
 	return out, nil
 }
 
-// scannerFor is the scanner for a result whose documents columns the
+// rulesFor are the scan rules for a result whose documents columns the
 // database reports as JSON documents: the resource's own when there are
-// none. Its errors, as scan's, are a statement's, which name the table.
-func (r *Resource[T]) scannerFor(documents []string) (*RowScanner[T], error) {
+// none. Its errors, as a scan's, are a statement's, which name the table.
+func (r *resourceCore) rulesFor(documents []string) (*rowRules, error) {
 	if len(documents) == 0 {
-		return r.scanner, nil
+		return &r.scanRules, nil
 	}
-	return r.rowScanner(ScanJSON(documents...))
+	rules, err := r.rowRules(ScanJSON(documents...))
+	if err != nil {
+		return nil, err
+	}
+	return &rules, nil
 }
 
 // listRows is what a list's page, count and facet statements read: the
@@ -531,7 +544,7 @@ func (r *Resource[T]) keys(items []T) ([]Key, error) {
 
 // ownsPlan refuses a plan r did not build: its keyset and includes name
 // another table's columns.
-func (r *Resource[T]) ownsPlan(plan *ListPlan) error {
+func (r *resourceCore) ownsPlan(plan *ListPlan) error {
 	if plan == nil {
 		return fmt.Errorf("parse: %s: nil list plan", r.table)
 	}

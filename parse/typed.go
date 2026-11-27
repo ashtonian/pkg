@@ -10,48 +10,65 @@ import (
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
-// generateSchemas builds the parser configuration from opts, and from it the
-// filter, sort, search and patch schemas T's struct tags declare and the
-// applier for T's patches.
-func (r *Resource[T]) generateSchemas(opts []core.Option) error {
+// generateSchemas builds the parser configuration from opts, and from it
+// the schemas T's struct tags declare (generate).
+func (r *resourceCore) generateSchemas(opts []core.Option, generate func(*core.SchemaGenerator) (Schemas, error)) error {
 	cfg := core.DefaultConfig()
 	for _, opt := range opts {
 		opt(cfg)
 	}
-	if err := cfg.Validate(); err != nil {
+	err := cfg.Validate()
+	if err != nil {
 		return fmt.Errorf("parser options: %w", err)
 	}
 	cfg = cfg.Effective()
 	gen := core.NewSchemaGenerator(cfg.GeneratorOpts...)
-	var err error
-	if r.filterSchema, err = filter.GenerateFilterSchema[T](gen); err != nil {
-		return fmt.Errorf("creating filter schema: %w", err)
-	}
-	if r.patchSchema, err = patch.GeneratePatchSchema[T](gen); err != nil {
-		return fmt.Errorf("creating patch schema: %w", err)
-	}
-	if r.serverPatchSchema, err = patch.GenerateServerPatchSchema[T](gen); err != nil {
-		return fmt.Errorf("creating server patch schema: %w", err)
-	}
-	if r.sortSchema, err = filter.GenerateSortSchema[T](gen); err != nil {
-		return fmt.Errorf("generating sort schema: %w", err)
-	}
-	if r.searchSchema, err = filter.GenerateSearchSchema[T](gen); err != nil {
-		return fmt.Errorf("creating search schema: %w", err)
-	}
-	if r.applier, err = patch.NewApplier[T](gen, cfg); err != nil {
+	s, err := generate(gen)
+	if err != nil {
 		return err
 	}
+	r.filterSchema, r.sortSchema, r.searchSchema = s.Filter, s.Sort, s.Search
+	r.patchSchema, r.serverPatchSchema = s.Patch, s.ServerPatch
 	r.cfg, r.gen, r.codec = cfg, gen, cfg.GetCodec()
 	return nil
 }
 
+// generateSchemas generates the filter, sort, search and patch schemas T's
+// struct tags declare.
+func generateSchemas[T any](gen *core.SchemaGenerator) (Schemas, error) {
+	var (
+		s   Schemas
+		err error
+	)
+	s.Filter, err = filter.GenerateFilterSchema[T](gen)
+	if err != nil {
+		return Schemas{}, fmt.Errorf("creating filter schema: %w", err)
+	}
+	s.Patch, err = patch.GeneratePatchSchema[T](gen)
+	if err != nil {
+		return Schemas{}, fmt.Errorf("creating patch schema: %w", err)
+	}
+	s.ServerPatch, err = patch.GenerateServerPatchSchema[T](gen)
+	if err != nil {
+		return Schemas{}, fmt.Errorf("creating server patch schema: %w", err)
+	}
+	s.Sort, err = filter.GenerateSortSchema[T](gen)
+	if err != nil {
+		return Schemas{}, fmt.Errorf("generating sort schema: %w", err)
+	}
+	s.Search, err = filter.GenerateSearchSchema[T](gen)
+	if err != nil {
+		return Schemas{}, fmt.Errorf("creating search schema: %w", err)
+	}
+	return s, nil
+}
+
 // ParseFilter parses a filter query string.
-func (r *Resource[T]) ParseFilter(query string) (*filter.ParsedFilter, error) {
+func (r *resourceCore) ParseFilter(query string) (*filter.ParsedFilter, error) {
 	return r.parseFilter(query, r.cfg)
 }
 
-func (r *Resource[T]) parseFilter(query string, cfg *core.ParserConfig) (*filter.ParsedFilter, error) {
+func (r *resourceCore) parseFilter(query string, cfg *core.ParserConfig) (*filter.ParsedFilter, error) {
 	fp := filter.NewFilterParser(r.filterSchema, cfg)
 	ast, err := fp.Parse(query)
 	if err != nil {
@@ -72,7 +89,7 @@ func (r *Resource[T]) parseFilter(query string, cfg *core.ParserConfig) (*filter
 // parameter the search schema advertises (core.WithSearchParam) is a list
 // parameter too. The parser's own configuration bounds the flat parameters,
 // whatever opts say.
-func (r *Resource[T]) ParseRequestFilter(q url.Values, opts ...filter.QueryParamOption) (*filter.ParsedFilter, error) {
+func (r *resourceCore) ParseRequestFilter(q url.Values, opts ...filter.QueryParamOption) (*filter.ParsedFilter, error) {
 	err := r.listParamsOnce(q)
 	if err != nil {
 		return nil, err
@@ -112,7 +129,7 @@ func (r *Resource[T]) ParseRequestFilter(q url.Values, opts ...filter.QueryParam
 //
 //	body, _ := json.Marshal(map[string]any{"user_id": userID})
 //	parsed, err := sessions.ParseFilter(string(body))
-func (r *Resource[T]) ParseFilterMap(m map[string]any) (*filter.ParsedFilter, error) {
+func (r *resourceCore) ParseFilterMap(m map[string]any) (*filter.ParsedFilter, error) {
 	fp := filter.NewFilterParser(r.filterSchema, r.cfg)
 	ast, err := fp.ParseMap(m)
 	if err != nil {
@@ -122,7 +139,7 @@ func (r *Resource[T]) ParseFilterMap(m map[string]any) (*filter.ParsedFilter, er
 }
 
 // ParsePatch validates and parses a JSON Patch document.
-func (r *Resource[T]) ParsePatch(body []byte, opts ...PatchOption) (*patch.ParsedPatch, error) {
+func (r *resourceCore) ParsePatch(body []byte, opts ...PatchOption) (*patch.ParsedPatch, error) {
 	parsed, err := patch.NewParser(r.patchSchema, r.cfg).Parse(body)
 	if err != nil {
 		return nil, err
@@ -131,7 +148,7 @@ func (r *Resource[T]) ParsePatch(body []byte, opts ...PatchOption) (*patch.Parse
 }
 
 // ParseMergePatch validates and parses a JSON Merge Patch (RFC 7396) body.
-func (r *Resource[T]) ParseMergePatch(body []byte, opts ...PatchOption) (*patch.ParsedPatch, error) {
+func (r *resourceCore) ParseMergePatch(body []byte, opts ...PatchOption) (*patch.ParsedPatch, error) {
 	parsed, err := patch.ParseMergePatch(body, r.patchSchema, r.cfg)
 	if err != nil {
 		return nil, err
@@ -143,7 +160,7 @@ func (r *Resource[T]) ParseMergePatch(body []byte, opts ...PatchOption) (*patch.
 // elsewhere, or built in code — exactly as ParseMergePatch validates its
 // body: a nested map merges, any other value (a Go value of the path's type
 // included) replaces, nil removes. No JSON round trip.
-func (r *Resource[T]) MergePatchMap(m map[string]any, opts ...PatchOption) (*patch.ParsedPatch, error) {
+func (r *resourceCore) MergePatchMap(m map[string]any, opts ...PatchOption) (*patch.ParsedPatch, error) {
 	parsed, err := patch.ParseMergePatchMap(m, r.patchSchema, r.cfg)
 	if err != nil {
 		return nil, err
@@ -153,14 +170,14 @@ func (r *Resource[T]) MergePatchMap(m map[string]any, opts ...PatchOption) (*pat
 
 // ServerMergePatchMap is MergePatchMap for a write the server makes, which
 // may also set the `parse:"server"` fields (ParseServerMergePatch).
-func (r *Resource[T]) ServerMergePatchMap(m map[string]any) (*patch.ParsedPatch, error) {
+func (r *resourceCore) ServerMergePatchMap(m map[string]any) (*patch.ParsedPatch, error) {
 	return patch.ParseMergePatchMap(m, r.serverPatchSchema, r.cfg)
 }
 
 // ValidateOperations validates JSON Patch operations built in code against
 // the patch schema, as ParsePatch validates a body: paths, operations,
 // value types, limits. Use it instead of assembling a ParsedPatch by hand.
-func (r *Resource[T]) ValidateOperations(ops []patch.RawPatchOp, opts ...PatchOption) (*patch.ParsedPatch, error) {
+func (r *resourceCore) ValidateOperations(ops []patch.RawPatchOp, opts ...PatchOption) (*patch.ParsedPatch, error) {
 	parsed, err := patch.NewParser(r.patchSchema, r.cfg).ParseOps(ops)
 	if err != nil {
 		return nil, err
@@ -170,7 +187,7 @@ func (r *Resource[T]) ValidateOperations(ops []patch.RawPatchOp, opts ...PatchOp
 
 // ValidateServerOperations is ValidateOperations for a write the server
 // makes, against the server patch schema.
-func (r *Resource[T]) ValidateServerOperations(ops []patch.RawPatchOp) (*patch.ParsedPatch, error) {
+func (r *resourceCore) ValidateServerOperations(ops []patch.RawPatchOp) (*patch.ParsedPatch, error) {
 	return patch.NewParser(r.serverPatchSchema, r.cfg).ParseOps(ops)
 }
 
@@ -188,19 +205,19 @@ func applyPatchOptions(parsed *patch.ParsedPatch, opts []PatchOption) (*patch.Pa
 // FilterSchema returns a copy of the filter schema: changing it changes
 // nothing the resource parses. Customize the schemas when the resource is
 // built (CustomizeSchemas).
-func (r *Resource[T]) FilterSchema() *filter.ResourceSchema {
+func (r *resourceCore) FilterSchema() *filter.ResourceSchema {
 	return r.filterSchema.Clone()
 }
 
 // PatchSchema returns a copy of the patch schema; see FilterSchema.
-func (r *Resource[T]) PatchSchema() *patch.PatchSchema {
+func (r *resourceCore) PatchSchema() *patch.PatchSchema {
 	return r.patchSchema.Clone()
 }
 
 // ServerPatchSchema returns a copy of the schema of the server's own writes:
 // the patch schema's paths and the `parse:"server"` fields. Build a patch
 // against it only for a write the server makes, never from a request.
-func (r *Resource[T]) ServerPatchSchema() *patch.PatchSchema {
+func (r *resourceCore) ServerPatchSchema() *patch.PatchSchema {
 	return r.serverPatchSchema.Clone()
 }
 
@@ -209,23 +226,23 @@ func (r *Resource[T]) ServerPatchSchema() *patch.PatchSchema {
 // sets, such as a rotated credential's fingerprint. Never pass it a request
 // body; ParseMergePatch is the request path. The result applies through the
 // same repositories, ApplyValidatedPatch included.
-func (r *Resource[T]) ParseServerMergePatch(body []byte) (*patch.ParsedPatch, error) {
+func (r *resourceCore) ParseServerMergePatch(body []byte) (*patch.ParsedPatch, error) {
 	return patch.ParseMergePatch(body, r.serverPatchSchema, r.cfg)
 }
 
 // SortSchema returns a copy of the sort schema; see FilterSchema.
-func (r *Resource[T]) SortSchema() *filter.SortSchema {
+func (r *resourceCore) SortSchema() *filter.SortSchema {
 	return r.sortSchema.Clone()
 }
 
 // SearchSchema returns a copy of the search schema, nil when T has no
 // search fields; see FilterSchema.
-func (r *Resource[T]) SearchSchema() *filter.SearchSchema {
+func (r *resourceCore) SearchSchema() *filter.SearchSchema {
 	return r.searchSchema.Clone()
 }
 
 // ParseSort parses a sort parameter string.
-func (r *Resource[T]) ParseSort(sortParam string) (*filter.SortResult, error) {
+func (r *resourceCore) ParseSort(sortParam string) (*filter.SortResult, error) {
 	return filter.ParseSort(r.sortSchema, sortParam)
 }
 
@@ -236,7 +253,7 @@ func (r *Resource[T]) ParseSort(sortParam string) (*filter.SortResult, error) {
 // fields, a ListSearch query composes the dialect's search predicate. A
 // computed column (ReadExpr) compiles as its expression. The error is
 // filter.NewListQuery's, for a key the list cannot end its keyset on.
-func (r *Resource[T]) ListQuery() (*filter.ListQuery, error) {
+func (r *resourceCore) ListQuery() (*filter.ListQuery, error) {
 	return newListQuery(r.filterSchema, r.sortSchema, r.searchSchema, r.dialect, r.cfg)
 }
 
@@ -262,7 +279,7 @@ func (r *Resource[T]) ApplyValidatedPatch(parsed *patch.ParsedPatch, target T) (
 // ownsPatch refuses a patch neither of the resource's patch schemas
 // validated. A WithPaths view shares its base's patch schemas, so each
 // accepts the other's patches.
-func (r *Resource[T]) ownsPatch(p *patch.ParsedPatch, role string) error {
+func (r *resourceCore) ownsPatch(p *patch.ParsedPatch, role string) error {
 	if p.ParsedFor(r.patchSchema) || p.ParsedFor(r.serverPatchSchema) {
 		return nil
 	}
