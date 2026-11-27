@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.9.0...gowalker/v0.10.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parse:** under WithJSONFields, an unexported embedded struct that a tag names is no longer a field when its type or pointer has MarshalJSON, UnmarshalJSON, AppendText, MarshalText, UnmarshalText, MarshalJSONTo or UnmarshalJSONFrom, or IsZero with omitzero; v0.9.0 named it a field whenever no leaf rule matched the type.
+* **parse:** under WithJSONFields, an embedded struct that a leaf rule matches contributes its fields instead of compiling as one field named after its type, and an unexported embedded leaf that a tag names is a member.
+
+### Features
+
+* **parse:** wave 6, the review's bugs: update transactions and locks, request text and keys, policies, patches, filters and the clients ([#458](https://github.com/ashtonian/pkg/issues/458)) ([fb9cf6d](https://github.com/ashtonian/pkg/commit/fb9cf6da1d35a0d9bb104ddef6ce49f0233c4cef)), refs [#416](https://github.com/ashtonian/pkg/issues/416) [#415](https://github.com/ashtonian/pkg/issues/415) [#414](https://github.com/ashtonian/pkg/issues/414)
+* **parse:** wave 7, the review's remaining bugs and the deduplication they needed ([#459](https://github.com/ashtonian/pkg/issues/459)) ([59aa60f](https://github.com/ashtonian/pkg/commit/59aa60f35076d38d428f4eca93d2b5dd87192aa7)), refs [#450](https://github.com/ashtonian/pkg/issues/450)
+
 ## [0.9.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.8.0...gowalker/v0.9.0) (2026-11-22)
 
 
