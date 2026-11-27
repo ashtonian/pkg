@@ -498,25 +498,17 @@ func ParseIncludeNames(schema *ResourceSchema, names []string) ([]string, error)
 		}
 		f, ok := schema.RequestField(name)
 		if !ok {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindFilter, Code: ECodeUnknownField.String(),
-				Message: fmt.Sprintf("include field '%s' does not exist", name), Details: map[string]any{core.DetailField: name},
-			}
+			return nil, core.NewError(ECodeUnknownField, fmt.Sprintf("include field '%s' does not exist", name), core.WithField(name))
 		}
 		if f.Relation == nil || !f.Includable {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindFilter, Code: ECodeInvalidRelation.String(),
-				Message: fmt.Sprintf("field '%s' is not an includable relation", name), Details: map[string]any{core.DetailField: name},
-			}
+			return nil, core.NewError(ECodeInvalidRelation, fmt.Sprintf("field '%s' is not an includable relation", name),
+				core.WithField(name))
 		}
 		fields = append(fields, name)
 	}
 	if len(fields) > MaxIncludes {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindFilter, Code: ECodeInvalidRelation.String(),
-			Message: fmt.Sprintf("a list includes at most %d relations, got %d", MaxIncludes, len(fields)),
-			Details: map[string]any{core.DetailParameter: ParamInclude},
-		}
+		return nil, core.NewError(ECodeInvalidRelation, fmt.Sprintf("a list includes at most %d relations, got %d", MaxIncludes, len(fields)),
+			core.WithParameter(ParamInclude))
 	}
 	return fields, nil
 }

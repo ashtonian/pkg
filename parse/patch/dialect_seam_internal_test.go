@@ -25,7 +25,7 @@ import (
 type providerDialect struct{ dialect.SQLite }
 
 func refused(what string) error {
-	err := &core.ParseError{Kind: core.ParseErrorKindPatch, Code: core.CodeOpNotSQLCompilable.String(), Message: "the provider cannot " + what}
+	err := core.NewError(core.CodeOpNotSQLCompilable, "the provider cannot "+what)
 	return err
 }
 
@@ -64,28 +64,32 @@ func (providerDialect) ArrayAppend(array string, element any, bind func(any) str
 func (providerDialect) MemberDocument(expr string) (string, error) { return "doc(" + expr + ")", nil }
 
 func (providerDialect) SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) (string, error) {
-	if err := refusesMember(member, "nope"); err != nil {
+	err := refusesMember(member, "nope")
+	if err != nil {
 		return "", err
 	}
 	return "set(" + doc + ", " + bind(strings.Join(member, ".")) + ", " + bind(string(value)) + ")", nil
 }
 
 func (providerDialect) RemoveMember(doc string, member []string, bind func(any) string) (string, error) {
-	if err := refusesMember(member, "nope"); err != nil {
+	err := refusesMember(member, "nope")
+	if err != nil {
 		return "", err
 	}
 	return "remove(" + doc + ", " + bind(strings.Join(member, ".")) + ")", nil
 }
 
 func (providerDialect) HasMember(doc string, member []string, bind func(any) string) (string, error) {
-	if err := refusesMember(member, "untestable"); err != nil {
+	err := refusesMember(member, "untestable")
+	if err != nil {
 		return "", err
 	}
 	return "has(" + doc + ", " + bind(strings.Join(member, ".")) + ")", nil
 }
 
 func (providerDialect) IsObject(doc string, member []string, bind func(any) string) (string, error) {
-	if err := refusesMember(member, "untestable"); err != nil {
+	err := refusesMember(member, "untestable")
+	if err != nil {
 		return "", err
 	}
 	return "object(" + doc + ", " + bind(strings.Join(member, ".")) + ")", nil

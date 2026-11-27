@@ -137,11 +137,7 @@ func documentType(t core.FieldType) bool {
 }
 
 func notCompilable(op *PatchOperation, why string) error {
-	err := &core.ParseError{
-		Kind: core.ParseErrorKindPatch, Code: ECodeOpNotSQLCompilable.String(),
-		Message: why + " — apply via ApplyValidatedPatch",
-		Path:    op.Path,
-	}
+	err := core.NewError(ECodeOpNotSQLCompilable, why+" — apply via ApplyValidatedPatch", core.WithPath(op.Path))
 	return err
 }
 
@@ -253,20 +249,23 @@ func (b *setBuilder) documentExpr(col string, ops []*PatchOperation) (columnWrit
 		}
 	}
 	if !f.known {
-		return columnWrite{expr: f.expr, members: true}, nil
+		members := columnWrite{expr: f.expr, members: true}
+		return members, nil
 	}
 	value := f.doc
 	if !f.folded {
 		value, _ = wholeValue(f.base)
 	}
 	if value == nil {
-		return columnWrite{expr: "NULL", schema: f.base.Schema}, nil
+		cleared := columnWrite{expr: "NULL", schema: f.base.Schema}
+		return cleared, nil
 	}
 	val, err := marshalIfComplex(value, f.base.Schema, f.b.dialect)
 	if err != nil {
 		return columnWrite{}, fmt.Errorf("marshaling value for %s: %w", f.base.Path, err)
 	}
-	return columnWrite{expr: f.b.bind(val), schema: f.base.Schema}, nil
+	bound := columnWrite{expr: f.b.bind(val), schema: f.base.Schema}
+	return bound, nil
 }
 
 func (f *documentFold) apply(op *PatchOperation) error {
@@ -430,10 +429,7 @@ func (p Precondition) Err() error {
 	if !p.Exists {
 		msg = fmt.Sprintf("operation %d: %s has no object to be added to", p.Op, p.Path)
 	}
-	err := &core.ParseError{
-		Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-		Message: msg, Path: p.Path, Index: new(p.Op),
-	}
+	err := core.NewError(ECodePatchValueInvalid, msg, core.WithPath(p.Path), core.WithIndex(p.Op))
 	return err
 }
 

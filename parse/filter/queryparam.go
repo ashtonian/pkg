@@ -123,11 +123,13 @@ func CheckAcceptedParam(schema *ResourceSchema, name string) error {
 		return errors.New("filter: CheckAcceptedParam: nil schema")
 	}
 	if IsListParam(name) {
-		return &AcceptedParamError{Param: name}
+		accepted := &AcceptedParamError{Param: name}
+		return accepted
 	}
 	field, _, ok := schema.FlatParamField(name)
 	if ok {
-		return &AcceptedParamError{Param: name, Field: field}
+		accepted := &AcceptedParamError{Param: name, Field: field}
+		return accepted
 	}
 	return nil
 }
@@ -168,24 +170,15 @@ func (p *QueryParamParser) Parse(params url.Values) (*FilterAST, error) {
 		field, ok := p.schema.RequestField(fieldName)
 		if !ok {
 			if !p.lenient {
-				return nil, &core.ParseError{
-					Kind:    core.ParseErrorKindFilter,
-					Code:    ECodeUnknownField.String(),
-					Message: "unknown filter field '" + fieldName + "'",
-					Details: map[string]any{core.DetailField: fieldName},
-				}
+				return nil, core.NewError(ECodeUnknownField, "unknown filter field '"+fieldName+"'", core.WithField(fieldName))
 			}
 			continue
 		}
 		// Repeated values on an eq key coalesce into $in; on
 		// any other operator they are ambiguous.
 		if len(values) > 1 && op != OpEq {
-			return nil, &core.ParseError{
-				Kind:    core.ParseErrorKindFilter,
-				Code:    ECodeInvalidOperator.String(),
-				Message: fmt.Sprintf("parameter '%s' repeated %d times; repeated values are only supported for equality (coalesced to $in)", key, len(values)),
-				Details: map[string]any{core.DetailField: fieldName},
-			}
+			return nil, core.NewError(ECodeInvalidOperator, fmt.Sprintf("parameter '%s' repeated %d times; repeated values are only supported for equality (coalesced to $in)", key, len(values)),
+				core.WithField(fieldName))
 		}
 		opKey, value, err := queryParamOperand(field, op, values)
 		if err != nil {
@@ -217,12 +210,8 @@ func (o flatOperands) add(field, opKey, param string, value any) error {
 		o[field] = ops
 	}
 	if prev, dup := ops[opKey]; dup {
-		return &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInvalidOperator.String(),
-			Message: fmt.Sprintf("parameters '%s' and '%s' both set %s on field '%s'", prev.param, param, opKey, field),
-			Details: map[string]any{core.DetailField: field},
-		}
+		return core.NewError(ECodeInvalidOperator, fmt.Sprintf("parameters '%s' and '%s' both set %s on field '%s'", prev.param, param, opKey, field),
+			core.WithField(field))
 	}
 	ops[opKey] = flatOperand{param: param, value: value}
 	return nil
@@ -320,11 +309,7 @@ func queryParamOperand(field *FieldSchema, op FilterOperator, values []string) (
 	case op == OpNull || op == OpNotNull:
 		b, err := strconv.ParseBool(values[0])
 		if err != nil {
-			return "", nil, &core.ParseError{
-				Kind:    core.ParseErrorKindFilter,
-				Code:    ECodeValueTypeMismatch.String(),
-				Message: "field '" + field.ExternalName + "': _" + string(op) + " requires true or false",
-			}
+			return "", nil, fieldError(ECodeValueTypeMismatch, field.ExternalName, "_"+string(op)+" requires true or false")
 		}
 		return "$" + string(op), b, nil
 	case len(values) > 1:
@@ -360,11 +345,7 @@ func queryParamValue(field *FieldSchema, raw string) (any, error) {
 	case core.FieldTypeBool:
 		b, err := strconv.ParseBool(raw)
 		if err != nil {
-			return nil, &core.ParseError{
-				Kind:    core.ParseErrorKindFilter,
-				Code:    ECodeValueTypeMismatch.String(),
-				Message: "field '" + field.ExternalName + "': expected true or false",
-			}
+			return nil, fieldError(ECodeValueTypeMismatch, field.ExternalName, "expected true or false")
 		}
 		return b, nil
 	}

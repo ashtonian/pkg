@@ -207,10 +207,7 @@ func (r *Resource[T]) maskName(name string) error {
 }
 
 func unknownListField(msg, name string) *core.ParseError {
-	return &core.ParseError{
-		Kind: core.ParseErrorKindFilter, Code: filter.ECodeUnknownField.String(),
-		Message: msg, Details: map[string]any{core.DetailField: name},
-	}
+	return core.NewError(filter.ECodeUnknownField, msg, core.WithField(name))
 }
 
 // ParseList reads a list request's query parameters (filter.Param*) into a
@@ -457,10 +454,7 @@ func listNames(names []string, check func(name string) error) ([]string, error) 
 }
 
 func listParamError(param, msg string) *core.ParseError {
-	return &core.ParseError{
-		Kind: core.ParseErrorKindFilter, Code: filter.ECodeInvalidListParam.String(),
-		Message: msg, Details: map[string]any{core.DetailParameter: param},
-	}
+	return core.NewError(filter.ECodeInvalidListParam, msg, core.WithParameter(param))
 }
 
 // Scope is what the server decides about a list; nothing in it comes from

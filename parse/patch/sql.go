@@ -351,12 +351,8 @@ func dialectError(what, path string, err error) error {
 	if errors.As(err, &refusal) {
 		why = refusal.Message
 	}
-	pe := &core.ParseError{
-		Kind: core.ParseErrorKindPatch, Code: ECodeOpNotSQLCompilable.String(),
-		Message: what + " for " + path + ": " + why + " — apply via ApplyValidatedPatch",
-		Path:    path,
-		Cause:   err,
-	}
+	pe := core.NewError(ECodeOpNotSQLCompilable, what+" for "+path+": "+why+" — apply via ApplyValidatedPatch",
+		core.WithPath(path), core.WithCause(err))
 	return pe
 }
 
@@ -403,24 +399,15 @@ func checkSQLCompilable(op *PatchOperation) error {
 		// A caller sending [test, replace] means the replace to be
 		// conditional, and the compiled UPDATE cannot make it so: dropping
 		// the test would leave that intent unenforced, so it is refused.
-		return &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeTestOpSQL.String(),
-			Message: fmt.Sprintf("test op for %s cannot be compiled to SQL; conditional update is not supported — verify with a read or use ApplyValidatedPatch", op.Path),
-			Path:    op.Path,
-		}
+		return core.NewError(ECodeTestOpSQL, fmt.Sprintf("test op for %s cannot be compiled to SQL; conditional update is not supported — verify with a read or use ApplyValidatedPatch", op.Path),
+			core.WithPath(op.Path))
 	case PatchOpMove, PatchOpCopy:
-		return &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeOpNotSQLCompilable.String(),
-			Message: fmt.Sprintf("%s op for %s cannot be compiled to SQL — apply via ApplyValidatedPatch", op.Op, op.Path),
-			Path:    op.Path,
-		}
+		return core.NewError(ECodeOpNotSQLCompilable, fmt.Sprintf("%s op for %s cannot be compiled to SQL — apply via ApplyValidatedPatch", op.Op, op.Path),
+			core.WithPath(op.Path))
 	case PatchOpReplace, PatchOpAdd, PatchOpRemove, PatchOpArrayAppend:
 	default:
-		return &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeOpNotSQLCompilable.String(),
-			Message: fmt.Sprintf("op %q for %s cannot be compiled to SQL", op.Op, op.Path),
-			Path:    op.Path,
-		}
+		return core.NewError(ECodeOpNotSQLCompilable, fmt.Sprintf("op %q for %s cannot be compiled to SQL", op.Op, op.Path),
+			core.WithPath(op.Path))
 	}
 	if op.Op == PatchOpArrayAppend && strings.Contains(strings.TrimPrefix(op.Path, "/"), "/") {
 		return notCompilable(op, fmt.Sprintf("array_append on %s, below a field, compiles to SQL only for a native array column", op.Path))
@@ -553,7 +540,8 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (columnWrite,
 		if err != nil {
 			return columnWrite{}, dialectError(string(ops[0].Op), ops[0].Path, err)
 		}
-		return columnWrite{expr: expr, schema: last}, nil
+		merged := columnWrite{expr: expr, schema: last}
+		return merged, nil
 	}
 	if slices.ContainsFunc(ops, func(op *PatchOperation) bool { return len(memberTokens(op)) > 0 }) {
 		return b.documentExpr(col, ops)
@@ -570,11 +558,8 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (columnWrite,
 		if op.Schema.DataType != "" && op.Schema.DataType != core.FieldTypeArray {
 			// A JSON-document array (jsonb on PostgreSQL) has no native
 			// array_append; the document path applies it.
-			notNative := &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodeOpNotSQLCompilable.String(),
-				Message: fmt.Sprintf("array_append on %s (a %s field) compiles to SQL only for native array columns — apply via ApplyValidatedPatch", op.Path, op.Schema.DataType),
-				Path:    op.Path,
-			}
+			notNative := core.NewError(ECodeOpNotSQLCompilable, fmt.Sprintf("array_append on %s (a %s field) compiles to SQL only for native array columns — apply via ApplyValidatedPatch", op.Path, op.Schema.DataType),
+				core.WithPath(op.Path))
 			return columnWrite{}, notNative
 		}
 	}
@@ -582,11 +567,13 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (columnWrite,
 		expr := b.dialect.QuoteIdent(col)
 		for _, op := range later {
 			var err error
-			if expr, err = b.dialect.ArrayAppend(expr, op.Value, b.bind); err != nil {
+			expr, err = b.dialect.ArrayAppend(expr, op.Value, b.bind)
+			if err != nil {
 				return columnWrite{}, dialectError(string(op.Op), op.Path, err)
 			}
 		}
-		return columnWrite{expr: expr, schema: last}, nil
+		appended := columnWrite{expr: expr, schema: last}
+		return appended, nil
 	}
 
 	base := ops[start]
@@ -603,13 +590,15 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (columnWrite,
 		value = append(elems, op.Value)
 	}
 	if value == nil {
-		return columnWrite{expr: "NULL", schema: last}, nil
+		cleared := columnWrite{expr: "NULL", schema: last}
+		return cleared, nil
 	}
 	val, err := marshalIfComplex(value, base.Schema, b.dialect)
 	if err != nil {
 		return columnWrite{}, fmt.Errorf("marshaling value for %s: %w", base.Path, err)
 	}
-	return columnWrite{expr: b.bind(val), schema: last}, nil
+	bound := columnWrite{expr: b.bind(val), schema: last}
+	return bound, nil
 }
 
 // mergeSQL merges an RFC 7396 patch object into the JSON document expr,
@@ -628,12 +617,8 @@ func mergeSQL(d SQLDialect, expr string, storage core.SQLType, patch any, bind f
 func buildRelationPatchOp(op *PatchOperation) (RelationPatchOp, error) {
 	verb, err := relationVerbFromOp(op.Op)
 	if err != nil {
-		return RelationPatchOp{}, &core.ParseError{
-			Kind:    core.ParseErrorKindPatch,
-			Code:    ECodeRelationVerbNotAllowed.String(),
-			Message: fmt.Sprintf("op %q not allowed on relation path %q", op.Op, op.Path),
-			Path:    op.Path,
-		}
+		return RelationPatchOp{}, core.NewError(ECodeRelationVerbNotAllowed, fmt.Sprintf("op %q not allowed on relation path %q", op.Op, op.Path),
+			core.WithPath(op.Path))
 	}
 	values, _ := core.AnySlice(op.Value)
 	return RelationPatchOp{

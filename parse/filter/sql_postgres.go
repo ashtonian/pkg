@@ -469,7 +469,8 @@ func typedSlice[T any](items []any, conv func(any) (T, error)) ([]T, error) {
 // SRID. SQLiteDialect and Evaluate decide JSONB points alike through
 // internal/geo.
 func (d PostgresDialect) geoCondition(field *FieldSchema, op FilterOperator, value any, bind func(any) string) (string, error) {
-	if err := validateGeoValue(value); err != nil {
+	err := validateGeoValue(field, value)
+	if err != nil {
 		return "", err
 	}
 	switch v := value.(type) {

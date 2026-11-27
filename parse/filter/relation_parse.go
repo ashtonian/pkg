@@ -33,7 +33,8 @@ func (p *FilterParser) parseRelated(field *FieldSchema, op FilterOperator, value
 	}
 	obj, ok := value.(map[string]any)
 	if !ok {
-		return nil, newFilterError(ECodeInvalidJSON, fmt.Sprintf("$%s on '%s' requires the target's filter object", op, field.ExternalName))
+		return nil, core.NewError(ECodeInvalidJSON, fmt.Sprintf("$%s on '%s' requires the target's filter object", op, field.ExternalName),
+			core.WithField(field.ExternalName))
 	}
 	nested := &FilterParser{schema: field.Related, config: p.config, codec: p.codec, now: p.now, relDepth: p.relDepth + 1}
 	child, err := nested.parseNode(obj, depth+1)
@@ -57,11 +58,8 @@ func (p *FilterParser) nestRelation(field *FieldSchema) error {
 	if p.relDepth < MaxRelationDepth {
 		return nil
 	}
-	return &core.ParseError{
-		Kind: core.ParseErrorKindFilter, Code: ECodeDepthExceeded.String(),
-		Message: fmt.Sprintf("relation predicates nest at most %d deep", MaxRelationDepth),
-		Details: map[string]any{core.DetailField: field.ExternalName},
-	}
+	return core.NewError(ECodeDepthExceeded, fmt.Sprintf("relation predicates nest at most %d deep", MaxRelationDepth),
+		core.WithField(field.ExternalName))
 }
 
 // relatedShorthand is the request's key comparison on a relation as the
@@ -138,7 +136,8 @@ func relatedKeyField(f *FieldSchema, i int) (*FieldSchema, error) {
 func (p *FilterParser) parseElements(field *FieldSchema, op FilterOperator, value any, depth int) (*FilterNode, error) {
 	obj, ok := value.(map[string]any)
 	if !ok {
-		return nil, newFilterError(ECodeInvalidJSON, fmt.Sprintf("$%s on '%s' requires a filter of its element paths", op, field.ExternalName))
+		return nil, core.NewError(ECodeInvalidJSON, fmt.Sprintf("$%s on '%s' requires a filter of its element paths", op, field.ExternalName),
+			core.WithField(field.ExternalName))
 	}
 	nested := &FilterParser{schema: field.Elements, config: p.config, codec: p.codec, now: p.now, relDepth: p.relDepth}
 	child, err := nested.parseNode(obj, depth+1)
@@ -158,7 +157,8 @@ func (p *FilterParser) parseElements(field *FieldSchema, op FilterOperator, valu
 func (p *FilterParser) parseScalarElements(field *FieldSchema, op FilterOperator, value any, depth int) (*FilterNode, error) {
 	obj, ok := value.(map[string]any)
 	if !ok {
-		return nil, newFilterError(ECodeInvalidJSON, fmt.Sprintf("$%s on '%s' requires a condition on its elements, such as {\"$in\": [...]}", op, field.ExternalName))
+		return nil, core.NewError(ECodeInvalidJSON, fmt.Sprintf("$%s on '%s' requires a condition on its elements, such as {\"$in\": [...]}", op, field.ExternalName),
+			core.WithField(field.ExternalName))
 	}
 	child, err := p.parseElementCondition(elementOf(field), obj, depth+1)
 	if err != nil {
@@ -176,11 +176,7 @@ func (p *FilterParser) parseScalarElements(field *FieldSchema, op FilterOperator
 // $and / $or / $not of such conditions. Nil for {}.
 func (p *FilterParser) parseElementCondition(elem *FieldSchema, obj map[string]any, depth int) (*FilterNode, error) {
 	if depth > p.config.MaxDepth {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeDepthExceeded.String(),
-			Message: fmt.Sprintf("filter depth exceeds maximum %d", p.config.MaxDepth),
-		}
+		return nil, core.NewError(ECodeDepthExceeded, fmt.Sprintf("filter depth exceeds maximum %d", p.config.MaxDepth))
 	}
 	var children []*FilterNode
 	for _, key := range slices.Sorted(maps.Keys(obj)) { // deterministic SQL text
@@ -194,11 +190,11 @@ func (p *FilterParser) parseElementCondition(elem *FieldSchema, obj map[string]a
 		case OpNot:
 			inner, ok := value.(map[string]any)
 			if !ok {
-				return nil, newFilterError(ECodeInvalidJSON, "$not requires an object value")
+				return nil, core.NewError(ECodeInvalidJSON, "$not requires an object value", core.WithField(elem.ExternalName))
 			}
 			var child *FilterNode
 			if child, err = p.parseElementCondition(elem, inner, depth+1); err == nil && child == nil {
-				err = newFilterError(ECodeInvalidJSON, "$not requires a non-empty object")
+				err = core.NewError(ECodeInvalidJSON, "$not requires a non-empty object", core.WithField(elem.ExternalName))
 			}
 			node = &FilterNode{Op: OpNot, Children: []*FilterNode{child}}
 		default:
@@ -222,13 +218,13 @@ func (p *FilterParser) parseElementCondition(elem *FieldSchema, obj map[string]a
 func (p *FilterParser) parseElementLogical(elem *FieldSchema, op FilterOperator, value any, depth int) (*FilterNode, error) {
 	arr, ok := value.([]any)
 	if !ok {
-		return nil, newFilterError(ECodeInvalidJSON, fmt.Sprintf("$%s requires an array value", op))
+		return nil, core.NewError(ECodeInvalidJSON, fmt.Sprintf("$%s requires an array value", op), core.WithField(elem.ExternalName))
 	}
 	var children []*FilterNode
 	for _, item := range arr {
 		obj, ok := item.(map[string]any)
 		if !ok {
-			return nil, newFilterError(ECodeInvalidJSON, fmt.Sprintf("$%s array items must be objects", op))
+			return nil, core.NewError(ECodeInvalidJSON, fmt.Sprintf("$%s array items must be objects", op), core.WithField(elem.ExternalName))
 		}
 		child, err := p.parseElementCondition(elem, obj, depth+1)
 		if err != nil {
@@ -239,7 +235,7 @@ func (p *FilterParser) parseElementLogical(elem *FieldSchema, op FilterOperator,
 		}
 	}
 	if len(children) == 0 {
-		return nil, newFilterError(ECodeInvalidJSON, fmt.Sprintf("$%s requires at least one non-empty condition", op))
+		return nil, core.NewError(ECodeInvalidJSON, fmt.Sprintf("$%s requires at least one non-empty condition", op), core.WithField(elem.ExternalName))
 	}
 	return &FilterNode{Op: op, Children: children}, nil
 }

@@ -336,11 +336,12 @@ func caseWhen(guard string, terms []string) string {
 // and is NULL when the point is. Native geometry storage needs PostGIS:
 // E2115.
 func (d SQLiteDialect) geoCondition(field *FieldSchema, op FilterOperator, value any, bind func(any) string) (string, error) {
-	if err := validateGeoValue(value); err != nil {
+	err := validateGeoValue(field, value)
+	if err != nil {
 		return "", err
 	}
 	if field.GeoConfig != nil && field.GeoConfig.StorageType != GeoStorageJSONB {
-		return "", geoUnsupported(d, op, "native "+string(field.GeoConfig.StorageType)+" storage")
+		return "", geoUnsupported(d, field, op, "native "+string(field.GeoConfig.StorageType)+" storage")
 	}
 	latKey, lonKey := geoKeys(field)
 	call := func(fn string, operands ...any) string {
@@ -375,12 +376,9 @@ func (d SQLiteDialect) geoCondition(field *FieldSchema, op FilterOperator, value
 	return "", fmt.Errorf("geo operator %s does not take %s", op, gowalker.TypeText(reflect.TypeOf(value)))
 }
 
-func geoUnsupported(d dialect.Dialect, op FilterOperator, shape string) error {
-	return &core.ParseError{
-		Kind:    core.ParseErrorKindFilter,
-		Code:    ECodeGeoNotSupported.String(),
-		Message: fmt.Sprintf("geo operator '%s' on %s is not supported by the %s dialect", op, shape, d.Name()),
-	}
+func geoUnsupported(d dialect.Dialect, field *FieldSchema, op FilterOperator, shape string) error {
+	return core.NewError(ECodeGeoNotSupported, fmt.Sprintf("geo operator '%s' on %s is not supported by the %s dialect", op, shape, d.Name()),
+		core.WithField(field.ExternalName))
 }
 
 // MarshalValue serializes a value for SQLite parameter binding.

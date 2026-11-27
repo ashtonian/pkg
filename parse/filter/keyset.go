@@ -211,7 +211,8 @@ func CursorValue(v any) (any, error) {
 		if reflect.PointerTo(rv.Type()).Implements(textMarshalerType) {
 			pv := reflect.New(rv.Type())
 			pv.Elem().Set(rv)
-			if p, ok := pv.Interface().(encoding.TextMarshaler); ok {
+			p, ok := pv.Interface().(encoding.TextMarshaler)
+			if ok {
 				return cursorTextValue(p)
 			}
 		}
@@ -260,7 +261,8 @@ func (k CursorKey) valueType() core.TypeInfo {
 	if k.Path != nil {
 		return memberType(k.DataType)
 	}
-	return core.TypeInfo{Type: k.DataType, NumberKind: k.NumberKind}
+	info := core.TypeInfo{Type: k.DataType, NumberKind: k.NumberKind}
+	return info
 }
 
 // effectiveDirection is the direction a key is walked in: flipped for a
@@ -520,22 +522,14 @@ func ValidateCursor(token *PageToken, keys []CursorKey) error {
 		}
 	}
 	if mismatch {
-		return &core.ParseError{
-			Kind:    core.ParseErrorKindSchema,
-			Code:    ECodeInvalidCursor.String(),
-			Message: "cursor does not match the active sort",
-		}
+		return core.NewError(ECodeInvalidCursor, "cursor does not match the active sort")
 	}
 	values := make([]any, len(keys))
 	for i, k := range keys {
 		v, err := cursorKeyValue(k, token.Fields[i].Value)
 		if err != nil {
-			return &core.ParseError{
-				Kind:    core.ParseErrorKindSchema,
-				Code:    ECodeInvalidCursor.String(),
-				Message: fmt.Sprintf("invalid cursor value for field %q", k.Name),
-				Cause:   err,
-			}
+			return core.NewError(ECodeInvalidCursor, fmt.Sprintf("invalid cursor value for field %q", k.Name),
+				core.WithCause(err))
 		}
 		values[i] = v
 	}
@@ -638,11 +632,7 @@ func EncodeCursor(token *PageToken) (string, error) {
 		for i, f := range token.Fields {
 			names[i] = f.Name
 		}
-		return "", &core.ParseError{
-			Kind:    core.ParseErrorKindSort,
-			Code:    ECodeCursorTooLarge.String(),
-			Message: fmt.Sprintf("the sort values at this page boundary (%s) encode to a %d-byte cursor, over the %d-byte limit; sort by a shorter field", strings.Join(names, ", "), len(cur), maxCursorLen),
-		}
+		return "", core.NewError(ECodeCursorTooLarge, fmt.Sprintf("the sort values at this page boundary (%s) encode to a %d-byte cursor, over the %d-byte limit; sort by a shorter field", strings.Join(names, ", "), len(cur), maxCursorLen))
 	}
 	return cur, nil
 }
@@ -652,10 +642,7 @@ func EncodeCursor(token *PageToken) (string, error) {
 // rejected as malformed.
 func DecodeCursor(encoded string) (*PageToken, error) {
 	invalid := func(msg string, cause error) error {
-		return &core.ParseError{
-			Kind: core.ParseErrorKindSchema, Code: ECodeInvalidCursor.String(),
-			Message: msg, Cause: cause,
-		}
+		return core.NewError(ECodeInvalidCursor, msg, core.WithCause(cause))
 	}
 	if encoded == "" {
 		return nil, invalid("cursor is empty", nil)

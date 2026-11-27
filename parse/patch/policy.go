@@ -177,11 +177,8 @@ func ApplyPatchPolicyConstraints(patch *ParsedPatch, pc *PatchPolicyConstraints,
 		}
 		for _, v := range pc.validators {
 			if err := v(op, subject); err != nil {
-				return &core.ParseError{
-					Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-					Message: fmt.Sprintf("policy validator failed for path '%s' at index %d: %v", op.Path, i, err),
-					Path:    op.Path, Index: new(i), Cause: err,
-				}
+				return core.NewError(ECodePatchValueInvalid, fmt.Sprintf("policy validator failed for path '%s' at index %d: %v", op.Path, i, err),
+					core.WithPath(op.Path), core.WithIndex(i), core.WithCause(err))
 			}
 		}
 	}
@@ -247,10 +244,7 @@ func (j policyJudge) forbidden(op *PatchOperation, path string, whole bool, inde
 		default:
 			msg = fmt.Sprintf("path '%s' covers '%s', which policy forbids, at index %d", path, pattern, index)
 		}
-		return &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyForbidden.String(),
-			Message: msg, Path: path, Index: new(index),
-		}
+		return core.NewError(ECodePatchPolicyForbidden, msg, core.WithPath(path), core.WithIndex(index))
 	}
 	return nil
 }
@@ -265,20 +259,14 @@ func (j policyJudge) checkValues(w write, index int) error {
 		// constraint at or below the destination can judge it here: anything
 		// could be staged in an unconstrained field and moved over this one.
 		if j.selectConstraint(w.path) != nil || j.constrainedBelow(w.path) {
-			return &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
-				Message: fmt.Sprintf("path '%s' has value constraints; only add/replace are allowed (index %d)", w.path, index),
-				Path:    w.path, Index: new(index),
-			}
+			return core.NewError(ECodePatchPolicyValue, fmt.Sprintf("path '%s' has value constraints; only add/replace are allowed (index %d)", w.path, index),
+				core.WithPath(w.path), core.WithIndex(index))
 		}
 		return nil
 	case writeMerge:
 		if j.selectConstraint(w.path) != nil {
-			return &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
-				Message: fmt.Sprintf("path '%s' has value constraints, which a merge into it cannot be checked against; replace it whole (index %d)", w.path, index),
-				Path:    w.path, Index: new(index),
-			}
+			return core.NewError(ECodePatchPolicyValue, fmt.Sprintf("path '%s' has value constraints, which a merge into it cannot be checked against; replace it whole (index %d)", w.path, index),
+				core.WithPath(w.path), core.WithIndex(index))
 		}
 		for _, member := range w.members() {
 			if err := j.checkValues(member, index); err != nil {
@@ -390,11 +378,8 @@ func (j policyJudge) checkElementWrite(op *PatchOperation, w write, index int) e
 			continue
 		}
 		if n < len(tokens)-1 || w.kind == writeCopy || w.kind == writeMerge {
-			refused := &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
-				Message: fmt.Sprintf("path '%s' is inside an element of '%s', whose value constraint judges each element whole; write the element with add or replace (index %d)", w.path, array, index),
-				Path:    w.path, Index: new(index),
-			}
+			refused := core.NewError(ECodePatchPolicyValue, fmt.Sprintf("path '%s' is inside an element of '%s', whose value constraint judges each element whole; write the element with add or replace (index %d)", w.path, array, index),
+				core.WithPath(w.path), core.WithIndex(index))
 			return refused
 		}
 		if w.kind == writeClear && (op.Op == PatchOpRemove || op.Op == PatchOpMove) {
@@ -551,10 +536,7 @@ func (o valueOrder) numeric() bool {
 // other value at a path they constrain is refused rather than passed.
 func (vc *valueRule) check(path string, value any, order valueOrder, index int) error {
 	refuse := func(format string, args ...any) error {
-		return &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
-			Message: fmt.Sprintf(format, args...), Path: path, Index: new(index),
-		}
+		return core.NewError(ECodePatchPolicyValue, fmt.Sprintf(format, args...), core.WithPath(path), core.WithIndex(index))
 	}
 	if len(vc.AllowedValues) > 0 && !valueInList(value, vc.AllowedValues, order.equal) {
 		return refuse("value for path '%s' is not in allowed values at index %d", path, index)
@@ -581,12 +563,14 @@ func (vc *valueRule) check(path string, value any, order valueOrder, index int) 
 		return refuse("value for path '%s' is not a number, which its bounds require, at index %d", path, index)
 	}
 	if vc.Min != nil {
-		if c, ok := order.compareBound(value, *vc.Min); !ok || c < 0 {
+		c, ok := order.compareBound(value, *vc.Min)
+		if !ok || c < 0 {
 			return refuse("value for path '%s' is below minimum %v at index %d", path, *vc.Min, index)
 		}
 	}
 	if vc.Max != nil {
-		if c, ok := order.compareBound(value, *vc.Max); !ok || c > 0 {
+		c, ok := order.compareBound(value, *vc.Max)
+		if !ok || c > 0 {
 			return refuse("value for path '%s' exceeds maximum %v at index %d", path, *vc.Max, index)
 		}
 	}

@@ -30,7 +30,7 @@ func enumValidator(values ...string) patch.Validator {
 			return nil
 		}
 		if _, found := allowed[s]; !found {
-			return &core.ParseError{Code: "E2087", Message: "invalid enum"}
+			return core.NewError(core.CodeInvalidEnumValue, "invalid enum")
 		}
 		return nil
 	}

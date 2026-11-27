@@ -22,7 +22,7 @@ import (
 )
 
 func TestWriteError_AnswersAParseErrorWithItsCodesStatus(t *testing.T) {
-	pe := &core.ParseError{Code: filter.ECodeInvalidUUID.String(), Message: "invalid UUID", Details: map[string]any{"field": "ref"}}
+	pe := core.NewError(filter.ECodeInvalidUUID, "invalid UUID", core.WithField("ref"))
 	w, req := httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/devices", nil)
 	require.True(t, WriteError(w, req, fmt.Errorf("list devices: %w", pe)), "a wrapped parse error is still one")
 	assert.Equal(t, 400, w.Code)
@@ -38,10 +38,8 @@ func TestWriteError_AnswersAParseErrorWithItsCodesStatus(t *testing.T) {
 // reads which field failed, and the hook learns which entry was dropped.
 func TestWriteError_AnswersWithoutDetailsItCannotEncode(t *testing.T) {
 	var reported []error
-	pe := &core.ParseError{
-		Code: filter.ECodeValueTypeMismatch.String(), Message: "price out of range",
-		Details: map[string]any{"field": "price", "value": math.NaN(), "limit": math.Inf(1)},
-	}
+	pe := core.NewError(filter.ECodeValueTypeMismatch, "price out of range",
+		core.WithField("price"), core.WithDetail("value", math.NaN()), core.WithDetail("limit", math.Inf(1)))
 	w, req := httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/devices", nil)
 	require.True(t, WriteError(w, req, pe, WithErrorHandler(func(_ *http.Request, err error) { reported = append(reported, err) })))
 
@@ -86,7 +84,8 @@ func TestWriteError_ReportsDetailsThatFailOnlySometimes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var reported []error
 			calls := 0
-			pe := &core.ParseError{Code: "E2073", Message: "m", Details: map[string]any{"field": "price", "v": flaky{calls: &calls, fail: tc.fail}}}
+			pe := core.NewError(core.CodeValueTypeMismatch, "m",
+				core.WithField("price"), core.WithDetail("v", flaky{calls: &calls, fail: tc.fail}))
 			w, req := httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/devices", nil)
 			require.True(t, WriteError(w, req, pe, WithErrorHandler(func(_ *http.Request, err error) { reported = append(reported, err) })))
 
@@ -113,7 +112,7 @@ func (f *failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe 
 func TestWriteError_ReportsAFailedWrite(t *testing.T) {
 	var reported []error
 	w, req := &failingWriter{header: http.Header{}}, httptest.NewRequest(http.MethodGet, "/devices", nil)
-	pe := &core.ParseError{Code: filter.ECodeInvalidUUID.String(), Message: "invalid UUID"}
+	pe := core.NewError(filter.ECodeInvalidUUID, "invalid UUID")
 	require.True(t, WriteError(w, req, pe, WithErrorHandler(func(_ *http.Request, err error) { reported = append(reported, err) })))
 
 	assert.Equal(t, http.StatusBadRequest, w.status)
@@ -175,10 +174,8 @@ func TestWriteError_AnswersAPatchErrorsPathAndIndex(t *testing.T) {
 // does: the module has one error body.
 func TestWriteError_WritesWhatAParseErrorMarshals(t *testing.T) {
 	index := 2
-	pe := &core.ParseError{
-		Code: "E2077", Message: "m", Kind: core.ParseErrorKindPatch, Path: "/a/b", Index: &index,
-		Details: map[string]any{"field": "a"}, Cause: errors.New("hidden"),
-	}
+	pe := core.NewError(core.CodePatchValueInvalid, "m",
+		core.WithPath("/a/b"), core.WithIndex(index), core.WithCause(errors.New("hidden")))
 	marshalled, err := json.Marshal(pe)
 	require.NoError(t, err)
 	w := httptest.NewRecorder()
