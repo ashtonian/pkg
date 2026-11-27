@@ -3,12 +3,16 @@
 package parsememory_test
 
 import (
+	"cmp"
 	"context"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -634,4 +638,100 @@ func TestUpdate_WritesARelationOnlyPatchesReach(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), res.RelationRows)
 	assert.Equal(t, []patchedPair{{"a", "y"}}, held())
+}
+
+// slot is a row keyed by two columns.
+type slot struct {
+	Shelf string `json:"shelf" db:"shelf" parse:"filter,sort"`
+	Bin   int64  `json:"bin"   db:"bin"   parse:"filter,sort"`
+	Label string `json:"label" db:"label" parse:"filter,sort"`
+}
+
+// walkPages lists every page of slots under input, forward from the first
+// page by each page's end cursor, and backward from the last page by each
+// page's start cursor, and returns each walk's rows in walk order and the
+// totals its pages report, nil for none.
+func walkPages(t *testing.T, r *parse.Resource[slot], input parse.ListInput) (forward, backward []slot, totals []*int64) {
+	t.Helper()
+	list := func() *filter.Page[slot] {
+		req, err := r.ParseListInput(input)
+		require.NoError(t, err)
+		page, err := r.List(t.Context(), req, parse.Scope{})
+		require.NoError(t, err)
+		totals = append(totals, page.PageInfo.TotalCount)
+		return page
+	}
+	for {
+		page := list()
+		forward = append(forward, page.Items...)
+		if !page.PageInfo.HasNextPage {
+			break
+		}
+		input.Cursor = string(page.PageInfo.EndCursor)
+	}
+	for {
+		page := list()
+		backward = append(slices.Clone(page.Items), backward...)
+		if !page.PageInfo.HasPrevPage {
+			break
+		}
+		input.Cursor = string(page.PageInfo.StartCursor)
+	}
+	return forward, backward, totals
+}
+
+// A page sorted by the table's key in one direction, which counts no
+// filter, reads the tree from its cursor and stops once it holds its rows,
+// its count the table's size: it pages exactly as a page that counts a
+// filter, which reads every row, forward and backward, and as a sort by
+// other keys does.
+func TestList_KeyOrderPagesAsAFullPass(t *testing.T) {
+	db := open(t, 100)
+	r, err := parse.NewResource[slot](db.Provider(), "slots", parse.PrimaryKey("shelf", "bin"))
+	require.NoError(t, err)
+	var rows []parsememory.Row
+	var want []slot
+	for _, shelf := range []string{"z", "x", "y"} {
+		for bin := int64(5); bin >= 1; bin-- {
+			label := fmt.Sprintf("%s%d", shelf, bin)
+			rows = append(rows, parsememory.Row{"shelf": shelf, "bin": bin, "label": label})
+			want = append(want, slot{Shelf: shelf, Bin: bin, Label: label})
+		}
+	}
+	require.NoError(t, db.Put(t.Context(), "slots", rows...))
+	byKey := func(a, b slot) int { return cmp.Or(strings.Compare(a.Shelf, b.Shelf), cmp.Compare(a.Bin, b.Bin)) }
+	slices.SortFunc(want, byKey)
+	descending := slices.Clone(want)
+	slices.Reverse(descending)
+
+	for _, tt := range []struct {
+		sort string
+		want []slot
+	}{
+		{"", want},
+		{"shelf", want},
+		{"-shelf", descending},
+		{"-shelf,-bin", descending},
+		{"label", want},
+	} {
+		t.Run("sort "+tt.sort, func(t *testing.T) {
+			total := int64(len(tt.want))
+			for _, input := range []parse.ListInput{
+				{Sort: tt.sort, PageSize: 4},
+				{Sort: tt.sort, PageSize: 4, IncludeTotal: true},
+				{Sort: tt.sort, PageSize: 4, IncludeTotal: true, Filter: `{"bin":{"$gte":1}}`},
+			} {
+				forward, backward, totals := walkPages(t, r, input)
+				assert.Equal(t, tt.want, forward, "%+v", input)
+				assert.Equal(t, tt.want, backward, "%+v", input)
+				for _, got := range totals {
+					if input.IncludeTotal {
+						assert.Equal(t, &total, got, "%+v", input)
+					} else {
+						assert.Nil(t, got, "%+v", input)
+					}
+				}
+			}
+		})
+	}
 }

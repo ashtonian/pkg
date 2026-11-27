@@ -88,38 +88,61 @@ func (r *rows) Err() error { return nil }
 // resource's row contract decodes as it decodes SQLite's.
 func (r *rows) Documents() []string { return nil }
 
-// columnRow is rec, a row of def's table, as a filter reads it
-// (filter.ColumnRow): by column, bare or qualified by the table.
-func columnRow(def *tableDef, rec *record) filter.ColumnRow {
-	return func(column string) (any, bool) {
-		name, _ := strings.CutPrefix(column, def.name+".")
-		at, ok := def.index[name]
-		if !ok {
-			return nil, false
-		}
-		return rec.value(at), true
-	}
+// rowReader reads the rows of def's table, one at a time: as a filter
+// reads a row (filter.ColumnRow), by column, bare or qualified by the
+// table, and as a lookup condition or a patch does, by bare column. A scan
+// builds one and points it at each row it reads, so no row allocates a
+// reader of its own.
+type rowReader struct {
+	def    *tableDef
+	prefix string
+	rec    *record
+	row    filter.ColumnRow
+	bare   func(string) (any, bool)
 }
 
-// bareRow is rec by bare column, as a lookup condition reads it
-// (filter.MatchLookupRow).
-func bareRow(def *tableDef, rec *record) func(string) (any, bool) {
-	return func(name string) (any, bool) {
-		at, ok := def.index[name]
-		if !ok {
-			return nil, false
-		}
-		return rec.value(at), true
-	}
+func newRowReader(def *tableDef) *rowReader {
+	r := &rowReader{def: def, prefix: def.name + "."}
+	r.row = r.qualified
+	r.bare = r.column
+	return r
 }
 
-// evaluate reports whether ast selects rec, a row of def's table: True, as
-// a WHERE clause admits a row.
-func evaluate(ast *filter.FilterAST, def *tableDef, rec *record) (bool, error) {
+func (r *rowReader) qualified(column string) (any, bool) {
+	name, _ := strings.CutPrefix(column, r.prefix)
+	return r.column(name)
+}
+
+func (r *rowReader) column(name string) (any, bool) {
+	at, ok := r.def.index[name]
+	if !ok {
+		return nil, false
+	}
+	return r.rec.value(at), true
+}
+
+// of is the reader pointed at rec as a filter reads it, valid until it is
+// pointed at another row.
+func (r *rowReader) of(rec *record) filter.ColumnRow {
+	r.rec = rec
+	return r.row
+}
+
+// bareOf is the reader pointed at rec by bare column
+// (filter.MatchLookupRow, patch.ComposedPatch.Apply), valid until it is
+// pointed at another row.
+func (r *rowReader) bareOf(rec *record) func(string) (any, bool) {
+	r.rec = rec
+	return r.bare
+}
+
+// evaluate reports whether ast selects rec: True, as a WHERE clause admits
+// a row.
+func (r *rowReader) evaluate(ast *filter.FilterAST, rec *record) (bool, error) {
 	if ast == nil || ast.Root == nil {
 		return true, nil
 	}
-	truth, err := filter.Evaluate(ast.Root, columnRow(def, rec))
+	truth, err := filter.Evaluate(ast.Root, r.of(rec))
 	if err != nil {
 		return false, err
 	}
@@ -165,7 +188,9 @@ type lookup struct {
 	view    view
 }
 
-// selected are the rows of l.Table that l.Where and l.Filter select.
+// selected are the rows of l.Table that l.Where and l.Filter select: of
+// the key ranges l.Where holds the table to, or of the whole table
+// (tableDef.lookupRows).
 func (lk lookup) selected(ctx context.Context, l *filter.Lookup) (*tableDef, []*record, error) {
 	def, ok := lk.catalog.table(l.Table)
 	if !ok {
@@ -188,7 +213,8 @@ func (lk lookup) selected(ctx context.Context, l *filter.Lookup) (*tableDef, []*
 	var out []*record
 	var err error
 	n := 0
-	t.Scan(func(rec *record) bool {
+	reader := newRowReader(def)
+	def.lookupRows(t, l.Where, func(rec *record) bool {
 		n++
 		if n%checkEvery == 0 {
 			err = ctx.Err()
@@ -197,9 +223,9 @@ func (lk lookup) selected(ctx context.Context, l *filter.Lookup) (*tableDef, []*
 			}
 		}
 		var ok bool
-		ok, err = filter.MatchLookupRow(l.Where, bareRow(def, rec))
+		ok, err = filter.MatchLookupRow(l.Where, reader.bareOf(rec))
 		if err == nil && ok {
-			ok, err = evaluate(ast, def, rec)
+			ok, err = reader.evaluate(ast, rec)
 		}
 		if err != nil {
 			return false

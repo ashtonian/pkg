@@ -55,6 +55,8 @@ func TestNormalizeScalar_RefusesTimestampsOutsideRFC3339AndTheFourDigitYears(t *
 		"2025-01-01T00:00:00.Z",
 		"2025-01-01T00:00:00",
 		"2025-01-01t00:00:00z",
+		"2025-02-29T00:00:00.000000000Z", // the canonical width, a day out of range
+		"2025-01-01T24:00:00.000000000Z", // the canonical width, an hour out of range
 		time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC),
 		time.Date(0, 12, 31, 23, 0, 0, 0, time.UTC),
 	}

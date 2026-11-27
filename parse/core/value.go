@@ -112,11 +112,21 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	switch dt {
 	case FieldTypeInt:
 		if isUnsignedKind(kind) {
-			return NormalizeUint(v, kind)
+			n, err := NormalizeUint(v, kind)
+			return heldInteger(v, n, err)
 		}
-		return NormalizeInt(v, kind)
+		n, err := NormalizeInt(v, kind)
+		return heldInteger(v, n, err)
 	case FieldTypeFloat:
-		return NormalizeFloat(v, kind)
+		f, err := NormalizeFloat(v, kind)
+		if err != nil {
+			return nil, err
+		}
+		held, ok := v.(float64)
+		if ok && math.Float64bits(held) == math.Float64bits(f) {
+			return v, nil // boxing f again would allocate
+		}
+		return f, nil
 	case FieldTypeDecimal:
 		return DecimalText(plainString(v))
 	case FieldTypeBool:
@@ -136,6 +146,20 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 		return v, nil // boxing s again would allocate
 	}
 	return s, nil
+}
+
+// heldInteger is n, v's normalized integer, as v when v already holds it:
+// boxing n again would allocate on every row a list, filter or facet
+// reads.
+func heldInteger[T int64 | uint64](v any, n T, err error) (any, error) {
+	if err != nil {
+		return nil, err
+	}
+	held, ok := v.(T)
+	if ok && held == n {
+		return v, nil
+	}
+	return n, nil
 }
 
 // canonicalText is the canonical text of v, a value of dt, a type whose
@@ -171,6 +195,10 @@ func canonicalText(dt FieldType, v any) (string, error) {
 		t, err := timestampOf(v)
 		if err != nil {
 			return "", err
+		}
+		text, isText := v.(string)
+		if isText && canonicalTimestampText(text) {
+			return text, nil // a stored timestamp is read on every row a list, filter or facet reads; FormatTimestamp would allocate it again
 		}
 		return FormatTimestamp(t), nil
 	case FieldTypeTime:
@@ -385,6 +413,15 @@ func toTime(v any) (time.Time, error) {
 }
 
 var errInvalidTimestamp = errors.New("invalid timestamp, expected RFC 3339")
+
+// canonicalTimestampText reports s, RFC 3339 text that time.Parse reads
+// as a timestamp (timestampOf), in the canonical form (TimestampLayout):
+// in UTC with nine fractional digits, which rfc3339Text's shape leaves at
+// exactly this width.
+func canonicalTimestampText(s string) bool {
+	const width = len("2006-01-02T15:04:05.000000000Z")
+	return len(s) == width && s[19] == '.' && s[width-1] == 'Z'
+}
 
 // rfc3339Text reports s in RFC 3339's date-time form: YYYY-MM-DDTHH:MM:SS,
 // a fraction of one to nine digits after a dot, then Z or an offset ±HH:MM

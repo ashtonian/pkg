@@ -173,16 +173,11 @@ func (u *updater) unpair(ctx context.Context, pt *pairs, owners, values []core.K
 	}
 	if pt.prefixed {
 		for _, owner := range owners {
-			pivot, err := pt.pivot(owner)
+			r, err := pt.def.prefixRange(owner)
 			if err != nil {
-				return 0, err
+				return 0, fmt.Errorf("owner: %w", err)
 			}
-			// NULL orders last and a key holds none, so the pivot, the owner
-			// with every later key column NULL, follows each of its pairs.
-			t.Descend(pivot, func(rec *record) bool {
-				if !pt.ownedBy(rec, pivot) {
-					return false
-				}
+			pt.def.eachInRange(t, r, func(rec *record) bool {
 				visit(rec)
 				return visitErr == nil
 			})
@@ -313,31 +308,6 @@ func (pt *pairs) record(owner, target core.Key) (*record, error) {
 		return nil, fmt.Errorf("pair table %q: %w", pt.def.name, err)
 	}
 	return rec, nil
-}
-
-// pivot is a record of the pair table holding owner at its source columns
-// and NULL elsewhere.
-func (pt *pairs) pivot(owner core.Key) (*record, error) {
-	rec := &record{values: make([]any, len(pt.def.columns))}
-	for i, at := range pt.sources {
-		v, err := storageValue(owner[i], pt.def.columns[at].typ)
-		if err != nil {
-			return nil, fmt.Errorf("owner column %s: %w", pt.def.columns[at].name, err)
-		}
-		rec.values[at] = v
-	}
-	return rec, nil
-}
-
-// ownedBy reports whether rec holds pivot's owner.
-func (pt *pairs) ownedBy(rec, pivot *record) bool {
-	for _, at := range pt.sources {
-		c, err := core.CompareCanonical(pt.def.columns[at].typ, rec.value(at), pivot.value(at))
-		if err != nil || c != 0 {
-			return false
-		}
-	}
-	return true
 }
 
 // heldFor reports whether rec is the update's tenant's pair, or the table

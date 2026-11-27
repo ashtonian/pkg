@@ -90,7 +90,16 @@ func (c *FacetCount) Add(v any) error {
 		c.counts[key]++
 		return nil
 	}
-	if c.Field.Path == nil && c.Field.DataType == core.FieldTypeArray {
+	if c.Field.Path == nil && c.Field.DataType != core.FieldTypeArray {
+		// One key, counted without the list FacetKeys would allocate for it
+		// on every row.
+		key, ok, err := columnFacetKey(v, c.Field)
+		if ok {
+			c.counts[key]++
+		}
+		return err
+	}
+	if c.Field.Path == nil {
 		// An array column's stored JSON text is a list once read as the
 		// column holds it.
 		list, present, err := ColumnValue(c.Field, v)

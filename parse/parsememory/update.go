@@ -176,6 +176,7 @@ type updater struct {
 	w      *write
 	res    *backend.Resource
 	def    *tableDef
+	reader *rowReader
 	scope  filter.RelationScope
 	lookup lookup
 }
@@ -185,7 +186,7 @@ func (e executor) updater(w *write, res *backend.Resource, scope filter.Relation
 	if !ok {
 		return nil, fmt.Errorf("parsememory: table %q: no resource declares it", res.Table)
 	}
-	u := &updater{db: e.db, w: w, res: res, def: def, scope: scope, lookup: lookup{catalog: e.db.catalog, view: w}}
+	u := &updater{db: e.db, w: w, res: res, def: def, reader: newRowReader(def), scope: scope, lookup: lookup{catalog: e.db.catalog, view: w}}
 	return u, nil
 }
 
@@ -243,7 +244,7 @@ func (u *updater) targets(ctx context.Context, where *filter.FilterAST, keys []c
 			}
 		}
 		var ok bool
-		ok, err = evaluate(where, u.def, rec)
+		ok, err = u.reader.evaluate(where, rec)
 		if err != nil {
 			return false
 		}
@@ -272,7 +273,7 @@ func (u *updater) target(where *filter.FilterAST, key core.Key) (*record, error)
 	if !ok {
 		return nil, nil
 	}
-	ok, err = evaluate(where, u.def, rec)
+	ok, err = u.reader.evaluate(where, rec)
 	if err != nil || !ok {
 		return nil, err
 	}
@@ -299,7 +300,7 @@ func (u *updater) apply(update *patch.ComposedPatch, targets []*record, skipUnch
 		at[i] = pos
 	}
 	for _, rec := range targets {
-		write, err := update.Apply(bareRow(u.def, rec))
+		write, err := update.Apply(u.reader.bareOf(rec))
 		if err != nil {
 			_, refused := errors.AsType[*core.ParseError](err)
 			if refused {

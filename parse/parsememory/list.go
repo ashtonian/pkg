@@ -85,6 +85,7 @@ type query struct {
 	keys   []filter.CursorKey
 	cursor *filter.PageToken
 	limit  int
+	count  bool
 	facets []filter.FacetRequest
 	scope  filter.RelationScope
 }
@@ -97,7 +98,7 @@ func queryOf(list *filter.ComposedList) query {
 	for i, name := range names {
 		facets[i] = filter.FacetRequest{Field: name}
 	}
-	q := query{schema: list.Schema(), filter: list.Filter(), keys: list.Keys(), cursor: list.Cursor(), limit: list.Limit(), facets: facets, scope: list.RelationScope()}
+	q := query{schema: list.Schema(), filter: list.Filter(), keys: list.Keys(), cursor: list.Cursor(), limit: list.Limit(), count: list.Count(), facets: facets, scope: list.RelationScope()}
 	return q
 }
 
@@ -105,18 +106,21 @@ func queryOf(list *filter.ComposedList) query {
 type lister struct {
 	table  string
 	def    *tableDef
+	reader *rowReader
 	q      query
 	lookup lookup
 	// paged reports a list that reads a page, not facets alone.
 	paged bool
 
 	keys []filter.CursorKey
-	// keyAt is each key's column position; reverse walks the keyset
-	// backward (a page's start cursor), and cursor is the position the
-	// page starts past, its values canonical (filter.ValidateCursor).
+	// keyAt is each key's column position and orders its values' order;
+	// reverse walks the keyset backward (a page's start cursor), and
+	// cursor is the position the page starts past.
 	keyAt   []int
+	orders  []*filter.KeyValueOrder
 	reverse bool
-	cursor  []any
+	cursor  []filter.SortValue
+	scratch []filter.SortValue
 
 	facets  []*filter.FacetCount
 	facetAt []int
@@ -149,23 +153,28 @@ func (e executor) lister(table string, q query, paged bool) (*lister, error) {
 	if !ok {
 		return nil, fmt.Errorf("parsememory: table %q: no resource declares it", table)
 	}
-	l := &lister{table: table, def: def, q: q, lookup: lookup{catalog: e.db.catalog, view: v}, paged: paged, tenantAt: -1}
+	l := &lister{table: table, def: def, reader: newRowReader(def), q: q, lookup: lookup{catalog: e.db.catalog, view: v}, paged: paged, tenantAt: -1}
 	if paged {
 		l.keys = q.keys
 		l.keyAt = make([]int, len(l.keys))
+		l.orders = make([]*filter.KeyValueOrder, len(l.keys))
 		for i, k := range l.keys {
 			at, ok := def.index[k.Column]
 			if !ok {
 				return nil, fmt.Errorf("parsememory: sort key %q reads column %q, which table %q does not hold", k.Name, k.Column, table)
 			}
 			l.keyAt[i] = at
+			l.orders[i] = filter.NewKeyValueOrder(k)
 		}
 		token := q.cursor
 		if token != nil {
 			l.reverse = token.Reverse
-			l.cursor = make([]any, len(token.Fields))
+			l.cursor = make([]filter.SortValue, len(token.Fields))
 			for i, f := range token.Fields {
-				l.cursor[i] = f.Value
+				l.cursor[i], err = l.orders[i].ReadCursor(f.Value)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -201,11 +210,13 @@ type passResult struct {
 	tenants map[tenantGroup]any
 }
 
-// pass reads every row once: each the filter selects is counted and
+// pass reads the table's rows once: each the filter selects is counted and
 // faceted, and, past the cursor, offered to a bounded selection of the
 // first limit plus one rows in walk order, so the page's memory is bounded
 // by the limit and no row is sorted that the page does not hold. Each
-// row's sort keys are read to their canonical values once.
+// row's sort keys are read to their canonical values once. A page in the
+// table's key order that facets nothing and counts no filter reads from
+// the cursor on and stops once it holds its rows (keyOrdered).
 func (l *lister) pass(ctx context.Context) (passResult, error) {
 	err := l.resolve(ctx)
 	if err != nil {
@@ -222,9 +233,10 @@ func (l *lister) pass(ctx context.Context) (passResult, error) {
 	if t == nil {
 		return res, nil
 	}
+	ordered := l.keyOrdered()
 	var passErr error
 	n := 0
-	t.Scan(func(rec *record) bool {
+	visit := func(rec *record) bool {
 		n++
 		if n%checkEvery == 0 {
 			passErr = ctx.Err()
@@ -233,8 +245,14 @@ func (l *lister) pass(ctx context.Context) (passResult, error) {
 			}
 		}
 		passErr = l.offer(ctx, rec, &res, top)
-		return passErr == nil
-	})
+		return passErr == nil && (!ordered || len(top.rows) < top.limit)
+	}
+	if ordered {
+		l.walkKey(t, visit)
+		res.count = int64(t.Len())
+	} else {
+		t.Scan(visit)
+	}
 	if passErr != nil {
 		return passResult{}, passErr
 	}
@@ -243,6 +261,54 @@ func (l *lister) pass(ctx context.Context) (passResult, error) {
 		return passResult{}, parse.StatementFailed(l.table, "page", top.err)
 	}
 	return res, nil
+}
+
+// keyOrdered reports a page whose rows the table's tree holds in walk
+// order: sorted by the table's key, every column in one direction and in
+// its column's own order, with no facet and no count of a filter, which
+// read every row; a count of no filter is the table's size. Its first
+// limit plus one rows past the cursor are the page.
+func (l *lister) keyOrdered() bool {
+	if !l.paged || (l.q.count && l.q.filter != nil) || len(l.facets) > 0 || len(l.keys) != len(l.def.key) {
+		return false
+	}
+	for i, k := range l.keys {
+		typ := l.def.columns[l.def.key[i]].typ
+		keyType := core.TypeInfo{Type: k.DataType, NumberKind: k.NumberKind}
+		if l.keyAt[i] != l.def.key[i] || k.Path != nil || k.Direction != l.keys[0].Direction || typ == (core.TypeInfo{}) || !typesAgree(typ, keyType) {
+			return false
+		}
+	}
+	return true
+}
+
+// walkKey calls visit with t's rows in walk order, the key's or its
+// reverse, until visit returns false: from the cursor, which the tree
+// finds in O(log n), or from the first row.
+func (l *lister) walkKey(t *tree, visit func(*record) bool) {
+	descending := l.direction(l.keys[0]) == filter.SortDesc
+	if l.cursor != nil {
+		cursor := make(core.Key, len(l.cursor))
+		for i, v := range l.cursor {
+			cursor[i] = v.Value()
+		}
+		// A cursor value no key column holds seeks nothing: the walk then
+		// reads from the first row, and past decides each.
+		r, err := l.def.prefixRange(cursor)
+		if err == nil && descending {
+			t.Descend(r.probe, visit)
+			return
+		}
+		if err == nil {
+			t.Ascend(r.probe, visit)
+			return
+		}
+	}
+	if descending {
+		t.Reverse(visit)
+		return
+	}
+	t.Scan(visit)
 }
 
 // offer passes rec, one row, through the list: the filter, the count, the
@@ -269,17 +335,19 @@ func (l *lister) offer(ctx context.Context, rec *record, res *passResult, top *t
 	if !l.paged {
 		return nil
 	}
-	row, err := l.sortRow(rec)
+	values, err := l.sortKeys(rec)
 	if err != nil {
 		return parse.StatementFailed(l.table, "page", err)
 	}
 	if l.cursor != nil {
-		past, err := l.past(row.values)
+		past, err := l.past(values)
 		if err != nil || !past {
 			return parse.StatementFailed(l.table, "page", err)
 		}
 	}
-	top.offer(row)
+	if top.wants(values) {
+		top.offer(sortRow{rec: rec, values: slices.Clone(values)})
+	}
 	return nil
 }
 
@@ -317,7 +385,7 @@ func (l *lister) resolve(ctx context.Context) error {
 // governed list the row's tenant group and tenant.
 func (l *lister) selects(ctx context.Context, rec *record) (bool, tenantGroup, any, error) {
 	if l.tenantAt < 0 {
-		ok, err := evaluate(l.where, l.def, rec)
+		ok, err := l.reader.evaluate(l.where, rec)
 		if err != nil {
 			return false, tenantGroup{}, nil, parse.StatementFailed(l.table, "page", err)
 		}
@@ -327,7 +395,7 @@ func (l *lister) selects(ctx context.Context, rec *record) (bool, tenantGroup, a
 	if err != nil {
 		return false, tenantGroup{}, nil, parse.StatementFailed(l.table, "page", err)
 	}
-	truth, err := filter.Evaluate(l.open.Root, columnRow(l.def, rec))
+	truth, err := filter.Evaluate(l.open.Root, l.reader.of(rec))
 	if err != nil {
 		return false, tenantGroup{}, nil, parse.StatementFailed(l.table, "page", err)
 	}
@@ -338,7 +406,7 @@ func (l *lister) selects(ctx context.Context, rec *record) (bool, tenantGroup, a
 	if err != nil {
 		return false, tenantGroup{}, nil, err
 	}
-	ok, err := evaluate(where, l.def, rec)
+	ok, err := l.reader.evaluate(where, rec)
 	if err != nil {
 		return false, tenantGroup{}, nil, parse.StatementFailed(l.table, "page", err)
 	}
@@ -413,19 +481,22 @@ func unresolved(n *filter.FilterNode) *filter.FilterNode {
 	return &out
 }
 
-// sortRow is rec with its sort keys read to their canonical values
-// (filter.KeyValue), which every comparison of the walk reads.
-func (l *lister) sortRow(rec *record) (sortRow, error) {
-	values := make([]any, len(l.keys))
-	for i, k := range l.keys {
-		v, err := filter.KeyValue(k, rec.value(l.keyAt[i]))
-		if err != nil {
-			return sortRow{}, fmt.Errorf("sort key %s: %w", k.Name, err)
-		}
-		values[i] = v
+// sortKeys are rec's sort keys read once (filter.KeyValueOrder), which
+// every comparison of the walk reads. They are held in the lister's
+// scratch until the next row's are read, so a row the page does not take
+// allocates none.
+func (l *lister) sortKeys(rec *record) ([]filter.SortValue, error) {
+	if l.scratch == nil {
+		l.scratch = make([]filter.SortValue, len(l.keys))
 	}
-	row := sortRow{rec: rec, values: values}
-	return row, nil
+	for i, k := range l.keys {
+		v, err := l.orders[i].Read(rec.value(l.keyAt[i]))
+		if err != nil {
+			return nil, fmt.Errorf("sort key %s: %w", k.Name, err)
+		}
+		l.scratch[i] = v
+	}
+	return l.scratch, nil
 }
 
 // direction is k's direction in the walk: flipped for a backward seek.
@@ -436,10 +507,10 @@ func (l *lister) direction(k filter.CursorKey) filter.SortDirection {
 	return k.Direction
 }
 
-// compare orders two canonical values of key i in the walk: the key's
-// order (filter.CompareKeyValues, NULL greatest) in its direction.
-func (l *lister) compare(i int, a, b any) (int, error) {
-	c, err := filter.CompareKeyValues(l.keys[i], a, b)
+// compare orders two values of key i in the walk: the key's order
+// (filter.CompareKeyValues, NULL greatest) in its direction.
+func (l *lister) compare(i int, a, b filter.SortValue) (int, error) {
+	c, err := l.orders[i].Compare(a, b)
 	if err != nil {
 		return 0, err
 	}
@@ -450,7 +521,7 @@ func (l *lister) compare(i int, a, b any) (int, error) {
 }
 
 // walkLess orders two rows in the walk, key by key.
-func (l *lister) walkLess(a, b []any) (bool, error) {
+func (l *lister) walkLess(a, b []filter.SortValue) (bool, error) {
 	for i := range l.keys {
 		c, err := l.compare(i, a[i], b[i])
 		if err != nil || c != 0 {
@@ -466,10 +537,10 @@ func (l *lister) walkLess(a, b []any) (bool, error) {
 // equal to the cursor's — NULL equal to NULL — and key i after it. After a
 // value walking ascending is a greater value, or NULL for a nullable key;
 // walking descending a lesser one, and after NULL every value.
-func (l *lister) past(values []any) (bool, error) {
+func (l *lister) past(values []filter.SortValue) (bool, error) {
 	for i, k := range l.keys {
 		x, v := values[i], l.cursor[i]
-		xnull, vnull := isNull(x), isNull(v)
+		xnull, vnull := x.Null(), v.Null()
 		var after bool
 		switch {
 		case l.direction(k) == filter.SortAsc && vnull:
@@ -490,7 +561,7 @@ func (l *lister) past(values []any) (bool, error) {
 		}
 		equal := xnull && vnull
 		if !xnull && !vnull {
-			c, err := filter.CompareKeyValues(k, x, v)
+			c, err := l.orders[i].Compare(x, v)
 			if err != nil {
 				return false, err
 			}
@@ -663,19 +734,19 @@ func (l *lister) ownersByTenant(owners []core.Key, page []*record) ([]tenantGrou
 	return slices.SortedFunc(maps.Keys(byGroup), compareGroups), byGroup, tenants, nil
 }
 
-// sortRow is a row offered to the page and its sort keys' canonical
-// values.
+// sortRow is a row offered to the page and its sort keys' values.
 type sortRow struct {
 	rec    *record
-	values []any
+	values []filter.SortValue
 }
 
 // topK keeps the first limit rows offered in walk order: a max-heap of
-// them, whose top is the last, which a row before it replaces. Offering n
-// rows costs O(n log limit) comparisons and holds limit rows.
+// them, whose top is the last, which a row before it replaces. A row costs
+// one comparison with the top, and one it keeps O(log limit) more, so n
+// rows cost O(n log limit) comparisons at most; it holds limit rows.
 type topK struct {
 	limit int
-	less  func(a, b []any) (bool, error)
+	less  func(a, b []filter.SortValue) (bool, error)
 	rows  []sortRow
 	err   error
 }
@@ -699,25 +770,34 @@ func (h *topK) Pop() any {
 	return last
 }
 
-// before reports whether a comes before b in the walk, keeping the first
-// comparison error.
-func (h *topK) before(a, b sortRow) bool {
-	less, err := h.less(a.values, b.values)
+// before reports whether a comes before b in the walk.
+func (h *topK) before(a, b sortRow) bool { return h.precedes(a.values, b.values) }
+
+// precedes reports whether sort keys a come before b in the walk, keeping
+// the first comparison error.
+func (h *topK) precedes(a, b []filter.SortValue) bool {
+	less, err := h.less(a, b)
 	if err != nil && h.err == nil {
 		h.err = err
 	}
 	return less
 }
 
+// wants reports whether a row whose sort keys are values would be kept:
+// the selection is not full, or the row comes before its last.
+func (h *topK) wants(values []filter.SortValue) bool {
+	return len(h.rows) < h.limit || h.precedes(values, h.rows[0].values)
+}
+
+// offer keeps row, which the selection wants (wants), dropping its last
+// when it is full.
 func (h *topK) offer(row sortRow) {
 	if len(h.rows) < h.limit {
 		heap.Push(h, row)
 		return
 	}
-	if h.before(row, h.rows[0]) {
-		h.rows[0] = row
-		heap.Fix(h, 0)
-	}
+	h.rows[0] = row
+	heap.Fix(h, 0)
 }
 
 // sorted are the kept rows in walk order.
