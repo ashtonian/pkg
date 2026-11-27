@@ -101,9 +101,13 @@ func newStore(maxRows int) *store {
 func (s *store) read() *snapshot { return s.head.Load() }
 
 // begin takes the writer, waiting under ctx for the write that holds it,
-// and starts a write on the published snapshot. The write holds the writer
+// and starts a write on the published snapshot. A ctx already done takes
+// nothing, whether or not the writer is free. The write holds the writer
 // until it commits or aborts, whatever happens to ctx after.
 func (s *store) begin(ctx context.Context) (*write, error) {
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("parsememory: waiting for the writer: %w", context.Cause(ctx))
+	}
 	select {
 	case s.writer <- struct{}{}:
 	case <-ctx.Done():

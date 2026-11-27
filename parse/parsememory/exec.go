@@ -40,13 +40,19 @@ func (e executor) view() (view, error) {
 // when apply succeeds. ErrRowLimit ends the transaction it happens in. A
 // panic in apply, such as a sink's scanner panicking, settles the write on
 // its way out as an error does: the savepoint is restored, or the write
-// aborted and the writer released.
+// aborted and the writer released. A ctx already done runs nothing, and
+// fails the part the SQL providers would run first: the savepoint in a
+// transaction, the begin otherwise.
 func (e executor) write(ctx context.Context, table string, apply func(*write) error) error {
 	err := e.db.open()
 	if err != nil {
 		return err
 	}
 	if e.txn != nil {
+		err = ctx.Err()
+		if err != nil {
+			return parse.StatementFailed(table, "savepoint", err)
+		}
 		return e.underSavepoint(apply)
 	}
 	w, err := e.db.store.begin(ctx)

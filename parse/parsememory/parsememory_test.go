@@ -735,3 +735,59 @@ func TestList_KeyOrderPagesAsAFullPass(t *testing.T) {
 		})
 	}
 }
+
+// requireStatement asserts err is the cancellation of ctx, reported as
+// the part of the notes resource's request named statement.
+func requireStatement(t *testing.T, err error, statement string) {
+	t.Helper()
+	require.ErrorIs(t, err, context.Canceled)
+	failed, ok := errors.AsType[*parse.StatementError](err)
+	require.True(t, ok, "%v", err)
+	assert.Equal(t, "notes", failed.Table)
+	assert.Equal(t, statement, failed.Statement)
+}
+
+// A request whose context is done runs nothing, as a SQL provider's first
+// statement fails under it, whether or not the writer is free: a list, its
+// facets, an update and a batch, alone or in a transaction, which goes on.
+func TestCancelledContext_RunsNothing(t *testing.T) {
+	db := open(t, 10)
+	notes := notesOn(t, db)
+	require.NoError(t, db.Put(t.Context(), "notes", row(1, "first")))
+	done, cancel := context.WithCancel(t.Context())
+	cancel()
+	p, err := notes.ParseMergePatch([]byte(`{"title":"x"}`))
+	require.NoError(t, err)
+	facets, err := notes.ParseFacets(url.Values{"facets": {"title"}})
+	require.NoError(t, err)
+
+	_, err = notes.List(done, nil, parse.Scope{})
+	requireStatement(t, err, "page")
+	_, err = notes.Facets(done, facets, parse.Scope{})
+	requireStatement(t, err, "facets")
+	_, err = notes.Update(done, p, parse.ByID(int64(1)), parse.Scope{})
+	requireStatement(t, err, "begin")
+	_, err = notes.UpdateBatch(done, []parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
+	requireStatement(t, err, "begin")
+	require.ErrorIs(t, db.Put(done, "notes", row(2, "second")), context.Canceled)
+	_, err = db.Begin(done)
+	require.ErrorIs(t, err, context.Canceled)
+
+	txn, err := db.Begin(t.Context())
+	require.NoError(t, err)
+	scoped, err := notes.In(parsememory.Tx(txn))
+	require.NoError(t, err)
+	_, err = scoped.Update(done, p, parse.ByID(int64(1)), parse.Scope{})
+	requireStatement(t, err, "savepoint")
+	_, err = scoped.List(done, nil, parse.Scope{})
+	requireStatement(t, err, "page")
+	require.NoError(t, txn.Put(t.Context(), "notes", row(3, "third")))
+	require.NoError(t, txn.Commit(t.Context()))
+
+	assert.Equal(t, []int64{1, 3}, list(t, notes))
+	unchanged, err := notes.ParseList(url.Values{"title": {"first"}})
+	require.NoError(t, err)
+	page, err := notes.List(t.Context(), unchanged, parse.Scope{})
+	require.NoError(t, err)
+	assert.Len(t, page.Items, 1, "no update wrote")
+}

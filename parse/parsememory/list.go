@@ -218,7 +218,11 @@ type passResult struct {
 // table's key order that facets nothing and counts no filter reads from
 // the cursor on and stops once it holds its rows (keyOrdered).
 func (l *lister) pass(ctx context.Context) (passResult, error) {
-	err := l.resolve(ctx)
+	err := ctx.Err()
+	if err != nil {
+		return passResult{}, parse.StatementFailed(l.table, l.part(), err)
+	}
+	err = l.resolve(ctx)
 	if err != nil {
 		return passResult{}, err
 	}
@@ -238,11 +242,9 @@ func (l *lister) pass(ctx context.Context) (passResult, error) {
 	n := 0
 	visit := func(rec *record) bool {
 		n++
-		if n%checkEvery == 0 {
-			passErr = ctx.Err()
-			if passErr != nil {
-				return false
-			}
+		if n%checkEvery == 0 && ctx.Err() != nil {
+			passErr = parse.StatementFailed(l.table, l.part(), ctx.Err())
+			return false
 		}
 		passErr = l.offer(ctx, rec, &res, top)
 		return passErr == nil && (!ordered || len(top.rows) < top.limit)
@@ -261,6 +263,15 @@ func (l *lister) pass(ctx context.Context) (passResult, error) {
 		return passResult{}, parse.StatementFailed(l.table, "page", top.err)
 	}
 	return res, nil
+}
+
+// part names the list's part as the SQL providers name its statement: a
+// list's page, or a facets request's facets.
+func (l *lister) part() string {
+	if l.paged {
+		return "page"
+	}
+	return "facets"
 }
 
 // keyOrdered reports a page whose rows the table's tree holds in walk
