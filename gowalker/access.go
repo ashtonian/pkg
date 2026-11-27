@@ -173,7 +173,7 @@ func (a *Accessor) GetValue(root reflect.Value) (Value, error) {
 		var missing bool
 		var err error
 		if compiled.step.Kind() != path.DerefKind {
-			v, shape, missing, err = a.follow(v, shape)
+			v, shape, missing, err = a.follow(v, shape, false)
 			if err != nil {
 				return Value{}, failure("get", err, nil, a.path, i, nil)
 			}
@@ -193,7 +193,7 @@ func (a *Accessor) GetValue(root reflect.Value) (Value, error) {
 		switch compiled.step.Kind() {
 		case path.FieldKind:
 			for _, index := range compiled.field.index {
-				v, shape, missing, err = a.follow(v, shape)
+				v, shape, missing, err = a.follow(v, shape, true)
 				if err != nil {
 					return Value{}, failure("get", err, nil, a.path, i, nil)
 				}
@@ -275,11 +275,14 @@ type pointerID struct {
 	ptr uintptr
 }
 
-func (a *Accessor) follow(v reflect.Value, shape *Shape) (reflect.Value, *Shape, bool, error) {
+// follow dereferences v's pointers and interfaces. A leaf stops it, but for
+// the pointers inlined along a field's route: they lead to a struct the
+// owner's view inlines, which a leaf rule does not close.
+func (a *Accessor) follow(v reflect.Value, shape *Shape, inlined bool) (reflect.Value, *Shape, bool, error) {
 	var initial [8]pointerID
 	seen := initial[:0]
 	for depth := 0; v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface; depth++ {
-		if shape.atomic {
+		if shape.atomic && !inlined {
 			return reflect.Value{}, nil, false, ErrPath
 		}
 		if depth >= a.schema.engine.settings.limits.MaxDepth {

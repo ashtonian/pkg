@@ -32,16 +32,19 @@ func staticRoute(root *Shape, steps []accessStep, maxDepth int) []hop {
 	hops := make([]hop, 0, count)
 	shape := root
 	for i, step := range steps {
-		for _, index := range step.field.index {
+		for j, index := range step.field.index {
+			// Past a field's first index, the route crosses structs the
+			// owner's view inlines, which no leaf rule closes.
+			inlined := j > 0
 			derefs := 0
 			for shape.Kind() == reflect.Pointer {
-				if shape.atomic || derefs >= maxDepth {
+				if shape.atomic && !inlined || derefs >= maxDepth {
 					return nil
 				}
 				derefs++
 				shape = shape.elem
 			}
-			if shape.Kind() != reflect.Struct || shape.atomic {
+			if shape.Kind() != reflect.Struct || shape.atomic && !inlined {
 				return nil
 			}
 			hops = append(hops, hop{derefs: derefs, index: index, step: i})

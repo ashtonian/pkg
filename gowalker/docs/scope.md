@@ -16,6 +16,7 @@ tags and fields mean.
 | Inherit annotations | The nearest tag on a field's route, for section-wide settings |
 | Inspect types | Exact declared types, raw struct fields, pointer/element/key relationships, and recursive type graphs |
 | Define visible fields | Names, aliases, skip/inline rules, field-specific or type-wide leaves, exact/case-fold matching, and collision errors |
+| Check JSON map keys | The key `encoding/json` reads a member name into, the name it writes back, and the key types it refuses |
 | Resolve locations | Concrete field, map-key, index and dereference steps; a text subset; an empty path for the root |
 | Read | Borrowed values with distinct present, nil and missing states; optional typed results |
 | Write | Go-assignable values, optional lossless numeric conversion, explicit pointer/map allocation, map/interface writeback, existing index replacement, and the settable location for a caller's own decoder |

@@ -53,8 +53,13 @@ The engine then applies field rules to build the visible field list. By default,
 this list contains exported Go fields with their original names and nesting.
 `WithTaggedFields` names fields by a tag; because it is part of the engine's
 settings rather than an opaque callback, its embedded-struct promotion can see
-the engine's leaf rules and leaves an embedded `time.Time` whole. A resolver can
-rename fields, add aliases, skip fields or inline a struct.
+the engine's leaf rules and leaves an embedded `time.Time` whole.
+`WithJSONFields` names the members `encoding/json` writes instead, and that
+codec promotes an embedded struct's fields whatever its methods whenever the
+outer struct does not inherit them, so its promotion ignores leaf rules: an
+inline owner may be a leaf, and reads, writes, static routes and walks follow
+a field's route through it, stopping at leaves only on the field itself. A
+resolver can rename fields, add aliases, skip fields or inline a struct.
 Inlining gives a descendant a shorter logical name while retaining the complete
 Go field-index route needed to reach it. `DeclaredView` also retains the inline
 owner, so a consumer can inspect tags on that owner. Expansion also records, per
@@ -112,6 +117,12 @@ into. `FieldRule.Atomic` makes one field a leaf; `WithAtomicType` makes every us
 of an exact type a leaf. Here, “atomic” describes traversal, not synchronization
 or a database transaction. Raw type relationships remain available, and still
 count toward compilation limits.
+
+Each node also records its JSON map-key rule when it is built (`json_key.go`):
+whether `encoding/json` refuses the type as a key, reads and writes it by its
+string or integer kind, or needs its own round trip, for text methods, floats,
+pointers and `any`. The rule depends on the type alone, not the engine, and
+costs one method-set check per node.
 
 Compilation checks all reachable visible fields, even if a caller later reads
 only one. The `WithTaggedFields` preset marks each selected column

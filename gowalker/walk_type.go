@@ -90,7 +90,7 @@ func (s *Schema) WalkType(fn TypeVisitor, options ...WalkOption) error {
 		return failure("walktype", ErrType, s.Type(), emptyPath, -1, nil)
 	}
 	w := typeWalk{settings: settings, fn: fn, active: make(map[reflect.Type]bool)}
-	err = w.visit(s.root, nil)
+	err = w.visit(s.root, nil, false)
 	if err == errWalkStopped {
 		return nil
 	}
@@ -118,12 +118,16 @@ func (w *typeWalk) emit(shape *Shape, route []TypeEdge, kind VisitKind) (Control
 	return control, nil
 }
 
-func (w *typeWalk) visit(shape *Shape, route []TypeEdge) error {
+// visit walks shape. A leaf is a terminal, but for an inline owner and the
+// pointers to it, inlined: a declared view's inline owners hold its fields
+// whatever the leaf rules.
+func (w *typeWalk) visit(shape *Shape, route []TypeEdge, inlined bool) error {
 	w.nodes++
 	if len(route) > w.settings.limits.MaxDepth || w.nodes > w.settings.limits.MaxNodes {
 		return typeWalkError(ErrLimit, shape, route, nil)
 	}
-	if !shape.atomic && w.active[shape.typ] {
+	leaf := shape.atomic && !inlined
+	if !leaf && w.active[shape.typ] {
 		_, err := w.emit(shape, route, Reference)
 		return err
 	}
@@ -133,7 +137,7 @@ func (w *typeWalk) visit(shape *Shape, route []TypeEdge) error {
 	}
 	w.active[shape.typ] = true
 	defer delete(w.active, shape.typ)
-	if control != SkipChildren && !shape.atomic {
+	if control != SkipChildren && !leaf {
 		switch shape.Kind() {
 		case reflect.Struct:
 			fields := shape.fields
@@ -145,16 +149,19 @@ func (w *typeWalk) visit(shape *Shape, route []TypeEdge) error {
 				if field.inline {
 					edge.Kind = InlineEdge
 				}
-				if err := w.visit(field.shape, append(route, edge)); err != nil {
+				err := w.visit(field.shape, append(route, edge), field.inline)
+				if err != nil {
 					return err
 				}
 			}
 		case reflect.Pointer:
-			if err := w.visit(shape.elem, append(route, TypeEdge{Kind: DerefEdge})); err != nil {
+			err := w.visit(shape.elem, append(route, TypeEdge{Kind: DerefEdge}), inlined)
+			if err != nil {
 				return err
 			}
 		case reflect.Map, reflect.Slice, reflect.Array:
-			if err := w.visit(shape.elem, append(route, TypeEdge{Kind: ElementEdge})); err != nil {
+			err := w.visit(shape.elem, append(route, TypeEdge{Kind: ElementEdge}), false)
+			if err != nil {
 				return err
 			}
 		}
