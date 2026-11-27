@@ -442,10 +442,11 @@ type SQLDialect interface {
 	ChangedDocumentCondition(column, doc string) (string, error)
 
 	// MergePatch merges the RFC 7396 patch object into the JSON document
-	// doc, stored as storage: patch members replace, nested objects merge,
+	// column doc, read as MemberDocument reads it, whatever JSON type, or
+	// text, the column is: patch members replace, nested objects merge,
 	// nulls delete, and a target that is not an object, NULL included,
 	// merges as {} (RFC 7396 §2).
-	MergePatch(doc string, storage core.SQLType, patch map[string]any, bind func(any) string) (string, error)
+	MergePatch(doc string, patch map[string]any, bind func(any) string) (string, error)
 
 	// ArrayAppend appends element to the native array expression array, a
 	// NULL array as an empty one, so the first append to a fresh column
@@ -505,7 +506,7 @@ func (b *setBuilder) columnExpr(ch *columnChange) (columnWrite, error) {
 	switch ch.kind {
 	case changeMerge:
 		op := ch.ops[0]
-		expr, err := b.dialect.MergePatch(col, op.Schema.SQLType, ch.merge, b.bind)
+		expr, err := b.dialect.MergePatch(col, ch.merge, b.bind)
 		if err != nil {
 			return columnWrite{}, dialectError(string(op.Op), op.Path, err)
 		}

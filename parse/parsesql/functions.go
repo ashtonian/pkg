@@ -132,11 +132,12 @@ func DecimalFloat32(v driver.Value) (driver.Value, error) {
 // Canonical is parse_canonical for one SQLite value of a column compared
 // as kind, a comparison kind's name ("document", "uuid", "array:uuid", …):
 // the form two values of one value share, which the change predicate of a
-// SkipUnchanged update compares (canonical.Value). NULL is nil, and a value
-// that holds no value of kind, a BLOB included, is itself. A kind that is
-// not text naming a comparison kind is an error. It is exported for a
-// SQLite driver other than modernc.org/sqlite to register under
-// CanonicalFunc.
+// SkipUnchanged update compares (canonical.Value). NULL is nil, and a
+// scalar that holds no value of kind, a BLOB included, is itself. A
+// document or array that holds no JSON value is an error, which fails the
+// statement, and so is a kind that is not text naming a comparison kind.
+// It is exported for a SQLite driver other than modernc.org/sqlite to
+// register under CanonicalFunc.
 func Canonical(v, kind driver.Value) (driver.Value, error) {
 	name, ok := kind.(string)
 	if !ok {
@@ -146,7 +147,11 @@ func Canonical(v, kind driver.Value) (driver.Value, error) {
 	if !ok {
 		return nil, fmt.Errorf("%s: no comparison kind %q", CanonicalFunc, name)
 	}
-	return canonical.Value(k, v), nil
+	form, err := canonical.Value(k, v)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %s: %w", CanonicalFunc, name, err)
+	}
+	return form, nil
 }
 
 // GeoNear is parse_geo_near: 1 when the stored point lies within meters of

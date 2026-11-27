@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"reflect"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -34,9 +33,9 @@ const SQLiteFunc = "parse_canonical"
 // scalar type.
 type Kind string
 
-// Document compares a JSON document as PostgreSQL's jsonb writes it as
-// text: its members whatever their order and spacing, and a number by its
-// value and the scale its literal gives.
+// Document compares a JSON document as PostgreSQL's jsonb text compares:
+// its members whatever their order and spacing, and a number by its value
+// and the scale its literal gives, exactly, whatever its length.
 const Document Kind = "document"
 
 const arrayKind = "array"
@@ -91,11 +90,11 @@ func valueType(t core.FieldType) bool {
 // function — in the form two values of one value share:
 //
 //   - Document: the document v's JSON text holds (Decode), its members
-//     sorted, unspaced, and each number as PostgreSQL's numeric writes it:
-//     its value at the scale its literal gives, the literal's fractional
-//     digits less its exponent (1e2 as 100, 1.50e1 as 15.0, -0 as 0, while
-//     1.0 stays 1.0); a number whose plain notation runs past
-//     core.MaxDecimalDigits digits as written.
+//     sorted, unspaced, and each number in the one spelling of its value
+//     and display scale (numberForm), the literal's fractional digits less
+//     its exponent, which is what jsonb's text keeps of a number: 1e2, 100
+//     and 10e1 as 1e2, 1.50e1 and 15.0 as 150e-1, -0 as 0, and 1.0, 10e-1,
+//     apart from 1. The form never pads, so its cost is linear in v's.
 //   - an array: the array v's JSON text holds, unspaced, each element in
 //     its type's canonical value (core.NormalizeStored), as PostgreSQL's
 //     typed array holds it: a UUID in lower case, a timestamp at its
@@ -142,22 +141,36 @@ func Text(kind Kind, v any) (string, error) {
 }
 
 // Value is v, a SQLite value of a column compared as kind, in its Text
-// form, which SQLite's change predicate compares: NULL as NULL, and v
-// itself where it holds no value of kind — a BLOB, as parse_decimal reads
-// one, text that does not parse, or a document's text that is not valid
-// UTF-8, which PostgreSQL refuses. A value kept as itself equals another
-// value only where the two are one as stored, since every form is a value
-// of kind and Text is idempotent: a value equal to a form is that form.
-func Value(kind Kind, v any) any {
-	switch v.(type) {
-	case nil, []byte:
-		return v
+// form, which SQLite's change predicate compares; NULL is NULL.
+//
+// A document or an array that holds no JSON value — text or a BLOB that is
+// not one JSON value, or not valid UTF-8 — is an error, as PostgreSQL's
+// cast to jsonb refuses a text column's and Apply refuses one: no form
+// decides whether a write changes it, and a merge or member write cannot
+// read it.
+//
+// A scalar that holds no value of kind — a BLOB, as parse_decimal reads
+// one, or text that does not parse, such as a legacy midnight timestamp in
+// a date column — is v itself, compared as stored, as Apply compares it: it
+// equals another value only where the two are one as stored, since every
+// form is a value of kind and Text is idempotent, so the write that stores
+// parse's form counts as a change.
+func Value(kind Kind, v any) (any, error) {
+	if v == nil {
+		return nil, nil
+	}
+	if kind == Document || kind.IsArray() {
+		return Text(kind, v)
+	}
+	_, blob := v.([]byte)
+	if blob {
+		return v, nil
 	}
 	text, err := Text(kind, v)
 	if err != nil {
-		return v
+		return v, nil
 	}
-	return text
+	return text, nil
 }
 
 // Decode is the JSON value v, a stored document's or array's text,
@@ -209,8 +222,8 @@ func encode(doc any) (string, error) {
 	return strings.TrimSuffix(b.String(), "\n"), nil
 }
 
-// numerics is doc, a decoded document, with each number as numeric writes
-// it (numericText), rewritten in place.
+// numerics is doc, a decoded document, with each number in its form
+// (numberForm), rewritten in place.
 func numerics(doc any) any {
 	switch d := doc.(type) {
 	case map[string]any:
@@ -222,42 +235,9 @@ func numerics(doc any) any {
 			d[i] = numerics(v)
 		}
 	case json.Number:
-		return numericText(d)
+		return numberForm(d)
 	}
 	return doc
-}
-
-// numericText is literal as PostgreSQL's numeric writes it: its value
-// (core.DecimalText) padded to its display scale, the literal's fractional
-// digits less its exponent. A literal whose value or padded text runs past
-// core.MaxDecimalDigits digits is kept as written, which bounds the text
-// an exponent such as 0e-999999999 asks for.
-func numericText(literal json.Number) json.Number {
-	value, err := core.DecimalText(literal)
-	if err != nil {
-		return literal
-	}
-	mantissa, exponent, scaled := strings.Cut(strings.ToLower(string(literal)), "e")
-	_, fraction, _ := strings.Cut(mantissa, ".")
-	scale := len(fraction)
-	if scaled {
-		e, err := strconv.Atoi(exponent)
-		if err != nil {
-			return literal
-		}
-		scale -= e
-	}
-	whole, digits, _ := strings.Cut(value, ".")
-	// The value's fractional digits never outnumber the scale: DecimalText
-	// drops the trailing zeros the scale counts.
-	pad := scale - len(digits)
-	if pad <= 0 {
-		return json.Number(value)
-	}
-	if len(whole)+scale > core.MaxDecimalDigits {
-		return literal
-	}
-	return json.Number(whole + "." + digits + strings.Repeat("0", pad))
 }
 
 // elements is doc, a decoded array, with each element in its canonical

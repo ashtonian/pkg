@@ -36,9 +36,12 @@ import (
 // nondeterministic collation and citext on PostgreSQL) and an enum there,
 // integers, floats, decimals (one padding to a scale, one a REAL on
 // SQLite, one TEXT there), a boolean, timestamps, a date, the value types,
-// a UUID, nullable wrappers, native arrays, untyped documents (raw declared
-// json on PostgreSQL), a map, a struct document, a typed map and the
-// server's counter and stamp.
+// a UUID, nullable wrappers, native arrays of every element type, a slice
+// of decimals (a document), untyped documents (raw declared json on
+// PostgreSQL, body a text column there), a document parse reads as its
+// text (exact, a text column on PostgreSQL), so its numbers keep every
+// digit, a map, a struct document, a typed map and the server's counter
+// and stamp.
 type storedPatchRow struct {
 	ID        int64               `json:"id" db:"id"`
 	Name      string              `json:"name" db:"name" parse:"patch"`
@@ -68,8 +71,17 @@ type storedPatchRow struct {
 	Flags     []bool              `json:"flags" db:"flags" parse:"patch"`
 	Ratios    []float64           `json:"ratios" db:"ratios" parse:"patch"`
 	Refs      []uuid.UUID         `json:"refs" db:"refs" parse:"patch"`
+	Days      []core.Date         `json:"days" db:"days" parse:"patch"`
+	Clocks    []core.LocalTime    `json:"clocks" db:"clocks" parse:"patch"`
+	Spans     []core.Interval     `json:"spans" db:"spans" parse:"patch"`
+	Addrs     []core.Inet         `json:"addrs" db:"addrs" parse:"patch"`
+	Subnets   []core.CIDR         `json:"subnets" db:"subnets" parse:"patch"`
+	Macs      []core.MACAddr      `json:"macs" db:"macs" parse:"patch"`
+	Prices    []decimal.Decimal   `json:"prices" db:"prices" parse:"patch"`
 	Doc       any                 `json:"doc" db:"doc" parse:"patch" patch_ops:"replace,add,remove,array_append"`
 	Raw       any                 `json:"raw" db:"raw" parse:"patch"`
+	Body      any                 `json:"body" db:"body" parse:"patch"`
+	Exact     json.RawMessage     `json:"exact" db:"exact" parse:"patch"`
 	Meta      map[string]any      `json:"meta" db:"meta" parse:"patch"`
 	Dims      patchtest.ApplyDims `json:"dims" db:"dims" parse:"patch"`
 	Labels    map[string]string   `json:"labels" db:"labels" parse:"patch"`
@@ -102,7 +114,11 @@ func storedPatchSeed() storedPatchRow {
 		Score: sql.NullInt64{Int64: 3, Valid: true}, SeenAt: sql.NullTime{Time: patchtest.RankedSeen(), Valid: true},
 		Tags: []string{"zero"}, Counts: []int64{1}, Times: []time.Time{at},
 		Flags: []bool{false}, Ratios: []float64{0.5}, Refs: []uuid.UUID{uuid.MustParse("0190a5b4-7c1e-7d8a-9b2c-3d4e5f6a7b8c")},
-		Doc: json.RawMessage(memberBase), Raw: json.RawMessage(memberBase),
+		Days: []core.Date{day}, Clocks: []core.LocalTime{clock}, Spans: []core.Interval{span},
+		Addrs: []core.Inet{addr}, Subnets: []core.CIDR{subnet}, Macs: []core.MACAddr{mac},
+		Prices: []decimal.Decimal{decimal.RequireFromString("1.5")},
+		Doc:    json.RawMessage(memberBase), Raw: json.RawMessage(memberBase), Body: json.RawMessage(memberBase),
+		Exact:   json.RawMessage(`{"a":1}`),
 		Meta:    map[string]any{"k": 1.0, "nested": map[string]any{"x": 1.0, "y": 2.0}},
 		Dims:    patchtest.ApplyDims{W: 2, H: 7},
 		Labels:  map[string]string{"old": "v"},
@@ -155,6 +171,8 @@ func storedDocumentSeed(column, start string) func(*storedPatchRow) {
 			r.Doc = doc
 		case "raw":
 			r.Raw = doc
+		case "body":
+			r.Body = doc
 		default:
 			panic("no document column " + column)
 		}
@@ -162,6 +180,12 @@ func storedDocumentSeed(column, start string) func(*storedPatchRow) {
 }
 
 func storedPatchCases(t *testing.T) []storedPatchCase {
+	// An interval of 24 hours in each engine's text: PostgreSQL's equality
+	// holds it equal to one day, its text and parse's do not.
+	inHours := map[Kind]string{
+		SQLite:   `UPDATE patch_rows SET span = 'PT24H', spans = '["PT24H"]'`,
+		Postgres: `UPDATE patch_rows SET span = '24 hours', spans = '{"24 hours"}'`,
+	}
 	cases := []storedPatchCase{
 		{name: "the same integer", body: `{"rank":1}`},
 		{name: "another integer", body: `{"rank":2}`, changed: true},
@@ -189,6 +213,10 @@ func storedPatchCases(t *testing.T) []storedPatchCase {
 		{name: "another boolean", body: `{"flag":false}`, changed: true},
 		{name: "the same interval", body: `{"span":"P1D"}`},
 		{name: "an interval in other units", body: `{"span":"PT24H"}`, changed: true},
+		{name: "an interval stored in hours", seedSQL: inHours, body: `{"span":"PT24H","spans":["PT24H"]}`},
+		{name: "an interval stored in hours, written as a day", seedSQL: inHours, body: `{"span":"P1D"}`, changed: true},
+		{name: "an interval array stored in hours, written as a day", seedSQL: inHours, body: `{"spans":["P1D"]}`, changed: true},
+		{name: "an interval array in other units", body: `{"spans":["PT24H"]}`, changed: true},
 		{name: "a timestamp's instant in another offset", body: `{"at":"2025-12-31T19:00:00-05:00"}`},
 		{name: "a timestamp stored in another offset", seedSQL: storedSeedSQL("at", "'2025-12-31T19:00:00-05:00'"), body: `{"at":"2026-01-01T00:00:00Z"}`},
 		{name: "another instant", body: `{"at":"2026-01-01T00:00:00.000001Z"}`, changed: true},
@@ -207,6 +235,13 @@ func storedPatchCases(t *testing.T) []storedPatchCase {
 			seedSQL: storedSeedSQL("clock", "'10:30:00.000', span = 'P1DT0H', addr = '192.0.2.1/32', subnet = '10.0.0.0/8', mac = '08-00-2B-01-02-03'"),
 			body:    `{"clock":"10:30:00","span":"P1D","addr":"192.0.2.1","subnet":"10.0.0.0/8","mac":"08:00:2b:01:02:03"}`},
 		{name: "the value types changed", body: `{"clock":"10:30:00.500","span":"PT90M","addr":"2001:0DB8::0001","subnet":"2001:DB8::/32","mac":"08-00-2B-01-02-04"}`, changed: true},
+		{name: "the value-type arrays, each element in its canonical text", body: `{"days":["2026-01-02"],"clocks":["10:30:00"],"spans":["P1D"],"addrs":["192.0.2.1"],"subnets":["10.0.0.0/8"],"macs":["08:00:2b:01:02:03"]}`},
+		{name: "the value-type arrays, each element in another spelling", body: `{"clocks":["10:30:00.000"],"spans":["P1DT0H"],"addrs":["192.0.2.1/32"],"macs":["08-00-2B-01-02-03"]}`},
+		{name: "the value-type arrays, each element stored in another spelling", seedSQL: map[Kind]string{
+			SQLite:   `UPDATE patch_rows SET clocks = '["10:30:00.000"]', spans = '[ "P1DT0H" ]', addrs = '["192.0.2.1/32"]', macs = '["08-00-2B-01-02-03"]'`,
+			Postgres: `UPDATE patch_rows SET days = '{20260102}', clocks = '{10:30:00.000}', spans = '{"1 day"}', addrs = '{192.0.2.1/32}', subnets = '{10/8}', macs = '{08-00-2B-01-02-03}'`,
+		}, body: `{"days":["2026-01-02"],"clocks":["10:30:00"],"spans":["P1D"],"addrs":["192.0.2.1"],"subnets":["10.0.0.0/8"],"macs":["08:00:2b:01:02:03"]}`},
+		{name: "the value-type arrays changed", body: `{"days":["2028-02-29"],"clocks":["10:30:00.500"],"spans":["PT90M"],"addrs":["2001:0DB8::0001"],"subnets":["2001:DB8::/32"],"macs":["08-00-2B-01-02-04"]}`, changed: true},
 		{name: "the value types removed", body: `[{"op":"remove","path":"/clock"},{"op":"remove","path":"/span"},{"op":"remove","path":"/addr"},{"op":"remove","path":"/subnet"},{"op":"remove","path":"/mac"}]`, changed: true},
 		{name: "the same document", seed: storedDocumentSeed("doc", `{"a":1,"b":[2]}`), body: `[{"op":"replace","path":"/doc","value":{"b":[2],"a":1}}]`},
 		{name: "a document stored in another key order", seedSQL: storedSeedSQL("doc", `'{"b":[2], "a":1}'`),
@@ -221,6 +256,15 @@ func storedPatchCases(t *testing.T) []storedPatchCase {
 			body: `[{"op":"replace","path":"/doc","value":{"a":100,"b":0,"c":15.0}}]`},
 		{name: "json column numbers stored in another form", seedSQL: storedSeedSQL("raw", `'{"a":1e2,"b":-0,"c":1.50e1}'`),
 			body: `[{"op":"replace","path":"/raw","value":{"a":100,"b":0,"c":15.0}}]`},
+		{name: "a text column's document stored in another key order", seedSQL: storedSeedSQL("body", `'{"b":[2], "a":1}'`),
+			body: `[{"op":"replace","path":"/body","value":{"a":1,"b":[2]}}]`},
+		{name: "a text column's document numbers stored in another form", seedSQL: storedSeedSQL("body", `'{"a":1e2,"b":-0,"c":1.50e1}'`),
+			body: `[{"op":"replace","path":"/body","value":{"a":100,"b":0,"c":15.0}}]`},
+		{name: "a text column's document number stored at another scale", seedSQL: storedSeedSQL("body", `'{"a":1.0}'`),
+			body: `[{"op":"replace","path":"/body","value":{"a":1}}]`, changed: true},
+		{name: "the same slice of decimals, a document", body: `{"prices":["1.5"]}`},
+		{name: "a slice of decimals stored in another scale, a document of strings", seedSQL: storedSeedSQL("prices", `'["1.50"]'`),
+			body: `{"prices":["1.5"]}`, changed: true},
 		{name: "another document", seed: storedDocumentSeed("doc", `{"a":1}`), body: `[{"op":"replace","path":"/doc","value":{"a":2}}]`, changed: true},
 		{name: "a merge that sets what is there", seed: storedDocumentSeed("doc", `{"a":1,"b":{"c":2}}`), body: `{"doc":{"b":{"c":2}}}`},
 		{name: "a merge deleting a missing member", seed: storedDocumentSeed("doc", `{"a":1}`), body: `{"doc":{"z":null}}`},
@@ -314,7 +358,27 @@ func storedPatchCases(t *testing.T) []storedPatchCase {
 		{name: "an append to a document", seed: storedDocumentSeed("doc", `[1]`), body: `[{"op":"array_append","path":"/doc","value":2}]`, refused: core.CodeOpNotSQLCompilable.String()},
 		{name: "an identity column counted", body: `{"rank":2}`, increments: []string{"id"}, refused: "identity"},
 	}
-	for _, column := range []string{"doc", "raw"} {
+	// A document's numbers compare by value and display scale exactly,
+	// however many digits they take: plain is 10^1001, past a float64's
+	// range, which exact, read as its text, holds.
+	plain := "1" + strings.Repeat("0", 1001)
+	for _, n := range []struct {
+		name, stored, written string
+		changed               bool
+	}{
+		{"a document number past a thousand digits, stored in another exponent", "10e1000", "1e1001", false},
+		{"a document number past a thousand digits, stored in plain notation", plain, "1e1001", false},
+		{"a document number's fraction an exponent covers, past a thousand digits", "1.0e1001", "1e1001", false},
+		{"a document number past a thousand digits, stored at another display scale", plain + ".0", "1e1001", true},
+		{"another document number past a thousand digits", "1e1001", "1e1002", true},
+		{"a document number's scale past a thousand digits, stored in another spelling", "0.1e-999", "1e-1000", false},
+		{"a document number's scale past a thousand digits, written at another scale", "1e-1000", "1.0e-1000", true},
+		{"a document's zero at a scale past a thousand digits, stored negative", "-0.0e-1000", "0e-1001", false},
+	} {
+		cases = append(cases, storedPatchCase{name: n.name, seedSQL: storedSeedSQL("exact", `'{"a":`+n.stored+`}'`),
+			body: `[{"op":"replace","path":"/exact","value":{"a":` + n.written + `}}]`, changed: n.changed})
+	}
+	for _, column := range []string{"doc", "raw", "body"} {
 		cases = append(cases, storedMemberCases(column)...)
 		cases = append(cases, storedMergeCases(t, column)...)
 		cases = append(cases, storedQuotedMemberCases(t, column)...)
@@ -415,7 +479,8 @@ type storedPatchFixture struct {
 
 // storedPatchTable is the patch_rows table: each column of its kind, the
 // collations, citext and enum the change predicate cases compare under, a
-// padded decimal and a REAL one, and a declared json column on PostgreSQL.
+// padded decimal and a REAL one, and on PostgreSQL a declared json column
+// and documents in TEXT columns.
 func storedPatchTable(columns map[string]core.TypeInfo, order []string) sqlTable {
 	table := sqlTable{name: "patch_rows", key: []string{"id"}}
 	for _, name := range order {
@@ -429,7 +494,7 @@ func storedPatchTable(columns map[string]core.TypeInfo, order []string) sqlTable
 	// sql.NullTime scans a time.Time, which SQLite's driver returns for a
 	// DATETIME column alone.
 	table = table.holding("seen_at", SQLite, "DATETIME")
-	return table.holding("raw", Postgres, "JSON")
+	return table.holding("raw", Postgres, "JSON").holding("body", Postgres, "TEXT").holding("exact", Postgres, "TEXT")
 }
 
 func newStoredPatchFixture(t *testing.T, b sqlBackend) *storedPatchFixture {
@@ -448,7 +513,7 @@ func newStoredPatchFixture(t *testing.T, b sqlBackend) *storedPatchFixture {
 	all := []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpArrayAppend, patch.PatchOpMove, patch.PatchOpCopy, patch.PatchOpTest}
 	members := []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpReplace, patch.PatchOpRemove}
 	r, err := parse.NewResource[storedPatchRow](provider, "patch_rows", parse.ColumnType("raw", core.SQLJSON), parse.CustomizeSchemas(func(s parse.Schemas) error {
-		for path, column := range map[string]string{"/doc/**": "doc", "/raw/**": "raw", "/meta/**": "meta"} {
+		for path, column := range map[string]string{"/doc/**": "doc", "/raw/**": "raw", "/body/**": "body", "/meta/**": "meta"} {
 			err := s.Patch.AddPath(path, &patch.PathSchema{AllowedOps: all, DataType: core.FieldTypeAny, SQLColumn: column})
 			if err != nil {
 				return err
@@ -523,6 +588,14 @@ func (f *storedPatchFixture) readExpr(column string) string {
 	kind := f.columns[column]
 	switch kind.Type {
 	case core.FieldTypeArray:
+		switch kind.Elem {
+		case core.FieldTypeInterval:
+			quoted = f.b.dialect.ReadColumn(quoted, core.SQLIntervalArray)
+		case core.FieldTypeInet:
+			quoted = f.b.dialect.ReadColumn(quoted, core.SQLInetArray)
+		case core.FieldTypeCIDR:
+			quoted = f.b.dialect.ReadColumn(quoted, core.SQLCIDRArray)
+		}
 		return "array_to_json(" + quoted + ")::text"
 	case core.FieldTypeJSON, core.FieldTypeObject:
 		return quoted + "::text"
@@ -602,20 +675,7 @@ func (f *storedPatchFixture) options(tc storedPatchCase) []parse.UpdateOption {
 // identity write, and apply it to the row's stored values.
 func (f *storedPatchFixture) apply(t *testing.T, tc storedPatchCase, parsed *patch.ParsedPatch, before map[string]storedCell) (map[string]storedCell, bool, error) {
 	t.Helper()
-	options := backend.UpdateOptions{Stamp: &backend.Stamp{Column: "updated_at", At: f.at}, Increments: append([]string{"version"}, tc.increments...)}
-	update, err := options.Compose(parsed)
-	if err != nil {
-		return nil, false, err
-	}
-	err = f.identity.CheckUpdate(update)
-	if err != nil {
-		return nil, false, err
-	}
-	stored := f.stored(t, before)
-	write, err := update.Apply(func(column string) (any, bool) {
-		v, ok := stored[column]
-		return v, ok
-	})
+	update, write, err := f.applyStored(tc, parsed, f.stored(t, before))
 	if err != nil {
 		return nil, false, err
 	}
@@ -626,6 +686,56 @@ func (f *storedPatchFixture) apply(t *testing.T, tc storedPatchCase, parsed *pat
 		after[column] = f.cell(t, column, write.Values[i])
 	}
 	return after, write.Changed, nil
+}
+
+// applyStored composes tc's update and applies it to stored, the row's
+// values as a store holds them.
+func (f *storedPatchFixture) applyStored(tc storedPatchCase, parsed *patch.ParsedPatch, stored map[string]any) (*patch.ComposedPatch, patch.RowWrite, error) {
+	options := backend.UpdateOptions{Stamp: &backend.Stamp{Column: "updated_at", At: f.at}, Increments: append([]string{"version"}, tc.increments...)}
+	update, err := options.Compose(parsed)
+	if err != nil {
+		return nil, patch.RowWrite{}, err
+	}
+	err = f.identity.CheckUpdate(update)
+	if err != nil {
+		return nil, patch.RowWrite{}, err
+	}
+	write, err := update.Apply(func(column string) (any, bool) {
+		v, ok := stored[column]
+		return v, ok
+	})
+	if err != nil {
+		return nil, patch.RowWrite{}, err
+	}
+	return update, write, nil
+}
+
+// guardedUpdate runs parsed's update of the stored row as BuildPatchSQL
+// writes it with its change predicate, and reports whether it wrote the
+// row: the predicate as the database evaluates it, before any read a
+// resource makes.
+func (f *storedPatchFixture) guardedUpdate(t *testing.T, parsed *patch.ParsedPatch) (bool, error) {
+	t.Helper()
+	d := patchDialectOf(t, f.b)
+	res, err := patch.BuildPatchSQL(parsed, d, patch.WithChangePredicate())
+	require.NoError(t, err)
+	stmt := "UPDATE patch_rows SET " + res.SetClause + " WHERE id = " + d.Placeholder(res.ParamCount+1) + " AND " + res.ChangePredicate
+	out, err := f.db.ExecContext(t.Context(), stmt, append(res.Args, 1)...)
+	if err != nil {
+		return false, err
+	}
+	n, err := out.RowsAffected()
+	require.NoError(t, err)
+	return n == 1, nil
+}
+
+// storedText is the stored row's column as the database holds it, as text.
+func (f *storedPatchFixture) storedText(t *testing.T, column string) string {
+	t.Helper()
+	var text string
+	query := "SELECT " + f.b.dialect.QuoteIdent(column) + " FROM patch_rows WHERE id = 1"
+	require.NoError(t, f.db.QueryRowContext(t.Context(), query).Scan(&text), query)
+	return text
 }
 
 func (f *storedPatchFixture) parse(t *testing.T, body string) *patch.ParsedPatch {
@@ -726,5 +836,127 @@ func composedPatchApplyAgreesWithTheDatabase(t *testing.T, engine Engine) {
 			require.Error(t, err)
 			assert.Equal(t, before, f.row(t), "the failed update writes nothing")
 		})
+
+		// A document in a text column that holds no JSON has no value to
+		// compare: PostgreSQL's cast to jsonb fails the change predicate,
+		// SQLite's parse_canonical fails it, and Apply refuses the stored
+		// text; the resource refuses to read it. A statement that compares
+		// nothing replaces it.
+		t.Run("a text column's document stored as text that is not JSON", func(t *testing.T) {
+			tc := storedPatchCase{body: `[{"op":"replace","path":"/body","value":{"a":1}}]`}
+			parsed := f.parse(t, tc.body)
+			f.reset(t, tc)
+			stored := f.stored(t, f.row(t))
+			_, err := f.db.ExecContext(t.Context(), `UPDATE patch_rows SET body = 'not json'`)
+			require.NoError(t, err)
+			stored["body"] = "not json"
+
+			_, _, memoryErr := f.applyStored(tc, parsed, stored)
+			require.ErrorContains(t, memoryErr, "patch: comparing column body: decoding the stored document: invalid character")
+			_, err = f.guardedUpdate(t, parsed)
+			want := map[Kind]string{
+				SQLite:   "parse_canonical: document: decoding the stored document: invalid character",
+				Postgres: "invalid input syntax for type json",
+			}
+			require.ErrorContains(t, err, want[b.engine])
+			_, err = f.r.Update(t.Context(), parsed, parse.ByID(int64(1)), parse.Scope{}, append(f.options(tc), parse.SkipUnchanged())...)
+			require.Error(t, err)
+			assert.Equal(t, "not json", f.storedText(t, "body"), "the failed updates write nothing")
+
+			_, err = f.r.Update(t.Context(), parsed, parse.ByID(int64(1)), parse.Scope{}, f.options(tc)...)
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"a":1}`, f.storedText(t, "body"))
+		})
+
+		// A document number outside PostgreSQL's numeric range, which only
+		// a json or text column holds there, compares exactly on SQLite and
+		// in Apply. PostgreSQL's cast to jsonb refuses it, stored or
+		// written, so an update that compares it fails rather than
+		// guessing; one that compares nothing writes it.
+		t.Run("a document number outside PostgreSQL's numeric range", func(t *testing.T) {
+			for _, n := range []struct {
+				stored, written string
+				changed         bool
+			}{
+				{`{"a":1e200000}`, `{"a":10e199999}`, false},
+				{`{"a":1}`, `{"a":1e-200000}`, true},
+			} {
+				tc := storedPatchCase{body: `[{"op":"replace","path":"/exact","value":` + n.written + `}]`}
+				parsed := f.parse(t, tc.body)
+				seed := func() {
+					f.reset(t, tc)
+					_, err := f.db.ExecContext(t.Context(), "UPDATE patch_rows SET exact = "+f.b.dialect.Placeholder(1), n.stored)
+					require.NoError(t, err)
+				}
+				seed()
+				_, write, err := f.applyStored(tc, parsed, f.stored(t, f.row(t)))
+				require.NoError(t, err, "Apply")
+				assert.Equal(t, n.changed, write.Changed, "Apply's verdict on %s", n.stored)
+
+				changed, err := f.guardedUpdate(t, parsed)
+				if b.engine == Postgres {
+					require.ErrorContains(t, err, "value overflows numeric format")
+				} else {
+					require.NoError(t, err)
+					assert.Equal(t, n.changed, changed, "the predicate's verdict on %s", n.stored)
+				}
+				seed()
+				res, err := f.r.Update(t.Context(), parsed, parse.ByID(int64(1)), parse.Scope{}, append(f.options(tc), parse.SkipUnchanged())...)
+				if b.engine == Postgres {
+					require.ErrorContains(t, err, "value overflows numeric format")
+					assert.Equal(t, n.stored, f.storedText(t, "exact"), "the failed updates write nothing")
+				} else {
+					require.NoError(t, err)
+					assert.Equal(t, n.changed, len(res.Changed) == 1, "the update skipping unchanged rows writes the row")
+				}
+
+				seed()
+				_, err = f.r.Update(t.Context(), parsed, parse.ByID(int64(1)), parse.Scope{}, f.options(tc)...)
+				require.NoError(t, err)
+				assert.Equal(t, n.written, f.storedText(t, "exact"))
+			}
+		})
+
+		// A scalar that holds no value of its column's type, which only
+		// SQLite stores, compares as stored there and in Apply, as no form
+		// of a value: the write that stores parse's text changes it. A
+		// legacy midnight timestamp in a date column, which parse reads as
+		// its date, is one; text that is no UUID or timestamp, which parse
+		// refuses to read, is another.
+		if b.engine == SQLite {
+			t.Run("scalars stored as text of no value of their type", func(t *testing.T) {
+				for _, held := range []map[string]string{
+					{"day": "2026-01-02T00:00:00Z"},
+					{"ref": "not a uuid", "at": "yesterday"},
+				} {
+					tc := storedPatchCase{body: `{"ref":"0190a5b4-7c1e-7d8a-9b2c-3d4e5f6a7b8c","day":"2026-01-02","at":"2026-01-01T00:00:00Z"}`}
+					parsed := f.parse(t, tc.body)
+					f.reset(t, tc)
+					stored := f.stored(t, f.row(t))
+					for column, text := range held {
+						_, err := f.db.ExecContext(t.Context(), "UPDATE patch_rows SET "+column+" = ?", text)
+						require.NoError(t, err)
+						stored[column] = text
+					}
+
+					_, write, err := f.applyStored(tc, parsed, stored)
+					require.NoError(t, err, "Apply")
+					assert.True(t, write.Changed, "Apply's verdict on %v", held)
+					changed, err := f.guardedUpdate(t, parsed)
+					require.NoError(t, err)
+					assert.True(t, changed, "the predicate's verdict on %v", held)
+					for column := range held {
+						assert.NotEqual(t, held[column], f.storedText(t, column), "the write stores parse's text in %s", column)
+					}
+				}
+				f.reset(t, storedPatchCase{})
+				_, err := f.db.ExecContext(t.Context(), "UPDATE patch_rows SET day = '2026-01-02T00:00:00Z'")
+				require.NoError(t, err)
+				res, err := f.r.Update(t.Context(), f.parse(t, `{"day":"2026-01-02"}`), parse.ByID(int64(1)), parse.Scope{}, append(f.options(storedPatchCase{}), parse.SkipUnchanged())...)
+				require.NoError(t, err)
+				assert.Len(t, res.Changed, 1, "the update skipping unchanged rows writes the legacy date")
+				assert.Equal(t, "2026-01-02", f.storedText(t, "day"))
+			})
+		}
 	})
 }

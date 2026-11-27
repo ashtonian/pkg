@@ -51,7 +51,7 @@ func TestMergeObjectBuildsSQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("merge-derived object op rejected: %v", err)
 	}
-	if !strings.Contains(res.SetClause, `"config" = (COALESCE(jsonb_path_query_first("config",`) || strings.Contains(res.SetClause, `"config" = $1`) {
+	if !strings.Contains(res.SetClause, `"config" = (COALESCE(jsonb_path_query_first("config"::jsonb,`) || strings.Contains(res.SetClause, `"config" = $1`) {
 		t.Errorf("SetClause = %q; want a merge into config, not a whole-column set", res.SetClause)
 	}
 }

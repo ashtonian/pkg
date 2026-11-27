@@ -4,6 +4,7 @@ package canonical
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,9 +36,16 @@ func TestText_OneFormPerValue(t *testing.T) {
 		{"a duplicated member, by its last value", Document, `{"a":2,"a":1}`, `{"a":1}`, true},
 		{"elements in another order", Document, `[1,2]`, `[2,1]`, false},
 		{"a string's escapes", Document, `{"a":"A\/"}`, `{"a":"A/"}`, true},
-		{"exponents too long to compare", Document, `1e999999`, `1e999998`, false},
-		{"the same exponent too long to compare", Document, `1e999999`, `1e999999`, true},
-		{"a scale too long to pad", Document, `0e-999999999`, `0e-999999998`, false},
+		{"another exponent", Document, `1e999999`, `1e999998`, false},
+		{"a long exponent's value in another spelling", Document, `1e999999`, `10e999998`, true},
+		{"a value past a thousand digits in plain notation", Document, `1` + strings.Repeat("0", 1001), `1e1001`, true},
+		{"a fraction an exponent covers", Document, `1.0e1001`, `1e1001`, true},
+		{"a scale past a thousand digits", Document, `1e-1000`, `1.0e-1000`, false},
+		{"a scale past a thousand digits in another spelling", Document, `1e-1000`, `0.1e-999`, true},
+		{"a long scale of zero", Document, `0e-999999999`, `-0.0e-999999998`, true},
+		{"another long scale of zero", Document, `0e-999999999`, `0e-999999998`, false},
+		{"an exponent past int64", Document, `1e99999999999999999999`, `10e99999999999999999998`, true},
+		{"a scale past int64", Document, `1.0e-99999999999999999999`, `1e-99999999999999999999`, false},
 		{"text and bytes", Document, `{"a":1}`, []byte(`{"a": 1}`), true},
 		{"an array's spacing", "array:float", `[1, 2]`, `[1,2]`, true},
 		{"an array's negative zero", "array:float", `[-0]`, `[0]`, false},
@@ -78,12 +86,12 @@ func TestText_OneFormPerValue(t *testing.T) {
 	}
 }
 
-// A document's form is jsonb's text: members sorted, unspaced, each number
-// as numeric writes it.
-func TestText_DocumentIsJSONBText(t *testing.T) {
-	got, err := Text(Document, `{"b": 1.50e1, "a": [1e2, -0, 1E-3, 1.0, -1.50, "<&>"]}`)
+// A document's form is its members sorted and unspaced, each number in its
+// form, whose length is linear in its literal's: no exponent is padded out.
+func TestText_DocumentForm(t *testing.T) {
+	got, err := Text(Document, `{"b": 1.50e1, "a": [1e2, -0, 1E-3, 1.0, -1.50, "<&>", 1e1000000000]}`)
 	require.NoError(t, err)
-	assert.Equal(t, `{"a":[100,0,0.001,1.0,-1.50,"<&>"],"b":15.0}`, got) //nolint:testifylint // the text is the form under test; JSONEq would take 15 for 15.0
+	assert.Equal(t, `{"a":[1e2,0,1e-3,10e-1,-150e-2,"<&>",1e1000000000],"b":150e-1}`, got) //nolint:testifylint // the text is the form under test; JSONEq would take 150e-1 for 15
 }
 
 func TestText_RefusesWhatHoldsNoValue(t *testing.T) {
@@ -110,25 +118,52 @@ func TestText_RefusesWhatHoldsNoValue(t *testing.T) {
 	}
 }
 
-// SQLite's function keeps a value that holds none of its kind as it is, a
-// BLOB included, and NULL as NULL.
-func TestValue_KeepsWhatHoldsNoValue(t *testing.T) {
+// SQLite's function gives NULL as NULL, a document or array in its form,
+// a JSON BLOB included, and a scalar that holds no value of its kind as it
+// is stored, a BLOB included.
+func TestValue_ComparesAScalarThatHoldsNoValueAsStored(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		kind Kind
 		v    any
 		want any
 	}{
-		{"a document", Document, `{"a": 1.0}`, `{"a":1.0}`},
+		{"a document", Document, `{"a": 1.0}`, `{"a":10e-1}`},
 		{"NULL", Document, nil, nil},
-		{"a BLOB of JSON text", Document, []byte(`{}`), []byte(`{}`)},
-		{"a document that is not JSON", Document, `{`, `{`},
-		{"a number in a document column", Document, int64(1), int64(1)},
+		{"a BLOB of JSON text", Document, []byte(`{"b":1, "a":2}`), `{"a":2,"b":1}`},
+		{"an array", "array:uuid", `["0190A5B4-7C1E-7D8A-9B2C-3D4E5F6A7B8C"]`, `["0190a5b4-7c1e-7d8a-9b2c-3d4e5f6a7b8c"]`},
 		{"text that is no UUID", "uuid", "ten", "ten"},
+		{"a legacy midnight timestamp in a date column", "date", "2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z"},
+		{"a BLOB that is no decimal", "decimal", []byte("1.5"), []byte("1.5")},
 		{"a REAL decimal", "decimal", 1.5, "1.5"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, Value(tc.kind, tc.v))
+			got, err := Value(tc.kind, tc.v)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// A document or array that holds no JSON value has no form: SQLite's
+// function refuses it, as PostgreSQL's cast to jsonb does.
+func TestValue_RefusesADocumentOrArrayThatHoldsNoJSON(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind Kind
+		v    any
+		err  string
+	}{
+		{"a document that is not JSON", Document, "not json", "decoding the stored document"},
+		{"a BLOB that is not JSON", Document, []byte("{"), "decoding the stored document"},
+		{"a document of invalid UTF-8", Document, "\"\xff\"", "its text is not valid UTF-8"},
+		{"a number in a document column", Document, int64(1), "a stored document is JSON text, not int64"},
+		{"an array that is not JSON", "array:uuid", "[", "decoding the stored document"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Value(tc.kind, tc.v)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.err)
 		})
 	}
 }

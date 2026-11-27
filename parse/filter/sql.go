@@ -191,7 +191,7 @@ type Dialect interface {
 	// when no target table holds its values.
 	ChangedCondition(column, expr string, t core.TypeInfo) (string, error)
 	ChangedDocumentCondition(column, doc string) (string, error)
-	MergePatch(doc string, storage core.SQLType, patch map[string]any, bind func(any) string) (string, error)
+	MergePatch(doc string, patch map[string]any, bind func(any) string) (string, error)
 	ArrayAppend(array string, element any, bind func(any) string) (string, error)
 	MemberDocument(expr string) (string, error)
 	SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) (string, error)
