@@ -294,7 +294,8 @@ class Scope(unittest.TestCase):
         lanes = set(re.findall(r"-tags=(\w+(?:,\w+)*)", MAKEFILE + WORKFLOW)) | {"-"}
         self.assertLessEqual(lanes, set(scope_input("go-tags").split("\n")))
         builds = scope_input("go-builds").split("\n")
-        self.assertEqual(builds, ["GOOS=linux GOARCH=amd64", "GOOS=darwin GOARCH=arm64"])
+        self.assertEqual(builds, ["GOOS=linux GOARCH=amd64", "GOOS=darwin GOARCH=arm64", "GOOS=wasip1 GOARCH=wasm"])
+        self.assertIn("test-parse-wasip1: export GOOS := wasip1", MAKEFILE)
         self.assertIn("runs-on: macos-latest", job("test-darwin"))
 
     def test_ignored_paths_hold_no_workspace_code(self):

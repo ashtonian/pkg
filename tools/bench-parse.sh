@@ -40,10 +40,18 @@ repository=github.com/ashtonian/pkg/
 # benchmark's name continues after Benchmark with anything but a lowercase letter.
 benchmark='^func Benchmark([A-Z0-9_][[:alnum:]_]*)?\('
 
+# Every workspace module under parse/ is listed as a pattern of its own: a
+# directory pattern stops at a nested module, so ./parse/... misses the
+# provider modules.
+parse_modules() {
+	go list -m -f '{{.Path}}' | sed -n "s|^${repository}\(parse\(/.*\)\{0,1\}\)$|./\1/...|p"
+}
+
 benchmarked() {
+	# shellcheck disable=SC2046 # one pattern per module
 	go list -tags=unit \
 		-f '{{range .TestGoFiles}}{{$.ImportPath}} {{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .XTestGoFiles}}{{$.ImportPath}} {{$.Dir}}/{{.}}{{"\n"}}{{end}}' \
-		./parse/... |
+		$(parse_modules) |
 		while read -r pkg file; do
 			if grep -qE "$benchmark" "$file"; then
 				echo "./${pkg#"$repository"}"
