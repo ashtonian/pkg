@@ -36,8 +36,12 @@ const (
 	uuidRegex      = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
 )
 
-// maxDecimalMember is decimals.MaxMemberLength as SQL text.
-var maxDecimalMember = strconv.Itoa(decimals.MaxMemberLength)
+// maxDecimalMember is decimals.MaxMemberLength as SQL text, and
+// maxNumberDigits core.MaxDecimalDigits.
+var (
+	maxDecimalMember = strconv.Itoa(decimals.MaxMemberLength)
+	maxNumberDigits  = strconv.Itoa(core.MaxDecimalDigits)
+)
 
 // pgMember is the jsonb member of doc at segs, read one object member at a
 // time with ->, and pgMemberText its text, the last member read with ->>.
@@ -105,9 +109,9 @@ func pgTypedMember(t core.FieldType, kind, text string) string {
 	case core.FieldTypeString:
 		return "(CASE WHEN " + kind + " = 'string' THEN " + text + " END)"
 	case core.FieldTypeInt, core.FieldTypeFloat:
-		return "(CASE WHEN " + kind + " = 'number' THEN " + text + "::numeric END)"
+		return "(CASE WHEN " + pgNumberMember(kind, text) + " THEN " + text + "::numeric END)"
 	case core.FieldTypeDecimal:
-		return "(CASE WHEN " + kind + " = 'number' THEN " + text + "::numeric WHEN " + kind + " = 'string' AND length" + text + " <= " + maxDecimalMember +
+		return "(CASE WHEN " + pgNumberMember(kind, text) + " THEN " + text + "::numeric WHEN " + kind + " = 'string' AND length" + text + " <= " + maxDecimalMember +
 			" AND " + text + " ~ '" + decimals.PlainRegex + "' THEN " + text + "::numeric END)"
 	case core.FieldTypeBool:
 		return "(CASE WHEN " + kind + " = 'boolean' THEN " + text + "::boolean END)"
@@ -118,6 +122,31 @@ func pgTypedMember(t core.FieldType, kind, text string) string {
 		return "(CASE WHEN " + kind + " = 'string' AND lower" + text + " ~ '" + uuidRegex + "' THEN lower" + text + " END)"
 	}
 	return "NULL"
+}
+
+// pgNumberMember holds for a number member (decimals.Number): kind is
+// 'number' and text, the member's numeric output (plain notation, the scale
+// it was written with kept), has at most core.MaxDecimalDigits digits once
+// its fraction's trailing zeros are dropped.
+func pgNumberMember(kind, text string) string {
+	digits := "length(split_part(ltrim(" + text + ", '-'), '.', 1)) + length(rtrim(split_part(" + text + ", '.', 2), '0'))"
+	return "(" + kind + " = 'number' AND " + digits + " <= " + maxNumberDigits + ")"
+}
+
+// sqliteNumber holds for a JSON number of kind; for a document member
+// (member) only for a number member (decimals.Number): literal, its JSON
+// text as written, has at most core.MaxDecimalDigits digits in plain
+// notation. A literal of at most that many characters and no exponent has,
+// so only another reaches parse_decimal, which reads it as decimals.Number
+// does.
+func sqliteNumber(kind, literal string, member bool) string {
+	number := kind + " IN ('integer', 'real')"
+	if !member {
+		return number
+	}
+	literal = "(" + literal + ")"
+	return "(" + number + " AND ((length(" + literal + ") <= " + maxNumberDigits + " AND " + literal + " NOT GLOB '*[eE]*') OR " +
+		decimals.SQLiteValueFunc + "(" + literal + ") IS NOT NULL))"
 }
 
 // sqliteTimestampGlob and sqliteUUIDGlob are the canonical shapes as GLOB
@@ -153,15 +182,16 @@ func sqlitePathMember(d dialect.Dialect, p *JSONPath) (kind, val, literal string
 
 // sqliteTypedMember is a JSON value of type t, NULL when it has another
 // kind: kind is its json_type, val its json_extract and literal its JSON
-// text as written (`->`). A date is an element of SQLite's JSON text array
-// column, read as ReadColumn reads a date column; a time, interval or
+// text as written (`->`); member is false for an array column's element
+// (JSONPath.columnElement). A date is an element of SQLite's JSON text
+// array column, read as ReadColumn reads a date column; a time, interval or
 // network element is the canonical text the column was written with.
-func sqliteTypedMember(t core.FieldType, kind, val, literal string) string {
+func sqliteTypedMember(t core.FieldType, kind, val, literal string, member bool) string {
 	switch t {
 	case core.FieldTypeString:
 		return "(CASE WHEN " + kind + " = 'text' THEN " + val + " END)"
 	case core.FieldTypeInt, core.FieldTypeFloat:
-		return "(CASE WHEN " + kind + " IN ('integer', 'real') THEN " + val + " END)"
+		return "(CASE WHEN " + sqliteNumber(kind, literal, member) + " THEN " + val + " END)"
 	case core.FieldTypeDecimal:
 		return decimals.SQLiteValueFunc + "(" + literal + ")"
 	case core.FieldTypeDate:

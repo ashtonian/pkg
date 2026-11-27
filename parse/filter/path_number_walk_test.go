@@ -19,8 +19,24 @@ import (
 // returns, so members one float64 apart tie and break on the id: the
 // walk resumes at each boundary in that order.
 func TestPathNumberWalk_SQLite(t *testing.T) {
-	runPathNumberWalks(t, measureDB{db: dbtest.SQLite(t), dialect: filter.SQLiteDialect{}, docType: "TEXT"},
-		[]int64{1, 2, 3, 4, 5, 6, 9, 10, 7, 8})
+	runPathNumberWalks(t, sqliteMeasures(t), sqliteMeasureOrder)
+}
+
+// SQLite agrees with Evaluate on which members are numbers, and on every
+// comparison the REAL json_extract reads decides as the exact value does.
+func TestPathNumberFilters_SQLite(t *testing.T) {
+	runPathNumberFilters(t, sqliteMeasures(t), []string{
+		`{"n":{"$null":true}}`, `{"n":{"$null":false}}`, `{"n":{"$gt":0.5}}`, `{"n":{"$lt":0.5}}`,
+		`{"n":{"$gte":1e300}}`, `{"n":{"$lte":-1e300}}`, `{"ns":{"$some":{"$gt":0.5}}}`, `{"ns":{"$null":true}}`,
+	})
+}
+
+func TestPathNumberFacets_SQLite(t *testing.T) {
+	runPathNumberFacets(t, sqliteMeasures(t))
+}
+
+func sqliteMeasures(t *testing.T) measureDB {
+	return measureDB{db: dbtest.SQLite(t), dialect: filter.SQLiteDialect{}, docType: "TEXT"}
 }
 
 // A memory backend orders a float path's members by the values its

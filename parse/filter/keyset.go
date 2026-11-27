@@ -127,17 +127,16 @@ func (p CursorPlan) Token(reverse bool, get func(column string) (any, error)) (*
 // time.Time as its day, a decimal key's text, INTEGER or REAL as its
 // canonical text — so ValidateCursor accepts the value it mints; a key of
 // no scalar type (a codec's) reads it through CursorValue. An int or float
-// path's member is its canonical decimal text, exactly as its JSON number
-// holds it, since PostgreSQL orders the member as numeric. Cursors and a
-// memory backend's ordering read keys through it alike.
+// path's number member is its canonical decimal text, exactly as its JSON
+// number holds it, since PostgreSQL orders the member as numeric; a JSON
+// number beyond core.MaxDecimalDigits digits is no number member, so its
+// key is NULL, as the SQL reads it. Cursors and a memory backend's
+// ordering read keys through it alike.
 func KeyValue(k CursorKey, raw any) (any, error) {
 	if k.Path != nil {
 		root, err := decodeDocument(raw)
 		if err != nil {
 			return nil, err
-		}
-		if k.numberPath() {
-			return pathNumberText(root, k.Path.Segments)
 		}
 		member, present, err := decodedPathValue(root, k.Path.Segments, k.DataType, "")
 		if err != nil || !present {
@@ -148,7 +147,8 @@ func KeyValue(k CursorKey, raw any) (any, error) {
 	if !core.IsKeyType(k.DataType) {
 		return CursorValue(raw)
 	}
-	v, _, err := core.StoredScalar(k.DataType, k.NumberKind, raw)
+	t := k.valueType()
+	v, _, err := core.StoredScalar(t.Type, t.NumberKind, raw)
 	if err != nil {
 		return nil, fmt.Errorf("cursor: %s key: %w", k.DataType, err)
 	}
@@ -254,11 +254,11 @@ func (k CursorKey) numberPath() bool {
 	return k.Path != nil && (k.DataType == core.FieldTypeInt || k.DataType == core.FieldTypeFloat)
 }
 
-// valueType is the type k's values (KeyValue) are of: a decimal for a
-// number path, otherwise k's own.
+// valueType is the type k's values (KeyValue) are of: a path's member's
+// (memberType), a decimal for a number path, otherwise k's own.
 func (k CursorKey) valueType() core.TypeInfo {
-	if k.numberPath() {
-		return core.TypeInfo{Type: core.FieldTypeDecimal}
+	if k.Path != nil {
+		return memberType(k.DataType)
 	}
 	return core.TypeInfo{Type: k.DataType, NumberKind: k.NumberKind}
 }

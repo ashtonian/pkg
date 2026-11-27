@@ -506,12 +506,20 @@ func storedOperand(f *FieldSchema, lit any) (any, bool, error) {
 }
 
 // compareScalar orders a row value against a filter value of type t, both in
-// the canonical domain, in the type's one order (core.CompareCanonical).
+// the canonical domain, in the type's one order (core.CompareCanonical). A
+// document's number member, which a path's value and its array's elements
+// carry as a json.Number (PathValue), compares exactly, as a decimal
+// (memberType), as PostgreSQL compares it; a column's number is never one
+// (ColumnValue).
 func compareScalar(f *FieldSchema, t core.FieldType, v, lit any) (int, error) {
 	if !core.IsKeyType(t) {
 		return 0, fmt.Errorf("field %s: type %q has no scalar comparison", f.ExternalName, t)
 	}
-	c, err := core.CompareCanonical(core.TypeInfo{Type: t, NumberKind: f.NumberKind}, v, lit)
+	typ := core.TypeInfo{Type: t, NumberKind: f.NumberKind}
+	if _, member := v.(json.Number); member {
+		typ = memberType(t)
+	}
+	c, err := core.CompareCanonical(typ, v, lit)
 	if err != nil {
 		return 0, fmt.Errorf("field %s: %w", f.ExternalName, err)
 	}

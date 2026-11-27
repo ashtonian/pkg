@@ -33,21 +33,31 @@ const MaxMemberLength = core.MaxDecimalDigits
 var plainShape = regexp.MustCompile(PlainRegex)
 
 // Member is the canonical text (core.DecimalText) of a decoded JSON document
-// member read as a decimal: a JSON number (json.Number, or a Go number
-// encoding/json decoded) within core.MaxDecimalDigits digits, or a string in
-// plain notation of at most MaxMemberLength characters. ok is false for any
-// other member.
+// member read as a decimal: a number member (Number), or a string in plain
+// notation of at most MaxMemberLength characters. ok is false for any other
+// member.
 func Member(v any) (string, bool) {
-	switch m := v.(type) {
-	case string:
-		if len(m) > MaxMemberLength || !plainShape.MatchString(m) {
-			return "", false
-		}
-	case json.Number:
-	default:
-		if !core.IsNumber(v) {
-			return "", false
-		}
+	s, ok := v.(string)
+	if !ok {
+		return Number(v)
+	}
+	if len(s) > MaxMemberLength || !plainShape.MatchString(s) {
+		return "", false
+	}
+	text, err := core.DecimalText(s)
+	return text, err == nil
+}
+
+// Number is the canonical text (core.DecimalText) of a decoded JSON document
+// member that is a number member: a JSON number (json.Number, or a Go number
+// encoding/json decoded) within core.MaxDecimalDigits digits in plain
+// notation, the most a cursor or a request carries. A JSON number beyond
+// that bound is no number member, so a path reads it as absent on every
+// backend: filter.PathExpr renders it NULL. ok is false for any other
+// member.
+func Number(v any) (string, bool) {
+	if !core.IsNumber(v) {
+		return "", false
 	}
 	text, err := core.DecimalText(v)
 	if err != nil { // more digits than a decimal holds, or not finite

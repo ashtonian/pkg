@@ -548,7 +548,7 @@ func (SQLiteDialect) objectElement(alias string) string {
 func (SQLiteDialect) scalarElement(f *FieldSchema, alias string) *FieldSchema {
 	e := bound(elementOf(f))
 	e.Table, e.Column, e.Expr = "", "", ""
-	e.Path = &JSONPath{alias: alias, Storage: StorageJSONB, element: true}
+	e.Path = &JSONPath{alias: alias, Storage: StorageJSONB, element: true, columnElement: f.Path == nil}
 	return &e
 }
 
@@ -581,7 +581,7 @@ func (d SQLiteDialect) numberKey(f *FieldSchema) string {
 // fullkey.
 func (d SQLiteDialect) PathExpr(p *JSONPath, t core.FieldType) string {
 	kind, val, literal := sqlitePathMember(d, p)
-	return sqliteTypedMember(t, kind, val, literal)
+	return sqliteTypedMember(t, kind, val, literal, !p.columnElement)
 }
 
 // TwoValuedCondition has no second rendering on SQLite.

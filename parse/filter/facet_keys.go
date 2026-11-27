@@ -92,21 +92,13 @@ func pathFacetKeys(doc any, f *FieldSchema) ([]string, error) {
 
 // memberFacetKey is a decoded document member's key as a path of type t
 // reads it (pathMember): its canonical text (core.CanonicalText), a number
-// exactly as written.
+// member exactly as written.
 func memberFacetKey(v any, t core.FieldType) (string, bool, error) {
-	if t == core.FieldTypeInt || t == core.FieldTypeFloat {
-		n, ok := jsonNumber(v)
-		if !ok {
-			return "", false, nil
-		}
-		text, err := core.CanonicalText(core.TypeInfo{Type: core.FieldTypeDecimal}, n)
-		return text, err == nil, nil
-	}
 	m, present, err := pathMember(v, t)
 	if err != nil || !present {
 		return "", false, err
 	}
-	text, err := core.CanonicalText(core.TypeInfo{Type: t}, m)
+	text, err := core.CanonicalText(memberType(t), m)
 	if err != nil {
 		return "", false, err
 	}
