@@ -347,8 +347,8 @@ func dialectError(what, path string, err error) error {
 		return fmt.Errorf("%s for %s: %w", what, path, err)
 	}
 	why := err.Error()
-	var refusal *core.ParseError
-	if errors.As(err, &refusal) {
+	refusal, ok := errors.AsType[*core.ParseError](err)
+	if ok {
 		why = refusal.Message
 	}
 	pe := core.NewError(ECodeOpNotSQLCompilable, what+" for "+path+": "+why+" — apply via ApplyValidatedPatch",
