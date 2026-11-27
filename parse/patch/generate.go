@@ -126,7 +126,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 					if mustHoldElement(field.Type(), bounds) {
 						return nil, fmt.Errorf("field %s: patch operation remove empties the array, which minitems %d refuses", field.GoName(), *bounds.MinItems)
 					}
-					return nil, fmt.Errorf("field %s: patch operation remove requires a type that holds null (a pointer, slice, map or sql.Null type: core.IsNullableType), got %s", field.GoName(), gowalker.TypeText(field.Type()))
+					return nil, fmt.Errorf("field %s: %w (core.IsNullableType: a pointer, slice, map or interface, or a type whose zero value writes NULL and scans NULL back, such as sql.NullString), got %s", field.GoName(), ErrRemoveNeedsNull, gowalker.TypeText(field.Type()))
 				}
 				if op == PatchOpArrayAppend && isFixedArray(field.Type()) {
 					return nil, fmt.Errorf("field %s: array_append cannot grow a fixed-size array (%s)", field.GoName(), gowalker.TypeText(field.Type()))

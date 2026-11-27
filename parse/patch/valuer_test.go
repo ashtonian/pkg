@@ -63,6 +63,18 @@ func TestPatch_ADatabaseValueColumnBindsTheValue(t *testing.T) {
 // A column of an sql.Null type holds NULL as the type's zero value: its path
 // accepts null and remove, SQL writes NULL, and Apply stores the zero value,
 // so a row cleared in Go reads as one cleared in the database.
+// remove is refused, by sentinel, for a type whose column holds no NULL.
+func TestGeneratePatchSchema_RemoveNeedsATypeThatHoldsNull(t *testing.T) {
+	type unclearable struct {
+		ID   string `json:"id"`
+		Name string `json:"name" db:"name" parse:"patch" patch_ops:"replace,remove"`
+	}
+	_, err := patch.GeneratePatchSchema[unclearable](core.NewSchemaGenerator())
+	require.ErrorIs(t, err, patch.ErrRemoveNeedsNull)
+	assert.ErrorContains(t, err, "field Name: patch operation remove requires a type that holds null")
+	assert.ErrorContains(t, err, "got string")
+}
+
 func TestPatch_AnSQLNullColumnClearsToNull(t *testing.T) {
 	type Ranked struct {
 		ID    string        `json:"id"`
