@@ -142,7 +142,8 @@ func exportedSpec(spec ast.Spec) []ast.Node {
 func exportedField(field *ast.Field) bool {
 	if len(field.Names) == 0 {
 		typ := field.Type
-		if star, ok := typ.(*ast.StarExpr); ok {
+		star, isPointer := typ.(*ast.StarExpr)
+		if isPointer {
 			typ = star.X
 		}
 		switch e := typ.(type) {

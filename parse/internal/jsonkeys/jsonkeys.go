@@ -81,9 +81,9 @@ func Validate(raw []byte, decoded any) error {
 // validate reads raw once, strictly or as decoding reads it, from empty
 // scratch.
 func (v *keyValidator) validate(raw []byte, shape *gowalker.Shape, strict bool) error {
-	options := decodedJSONOptions
+	options := v.decodedOptions
 	if strict {
-		options = strictJSONOptions
+		options = v.strictOptions
 	}
 	v.strict = strict
 	v.clear()
@@ -101,17 +101,6 @@ func (v *keyValidator) validate(raw []byte, shape *gowalker.Shape, strict bool) 
 }
 
 var errInvalidJSONDocument = errors.New("invalid JSON document")
-
-// decodedJSONOptions read a document as encoding/json decodes one: a
-// repeated member and invalid UTF-8 are accepted, and judged here.
-// strictJSONOptions refuse invalid UTF-8, so the decoder's own scan proves
-// every member name valid and memberName need not scan it again; nearly
-// every stored document reads this way, and one that does not is read
-// again under decodedJSONOptions.
-var (
-	decodedJSONOptions = jsonv2.JoinOptions(jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(true))
-	strictJSONOptions  = jsonv2.JoinOptions(jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(false))
-)
 
 // decodedShape follows shape's pointers to the shape a JSON value decodes
 // into, stopping at a leaf. A pointer type that leads back to itself, which
@@ -180,7 +169,15 @@ func checkDecodable(shape *gowalker.Shape, seen map[*gowalker.Shape]bool) error 
 type keyValidator struct {
 	reader bytes.Reader
 	dec    *jsontext.Decoder
-	// strict is a read under strictJSONOptions.
+	// decodedOptions read a document as encoding/json decodes one: a
+	// repeated member and invalid UTF-8 are accepted, and judged here.
+	// strictOptions refuse invalid UTF-8, so the decoder's own scan proves
+	// every member name valid and memberName need not scan it again; nearly
+	// every stored document reads this way, and one that does not is read
+	// again under decodedOptions. Each validator joins them once, when the
+	// pool makes it.
+	decodedOptions, strictOptions jsonv2.Options
+	// strict is a read under strictOptions.
 	strict bool
 	// name holds the member name just read when it had to be unquoted.
 	name []byte
@@ -196,8 +193,11 @@ type keyValidator struct {
 type nameSpan struct{ start, end int }
 
 var keyValidators = sync.Pool{New: func() any {
-	v := new(keyValidator)
-	v.dec = jsontext.NewDecoder(&v.reader, decodedJSONOptions)
+	v := &keyValidator{
+		decodedOptions: jsonv2.JoinOptions(jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(true)),
+		strictOptions:  jsonv2.JoinOptions(jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(false)),
+	}
+	v.dec = jsontext.NewDecoder(&v.reader, v.decodedOptions)
 	return v
 }}
 
@@ -206,7 +206,7 @@ const maxPooledScratch = 64 << 10
 
 func (v *keyValidator) release() {
 	v.reader.Reset(nil)
-	v.dec.Reset(&v.reader, decodedJSONOptions)
+	v.dec.Reset(&v.reader, v.decodedOptions)
 	if cap(v.mapNames) > maxPooledScratch || cap(v.seen) > maxPooledScratch {
 		return
 	}
