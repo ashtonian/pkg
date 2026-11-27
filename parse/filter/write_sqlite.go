@@ -6,23 +6,42 @@ import (
 	"strconv"
 
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/canonical"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
-// ChangedCondition is column COLLATE BINARY IS NOT expr. IS NOT is SQLite's
-// null-safe inequality on every version that runs the SQL (IS DISTINCT
-// FROM is a 3.39 alias). BINARY overrides a NOCASE or RTRIM column and
-// keeps its affinity, which converts the value for the comparison as it
-// does on store.
-func (SQLiteDialect) ChangedCondition(column, expr string, _ core.TypeInfo) (string, error) {
-	return column + " COLLATE BINARY IS NOT " + expr, nil
+// ChangedCondition is column COLLATE BINARY IS NOT expr: the stored value
+// and the written one differ as stored. IS NOT is SQLite's null-safe
+// inequality on every version that runs the SQL (IS DISTINCT FROM is a
+// 3.39 alias). BINARY overrides a NOCASE or RTRIM column and keeps its
+// affinity, which converts the value for the comparison as it does on
+// store. A column of a type whose text spells one value more than one way
+// (canonical.KindOf: a document, an array, a decimal, a UUID, a timestamp,
+// a value type) must also differ by value: their parse_canonical forms
+// (parsesql), which patch.ComposedPatch.Apply compares too. The stored
+// comparison goes first, so a row holding the very value written costs no
+// call.
+func (SQLiteDialect) ChangedCondition(column, expr string, t core.TypeInfo) (string, error) {
+	stored := column + " COLLATE BINARY IS NOT " + expr
+	kind, byValue := canonical.KindOf(t)
+	if !byValue {
+		return stored, nil
+	}
+	return "(" + stored + " AND " + sqliteCanonical(column, kind) + " IS NOT " + sqliteCanonical(expr, kind) + ")", nil
 }
 
-// ChangedDocumentCondition compares the document's JSON text as
-// ChangedCondition compares any column: json_set and json_remove return
-// the text the column then holds.
+// ChangedDocumentCondition compares the document the member methods built
+// with the stored one as ChangedCondition compares a document column: by
+// their text, then by their JSON value, since json_set and json_remove
+// return the stored document's text unspaced.
 func (d SQLiteDialect) ChangedDocumentCondition(column, doc string) (string, error) {
-	return d.ChangedCondition(column, doc, core.TypeInfo{})
+	return d.ChangedCondition(column, doc, core.TypeInfo{Type: core.FieldTypeJSON})
+}
+
+// sqliteCanonical is expr's form as a value of kind, whose name holds no
+// quote.
+func sqliteCanonical(expr string, kind canonical.Kind) string {
+	return canonical.SQLiteFunc + "(" + expr + ", '" + string(kind) + "')"
 }
 
 // MergePatch is json_patch, SQLite's RFC 7396, with the patch bound as its

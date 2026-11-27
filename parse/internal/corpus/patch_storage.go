@@ -128,10 +128,6 @@ type storedPatchCase struct {
 	// engine whose stored row differs, for SQL and Apply alike.
 	changed bool
 	on      map[Kind]bool
-	// sqlDiffers names an engine whose change predicate decides the other
-	// way from Apply, and why: a defect of that engine's SQL, which this
-	// case holds as it is.
-	sqlDiffers map[Kind]string
 	// refused is the code of the error the update fails with, "" for none;
 	// a store's Apply fails it with the same error.
 	refused string
@@ -180,8 +176,8 @@ func storedPatchCases(t *testing.T) []storedPatchCase {
 		{name: "a decimal the column pads", body: `{"price":"1.50"}`},
 		{name: "a decimal in another scale", seed: func(r *storedPatchRow) { r.Amount = decimal.RequireFromString("1.5") }, body: `{"amount":"1.50"}`},
 		{name: "a decimal stored in another scale", seedSQL: storedSeedSQL("amount", "1.50"), body: `{"amount":"1.5"}`},
-		{name: "a decimal stored in another scale, in a text column", seedSQL: storedSeedSQL("cost", "'1.50'"), body: `{"cost":"1.5"}`,
-			sqlDiffers: map[Kind]string{SQLite: "SQLite compares a decimal in a TEXT column by its text, so its scale counts"}},
+		{name: "a decimal stored in another scale, in a text column", seedSQL: storedSeedSQL("cost", "'1.50'"), body: `{"cost":"1.5"}`},
+		{name: "a decimal stored in an exponent, in a text column", seedSQL: storedSeedSQL("cost", "'0.15e1'"), body: `{"cost":"1.5"}`},
 		{name: "a decimal in another scale, in a text column", body: `{"cost":"1.50"}`},
 		{name: "a number stored as an integer or a real", seedSQL: storedSeedSQL("price", "1.0, amount = 1"), body: `{"price":"1","amount":"1"}`},
 		{name: "another decimal", body: `{"price":"1.51"}`, changed: true},
@@ -194,6 +190,7 @@ func storedPatchCases(t *testing.T) []storedPatchCase {
 		{name: "the same interval", body: `{"span":"P1D"}`},
 		{name: "an interval in other units", body: `{"span":"PT24H"}`, changed: true},
 		{name: "a timestamp's instant in another offset", body: `{"at":"2025-12-31T19:00:00-05:00"}`},
+		{name: "a timestamp stored in another offset", seedSQL: storedSeedSQL("at", "'2025-12-31T19:00:00-05:00'"), body: `{"at":"2026-01-01T00:00:00Z"}`},
 		{name: "another instant", body: `{"at":"2026-01-01T00:00:00.000001Z"}`, changed: true},
 		{name: "the same date", body: `{"day":"2026-01-02"}`},
 		{name: "another date", body: `{"day":"2028-02-29"}`, changed: true},
@@ -201,30 +198,29 @@ func storedPatchCases(t *testing.T) []storedPatchCase {
 		{name: "the same UUID in upper case", body: `{"ref":"0190A5B4-7C1E-7D8A-9B2C-3D4E5F6A7B8C"}`},
 		{name: "another UUID", body: `{"ref":"` + uuid.Nil.String() + `"}`, changed: true},
 		{name: "a UUID stored in upper case", only: SQLite, seedSQL: map[Kind]string{SQLite: "UPDATE patch_rows SET ref = upper(ref)"},
-			body:       `{"ref":"0190a5b4-7c1e-7d8a-9b2c-3d4e5f6a7b8c"}`,
-			sqlDiffers: map[Kind]string{SQLite: "SQLite compares a UUID column's text, so its case counts"}},
+			body: `{"ref":"0190a5b4-7c1e-7d8a-9b2c-3d4e5f6a7b8c"}`},
+		{name: "a UUID stored in braces", only: SQLite, seedSQL: map[Kind]string{SQLite: "UPDATE patch_rows SET ref = '{' || upper(ref) || '}'"},
+			body: `{"ref":"0190a5b4-7c1e-7d8a-9b2c-3d4e5f6a7b8c"}`},
 		{name: "the value types, each in its canonical text", body: `{"clock":"10:30:00","span":"P1D","addr":"192.0.2.1","subnet":"10.0.0.0/8","mac":"08:00:2b:01:02:03"}`},
 		{name: "the value types, each in another spelling", body: `{"clock":"10:30:00.000","addr":"192.0.2.1/32","mac":"08-00-2B-01-02-03"}`},
+		{name: "the value types, each stored in another spelling",
+			seedSQL: storedSeedSQL("clock", "'10:30:00.000', span = 'P1DT0H', addr = '192.0.2.1/32', subnet = '10.0.0.0/8', mac = '08-00-2B-01-02-03'"),
+			body:    `{"clock":"10:30:00","span":"P1D","addr":"192.0.2.1","subnet":"10.0.0.0/8","mac":"08:00:2b:01:02:03"}`},
 		{name: "the value types changed", body: `{"clock":"10:30:00.500","span":"PT90M","addr":"2001:0DB8::0001","subnet":"2001:DB8::/32","mac":"08-00-2B-01-02-04"}`, changed: true},
 		{name: "the value types removed", body: `[{"op":"remove","path":"/clock"},{"op":"remove","path":"/span"},{"op":"remove","path":"/addr"},{"op":"remove","path":"/subnet"},{"op":"remove","path":"/mac"}]`, changed: true},
 		{name: "the same document", seed: storedDocumentSeed("doc", `{"a":1,"b":[2]}`), body: `[{"op":"replace","path":"/doc","value":{"b":[2],"a":1}}]`},
 		{name: "a document stored in another key order", seedSQL: storedSeedSQL("doc", `'{"b":[2], "a":1}'`),
-			body:       `[{"op":"replace","path":"/doc","value":{"a":1,"b":[2]}}]`,
-			sqlDiffers: map[Kind]string{SQLite: "SQLite compares a document's text, so its key order and spacing count"}},
+			body: `[{"op":"replace","path":"/doc","value":{"a":1,"b":[2]}}]`},
 		{name: "a json column stored in another key order", seedSQL: storedSeedSQL("raw", `'{"b":[2], "a":1}'`),
-			body:       `[{"op":"replace","path":"/raw","value":{"a":1,"b":[2]}}]`,
-			sqlDiffers: map[Kind]string{SQLite: "SQLite compares a document's text, so its key order and spacing count"}},
+			body: `[{"op":"replace","path":"/raw","value":{"a":1,"b":[2]}}]`},
 		{name: "a member set to what a spaced document holds", seedSQL: storedSeedSQL("doc", `'{"a": 1}'`),
-			body:       `[{"op":"replace","path":"/doc/a","value":1}]`,
-			sqlDiffers: map[Kind]string{SQLite: "json_set writes the document's text without its spacing, which SQLite then compares as text"}},
+			body: `[{"op":"replace","path":"/doc/a","value":1}]`},
 		{name: "a document number stored at another scale", seedSQL: storedSeedSQL("doc", `'{"a":1.0}'`),
 			body: `[{"op":"replace","path":"/doc","value":{"a":1}}]`, changed: true},
 		{name: "document numbers stored in another form", seedSQL: storedSeedSQL("doc", `'{"a":1e2,"b":-0,"c":1.50e1}'`),
-			body:       `[{"op":"replace","path":"/doc","value":{"a":100,"b":0,"c":15.0}}]`,
-			sqlDiffers: map[Kind]string{SQLite: "SQLite compares a document's text, so a number's form counts"}},
+			body: `[{"op":"replace","path":"/doc","value":{"a":100,"b":0,"c":15.0}}]`},
 		{name: "json column numbers stored in another form", seedSQL: storedSeedSQL("raw", `'{"a":1e2,"b":-0,"c":1.50e1}'`),
-			body:       `[{"op":"replace","path":"/raw","value":{"a":100,"b":0,"c":15.0}}]`,
-			sqlDiffers: map[Kind]string{SQLite: "SQLite compares a document's text, so a number's form counts"}},
+			body: `[{"op":"replace","path":"/raw","value":{"a":100,"b":0,"c":15.0}}]`},
 		{name: "another document", seed: storedDocumentSeed("doc", `{"a":1}`), body: `[{"op":"replace","path":"/doc","value":{"a":2}}]`, changed: true},
 		{name: "a merge that sets what is there", seed: storedDocumentSeed("doc", `{"a":1,"b":{"c":2}}`), body: `{"doc":{"b":{"c":2}}}`},
 		{name: "a merge deleting a missing member", seed: storedDocumentSeed("doc", `{"a":1}`), body: `{"doc":{"z":null}}`},
@@ -245,6 +241,12 @@ func storedPatchCases(t *testing.T) []storedPatchCase {
 		{name: "an array's float in another form", seed: func(r *storedPatchRow) { r.Ratios = []float64{100} }, body: `{"ratios":[1e2]}`},
 		{name: "a UUID array in upper case", body: `{"refs":["0190A5B4-7C1E-7D8A-9B2C-3D4E5F6A7B8C"]}`},
 		{name: "timestamps replaced in another offset", body: `{"times":["2025-12-31T19:00:00-05:00"]}`},
+		{name: "an array stored in other spacing", only: SQLite, seed: func(r *storedPatchRow) { r.Tags = []string{"x", "y"} },
+			seedSQL: map[Kind]string{SQLite: `UPDATE patch_rows SET tags = '[ "x", "y" ]'`}, body: `{"tags":["x","y"]}`},
+		{name: "an array's elements stored in another form", seedSQL: map[Kind]string{
+			SQLite:   `UPDATE patch_rows SET refs = upper(refs), times = '["2025-12-31T19:00:00-05:00"]', ratios = '[5e-1]'`,
+			Postgres: `UPDATE patch_rows SET ratios = '{5e-1}'`,
+		}, body: `{"refs":["0190a5b4-7c1e-7d8a-9b2c-3d4e5f6a7b8c"],"times":["2026-01-01T00:00:00Z"],"ratios":[0.5]}`},
 		{name: "one column of two changing", body: `{"rank":1,"name":"b"}`, changed: true},
 		{name: "the server's columns do not count", body: `{"rank":1,"version":7,"updated_at":"2001-01-01T00:00:00Z"}`},
 		{name: "a nullable wrapper's value replaced", body: `[{"op":"replace","path":"/score","value":7}]`, changed: true},
@@ -665,9 +667,8 @@ func sameRefusal(t *testing.T, sqlErr, memory error, code string) {
 // leaves is the stored row with Apply's values written (stamp and counter
 // included), compared in filter.ColumnValue's domain; the update that
 // skips unchanged rows writes the row exactly when Apply reports it
-// changed, where the engine's SQL does not compare otherwise
-// (storedPatchCase.sqlDiffers); and a patch the update refuses Apply
-// refuses with the same error.
+// changed; and a patch the update refuses Apply refuses with the same
+// error.
 func composedPatchApplyAgreesWithTheDatabase(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		f := newStoredPatchFixture(t, b)
@@ -701,16 +702,11 @@ func composedPatchApplyAgreesWithTheDatabase(t *testing.T, engine Engine) {
 					changed = override
 				}
 				assert.Equal(t, changed, memoryChanged, "Apply's verdict")
-				sqlChanged := changed
-				reason, differs := tc.sqlDiffers[b.engine]
-				if differs {
-					sqlChanged = !changed
-				}
 				f.reset(t, tc)
 				res, err := f.r.Update(ctx, parsed, parse.ByID(int64(1)), parse.Scope{}, append(f.options(tc), parse.SkipUnchanged())...)
 				require.NoError(t, err)
-				assert.Equal(t, sqlChanged, len(res.Changed) == 1, "the update skipping unchanged rows writes the row %v", reason)
-				if !sqlChanged {
+				assert.Equal(t, changed, len(res.Changed) == 1, "the update skipping unchanged rows writes the row")
+				if !changed {
 					assert.Equal(t, before, f.row(t), "a row the update skips keeps its stamp and counter")
 				}
 			})

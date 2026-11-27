@@ -3,16 +3,13 @@ package patch
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"math"
 	"reflect"
-	"strconv"
-	"strings"
 
 	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/canonical"
 	"github.com/ashtonian/pkg/parse/internal/jsonmerge"
 )
 
@@ -59,10 +56,11 @@ type RowWrite struct {
 //
 // Changed compares each patch column's stored and written values null-safe:
 // a document as PostgreSQL's jsonb text compares it (member order aside, a
-// number by its value and scale), a native array element by element as
-// written, a float with its zero's sign, and any other value as its
-// column's type orders it (core.CompareCanonical): a timestamp by its
-// instant, a decimal by its value.
+// number by its value and scale) and a native array element by element,
+// each by its type's value, in the forms SQLite's change predicate
+// compares (canonical.Text); a float with its zero's sign; and any other
+// value as its column's type orders it (core.CompareCanonical): a
+// timestamp by its instant, a decimal by its value.
 func (c *ComposedPatch) Apply(row StoredRow) (RowWrite, error) {
 	if !c.Assigns() {
 		return RowWrite{}, nil
@@ -151,7 +149,7 @@ func (r *storedRow) document(column string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	doc, err = storedDocument(v)
+	doc, err = canonical.Decode(v)
 	if err != nil {
 		return nil, fmt.Errorf("patch: column %s: %w", column, err)
 	}
@@ -270,25 +268,23 @@ func storedEqual(t core.TypeInfo, a, b any) (bool, error) {
 	if a == nil || b == nil {
 		return a == nil && b == nil, nil
 	}
-	switch {
-	case core.IsDocument(t.Type) || t.SQLType.IsJSON():
-		x, y, err := storedDocuments(a, b)
+	kind, byForm := canonical.KindOf(t)
+	if byForm && (kind == canonical.Document || kind.IsArray()) {
+		x, err := canonical.Text(kind, a)
 		if err != nil {
 			return false, err
 		}
-		return jsonbEqual(x, y), nil
-	case t.Type == core.FieldTypeArray:
-		// A native array compares as its elements' text, in order: a number
-		// as written, as PostgreSQL's float8 text keeps -0 apart from 0.
-		x, y, err := storedDocuments(a, b)
+		y, err := canonical.Text(kind, b)
 		if err != nil {
 			return false, err
 		}
-		return reflect.DeepEqual(x, y), nil
-	case t.Type == core.FieldTypeGeo || t.Type == core.FieldTypeAny:
+		return x == y, nil
+	}
+	switch t.Type {
+	case core.FieldTypeGeo, core.FieldTypeAny:
 		// No order: equal as stored.
 		return storedBytesEqual(a, b), nil
-	case t.Type == core.FieldTypeFloat:
+	case core.FieldTypeFloat:
 		x, xok := a.(float64)
 		y, yok := b.(float64)
 		if xok && yok && x == 0 && y == 0 {
@@ -321,122 +317,6 @@ func storedBytesEqual(a, b any) bool {
 		return reflect.DeepEqual(a, string(y))
 	}
 	return reflect.DeepEqual(a, b)
-}
-
-// storedDocuments decodes a and b, two stored documents or arrays.
-func storedDocuments(a, b any) (x, y any, err error) {
-	x, err = storedDocument(a)
-	if err != nil {
-		return nil, nil, err
-	}
-	y, err = storedDocument(b)
-	if err != nil {
-		return nil, nil, err
-	}
-	return x, y, nil
-}
-
-// jsonbEqual reports whether a and b, two documents storedDocument decoded,
-// have one text as PostgreSQL's jsonb writes it, which the change predicate
-// compares: objects by their members, whatever their order, arrays in
-// order, and a number as numeric holds it, by its value and the scale its
-// literal gives, so 1.0 is not 1 while 1e2 is 100 and -0 is 0.
-func jsonbEqual(a, b any) bool {
-	switch x := a.(type) {
-	case map[string]any:
-		y, ok := b.(map[string]any)
-		if !ok || len(x) != len(y) {
-			return false
-		}
-		for k, xv := range x {
-			yv, ok := y[k]
-			if !ok || !jsonbEqual(xv, yv) {
-				return false
-			}
-		}
-		return true
-	case []any:
-		y, ok := b.([]any)
-		if !ok || len(x) != len(y) {
-			return false
-		}
-		for i := range x {
-			if !jsonbEqual(x[i], y[i]) {
-				return false
-			}
-		}
-		return true
-	case json.Number:
-		y, ok := b.(json.Number)
-		return ok && numericEqual(x, y)
-	}
-	return a == b
-}
-
-// numericEqual reports whether two JSON number literals are one numeric:
-// one value (core.DecimalText, which bounds the digits a short exponent
-// spells) at one display scale.
-func numericEqual(a, b json.Number) bool {
-	if a == b {
-		return true
-	}
-	x, err := core.DecimalText(a)
-	if err != nil {
-		return false
-	}
-	y, err := core.DecimalText(b)
-	if err != nil || x != y {
-		return false
-	}
-	xs, xok := numericScale(a)
-	ys, yok := numericScale(b)
-	return xok && yok && xs == ys
-}
-
-// numericScale is the display scale numeric gives literal: its fractional
-// digits less its exponent, at least 0 ("1.50" 2, "1.5e1" 0, "1e-3" 3).
-func numericScale(literal json.Number) (int, bool) {
-	mantissa, exponent, scaled := strings.Cut(strings.ToLower(string(literal)), "e")
-	_, fraction, _ := strings.Cut(mantissa, ".")
-	scale := len(fraction)
-	if scaled {
-		e, err := strconv.Atoi(exponent)
-		if err != nil {
-			return 0, false
-		}
-		scale -= e
-	}
-	return max(scale, 0), true
-}
-
-// storedDocument decodes v, a stored document or array's JSON text, with
-// numbers kept as written; nil is NULL.
-func storedDocument(v any) (any, error) {
-	var text []byte
-	switch d := v.(type) {
-	case nil:
-		return nil, nil
-	case string:
-		text = []byte(d)
-	case []byte:
-		text = d
-	case json.RawMessage:
-		text = d
-	default:
-		return nil, fmt.Errorf("a stored document is JSON text, not %s", gowalker.TypeText(reflect.TypeOf(v)))
-	}
-	dec := json.NewDecoder(bytes.NewReader(text))
-	dec.UseNumber()
-	var doc any
-	err := dec.Decode(&doc)
-	if err != nil {
-		return nil, fmt.Errorf("decoding the stored document: %w", err)
-	}
-	_, err = dec.Token()
-	if !errors.Is(err, io.EOF) {
-		return nil, errors.New("decoding the stored document: text follows its value")
-	}
-	return doc, nil
 }
 
 // documentText is doc, a document as encoding/json decodes one, as a row

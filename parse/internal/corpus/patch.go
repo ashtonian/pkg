@@ -59,10 +59,14 @@ func changeTableOn(engine Kind) changeTable {
 			setup: []string{`CREATE TABLE things (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE, email TEXT COLLATE NOCASE, mood TEXT,
 			rank INTEGER, price NUMERIC, amount REAL, ratio REAL, span TEXT, at TEXT, doc TEXT, raw TEXT, tags TEXT NOT NULL DEFAULT '[]',
 			version INTEGER NOT NULL DEFAULT 1, updated_at TEXT)`},
-			// quote() keeps the storage class: 1 and 1.0 read apart.
+			// quote() keeps the storage class: 1 and 1.0 read apart. A
+			// timestamp, a document and an array read as their values
+			// (parse_canonical), as PostgreSQL's timestamptz, jsonb and array
+			// text does.
 			readBack: `SELECT quote(name) || '|' || quote(email) || '|' || quote(mood) || '|' || quote(rank) || '|' || quote(price) || '|' ||
-			quote(amount) || '|' || quote(ratio) || '|' || quote(span) || '|' || quote(at) || '|' || quote(doc) || '|' || quote(raw) || '|' ||
-			quote(tags) FROM things WHERE id = 1`,
+			quote(amount) || '|' || quote(ratio) || '|' || quote(span) || '|' || quote(parse_canonical(at, 'timestamp')) || '|' ||
+			quote(parse_canonical(doc, 'document')) || '|' || quote(parse_canonical(raw, 'document')) || '|' ||
+			quote(parse_canonical(tags, 'array:string')) FROM things WHERE id = 1`,
 		}
 		return table
 	}
@@ -124,12 +128,15 @@ func changeCases() []changeCase {
 		{name: "the same interval", seed: `{"span":"1 day"}`, patch: `{"span":"1 day"}`},
 		{name: "an interval in other units", seed: `{"span":"1 day"}`, patch: `{"span":"24 hours"}`, changed: true},
 		{name: "a timestamp's instant in another offset", seed: `{"at":"2026-01-01T00:00:00Z"}`, patch: `{"at":"2025-12-31T19:00:00-05:00"}`},
+		{name: "a timestamp stored in another offset", seedSQL: `UPDATE things SET at = '2025-12-31T19:00:00-05:00'`, patch: `{"at":"2026-01-01T00:00:00Z"}`},
 		{name: "another instant", seed: `{"at":"2026-01-01T00:00:00Z"}`, patch: `{"at":"2026-01-01T00:00:00.000001Z"}`, changed: true},
 		{name: "the same document", seed: `[{"op":"replace","path":"/doc","value":{"a":1,"b":[2]}}]`, patch: `[{"op":"replace","path":"/doc","value":{"b":[2],"a":1}}]`},
 		{name: "a document stored in another key order", seedSQL: `UPDATE things SET doc = '{"b":[2], "a":1}'`,
-			patch: `[{"op":"replace","path":"/doc","value":{"a":1,"b":[2]}}]`, on: map[string]bool{"sqlite": true}},
+			patch: `[{"op":"replace","path":"/doc","value":{"a":1,"b":[2]}}]`},
 		{name: "a json column stored in another key order", seedSQL: `UPDATE things SET raw = '{"b":[2], "a":1}'`,
-			patch: `[{"op":"replace","path":"/raw","value":{"a":1,"b":[2]}}]`, on: map[string]bool{"sqlite": true}},
+			patch: `[{"op":"replace","path":"/raw","value":{"a":1,"b":[2]}}]`},
+		{name: "document numbers stored in another form", seedSQL: `UPDATE things SET doc = '{"a":1e2,"b":-0,"c":1.50e1}'`,
+			patch: `[{"op":"replace","path":"/doc","value":{"a":100,"b":0,"c":15.0}}]`},
 		{name: "a document number stored in another form", seedSQL: `UPDATE things SET doc = '{"a":1.0}'`,
 			patch: `[{"op":"replace","path":"/doc","value":{"a":1}}]`, changed: true},
 		{name: "another document", seed: `[{"op":"replace","path":"/doc","value":{"a":1}}]`, patch: `[{"op":"replace","path":"/doc","value":{"a":2}}]`, changed: true},

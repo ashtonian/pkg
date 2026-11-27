@@ -105,7 +105,7 @@ SQL identifiers come only from the schema and are quoted by the dialect; a reque
 
 ## Dependencies
 
-- *Imports*: `parse/core`, `parse/internal/dialect`, `parse/internal/cursor`, `parse/internal/decimals`, `parse/internal/geo`, `gowalker` (type text in errors), stdlib `uuid`
+- *Imports*: `parse/core`, `parse/internal/dialect`, `parse/internal/cursor`, `parse/internal/canonical`, `parse/internal/decimals`, `parse/internal/geo`, `gowalker` (type text in errors), stdlib `uuid`
 - *Imported by*: `parse`, `parse/parsehttp`, `parse/parsepgx`, `parse/filter/filtertest`, the example server, and servers that compile lists themselves
 - *Package boundary*: standalone Parse module
 

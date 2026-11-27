@@ -313,7 +313,7 @@ func changedSQL(d SQLDialect, col string, w columnWrite) (string, error) {
 	}
 	var t core.TypeInfo
 	if w.schema != nil {
-		t = core.TypeInfo{Type: w.schema.DataType, SQLType: w.schema.SQLType}
+		t = pathType(w.schema)
 	}
 	return d.ChangedCondition(col, w.expr, t)
 }
