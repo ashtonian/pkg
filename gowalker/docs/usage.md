@@ -453,8 +453,43 @@ key rule on its key shape: `Key().JSONKey(name)` reads a member name into a
 key as `encoding/json` does and returns the name `encoding/json` writes for
 it, `IsCanonicalJSONKey` tells whether a member already spells its key that
 way, and `CheckJSONKey` refuses a key type `encoding/json` cannot use, such
-as `bool`. The [example](../example_test.go) (`ExampleShape_JSONKey`) reads a
-`map[uint16]int`'s members:
+as `bool`. This program reads a `map[uint16]int`'s members and checks a
+`map[bool]int`'s key:
+
+```go
+package main
+
+import (
+	"fmt"
+
+	"github.com/ashtonian/pkg/gowalker"
+)
+
+type Inventory struct {
+	Counts map[uint16]int `json:"counts"`
+	Flags  map[bool]int   `json:"flags"`
+}
+
+func main() {
+	engine := gowalker.MustNew(gowalker.WithJSONFields("json", gowalker.NestedFields()))
+	schema, err := engine.Compile[Inventory]()
+	if err != nil {
+		panic(err)
+	}
+	counts, _ := schema.Root().Lookup("counts")
+	key := counts.Shape().Key()
+	for _, member := range []string{"7", "007", "+7", "70000", "seven"} {
+		k, canonical, ok := key.JSONKey(member)
+		if !ok {
+			fmt.Printf("%q: no uint16 key\n", member)
+			continue
+		}
+		fmt.Printf("%q: key %v, written %q, canonical %t\n", member, k.Interface(), canonical, key.IsCanonicalJSONKey([]byte(member)))
+	}
+	flags, _ := schema.Root().Lookup("flags")
+	fmt.Println(flags.Shape().Key().CheckJSONKey())
+}
+```
 
 ```text
 "7": key 7, written "7", canonical true
