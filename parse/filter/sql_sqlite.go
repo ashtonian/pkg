@@ -187,9 +187,8 @@ func sqliteIntegers(field *FieldSchema, value any) error {
 	return nil
 }
 
-// sqliteSetMembers are a set's members as its JSON array holds them, each
-// as a scalar parameter binds it (core.StoredValue): a NULL member, nil or
-// a NULL Valuer, is JSON null, which `IN` reads as SQL NULL.
+// sqliteSetMembers are a set's members, none NULL (membership), as its
+// JSON array holds them.
 func sqliteSetMembers(field *FieldSchema, members []any) (any, error) {
 	if field.DataType == core.FieldTypeDecimal {
 		return typedSlice(members, core.DecimalText)
@@ -199,14 +198,7 @@ func sqliteSetMembers(field *FieldSchema, members []any) (any, error) {
 	}
 	doc := make([]any, len(members))
 	for i, m := range members {
-		stored, null, err := core.StoredValue(m)
-		if err != nil {
-			return nil, err
-		}
-		if null {
-			continue
-		}
-		switch v := stored.(type) {
+		switch v := m.(type) {
 		case float64:
 			// Always a REAL: encoding/json writes an integral float below
 			// 1e21 as an integer literal, which SQLite reads as an INTEGER

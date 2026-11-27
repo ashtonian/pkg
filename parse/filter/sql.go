@@ -300,10 +300,12 @@ func comparison(expr string, op FilterOperator, value any, bind func(any) string
 }
 
 // membership renders `$in` / `$nin` through render, which receives the
-// set's members, none NULL and at least one, bound as one parameter so a
-// statement's parameter count is independent of the set's size. An empty
-// set matches nothing (`$in`) or everything (`$nin`), NULL or not. A NULL
-// member makes a miss Unknown, as it does in `x IN (…, NULL)`.
+// set's members, each as a parameter binds it (core.StoredValue), none
+// NULL and at least one, bound as one parameter so a statement's parameter
+// count is independent of the set's size. An empty set matches nothing
+// (`$in`) or everything (`$nin`), NULL or not. A NULL member — nil, a nil
+// pointer or a NULL Valuer — makes a miss Unknown, as it does in
+// `x IN (…, NULL)`, on every dialect: no typed array need hold it.
 func membership(op FilterOperator, value any, render func(members []any, in bool) (string, error)) (string, error) {
 	arr, ok := core.AnySlice(value)
 	if !ok {
@@ -316,9 +318,13 @@ func membership(op FilterOperator, value any, render func(members []any, in bool
 		return "1=1", nil
 	}
 	members := make([]any, 0, len(arr))
-	for _, m := range arr {
-		if m != nil {
-			members = append(members, m)
+	for i, m := range arr {
+		stored, null, err := core.StoredValue(m)
+		if err != nil {
+			return "", fmt.Errorf("$%s member %d: %w", op, i, err)
+		}
+		if !null {
+			members = append(members, stored)
 		}
 	}
 	if len(members) == 0 {
