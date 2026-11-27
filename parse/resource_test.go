@@ -154,13 +154,13 @@ func TestResource_RefusesAnotherResourcesPlan(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = r.Page(nil, plan)
-	assert.ErrorContains(t, err, `list plan built for "other_widgets"`)
+	require.ErrorContains(t, err, `list plan built for "other_widgets"`)
 	_, err = r.PagePointers(nil, plan)
-	assert.Error(t, err)
+	require.Error(t, err)
 	_, err = r.IncludeQueries(plan, []parse.Key{{"w1"}})
-	assert.Error(t, err)
+	require.Error(t, err)
 	_, err = r.Page(nil, nil)
-	assert.ErrorContains(t, err, "nil list plan")
+	require.ErrorContains(t, err, "nil list plan")
 }
 
 // parenthesizedColumns maps every field to a computed expression, so a
@@ -171,7 +171,11 @@ func (parenthesizedColumns) MapColumn(table, column string, _ core.FieldType) st
 	return "(" + table + "." + column + ")"
 }
 
-var mappedColumns = parse.ParserOptions(core.WithGeneratorOptions(core.WithColumnMapper(parenthesizedColumns{})))
+// mappedColumns maps every field through parenthesizedColumns.
+func mappedColumns() parse.ResourceOption {
+	opt := parse.ParserOptions(core.WithGeneratorOptions(core.WithColumnMapper(parenthesizedColumns{})))
+	return opt
+}
 
 type team struct {
 	ID string `json:"id" db:"id" parse:"filter,sort"`
@@ -1048,7 +1052,7 @@ type customItem struct {
 // A path sort key's cursor reads its document's row column, which a column
 // mapper's computed SQL does not name; the document field's Column does.
 func TestResource_WithPathsSortsAMappedDocument(t *testing.T) {
-	r, err := parse.NewResource[customItem](onSQLite, "custom_items", mappedColumns)
+	r, err := parse.NewResource[customItem](onSQLite, "custom_items", mappedColumns())
 	require.NoError(t, err)
 	view, err := r.WithPaths(filter.PathDecl{Path: "custom.tier", Type: core.FieldTypeString, Sort: true})
 	require.NoError(t, err)

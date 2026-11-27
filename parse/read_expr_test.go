@@ -116,7 +116,7 @@ func TestReadExpr_UnderAColumnMapper(t *testing.T) {
 		Name  string `json:"name"  db:"name"  parse:"filter"`
 		Label string `json:"label" db:"label" parse:"filter,sort,facet,search"`
 	}
-	tallies, err := parse.NewResource[tally](onSQLite, "tallies", mappedColumns, parse.ReadExpr("label", parse.SQL("upper(tallies.name)")))
+	tallies, err := parse.NewResource[tally](onSQLite, "tallies", mappedColumns(), parse.ReadExpr("label", parse.SQL("upper(tallies.name)")))
 	require.NoError(t, err)
 	req, err := tallies.ParseList(url.Values{
 		filter.ParamFilter:       {`{"label":{"$ne":""}}`},

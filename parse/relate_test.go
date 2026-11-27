@@ -561,7 +561,7 @@ func TestRelate_CorrelatesThroughTheOwnersMappedField(t *testing.T) {
 		ID     string `json:"id"      db:"id"      parse:"filter,sort"`
 		TeamID string `json:"team_id" db:"team_id" parse:"filter"`
 	}
-	members := parse.MustResource[mappedMember](onSQLite, "members", mappedColumns)
+	members := parse.MustResource[mappedMember](onSQLite, "members", mappedColumns())
 	members.MustRelate("team", parse.BelongsTo(parse.MustResource[team](onSQLite, "teams"), "team_id"))
 	assert.Equal(t, "(members.team_id)", members.FilterSchema().Fields["team"].RelatedBy[0].Expr)
 }

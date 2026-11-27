@@ -409,8 +409,8 @@ func TestReadColumns_RefusesAFacetOnAnUnreadColumn(t *testing.T) {
 	}{
 		{"a column's facet", []parse.ResourceOption{parse.ReadColumns("id", "status", "attrs"), parse.QueryOnlyColumns("token")}, `facet "token": api_keys does not read column "token"`},
 		{"a document path's facet", []parse.ResourceOption{parse.ReadColumns("id", "status", "token"), parse.QueryOnlyColumns("attrs")}, `facet "attrs.env": api_keys does not read column "attrs"`},
-		{"a mapped column's facet", []parse.ResourceOption{mappedColumns, parse.ReadColumns("id", "status", "attrs"), parse.QueryOnlyColumns("token")}, `facet "token": api_keys does not read column "token"`},
-		{"a mapped document path's facet", []parse.ResourceOption{mappedColumns, parse.ReadColumns("id", "status", "token"), parse.QueryOnlyColumns("attrs")}, `facet "attrs.env": api_keys does not read column "attrs"`},
+		{"a mapped column's facet", []parse.ResourceOption{mappedColumns(), parse.ReadColumns("id", "status", "attrs"), parse.QueryOnlyColumns("token")}, `facet "token": api_keys does not read column "token"`},
+		{"a mapped document path's facet", []parse.ResourceOption{mappedColumns(), parse.ReadColumns("id", "status", "token"), parse.QueryOnlyColumns("attrs")}, `facet "attrs.env": api_keys does not read column "attrs"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parse.NewResource[apiKey](onSQLite, "api_keys", tc.opts...)
@@ -418,7 +418,7 @@ func TestReadColumns_RefusesAFacetOnAnUnreadColumn(t *testing.T) {
 		})
 	}
 
-	r, err := parse.NewResource[apiKey](onSQLite, "api_keys", mappedColumns, parse.ReadColumns("id", "status", "token", "attrs"))
+	r, err := parse.NewResource[apiKey](onSQLite, "api_keys", mappedColumns(), parse.ReadColumns("id", "status", "token", "attrs"))
 	require.NoError(t, err)
 	_, err = r.ParseList(url.Values{filter.ParamFacets: {"status,token,attrs.env"}})
 	assert.NoError(t, err, "facets on read columns")
@@ -441,8 +441,8 @@ func TestReadColumns_RefusesAPredicateOnAnUnreadColumn(t *testing.T) {
 	}{
 		{"a filter field", []parse.ResourceOption{parse.ReadColumns("id", "title", "body")}, `filter field "status": tickets does not read column "status"; QueryOnlyColumns admits`},
 		{"a search field", []parse.ResourceOption{parse.ReadColumns("id", "title", "status")}, `search field "body": tickets does not read column "body"; QueryOnlyColumns admits`},
-		{"a mapped filter field", []parse.ResourceOption{mappedColumns, parse.ReadColumns("id", "title", "body")}, `filter field "status": tickets does not read column "status"`},
-		{"a mapped search field", []parse.ResourceOption{mappedColumns, parse.ReadColumns("id", "title", "status")}, `search field "body": tickets does not read column "body"`},
+		{"a mapped filter field", []parse.ResourceOption{mappedColumns(), parse.ReadColumns("id", "title", "body")}, `filter field "status": tickets does not read column "status"`},
+		{"a mapped search field", []parse.ResourceOption{mappedColumns(), parse.ReadColumns("id", "title", "status")}, `search field "body": tickets does not read column "body"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parse.NewResource[ticket](onSQLite, "tickets", tc.opts...)

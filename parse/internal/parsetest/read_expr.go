@@ -73,7 +73,8 @@ const (
 
 // emailExpr reads the nullable email through each dialect's own function.
 func emailExpr(d filter.Dialect) (string, error) {
-	if _, ok := d.(filter.SQLiteDialect); ok {
+	_, sqlite := d.(filter.SQLiteDialect)
+	if sqlite {
 		return SqliteEmailExpr, nil
 	}
 	return PgEmailExpr, nil
@@ -81,7 +82,8 @@ func emailExpr(d filter.Dialect) (string, error) {
 
 // contactExpr is the account's email, or its name without one.
 func contactExpr(d filter.Dialect) (string, error) {
-	if _, ok := d.(filter.SQLiteDialect); ok {
+	_, sqlite := d.(filter.SQLiteDialect)
+	if sqlite {
 		return SqliteContactExpr, nil
 	}
 	return PgContactExpr, nil
