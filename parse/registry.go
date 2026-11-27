@@ -14,9 +14,6 @@ import (
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
-// ErrRegistered is a registration under a name the registry already holds.
-var ErrRegistered = errors.New("already registered")
-
 // SchemaRegistry is the schema document's source: the schemas of each
 // registered name, served by SchemaFor and the accessors. A name is
 // registered once. It is safe for concurrent use.

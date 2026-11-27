@@ -2,7 +2,6 @@ package parse
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -91,8 +90,16 @@ func (tx *Tx) Rollback(ctx context.Context) error {
 	return nil
 }
 
-// ErrProviderMismatch is a resource given a transaction of another
-// provider (In), or a relation target built on another provider (Relate):
-// a transaction holds one database's statements, and a relation joins
-// tables of one database.
-var ErrProviderMismatch = errors.New("not the resource's provider")
+// DefaultSettleTimeout bounds each statement that settles an update's
+// transaction when a provider is opened without a settle timeout.
+//
+// A provider settles an update's transaction — its COMMIT or ROLLBACK, or
+// in a transaction the resource is scoped to (In) the release of its
+// savepoint or the rollback to it — once every statement has run and every
+// row has scanned. The request may be gone by then, and a settle the
+// request's cancellation cut short would leave the update half reported, so
+// each settling statement runs under the request's values without its
+// cancellation, bounded by a timeout of its own: a stalled database holds
+// the call for that long and no longer. Each provider package takes the
+// timeout as an option (parsesql.SettleTimeout, parsepgx.SettleTimeout).
+const DefaultSettleTimeout = 10 * time.Second

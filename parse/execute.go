@@ -243,42 +243,6 @@ func (r *Resource[T]) UpdateBatch(ctx context.Context, rows []RowUpdate, s Scope
 	return res, nil
 }
 
-// StatementError is the failure of one statement a resource ran on its
-// provider, as the database or the scan of its rows reported it. Statement
-// names it: a list's page, count, facets or include <field>; a query; an
-// update's current, conflict, lock, owner, relations or reread; or a step
-// of the transaction an update runs in: begin, savepoint, release
-// savepoint, rollback to savepoint, rollback or commit. Every provider
-// names its statements so, for a log attribute or a metric label.
-type StatementError struct {
-	// Table is the table of the resource whose statement it is; empty for
-	// a transaction's own begin, commit or rollback (Provider.Begin, Tx).
-	Table     string
-	Statement string
-	Err       error
-}
-
-func (e *StatementError) Error() string {
-	if e.Table == "" {
-		return e.Statement + ": " + e.Err.Error()
-	}
-	return "parse: " + e.Table + ": " + e.Statement + ": " + e.Err.Error()
-}
-
-func (e *StatementError) Unwrap() error { return e.Err }
-
-// StatementFailed is err as the failure of statement, one of table's
-// resource ("" for a transaction's own), a *StatementError, or nil when err
-// is nil, for parse's provider packages, which report each statement's
-// failure so.
-func StatementFailed(table, statement string, err error) error {
-	if err == nil {
-		return nil
-	}
-	failed := &StatementError{Table: table, Statement: statement, Err: err}
-	return failed
-}
-
 // errNoRow is a statement that returns one row returning none.
 var errNoRow = errors.New("no row")
 
