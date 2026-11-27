@@ -1,51 +1,4 @@
-// Package parsesqlite registers the SQL functions parse's SQLite dialect
-// calls, with the modernc.org/sqlite driver. SQLite has no exact decimal
-// type: a NUMERIC column or a json_extract result holds a double, so
-// filter.SQLiteDialect compares, orders and facets decimals, and bounds an
-// int or float path's number members, through deterministic functions
-// instead. It has no geometry either, so geo
-// filters on a JSONB point call functions that decide them as PostGIS does.
-//
-//   - parse_decimal(x) is the canonical decimal text (core.DecimalText) of
-//     x, or NULL: equality, sets and facet keys compare it.
-//   - parse_decimal_key(x) is a BLOB that orders bytewise as the decimal x,
-//     or NULL: ranges, ORDER BY and keyset seeks compare it.
-//   - parse_decimal_float32(x) is the canonical decimal text of x rounded
-//     to float32, or NULL: the facet key of a float32 field's REAL column.
-//
-// x is a decimal column's value (an INTEGER, a REAL, or TEXT holding a JSON
-// number literal) or a document member as SQLite's `->` operator returns
-// it: a JSON number literal as written, or a JSON string literal holding a
-// decimal in plain notation, as filter.PathValue reads a decimal member.
-// An int or float path reads a number member through parse_decimal when
-// its literal has an exponent or runs past core.MaxDecimalDigits
-// characters, so a plan that filters, sorts or facets such a path needs
-// the functions too.
-// Anything else is NULL, so a filter treats it as missing.
-//
-//   - parse_geo_near(point, latKey, lonKey, lat, lon, meters) is 1 when the
-//     stored point lies within meters of (lat, lon) by the WGS 84 geodesic
-//     distance, as PostGIS measures geography, else 0: $near.
-//   - parse_geo_in_box(point, latKey, lonKey, south, north, west, east) is
-//     1 when the stored point lies in the box or on its edge, else 0:
-//     $within and $intersects a box.
-//   - parse_geo_covered_by(point, latKey, lonKey, polygon) is 1 when the
-//     stored point lies in the polygon (a WKB blob) or on its boundary, else
-//     0: $within and $intersects a polygon.
-//
-// point is the stored point's JSON text; its latKey and lonKey members are
-// read as PostgreSQL reads (doc->>'lat')::float8, a duplicated member by its
-// last value. Each function is NULL when the point is: NULL, not an object,
-// or a member missing, null or no number. An operand of the wrong type is
-// an error on every row, one whose point is NULL included.
-//
-// Call Register before the database opens its first connection, or
-// RegisterOn for a sqlite.Driver of your own. A statement on a connection
-// without the functions fails with SQLite's "no such function:
-// parse_decimal" rather than comparing a rounded double. Another SQLite
-// driver registers the table Functions returns. parsesql.New checks the
-// SQLite release the database runs.
-package parsesqlite
+package parsesql
 
 import (
 	"database/sql/driver"
@@ -130,7 +83,7 @@ func registerAll(register registerFunc) error {
 			return fn.Call(args)
 		})
 		if err != nil {
-			return fmt.Errorf("parsesqlite: register %s: %w", fn.Name, err)
+			return fmt.Errorf("parsesql: registering %s: %w", fn.Name, err)
 		}
 	}
 	return nil

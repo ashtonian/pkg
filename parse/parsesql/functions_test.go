@@ -1,6 +1,6 @@
 //go:build unit || concurrency
 
-package parsesqlite_test
+package parsesql_test
 
 import (
 	"context"
@@ -16,25 +16,25 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/geo"
-	"github.com/ashtonian/pkg/parse/parsesqlite"
+	"github.com/ashtonian/pkg/parse/parsesql"
 )
 
 func TestRegisterIsIdempotent(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make([]error, 8)
 	for i := range errs {
-		wg.Go(func() { errs[i] = parsesqlite.Register() })
+		wg.Go(func() { errs[i] = parsesql.Register() })
 	}
 	wg.Wait()
 	for _, err := range errs {
 		assert.NoError(t, err)
 	}
-	assert.NoError(t, parsesqlite.Register())
+	assert.NoError(t, parsesql.Register())
 }
 
 func open(t *testing.T) *sql.DB {
 	t.Helper()
-	require.NoError(t, parsesqlite.Register())
+	require.NoError(t, parsesql.Register())
 	db, err := sql.Open("sqlite", ":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
@@ -46,7 +46,7 @@ func open(t *testing.T) *sql.DB {
 // constructed driver, so its connections have only what RegisterOn installed.
 var constructedDriver = sync.OnceValues(func() (*sqlite.Driver, error) {
 	d := &sqlite.Driver{}
-	return d, parsesqlite.RegisterOn(d)
+	return d, parsesql.RegisterOn(d)
 })
 
 // connector opens a driver's connections without registering it by name.
@@ -81,20 +81,20 @@ func databases(t *testing.T) []database {
 // filter.SQLiteDialect calls.
 func TestFunctions(t *testing.T) {
 	var names []string
-	for _, fn := range parsesqlite.Functions() {
+	for _, fn := range parsesql.Functions() {
 		names = append(names, fn.Name)
 	}
 	assert.Equal(t, []string{
-		parsesqlite.DecimalFunc, parsesqlite.DecimalKeyFunc, parsesqlite.DecimalFloat32Func,
-		parsesqlite.GeoNearFunc, parsesqlite.GeoInBoxFunc, parsesqlite.GeoCoveredByFunc,
+		parsesql.DecimalFunc, parsesql.DecimalKeyFunc, parsesql.DecimalFloat32Func,
+		parsesql.GeoNearFunc, parsesql.GeoInBoxFunc, parsesql.GeoCoveredByFunc,
 	}, names)
 
-	fns := parsesqlite.Functions()
+	fns := parsesql.Functions()
 	fns[0].Name = "changed"
-	assert.Equal(t, parsesqlite.DecimalFunc, parsesqlite.Functions()[0].Name, "Functions returns a copy")
+	assert.Equal(t, parsesql.DecimalFunc, parsesql.Functions()[0].Name, "Functions returns a copy")
 
 	// A function called through the table answers as the exported function.
-	got, err := parsesqlite.Functions()[0].Call([]driver.Value{"1.50"})
+	got, err := parsesql.Functions()[0].Call([]driver.Value{"1.50"})
 	require.NoError(t, err)
 	assert.Equal(t, "1.5", got)
 }
@@ -112,12 +112,12 @@ func TestConstructedDriverNeedsRegisterOn(t *testing.T) {
 // before it in the table registered and those after it not.
 func TestRegisterOnNameTaken(t *testing.T) {
 	d := &sqlite.Driver{}
-	require.NoError(t, d.RegisterDeterministicScalarFunction(parsesqlite.DecimalFloat32Func, 1,
+	require.NoError(t, d.RegisterDeterministicScalarFunction(parsesql.DecimalFloat32Func, 1,
 		func(*sqlite.FunctionContext, []driver.Value) (driver.Value, error) { return "taken", nil }))
 
-	err := parsesqlite.RegisterOn(d)
+	err := parsesql.RegisterOn(d)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsesqlite: register "+parsesqlite.DecimalFloat32Func)
+	assert.Contains(t, err.Error(), "parsesql: registering "+parsesql.DecimalFloat32Func)
 
 	db := openOn(t, d)
 	var got any

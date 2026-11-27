@@ -1,6 +1,6 @@
 //go:build unit
 
-package parsesqlite_test
+package parsesql_test
 
 import (
 	"bytes"
@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ashtonian/pkg/parse/parsesqlite"
+	"github.com/ashtonian/pkg/parse/parsesql"
 )
 
 // The dialect compares decimals by key, equality and sets included, where
@@ -107,9 +107,9 @@ func FuzzDecimalKey_EqualExactlyWhereTextIsEqual(f *testing.F) {
 		texts := make([]any, len(values))
 		keys := make([]any, len(values))
 		for n, v := range values {
-			text, err := parsesqlite.Decimal(v)
+			text, err := parsesql.Decimal(v)
 			require.NoError(t, err)
-			key, err := parsesqlite.DecimalKey(v)
+			key, err := parsesql.DecimalKey(v)
 			require.NoError(t, err)
 			if (text == nil) != (key == nil) {
 				t.Fatalf("%#v: text %#v, key %#v", v, text, key)
@@ -118,9 +118,9 @@ func FuzzDecimalKey_EqualExactlyWhereTextIsEqual(f *testing.F) {
 			if text == nil {
 				continue
 			}
-			bound, err := parsesqlite.Decimal(text)
+			bound, err := parsesql.Decimal(text)
 			require.NoError(t, err)
-			boundKey, err := parsesqlite.DecimalKey(text)
+			boundKey, err := parsesql.DecimalKey(text)
 			require.NoError(t, err)
 			if bound != text || !bytes.Equal(boundKey.([]byte), key.([]byte)) {
 				t.Fatalf("%#v: text %q reads back as %#v with key %x, not key %x", v, text, bound, boundKey, key)

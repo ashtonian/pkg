@@ -1,6 +1,6 @@
 //go:build integration
 
-package parseprovider_test
+package parsepgx_test
 
 import (
 	"net/url"
@@ -12,16 +12,21 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/parsepgx"
+	"github.com/ashtonian/pkg/parse/parsepgx/internal/pgtest"
 	"github.com/ashtonian/pkg/parse/parseprovider"
 )
 
-// postgresDSN is the test server's DSN on a fresh schema, which the DSN
-// names as its search_path startup parameter.
-func postgresDSN(t *testing.T) string {
+type note struct {
+	ID   string `json:"id"   db:"id"   parse:"filter,sort"`
+	Body string `json:"body" db:"body" parse:"filter,patch"`
+}
+
+// serverDSN is the test server's DSN on a fresh schema, which the DSN names
+// as its search_path startup parameter.
+func serverDSN(t *testing.T) string {
 	t.Helper()
-	config := dbtest.PostgresPoolConfig(t)
+	config := pgtest.PostgresPoolConfig(t)
 	dsn := config.ConnString()
 	sep := "?"
 	if strings.Contains(dsn, "?") {
@@ -30,25 +35,22 @@ func postgresDSN(t *testing.T) string {
 	return dsn + sep + "search_path=" + url.QueryEscape(config.ConnConfig.RuntimeParams["search_path"])
 }
 
-// Provider postgres opens a pool with the configured limits, which
-// resources run on.
-func TestOpen_Postgres(t *testing.T) {
-	cfg := defaults(t)
-	cfg.Provider = parsepgx.Name
-	cfg.DSN = postgresDSN(t)
-	cfg.Postgres.MaxConns = 3
-	cfg.Postgres.MaxConnIdleTime = time.Minute
-	opened, err := parseprovider.Open(dbtest.Context(t), cfg)
+// Open opens a pool with the configured limits, which resources run on, and
+// parseprovider opens it by the provider's name.
+func TestOpen_PoolRunsResources(t *testing.T) {
+	cfg := configOn(t, serverDSN(t))
+	cfg.MaxConns = 3
+	cfg.MaxConnIdleTime = time.Minute
+	chosen, err := parseprovider.Open(pgtest.Context(t), parsepgx.Name, parsepgx.Choice(cfg))
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, opened.Close()) })
+	t.Cleanup(func() { require.NoError(t, chosen.Close()) })
+	opened, ok := chosen.(*parsepgx.Database)
+	require.True(t, ok, "the opened database is the provider's own, for its pool")
 	assert.Equal(t, parsepgx.Name, opened.Provider().Name())
-	_, isSQLite := opened.SQLite()
-	assert.False(t, isSQLite)
-	pool, ok := opened.Postgres()
-	require.True(t, ok)
+	pool := opened.Pool()
 	assert.Equal(t, int32(3), pool.Config().MaxConns)
 	assert.Equal(t, time.Minute, pool.Config().MaxConnIdleTime)
-	assert.Equal(t, cfg.Postgres.ConnectTimeout, pool.Config().ConnConfig.ConnectTimeout)
+	assert.Equal(t, cfg.ConnectTimeout, pool.Config().ConnConfig.ConnectTimeout)
 	require.NoError(t, opened.Ping(t.Context()))
 
 	_, err = pool.Exec(t.Context(), `CREATE TABLE notes (id text PRIMARY KEY, body text NOT NULL)`)

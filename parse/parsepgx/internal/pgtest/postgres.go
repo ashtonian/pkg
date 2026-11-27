@@ -1,6 +1,11 @@
 //go:build integration
 
-package dbtest
+// Package pgtest opens fresh schemas of the PostgreSQL test servers for
+// parsepgx's tests (PARSE_POSTGRES_DSN, and PARSE_POSTGIS_DSN with PostGIS
+// enabled), as database/sql handles, pgx configs and pools, and the
+// provider on them. Each test gets a schema of its own on a shared server,
+// dropped at cleanup.
+package pgtest
 
 import (
 	"context"
@@ -125,7 +130,7 @@ func Timeout(t testing.TB) time.Duration {
 	t.Helper()
 	d, err := timeout()
 	if err != nil {
-		t.Fatalf("dbtest: %v", err)
+		t.Fatalf("pgtest: %v", err)
 	}
 	return d
 }
@@ -194,7 +199,7 @@ func (s *server) pool(t testing.TB) *pgxpool.Pool {
 	t.Helper()
 	pool, err := pgxpool.NewWithConfig(Context(t), s.poolConfig(t))
 	if err != nil {
-		t.Fatalf("dbtest: %s pool: %v", s.dsnEnv, err)
+		t.Fatalf("pgtest: %s pool: %v", s.dsnEnv, err)
 	}
 	t.Cleanup(pool.Close)
 	return pool
@@ -214,7 +219,7 @@ func (s *server) poolConfig(t testing.TB) *pgxpool.Config {
 	s.requireSet(t)
 	base, err := s.ready()
 	if err != nil {
-		t.Fatalf("dbtest: %s server: %v", s.dsnEnv, err)
+		t.Fatalf("pgtest: %s server: %v", s.dsnEnv, err)
 	}
 
 	// Random, not the clock: test binaries of several packages share one
@@ -225,7 +230,7 @@ func (s *server) poolConfig(t testing.TB) *pgxpool.Config {
 	defer cancel()
 	err = exec(ctx, base.ConnConfig, "CREATE SCHEMA "+schema)
 	if err != nil {
-		t.Fatalf("dbtest: create schema: %v", err)
+		t.Fatalf("pgtest: create schema: %v", err)
 	}
 	t.Cleanup(func() {
 		// The test's context is already cancelled when cleanups run.
@@ -233,7 +238,7 @@ func (s *server) poolConfig(t testing.TB) *pgxpool.Config {
 		defer cancel()
 		err := exec(ctx, base.ConnConfig, "DROP SCHEMA "+schema+" CASCADE")
 		if err != nil {
-			t.Logf("dbtest: drop schema %s: %v", schema, err)
+			t.Logf("pgtest: drop schema %s: %v", schema, err)
 		}
 	})
 
@@ -253,9 +258,9 @@ func (s *server) requireSet(t testing.TB) {
 		return
 	}
 	if os.Getenv(RequirePostgresEnv) == "1" {
-		t.Fatalf("dbtest: %s is unset and %s=1 requires PostgreSQL", s.dsnEnv, RequirePostgresEnv)
+		t.Fatalf("pgtest: %s is unset and %s=1 requires PostgreSQL", s.dsnEnv, RequirePostgresEnv)
 	}
-	t.Skipf("dbtest: set %s to run PostgreSQL tests", s.dsnEnv)
+	t.Skipf("pgtest: set %s to run PostgreSQL tests", s.dsnEnv)
 }
 
 func exec(ctx context.Context, config *pgx.ConnConfig, stmt string) error {

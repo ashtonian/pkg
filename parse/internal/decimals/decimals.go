@@ -1,7 +1,7 @@
 // Package decimals reads values as parse's exact decimals where a document
 // member or a SQLite value holds one, and encodes a decimal as a key whose
 // bytes order as the decimals do. The filter package reads document members
-// through Member; parse's SQLite functions (parsesqlite) are Value and Key.
+// through Member; parse's SQLite functions (parsesql) are Value and Key.
 package decimals
 
 import (
@@ -13,7 +13,7 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
-// The SQLite functions parse's dialect calls and parsesqlite registers:
+// The SQLite functions parse's dialect calls and parsesql registers:
 // Value, Key and Float32Value of one argument.
 const (
 	SQLiteValueFunc   = "parse_decimal"

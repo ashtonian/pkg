@@ -13,7 +13,7 @@ import (
 // statementHookKey is the context key OnStatement keeps its hook under.
 type statementHookKey struct{}
 
-// OnStatement returns ctx carrying hook. A database SQLiteHooked opened
+// OnStatement returns ctx carrying hook. A database Hooked opened
 // calls hook with each statement it is about to run under that context, or
 // under one derived from it (context.WithoutCancel keeps it), then refuses
 // the statement with the context's error if the context has ended by then,
@@ -24,20 +24,19 @@ func OnStatement(ctx context.Context, hook func(ctx context.Context, query strin
 	return context.WithValue(ctx, statementHookKey{}, hook)
 }
 
-// SQLiteHooked is SQLite, opened as SQLite opens it, through a driver that
-// calls the hook OnStatement put in a statement's context. Statements run
+// SQLiteDSN is one in-memory SQLite database whose transactions begin
+// IMMEDIATE, as parsesql documents for its updates.
+const SQLiteDSN = ":memory:?_txlock=immediate"
+
+// Hooked opens dsn through d, a driver parse's SQLite functions are
+// registered on, wrapping each connection so it calls the hook OnStatement
+// put in a statement's context; one connection, so every statement sees
+// the same in-memory database, closed at test cleanup. Statements run
 // through ExecContext and QueryContext reach the hook; prepared statements
 // do not.
-func SQLiteHooked(t testing.TB) *sql.DB {
+func Hooked(t testing.TB, d driver.Driver, dsn string) *sql.DB {
 	t.Helper()
-	// The handle only names the registered driver; it never connects.
-	registered := openSQLite(t)
-	connector := hookedConnector{driver: registered.Driver(), dsn: sqliteDSN}
-	err := registered.Close()
-	if err != nil {
-		t.Fatalf("dbtest: close sqlite handle: %v", err)
-	}
-	db := sql.OpenDB(connector)
+	db := sql.OpenDB(hookedConnector{driver: d, dsn: dsn})
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 	return db
@@ -133,7 +132,7 @@ func (c hookedConn) IsValid() bool {
 
 // Announce calls the hook OnStatement put in ctx, if it has one, with query,
 // and returns ctx's error if the hook left ctx ended: a statement about to
-// be sent reports itself so. SQLiteHooked's driver announces every
+// be sent reports itself so. Hooked's connections announce every
 // statement; a test's own wrapper of another driver's connection does the
 // same.
 func Announce(ctx context.Context, query string) error {

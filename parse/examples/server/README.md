@@ -1,6 +1,6 @@
 # parse/examples/server
 
-Serve a seeded product API from the database its settings name: an in-memory SQLite database by default, or PostgreSQL. The example exercises Resource lists over both transports (a GET query string, or the same request as a POST body for a filter too large for a URL), keyset pages, schema discovery, facets and Merge Patch of one product or a batch. [`parseprovider`](../../parseprovider/README.md) opens the provider the `db` settings select, once at startup, and the products resource runs every statement on it; the handlers are the same on either. It serves every route the TypeScript SDK calls ([server contract](../../sdk/ts/README.md#server-contract)), and a readiness probe.
+Serve a seeded product API from the database its settings name: an in-memory SQLite database by default, or PostgreSQL. The example exercises Resource lists over both transports (a GET query string, or the same request as a POST body for a filter too large for a URL), keyset pages, schema discovery, facets and Merge Patch of one product or a batch. [`parseprovider`](../../parseprovider/README.md) opens the provider the `db` settings name, once at startup, among the two the binary links ([`parsesql`](../../parsesql/README.md) for SQLite, [`parsepgx`](../../parsepgx/README.md) for PostgreSQL), and the products resource runs every statement on it; the handlers are the same on either. It serves every route the TypeScript SDK calls ([server contract](../../sdk/ts/README.md#server-contract)), and a readiness probe.
 
 ## Architecture
 
@@ -11,13 +11,13 @@ flowchart LR
     server -->|"Parameterized SQL"| db[("SQLite (embedded) or PostgreSQL")]
 ```
 
-**Entry points:** `main` loads settings and runs the HTTP server; `openDB` opens the configured database through `parseprovider.Open` and seeds it; `newServer` builds the products resource on its provider and wires the routes.
+**Entry points:** `main` loads settings and runs the HTTP server; `openDB` opens the configured database through `parseprovider.Open`, handing it `parsesql.Choice` and `parsepgx.Choice`, and seeds it; `newServer` builds the products resource on its provider and wires the routes.
 
 **Exit points:** Parameterized SQL goes to SQLite or PostgreSQL; JSON pages, schema documents, facets and native error envelopes go to the HTTP client.
 
-**Failure modes:** Invalid settings fail startup, and so does a database setting `parseprovider.Open` refuses (`parseprovider: <setting>: …`, never quoting the DSN), a database that does not answer, a SQLite older than 3.47.0, or a PostgreSQL without the configured collation (`pg_c_utf8` before 17: set `db.postgres.collation` to `C`); invalid requests return Parse E-codes; a patch of a missing product, or of a key its columns cannot hold, is 404 `E4004`, and a batch's missing keys, and those its column cannot hold, are its `failed` items; a request body the client did not finish sending is 400 `E4001`, logged at WARN; a request that outlives `--request-timeout` is 504 `E5004`, logged at WARN, and a request whose client left is not answered and is logged at DEBUG; any other SQL failure is 500 `E5001`, logged at ERROR; a database that stops answering makes `GET /readyz` 503 `E5003`, logged at WARN; response failures are observed by the handler; an expired shutdown grace forces connections closed.
+**Failure modes:** Invalid settings fail startup, and so does a database setting the chosen provider refuses (`parsesql: <setting>: …`, `parsepgx: <setting>: …`, never quoting the DSN), a database that does not answer, a SQLite older than 3.47.0, or a PostgreSQL without the configured collation (`pg_c_utf8` before 17: set `db.postgres.collation` to `C`); invalid requests return Parse E-codes; a patch of a missing product, or of a key its columns cannot hold, is 404 `E4004`, and a batch's missing keys, and those its column cannot hold, are its `failed` items; a request body the client did not finish sending is 400 `E4001`, logged at WARN; a request that outlives `--request-timeout` is 504 `E5004`, logged at WARN, and a request whose client left is not answered and is logged at DEBUG; any other SQL failure is 500 `E5001`, logged at ERROR; a database that stops answering makes `GET /readyz` 503 `E5003`, logged at WARN; response failures are observed by the handler; an expired shutdown grace forces connections closed.
 
-**Dependencies:** The example is a module of its own. It imports Parse, replaced by the working tree it sits in, the released `pkg/config` and Kong provider, Kong, pgx for the PostgreSQL seed, and, through `parseprovider`, the pure-Go SQLite driver and pgx's pool; Parse itself requires none of the CLI and configuration modules. Applications supply their own resource, storage, authenticated scope and authorization policy.
+**Dependencies:** The example is a module of its own. It imports Parse and its provider modules `parsesql` and `parsepgx`, each replaced by the working tree it sits in, the released `pkg/config` and Kong provider, Kong, and pgx for the PostgreSQL seed; through the provider modules it links the pure-Go SQLite driver and pgx's pool. Parse itself requires no database driver and none of the CLI and configuration modules: a binary that links only `parsesql` carries no pgx. Applications supply their own resource, storage, authenticated scope and authorization policy.
 
 ## Quick Start
 
@@ -38,11 +38,11 @@ On PostgreSQL 17 or later, the database selected by the environment (the `db` se
 ```bash
 docker run -d --name parse-example-pg -e POSTGRES_PASSWORD=example -p 127.0.0.1:5432:5432 postgres:18
 PARSE_SERVER_DB_PROVIDER=postgres \
-PARSE_SERVER_DB_DSN='postgres://postgres:example@127.0.0.1:5432/postgres?sslmode=disable' \
+PARSE_SERVER_DB_POSTGRES_DSN='postgres://postgres:example@127.0.0.1:5432/postgres?sslmode=disable' \
 GOWORK=off go run . --addr 127.0.0.1:8080
 ```
 
-Startup creates the `products` table when it is missing (on PostgreSQL with a GIN index on `labels`, the index its `indexed` tag declares) and inserts the ten demonstration products it does not hold, so a database that persists — PostgreSQL, or SQLite at a file path such as `PARSE_SERVER_DB_DSN=./products.db` — keeps the changes made to them across restarts. On PostgreSQL 14 to 16 add `PARSE_SERVER_DB_POSTGRES_COLLATION=C`.
+Startup creates the `products` table when it is missing (on PostgreSQL with a GIN index on `labels`, the index its `indexed` tag declares) and inserts the ten demonstration products it does not hold, so a database that persists — PostgreSQL, or SQLite at a file path such as `PARSE_SERVER_DB_SQLITE_DSN=./products.db` — keeps the changes made to them across restarts. On PostgreSQL 14 to 16 add `PARSE_SERVER_DB_POSTGRES_COLLATION=C`.
 
 ## Routes
 
@@ -55,7 +55,7 @@ Startup creates the `products` table when it is missing (on PostgreSQL with a GI
 | `PATCH /api/products?id[]=…` | `patchMany` | `parsehttp.Query`, `Resource.ParseKey` per `id[]`, `parsehttp.ParsePatch`, `Resource.Update(…, parse.ByKeys(…), …)` for 1 to 100 keys: `{"updated": [...], "failed": [{"id", "code": "E4004", "error"}]}`; no key or more than 100 is 400 `E4001` |
 | `GET /api/{resource}/schema` | `schema` | `parsehttp.SchemaHandler`: the resource's document, or 404 `E2078` |
 | `GET /api/schemas` | `schemas` | `parsehttp.SchemaListHandler`: `{"schemas": [...]}`, every registered resource's document |
-| `GET /readyz` | none: the readiness probe | `parseprovider.Database.Ping` under the request timeout: 200 `{"status": "ready"}`, or 503 `E5003` while the database does not answer |
+| `GET /readyz` | none: the readiness probe | The opened provider's `Ping` (`parseprovider.Database`) under the request timeout: 200 `{"status": "ready"}`, or 503 `E5003` while the database does not answer |
 
 The patch routes read no query parameter but a batch's `id[]`, and answer any other with 400 `E4001`: a parameter a patch ignored, a filter meant to narrow it, would let it write rows the client did not mean to.
 
@@ -65,7 +65,7 @@ The item route derives from the resource's key: products, keyed by `id`, are `/a
 
 ## Logging and shutdown
 
-The process writes JSON logs to stderr. Its first entry, `starting`, is written at any level: the service, its version, the effective log level and the settings, with secrets redacted (`db.dsn`, which may hold a password). At the default level, `warn`, a healthy process writes nothing else. Each level below adds detail:
+The process writes JSON logs to stderr. Its first entry, `starting`, is written at any level: the service, its version, the effective log level and the settings, with secrets redacted (`db.sqlite.dsn` and `db.postgres.dsn`, which may hold a password). At the default level, `warn`, a healthy process writes nothing else. Each level below adds detail:
 
 | Level | Adds |
 |---|---|
@@ -95,15 +95,17 @@ SIGINT or SIGTERM stops new requests and drains active requests for the configur
 | `--write-timeout` | `PARSE_SERVER_WRITE_TIMEOUT` | duration, positive | `10s` | Bound response writes |
 | `--idle-timeout` | `PARSE_SERVER_IDLE_TIMEOUT` | duration, positive | `60s` | Bound idle keep-alive connections |
 
-The database settings are `parseprovider.Config` under `db`. They have no flags: set them in the environment or the settings file. `parseprovider.Open` checks them again at startup and names the setting it refuses. Each takes a restart.
+The database settings sit under `db`: the provider's name, then each provider's own settings, `parsesql.Config` under `db.sqlite` and `parsepgx.Config` under `db.postgres`. Only the named provider's settings are used, so the PostgreSQL DSN, which has no default, may stay unset on SQLite. They have no flags: set them in the environment or the settings file. The provider checks its settings again at startup and names the one it refuses. Each takes a restart.
 
 | Setting | Environment | Type | Default | Purpose |
 |---|---|---|---|---|
 | `db.provider` | `PARSE_SERVER_DB_PROVIDER` | string | `sqlite` | The database parse runs on: `sqlite` or `postgres` |
-| `db.dsn` | `PARSE_SERVER_DB_DSN` | string, secret | `:memory:` | For `sqlite` a file path (absolute, `./` or `../`, ending `.db`, `.sqlite` or `.sqlite3`), a `file:` URI or `:memory:`, without `_txlock` or `_busy_timeout`; for `postgres` a `postgres://` URL or a keyword/value string, without `pool_*` parameters. Redacted in the startup entry |
-| `db.settle_timeout` | `PARSE_SERVER_DB_SETTLE_TIMEOUT` | duration, positive | `10s` | Bound on each statement that settles an update's transaction: commit, rollback, savepoint release |
+| `db.sqlite.dsn` | `PARSE_SERVER_DB_SQLITE_DSN` | string, secret | `:memory:` | A file path (absolute, `./` or `../`, ending `.db`, `.sqlite` or `.sqlite3`), a `file:` URI or `:memory:`, without `_txlock` or `_busy_timeout`. Redacted in the startup entry |
+| `db.sqlite.settle_timeout` | `PARSE_SERVER_DB_SQLITE_SETTLE_TIMEOUT` | duration, positive | `10s` | Bound on each statement that settles an update in a transaction the application holds: savepoint release and rollback |
 | `db.sqlite.max_open_conns` | `PARSE_SERVER_DB_SQLITE_MAX_OPEN_CONNS` | int, at least 1 | `1` | Connections the SQLite database holds open, never recycled; an in-memory database without `cache=shared` needs 1 |
 | `db.sqlite.busy_timeout` | `PARSE_SERVER_DB_SQLITE_BUSY_TIMEOUT` | duration, not negative | `5s` | How long a SQLite statement waits for another connection's write lock before `SQLITE_BUSY` |
+| `db.postgres.dsn` | `PARSE_SERVER_DB_POSTGRES_DSN` | string, secret | none | A `postgres://` URL or a keyword/value string, without `pool_*` parameters; required on `postgres`. Redacted in the startup entry |
+| `db.postgres.settle_timeout` | `PARSE_SERVER_DB_POSTGRES_SETTLE_TIMEOUT` | duration, positive | `10s` | Bound on each statement that settles an update's transaction: commit, rollback, savepoint release |
 | `db.postgres.collation` | `PARSE_SERVER_DB_POSTGRES_COLLATION` | string | `pg_c_utf8` | Code-point collation strings sort and compare under: `pg_c_utf8` (PostgreSQL 17+) or `C` (14 to 16) |
 | `db.postgres.containment_max_values` | `PARSE_SERVER_DB_POSTGRES_CONTAINMENT_MAX_VALUES` | int | `0` | Largest `$in` set a jsonb path compares by containment; 0 is parse's default, negative compares none |
 | `db.postgres.max_conns` | `PARSE_SERVER_DB_POSTGRES_MAX_CONNS` | int, at least 1 | `10` | Most connections the pool opens |
@@ -136,13 +138,13 @@ sequenceDiagram
 
 **Failure modes:** Query validation returns the native Parse error. A POST with list parameters in its query string, or a body that is not `application/json`, is E2067; a body over the resource's list body limit (80 KiB at the default limits) is E2063, read no further. Database execution and page construction errors reach the HTTP error boundary.
 
-**Dependencies:** The request's context, carrying `--request-timeout`, flows to database execution; the Resource compiles the request for its provider's dialect, runs the statements on the provider's database (an update in one transaction, on SQLite begun IMMEDIATE, as `parseprovider` opens it), and owns grammar and page construction. A patch answers every target row it matched: those it wrote and those it left as they were.
+**Dependencies:** The request's context, carrying `--request-timeout`, flows to database execution; the Resource compiles the request for its provider's dialect, runs the statements on the provider's database (an update in one transaction, on SQLite begun IMMEDIATE, as `parsesql.Open` opens it), and owns grammar and page construction. A patch answers every target row it matched: those it wrote and those it left as they were.
 
 ## Security and operation
 
-The default listener is loopback. The seeded demonstration exposes writes without authentication, tenant isolation or authorization; supply those application policies before exposing it to untrusted clients. With the default DSN the data is in memory and disappears when the process exits. The DSN is the one secret: set it in the environment or a settings file readable only by the service, never on the command line (it has no flag), and it is redacted from the startup entry; `parseprovider` errors name the setting without quoting it.
+The default listener is loopback. The seeded demonstration exposes writes without authentication, tenant isolation or authorization; supply those application policies before exposing it to untrusted clients. With the default DSN the data is in memory and disappears when the process exits. The DSN is the one secret: set it in the environment or a settings file readable only by the service, never on the command line (it has no flag), and it is redacted from the startup entry; the providers' errors name the setting without quoting it.
 
-JSON logs report startup at any level, request and response failures at WARN and ERROR, and, at `info`, the database opened, every request and the shutdown. To follow one request, filter the entries by its `request_id`, the `X-Request-ID` of its answer. `request deadline exceeded` (WARN) means a request's queries outlived `--request-timeout`: when ordinary requests log it, check the filter and sort in the entry's path against the indexed fields, then the timeout; on PostgreSQL also check `db.postgres.max_conns` against the requests in flight, since a request waiting for a connection spends its deadline. `request cancelled` (DEBUG) is a client that left before its answer. `request failed` (ERROR) is a server fault: its `error` names the table and the statement (`parse: products: page: …`). `database not ready` (WARN) is `GET /readyz` failing its ping: check that the database is up and reachable at `db.dsn`, then the pool's connections. HTTP and database deadlines bound active work; the example has a readiness probe and no metrics endpoint.
+JSON logs report startup at any level, request and response failures at WARN and ERROR, and, at `info`, the database opened, every request and the shutdown. To follow one request, filter the entries by its `request_id`, the `X-Request-ID` of its answer. `request deadline exceeded` (WARN) means a request's queries outlived `--request-timeout`: when ordinary requests log it, check the filter and sort in the entry's path against the indexed fields, then the timeout; on PostgreSQL also check `db.postgres.max_conns` against the requests in flight, since a request waiting for a connection spends its deadline. `request cancelled` (DEBUG) is a client that left before its answer. `request failed` (ERROR) is a server fault: its `error` names the table and the statement (`parse: products: page: …`). `database not ready` (WARN) is `GET /readyz` failing its ping: check that the database is up and reachable at the provider's DSN (`db.sqlite.dsn`, `db.postgres.dsn`), then the pool's connections. HTTP and database deadlines bound active work; the example has a readiness probe and no metrics endpoint.
 
 ## Verification
 
@@ -163,8 +165,8 @@ The unit checks cover explicit flags over environment values, omitted-flag prece
 
 | File | Responsibility |
 |---|---|
-| `go.mod` | The example's own module: Kong, the released config modules and pgx, Parse replaced by this working tree |
-| `main.go` | Configuration and its reloads (the `db` settings are `parseprovider.Config`), the live log level, HTTP lifecycle, and the database: `openDB` opens it through `parseprovider.Open`, and the seed creates and fills the products table in each provider's SQL |
+| `go.mod` | The example's own module: Kong, the released config modules and pgx, Parse and its provider modules replaced by this working tree |
+| `main.go` | Configuration and its reloads (the `db` settings name the provider and hold `parsesql.Config` and `parsepgx.Config`), the live log level, HTTP lifecycle, and the database: `openDB` opens it through `parseprovider.Open`, and the seed creates and fills the products table in the opened provider's SQL |
 | `log.go` | The JSON logger: the TRACE level, the request ID on every entry, entries written past the level |
 | `request_log.go` | The request ID and the one entry per request, with its detail by level |
 | `server.go` | Resource declaration on the database's provider, routes (the item route from the key, `parsehttp.ItemPattern`), list (GET and POST, written under its field mask by `parsehttp.WriteList`), facet, schema, single (key read by `parsehttp.ItemKey`) and batch patch handlers, the readiness probe, the example's error codes |

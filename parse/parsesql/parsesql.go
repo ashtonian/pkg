@@ -1,21 +1,68 @@
-// Package parsesql is parse's SQLite provider. New opens a parse.Provider
-// over a *sql.DB on any SQLite driver, and every resource built on it
+// Package parsesql is parse's SQLite provider. Open opens a SQLite
+// database from Config through modernc.org/sqlite, with the SQL functions
+// parse's SQLite plans call registered, and returns the provider on it
+// (Database). New opens a parse.Provider over a *sql.DB the application
+// opened itself, on any SQLite driver that has the functions (Register,
+// RegisterOn, Functions). Every resource built on the provider
 // (parse.NewResource) compiles for filter.SQLiteDialect and runs its lists,
 // facets, queries and updates on that database; Tx wraps a transaction of
 // the application's own for a resource to run in (parse.Resource.In). Rows
 // scan through the resource's row contract (parse.RowScanner), which
 // decodes the JSON text SQLite stores documents and arrays in and parses
-// its timestamp text. The SQL functions SQLite plans call are registered by
-// parsesqlite. New refuses a database whose SQLite is older than
+// its timestamp text. New refuses a database whose SQLite is older than
 // MinSQLiteVersion, the oldest release the plans run on.
+//
+// SQLite has no exact decimal type: a NUMERIC column or a json_extract
+// result holds a double, so filter.SQLiteDialect compares, orders and
+// facets decimals, and bounds an int or float path's number members,
+// through deterministic functions instead. It has no geometry either, so
+// geo filters on a JSONB point call functions that decide them as PostGIS
+// does.
+//
+//   - parse_decimal(x) is the canonical decimal text (core.DecimalText) of
+//     x, or NULL: equality, sets and facet keys compare it.
+//   - parse_decimal_key(x) is a BLOB that orders bytewise as the decimal x,
+//     or NULL: ranges, ORDER BY and keyset seeks compare it.
+//   - parse_decimal_float32(x) is the canonical decimal text of x rounded
+//     to float32, or NULL: the facet key of a float32 field's REAL column.
+//
+// x is a decimal column's value (an INTEGER, a REAL, or TEXT holding a JSON
+// number literal) or a document member as SQLite's `->` operator returns
+// it: a JSON number literal as written, or a JSON string literal holding a
+// decimal in plain notation, as filter.PathValue reads a decimal member.
+// An int or float path reads a number member through parse_decimal when
+// its literal has an exponent or runs past core.MaxDecimalDigits
+// characters, so a plan that filters, sorts or facets such a path needs
+// the functions too. Anything else is NULL, so a filter treats it as
+// missing.
+//
+//   - parse_geo_near(point, latKey, lonKey, lat, lon, meters) is 1 when the
+//     stored point lies within meters of (lat, lon) by the WGS 84 geodesic
+//     distance, as PostGIS measures geography, else 0: $near.
+//   - parse_geo_in_box(point, latKey, lonKey, south, north, west, east) is
+//     1 when the stored point lies in the box or on its edge, else 0:
+//     $within and $intersects a box.
+//   - parse_geo_covered_by(point, latKey, lonKey, polygon) is 1 when the
+//     stored point lies in the polygon (a WKB blob) or on its boundary, else
+//     0: $within and $intersects a polygon.
+//
+// point is the stored point's JSON text; its latKey and lonKey members are
+// read as PostgreSQL reads (doc->>'lat')::float8, a duplicated member by its
+// last value. Each function is NULL when the point is: NULL, not an object,
+// or a member missing, null or no number. An operand of the wrong type is
+// an error on every row, one whose point is NULL included. A statement on
+// a connection without the functions fails with SQLite's "no such function:
+// parse_decimal" rather than comparing a rounded double.
 //
 // SQLite has no row lock: an update that reads before it writes (a
 // SkipUnchanged plan's Current, a batch's preimages) holds its targets only
-// in a write transaction. database/sql begins transactions in the mode the
-// connection string names, so open the database with _txlock=immediate, and
-// with _busy_timeout so a second writer waits rather than failing with
-// SQLITE_BUSY (modernc.org/sqlite and mattn/go-sqlite3 both read them); a
-// *sql.Tx passed to Tx is begun on such a connection.
+// in a write transaction. Open begins every transaction IMMEDIATE and sets
+// the busy timeout, so a second writer waits rather than failing with
+// SQLITE_BUSY. database/sql begins transactions in the mode the connection
+// string names, so a database the application opens for New takes
+// _txlock=immediate and _busy_timeout (modernc.org/sqlite and
+// mattn/go-sqlite3 both read them), and a *sql.Tx passed to Tx is begun on
+// such a connection.
 package parsesql
 
 import (
@@ -37,9 +84,9 @@ const Name = "sqlite"
 const savepoint = "parsesql_update"
 
 // Option configures New.
-type Option func(*config)
+type Option func(*options)
 
-type config struct {
+type options struct {
 	settle time.Duration
 }
 
@@ -50,7 +97,7 @@ type config struct {
 // context, so the COMMIT or ROLLBACK of a transaction an update begins
 // itself is unbounded; SQLite runs it in process.
 func SettleTimeout(d time.Duration) Option {
-	return func(c *config) { c.settle = d }
+	return func(o *options) { o.settle = d }
 }
 
 // New opens the SQLite provider over db: it reads sqlite_version() once
@@ -59,20 +106,20 @@ func SettleTimeout(d time.Duration) Option {
 // the application's, and stays open and owned by it; the provider runs
 // every resource's statements on it.
 func New(ctx context.Context, db *sql.DB, opts ...Option) (*parse.Provider, error) {
-	return open(ctx, db, MinSQLiteVersion, opts)
+	return newProvider(ctx, db, MinSQLiteVersion, opts)
 }
 
-// open is New requiring SQLite need.
-func open(ctx context.Context, db *sql.DB, need string, opts []Option) (*parse.Provider, error) {
+// newProvider is New requiring SQLite need.
+func newProvider(ctx context.Context, db *sql.DB, need string, opts []Option) (*parse.Provider, error) {
 	if db == nil {
 		return nil, errors.New("parsesql: nil database")
 	}
-	cfg := config{settle: parse.DefaultSettleTimeout}
+	o := options{settle: parse.DefaultSettleTimeout}
 	for _, opt := range opts {
-		opt(&cfg)
+		opt(&o)
 	}
-	if cfg.settle <= 0 {
-		return nil, fmt.Errorf("parsesql: settle timeout %s: must be positive", cfg.settle)
+	if o.settle <= 0 {
+		return nil, fmt.Errorf("parsesql: settle timeout %s: must be positive", o.settle)
 	}
 	version, err := libraryVersion(ctx, db)
 	if err != nil {
@@ -82,7 +129,7 @@ func open(ctx context.Context, db *sql.DB, need string, opts []Option) (*parse.P
 	if err != nil {
 		return nil, err
 	}
-	p := parse.NewProvider(backend.Provider{Name: Name, Dialect: filter.SQLiteDialect{}, DB: database{db: db}, SettleTimeout: cfg.settle})
+	p := parse.NewProvider(backend.Provider{Name: Name, Dialect: filter.SQLiteDialect{}, DB: database{db: db}, SettleTimeout: o.settle})
 	return p, nil
 }
 

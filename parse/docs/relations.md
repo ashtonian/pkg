@@ -158,9 +158,9 @@ Declare `Facetable()` on a has-many or many-to-many and `facets=tags` counts the
 
 Declare `Writable()` on a many-to-many and a patch changes its membership with target keys: a merge patch `{"tags": ["red", "blue"]}` replaces the set, `{"tags": []}` or `{"tags": null}` clears it, and a JSON Patch `add` / `remove` on `/tags` with a list of at least one key adds or removes keys. A key is never null (E2118); the parser decides each operation's value, so a membership change it accepts always renders. Keys travel as the target's key does: a target key tagged `json:",string"` takes them as JSON strings (`{"tags":["5"]}`), as responses write it and the relation's filter shorthands take it, and the schema document marks the path `"wire": "string"` ([quoted values](schema-configuration.md#quoted-values)). A target key of several columns is an array of a value per column, in key order (`{"stock":[[1,"a"],[2,"b"]]}`), each value taking its column's type and wire form; the schema document lists the columns in the path's `key`. `Update` runs the owner statement, then the membership statements for the keys it returned, in one transaction. Pairs are made only with targets the request may relate — live, in the tenant, or admitted by the target's policy — by selecting the owner and target rows rather than binding raw keys, and a replace or remove reaches only pairs to such targets, so pairs the request cannot see stay. A JSON Patch `add` of `["red","blue"]` to `/tags` on device `d1`:
 
-`ExampleResource_Update_membership` adds the tags red, blue (deleted) and green (another tenant's) to a device of tenant t1; the statement pairs the device with red alone:
+parsesql's `Example_updateMembership` adds the tags red, blue (deleted) and green (another tenant's) to a device of tenant t1; the statement pairs the device with red alone:
 
-<!-- output of ExampleResource_Update_membership -->
+<!-- output of parsesql.Example_updateMembership -->
 ```text
 pairs written: 1
 d1 red t1

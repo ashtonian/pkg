@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -24,7 +23,7 @@ type tagged struct {
 // returns the resource each test runs on with the database under it.
 func taggedItems(t *testing.T) (*parse.Resource[tagged], *sql.DB) {
 	t.Helper()
-	db := dbtest.SQLiteHooked(t)
+	db := HookedMemoryDB(t)
 	for _, stmt := range []string{
 		`CREATE TABLE tagged (id TEXT PRIMARY KEY, name TEXT NOT NULL)`,
 		`CREATE TABLE tagged_tags (item_id TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (item_id, tag_id))`,

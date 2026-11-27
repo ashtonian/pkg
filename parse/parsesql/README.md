@@ -1,18 +1,21 @@
 # parse/parsesql
 
-parse's SQLite provider. `New` opens a `parse.Provider` over a `*sql.DB` on any SQLite driver; every resource built on it (`parse.NewResource(p, …)`) compiles its statements for `filter.SQLiteDialect` and runs its lists, facets, queries and updates on that database, scanning rows into the resource's type through its row contract (`parse.RowScanner`). `Tx` wraps a transaction of the application's own for a resource to run in (`parse.Resource.In`). The provider's API is the one every parse provider has: [`parsepgx`](../parsepgx/README.md) is PostgreSQL's, and [`parseprovider`](../parseprovider/README.md) opens whichever an application's configuration names. Providers are alternatives chosen at startup: parse never moves data between them or runs one beside another.
+parse's SQLite provider, a module of its own: `github.com/ashtonian/pkg/parse/parsesql`, which brings `modernc.org/sqlite` into the module graph of an application that requires it, and no other driver. `Open` opens a SQLite database from `Config` through modernc.org/sqlite, with the SQL functions parse's SQLite plans call registered, and returns the provider on it (`Database`). `New` opens a `parse.Provider` over a `*sql.DB` the application opened itself, on any SQLite driver that has the functions. Every resource built on the provider (`parse.NewResource(p, …)`) compiles its statements for `filter.SQLiteDialect` and runs its lists, facets, queries and updates on that database, scanning rows into the resource's type through its row contract (`parse.RowScanner`). `Tx` wraps a transaction of the application's own for a resource to run in (`parse.Resource.In`).
+
+The provider's API is the one every parse provider has: [`parsepgx`](../parsepgx/README.md) is PostgreSQL's, and [`parseprovider`](../parseprovider/README.md) opens whichever an application's configuration names among those its binary links (`Choice`). Providers are alternatives chosen at startup: parse never moves data between them or runs one beside another.
+
+SQLite has no exact decimal type: a `NUMERIC` column converts text past 64-bit integers to a double, and `json_extract` reads a JSON number as one. `filter.SQLiteDialect` therefore reads every decimal column and decimal path member through deterministic functions this package registers, so equality, sets, ranges, sorts, keyset seeks and facets on SQLite agree with PostgreSQL's `numeric` and with `filter.Evaluate` to `core.MaxDecimalDigits` (1000) digits. A numeric facet keys its values through them too, as canonical decimal text. SQLite has no geometry either: geo filters on a JSONB point call functions that decide them as PostGIS does, `$near` by the WGS 84 geodesic distance and `$within` / `$intersects` a box or polygon with its boundary, so SQLite, PostgreSQL with PostGIS and `filter.Evaluate` select the same rows ([functions](#functions)).
 
 ## Quick Start
 
+```sh
+go get github.com/ashtonian/pkg/parse@latest github.com/ashtonian/pkg/parse/parsesql@latest
+```
+
 ```go
-// One write transaction at a time, waited for: updates read before they
-// write, and SQLite has no row lock.
-if err := parsesqlite.Register(); err != nil { // modernc.org/sqlite: parse's SQL functions
-	return err
-}
-db, err := sql.Open("sqlite", "./app.db?_txlock=immediate&_busy_timeout=5000")
-p, err := parsesql.New(ctx, db) // refuses a SQLite older than MinSQLiteVersion
-devices, err := parse.NewResource[Device](p, "devices", parse.TenantColumn("tenant_id"))
+db, err := parsesql.Open(ctx, cfg) // cfg parsesql.Config: DSN "./app.db", or the default ":memory:"
+defer db.Close()
+devices, err := parse.NewResource[Device](db.Provider(), "devices", parse.TenantColumn("tenant_id"))
 
 page, err := devices.List(ctx, req, parse.Scope{Tenant: tenantID})
 res, err := devices.Update(ctx, patch, parse.ByID(id), scope, parse.SkipUnchanged())
@@ -20,13 +23,21 @@ res, err := devices.Update(ctx, patch, parse.ByID(id), scope, parse.SkipUnchange
 // res.Unchanged: matched and left as they were. Neither: not found.
 
 // Several operations, with the application's own SQL, in one transaction:
-tx, err := db.BeginTx(ctx, nil)
+tx, err := db.DB().BeginTx(ctx, nil)
 scoped, err := devices.In(parsesql.Tx(tx))
 _, err = scoped.Update(ctx, patch, parse.ByID(id), scope) // under a savepoint of tx
 err = tx.Commit()
 ```
 
-[`parseprovider.Open`](../parseprovider/README.md) does the registration, the DSN parameters and the pool settings from configuration.
+`Example_quickStart` (`example_test.go`) is the parse README's complete program, and `Example_updateMembership` a membership update; both run in the unit lane. On a database the application opens itself, register the functions before its first connection, open it with `_txlock=immediate`, and hand it to `New`:
+
+```go
+if err := parsesql.Register(); err != nil { // modernc.org/sqlite: parse's SQL functions
+	return err
+}
+sqlDB, err := sql.Open("sqlite", "./app.db?_txlock=immediate&_busy_timeout=5000")
+p, err := parsesql.New(ctx, sqlDB) // refuses a SQLite older than MinSQLiteVersion
+```
 
 ## Architecture
 
@@ -44,7 +55,7 @@ What runs, in what order, and what the result holds is the root package's, the s
 
 **Updates.** An update on the provider runs in a transaction of its own, begun on a connection taken under the caller's context, so the wait for one keeps its deadline; the transaction is begun without the context's cancellation, which `database/sql` would answer by rolling back what is already done. On a resource scoped to a transaction (`In`) it runs under a savepoint (`parsesql_update`) of that transaction, released once it succeeds and rolled back to otherwise, so a failed update leaves the caller's transaction as it was and usable. Either way it settles only once every returned row has scanned: an error — a failed statement, a row that fails to scan, a cancellation — means nothing the update wrote is kept. Once every statement has run the update commits (or releases its savepoint) whatever its context does since, and reports success, so an error never hides an applied update. SQLite's commit always answers, so `parse.ErrCommitUnknown` is `parsepgx`'s alone. A panic while the update runs — a type's own `UnmarshalJSON` as a row is read — rolls the transaction or savepoint back on its way to the caller, so no transaction stays open on the connection.
 
-**Write transactions.** SQLite has no row lock: an update that reads before it writes (a `SkipUnchanged` plan's `Current`, a batch's preimages) holds its targets only in a write transaction, so no other writer commits between `Current` and `Owner`. `database/sql` begins transactions in the mode the connection string names: open the database with `_txlock=immediate`, and a `*sql.Tx` passed to `Tx` is then begun as a write transaction too.
+**Write transactions.** SQLite has no row lock: an update that reads before it writes (a `SkipUnchanged` plan's `Current`, a batch's preimages) holds its targets only in a write transaction, so no other writer commits between `Current` and `Owner`. `database/sql` begins transactions in the mode the connection string names: `Open` sets `_txlock=immediate`, and a database the application opens for `New` needs it too; a `*sql.Tx` passed to `Tx` is then begun as a write transaction as well.
 
 **Rows.** A statement over a resource reads `Resource.Columns()`, so every row holds `Resource.ColumnNames()` in order, scanned with `rows.Scan`:
 
@@ -66,17 +77,22 @@ parse's SQLite statements need **SQLite 3.47.0** or later (`MinSQLiteVersion`), 
 | `modernc.org/sqlite` | the release it bundles, at the version this module requires |
 | `github.com/mattn/go-sqlite3` | the release it bundles: 3.54.1 in v1.14.53 (`SQLITE_VERSION` in its `sqlite3-binding.c`); built with the `libsqlite3` tag, the system's library, which must meet the minimum itself |
 
-`TestDriver_MeetsTheSQLiteMinimum` opens `modernc.org/sqlite` at the version this module requires, checks that the release above is `MinSQLiteVersion` and that the bundled library passes `CheckVersion`, and runs each construct it lists, a label compared as decoded and one holding an escaped double quote included. `TestOpen_RefusesAnOlderSQLite` opens the provider over the bundled library with the release it needs raised past the bundled one, and gets the `*VersionError`.
+`TestDriver_MeetsTheSQLiteMinimum` opens `modernc.org/sqlite` at the version this module requires, checks that the release above is `MinSQLiteVersion` and that the bundled library passes `CheckVersion`, and runs each construct it lists, a label compared as decoded and one holding an escaped double quote included. `TestNew_RefusesAnOlderSQLite` opens the provider over the bundled library with the release it needs raised past the bundled one, and gets the `*VersionError`. The functions run on any release.
 
 ## Configuration
 
-`New` takes options:
+`Config` is what `Open` opens, loaded through [`github.com/ashtonian/pkg/config`](../../config/README.md) (its `koanf` names and defaults) or built in code. `Open` checks every setting whichever way it was built, and refuses one out of range naming it (`parsesql: max_open_conns: 0: must be at least 1`); its errors never quote the DSN.
 
-| Option | Type | Default | Description |
+| Setting | Type | Default | Description |
 |---|---|---|---|
-| `SettleTimeout` | `time.Duration` | `10s` (`parse.DefaultSettleTimeout`) | Bounds each statement that settles an update in a transaction the resource is scoped to (`RELEASE SAVEPOINT`, `ROLLBACK TO SAVEPOINT`), which runs past the caller's cancellation. `database/sql`'s `Commit` and `Rollback` take no context, so the `COMMIT` or `ROLLBACK` of a transaction an update begins itself runs as the driver runs it; SQLite runs it in process. Must be positive; `New` refuses another. |
+| `dsn` | string (sensitive) | `:memory:` | The database: a file path (absolute, `./` or `../`, ending `.db`, `.sqlite` or `.sqlite3`), a `file:` URI, or `:memory:`, with any parameter of modernc.org/sqlite but the ones `Open` sets. Refused: a connection string of another database, a `sqlite://` URL (the driver would open it as a file name), an extended-length path (`\\?\`, which the driver splits at its `?`), and the parameters `_txlock`, `_busy_timeout` and `_timeout` |
+| `max_open_conns` | int | `1` | Connections the database holds open, all kept idle and never recycled (an in-memory database lives only while a connection to it is open). An in-memory database without `cache=shared` is a database per connection: `Open` refuses more than 1 for one. A file database in WAL mode reads concurrently on more |
+| `busy_timeout` | duration | `5s` | How long a statement waits for another connection's write lock before failing with `SQLITE_BUSY` (`_busy_timeout`); 0 fails at once, negative is refused |
+| `settle_timeout` | duration | `10s` (`parse.DefaultSettleTimeout`) | Bounds each statement that settles an update in a transaction the resource is scoped to (`RELEASE SAVEPOINT`, `ROLLBACK TO SAVEPOINT`), which runs past the caller's cancellation. `database/sql`'s `Commit` and `Rollback` take no context, so the `COMMIT` or `ROLLBACK` of a transaction an update begins itself runs as the driver runs it; SQLite runs it in process. Must be positive |
 
-The connection, its pool limits and its transaction mode belong to the caller's `*sql.DB` (`parseprovider` sets them from configuration):
+`Open` begins every transaction `IMMEDIATE` (`_txlock=immediate`), the write transaction an update that reads before it writes needs.
+
+`New` takes the settle timeout as an option, `SettleTimeout(d)` (default `parse.DefaultSettleTimeout`; must be positive). The connection, its pool limits and its transaction mode belong to the caller's `*sql.DB`:
 
 | Connection setting | Type | Recommended | Why |
 |---|---|---|---|
@@ -84,55 +100,159 @@ The connection, its pool limits and its transaction mode belong to the caller's 
 | `_busy_timeout` (DSN) | milliseconds | `5000` | A second writer waits for the first instead of failing with `SQLITE_BUSY` |
 | `SetMaxOpenConns` | int | `1` for `:memory:` | Each connection to `:memory:` is a database of its own; a file database in WAL mode reads concurrently on more |
 
-`modernc.org/sqlite` and `mattn/go-sqlite3` both read the two DSN parameters.
+`modernc.org/sqlite` and `mattn/go-sqlite3` both read the two DSN parameters. The functions take no configuration: they are pure and deterministic.
 
 ## External Dependencies
 
-`database/sql` and a SQLite driver the caller registers, running at least `MinSQLiteVersion`. Statements that compare decimals, filter, sort or facet an int or float path, or decide geo predicates need the functions [`parsesqlite`](../parsesqlite/README.md) registers (`Register` for modernc.org/sqlite, `Functions` for another driver).
+- `modernc.org/sqlite`, the driver `Open` opens databases through and `Register` registers the functions with, at the version this module's `go.mod` requires (a pure-Go SQLite; no cgo).
+- `github.com/ashtonian/pkg/parse` at this module's own version: parse and its provider modules release together at one version ([versions](#versions)).
+- For `New` on another driver: `database/sql` and that driver, running at least `MinSQLiteVersion`, with every function `Functions()` lists registered. Statements that compare decimals, filter, sort or facet an int or float path, or decide geo predicates need them.
 
 ## API Reference
 
+- `Open(ctx, cfg Config) (*Database, error)`: registers the functions, opens `cfg.DSN` through modernc.org/sqlite with the settings above, and opens the provider on it (`New`) under `ctx`; a failure closes what it opened.
+- `Database`: `Provider()` (the provider to build resources on), `DB()` (the `*sql.DB`, for the application's schema, its own statements and a transaction it shares with parse), `Ping(ctx)` (a readiness probe), `Close()`.
+- `Choice(cfg Config) parseprovider.Choice`: this provider by its name, opened from `cfg`, for `parseprovider.Open` to choose among the providers a binary links.
 - `New(ctx, db *sql.DB, opts ...Option) (*parse.Provider, error)`: the provider over `db`, after the version check, which runs under `ctx`. `db` stays the caller's to close. Refuses a nil `db` and a non-positive settle timeout.
 - `Tx(tx *sql.Tx) *parse.Tx`: a transaction the application began on the provider's database, for `parse.Resource.In`. Commit or roll it back through `tx` or the returned `*parse.Tx`.
 - `Name` (`"sqlite"`): the provider's name in configuration, `parse.Provider.Name()`.
-- `SettleTimeout(d)`, `Option`: the option above.
+- `SettleTimeout(d)`, `Option`: `New`'s option.
 - `MinSQLiteVersion`, `CheckVersion(version)`, `VersionError{Have, Need}`: the minimum, its check, its refusal.
+- `Register()`: registers the six functions with modernc.org/sqlite's `"sqlite"` driver, once per process; it returns its first result on every call. `RegisterOn(d *sqlite.Driver)`: registers them on a `sqlite.Driver` the caller constructs, which then carries them on its own connections only; package-level registrations, `Register`'s included, never reach a constructed driver. Register before the database opens its first connection: modernc.org/sqlite installs registered functions on each connection it opens afterwards.
+- `Functions()`: the table both install, as `Function{Name, NArgs, Call}`, for registering with another SQLite driver ([below](#another-sqlite-driver)). `Decimal(v)`, `DecimalKey(v)`, `DecimalFloat32(v)`, `GeoNear(…)`, `GeoInBox(…)`, `GeoCoveredBy(…)`: the functions over one SQLite value, and the constants `DecimalFunc`, `DecimalKeyFunc`, `DecimalFloat32Func`, `GeoNearFunc`, `GeoInBoxFunc` and `GeoCoveredByFunc` their SQL names.
 
 The resource methods (`List`, `Facets`, `Query`, `Update`, `UpdateBatch`, `In`) are the root package's. A statement's failure is a `*parse.StatementError` naming it, wrapped once with the table: `parse: devices: owner: …`, `… current: …`, `… conflict: …`, `… lock: …`, `… relations: …`, `… reread: …`, `… page: …`, `… count: …`, `… facets: …`, `… include tags: …`, `… query: …`, and the transaction's `begin`, `savepoint`, `release savepoint`, `rollback to savepoint`, `rollback` and `commit`. `errors.As` reaches it and the driver's error under it; `parsepgx` names its statements the same way.
 
-## Build and test
+## Functions
 
-```sh
-make test-parse-unit         # unit tests, SQLite in memory
-make test-parse-integration  # SQLite and PostgreSQL
+**When a function fails**
+- A connection opened before `Register`, or a database whose driver never registered the functions: every statement on a decimal field or an int or float path, and every facet of a number, fails with SQLite's `no such function: parse_decimal` (or `parse_decimal_key`, `parse_decimal_float32`), and every geo filter with `no such function: parse_geo_near` (or `parse_geo_in_box`, `parse_geo_covered_by`). parse never falls back to a rounded comparison or key, or to a spherical distance.
+- `Register` failing: `parsesql: registering parse_decimal: a function named "parse_decimal" is already registered` means another package registered that name with modernc.org/sqlite first. The functions before the taken name in `Functions()` are registered and the rest are not, so fix the conflict rather than retrying: `Register` returns its first result on every call. `RegisterOn` fails the same way on a driver that already has a name, and is not memoized: call it once per driver.
+- A value that holds no decimal (a JSON boolean, a string with an exponent, text that is no number, a BLOB): NULL, so a filter treats it as missing, as `filter.PathValue` does.
+- A point member that holds no coordinate (missing, JSON `null`, a boolean, an object or array, text float8 rejects such as `1_0`, a value beyond float8's range): the point is NULL, so the geo filter is unknown and `$not` does not select the row. PostgreSQL refuses the query on any of these but a missing or null member; check the stored documents when the two disagree. A member holding `NaN` or `Infinity` is a coordinate on both, and its point is near, in and on nothing.
+- `parse_geo_near: geo: decode point: …`: the stored point is not JSON (`json()` in the plan reports malformed JSON first). `want the point's member names as text`, `want the point as JSON text`, `want a number for operand n`, `parse_geo_covered_by: want the polygon as a WKB blob` or `geo: want a little-endian one-ring polygon WKB`: hand-written SQL called a geo function with arguments `filter.SQLiteDialect` never binds. The operands are checked before the point, so the error comes on the first row, a NULL point's included. The dialect passes `json(column)`, the member names as text, numbers, and the polygon `geo.AppendPolygonWKB` writes.
+
+The constants `DecimalFunc`, `DecimalKeyFunc`, `DecimalFloat32Func`, `GeoNearFunc`, `GeoInBoxFunc` and `GeoCoveredByFunc` hold the SQL names below, as `filter.SQLiteDialect` calls them.
+
+| SQL | Returns | Used for |
+|---|---|---|
+| `parse_decimal(x)` | `x`'s canonical decimal text (`core.DecimalText`): plain notation, no exponent, no leading or trailing zeros, `0` for either zero; NULL when `x` holds no decimal | facet terms, a decimal field's value as a statement reads it (`filter.FieldExpr`), whether an int or float path's member written with an exponent or more than 1000 characters is a number member |
+| `parse_decimal_key(x)` | a BLOB whose bytes order as `x`'s value, equal exactly where the values are; NULL exactly where `parse_decimal(x)` is | equality, `$ne`, `$in` / `$nin` against each member's key, ranges, `ORDER BY`, keyset seeks, range facets |
+| `parse_decimal_float32(x)` | the canonical decimal text of `x` rounded to float32 (an INTEGER, a REAL or TEXT holding a JSON number literal); NULL for anything else or a value beyond float32's range | facet terms of a `float32` field, whose REAL column holds the double of the float32 (`0.10000000149011612` for `0.1`) |
+
+`x` is read as:
+
+| SQLite value | Decimal |
+|---|---|
+| INTEGER | its digits |
+| REAL | its shortest decimal form |
+| TEXT holding a JSON number literal (`10.50`, `1.05e1`) | its value: a `TEXT` column's exact decimal, or a document member's number as `->` returns it |
+| TEXT holding a JSON string literal (`"9.50"`) | its content, if it is a decimal in plain notation of at most 1000 characters: a document member's string, as `filter.PathValue` reads a decimal member |
+| anything else (NULL, a BLOB, JSON `null` / `true` / an object, other text) | none: NULL |
+
+The key is a sign byte (negative, zero, positive), then for a nonzero value `0.d₁…dₙ × 10^e` the exponent `e` biased to two big-endian bytes and the digits; a negative's exponent and digits are complemented and end with `0xFF`, so a greater magnitude orders lower.
+
+### Geo functions
+
+| SQL | Returns | Used for |
+|---|---|---|
+| `parse_geo_near(point, latKey, lonKey, lat, lon, meters)` | 1 when the stored point lies within `meters` of `(lat, lon)` by the geodesic distance on the WGS 84 ellipsoid, as PostGIS's `ST_DWithin` measures geography (Karney's algorithm, to nanometres), else 0; a stored latitude beyond a pole is coerced as geography coerces it; NULL when the point is | `$near` |
+| `parse_geo_in_box(point, latKey, lonKey, south, north, west, east)` | 1 when the stored point lies in the box or on its edge, else 0; NULL when the point is | `$within` and `$intersects` a box |
+| `parse_geo_covered_by(point, latKey, lonKey, polygon)` | 1 when the stored point lies in the polygon or on its boundary (the ring's winding number, as PostGIS's point-in-polygon test), else 0; NULL when the point is. `polygon` is a little-endian one-ring polygon WKB in lon/lat order | `$within` and `$intersects` a polygon |
+
+`point` is the column's JSON text (`json(column)` in the plan); it is NULL when the column is NULL, is not an object, or lacks a coordinate under `latKey` or `lonKey`. A duplicated member reads its last value, as jsonb keeps it. Each member is read as PostgreSQL reads `(doc->>'lat')::float8`:
+
+| Member | Coordinate |
+|---|---|
+| a JSON number (`10`, `1e1`) | its value |
+| a JSON string float8 accepts: decimal (`"10"`, `" 10 "`, `"1e1"`, `".5"`), hexadecimal (`"0x10"`, `"0x1.8"`, `"0x1p3"`), `"NaN"`, `"Infinity"`, `"-inf"` | its value; a point holding NaN or an infinity is near, in and on nothing |
+| missing, JSON `null`, a boolean, an object, an array, a string float8 rejects (`"1_0"`, `"1e"`, `"ten"`), a value beyond float8's range (`1e400`, `"1e-400"`) | none: the point is NULL |
+
+### Another SQLite driver
+
+`Functions()` is the registration contract for a database the application opens on another driver and hands to `New`: each entry's `Name` is what `filter.SQLiteDialect` calls, `NArgs` how many arguments it passes, and `Call` the implementation over the `database/sql/driver` values a scalar function receives. Register every entry, as a deterministic function: SQLite uses an index on an expression only when its functions are deterministic. `New` checks the release the database runs ([supported SQLite](#supported-sqlite)).
+
+| Name | Arguments |
+|---|---|
+| `parse_decimal` | 1 |
+| `parse_decimal_key` | 1 |
+| `parse_decimal_float32` | 1 |
+| `parse_geo_near` | 6 |
+| `parse_geo_in_box` | 7 |
+| `parse_geo_covered_by` | 4 |
+
+The functions need nothing from modernc.org/sqlite, but this package registers them with it and opens its databases through it, so a program on another driver that imports it links modernc.org/sqlite too.
+
+## Versions
+
+parse and its provider modules release together, at one version: require `parse` and `parse/parsesql` at the same one, as `go get` of both `@latest` does, and as each release of this module requires its own release of parse. The provider runs on parse's internal contract, which no other module implements and which changes between releases, so a build that pairs this module with another release of parse fails to compile at this module's `contract.go`, naming this module's release and then parse's as `[major][minor][patch]` arrays:
+
+```text
+parsesql/contract.go:21:84: cannot use [releaseMajor][releaseMinor][releasePatch]struct{}{} (value of type [0][18][0]struct{}) as [0][19][0]struct{} value in variable declaration
 ```
 
-`TestCorpus` (`corpus_integration_test.go`) runs parse's database corpus (`internal/corpus`) on SQLite through this package, as `parsepgx`'s runs it on PostgreSQL: the executor contract (changed and unchanged rows, junction counts, rollback, savepoints, batches, pages, transactions), the row contract over every row shape, and the list, filter, key, value, update, policy, relation and tenancy cases. `go test -tags=integration -run 'TestCorpus/ExecutorContract' ./parsesql/` runs one case. This package's own tests cover the version check, transactions and savepoints, and a connection wait under the caller's context.
+Here parsesql 0.18.0 meets parse 0.19.0: move both to one release. Dependabot updates them as one group.
+
+## Build and test
+
+From this module's directory (the repository's `go.work` builds it against the working tree's parse):
+
+```sh
+go test -tags=unit -race ./...           # the version check, Open's settings, the functions, the examples
+go test -tags=integration ./...          # TestCorpus: parse's database corpus on SQLite
+go test -tags=integration -run 'TestCorpus/ExecutorContract' .   # one case
+```
+
+`make test-parse-unit` and `make test-parse-integration` run them with parse's other modules. `TestCorpus` (`corpus_integration_test.go`) runs parse's database corpus (`internal/corpus`) on SQLite through this package, as `parsepgx`'s runs it on PostgreSQL: the executor contract (changed and unchanged rows, junction counts, rollback, savepoints, batches, pages, transactions), the row contract over every row shape, and the list, filter, patch, key, value, update, policy, relation and tenancy cases, the decimal and geo matrices among them (`TestCorpus/(DecimalMatrix|NumberKeys|GeoMatrix|FilterMatrix)$`). This package's own tests cover `Open`'s settings, the version check, transactions and savepoints, a connection wait under the caller's context, and the functions: `TestDecimalKey_EqualExactlyWhereTextIsEqual` compares every pair of stored forms in SQL (INTEGER, REAL, TEXT in plain and exponent notation, a member's JSON string, either zero, BLOB, NULL and text that is no number), and each with the canonical text a filter binds: two keys are equal exactly where `parse_decimal`'s texts are, and NULL together. `internal/decimals` checks over generated literals that the key orders as `core.CompareDecimals` does; `internal/geo` checks the distance against GeographicLib's test set, and with PostGIS (`PARSE_POSTGIS_DSN`) thousands of seeded distances and points on polygons' vertices and edges against PostGIS.
 
 ## Operations
 
 - *Timeouts*: every statement of a list, and of an update up to its settle, takes the caller's context, as does an update's wait for a connection; give the request a deadline. The settle runs past the caller's cancellation: in a scoped transaction each settling statement is bounded by `SettleTimeout` (default `10s`); the `COMMIT` or `ROLLBACK` of a transaction the update began takes no context in `database/sql`.
 - *Transactions*: an update holds a write transaction from `Current` (or `Owner`) to its last relation statement; a batch holds one for every chunk. Keep batches bounded (`parse.UpdateBatchLimits`) so the write lock is short.
-- *Observability*: the package emits no metrics or logs of its own; instrument the driver, and label failures by `parse.StatementError.Statement`.
+- *Health*: `Database.Ping(ctx)` answers a readiness probe.
+- *Observability*: the package emits no metrics or logs of its own; instrument the driver, and label failures by `parse.StatementError.Statement`. A missing function registration surfaces as the statement error under [functions](#functions).
+- *Cost*: one Go call per row for each decimal expression a statement evaluates, and for each number a facet keys. A key is one byte for zero; otherwise the value's significant digits plus three bytes, and one more for a negative, which ends with a terminator. A geo filter is one call per row, which decodes the point's JSON text: a distance then iterates a handful of times (more near the antipode), a polygon test is linear in its points (at most 100).
+- *Indexes*: no index serves a geo filter on SQLite; it reads every row its other predicates leave. SQLite indexes an expression of deterministic functions. `CREATE INDEX … ON t (parse_decimal_key(amount), id)`, the key and then the keyset's tiebreaker, serves decimal equality, sets, ranges, sorts and keyset seeks. An index on them needs the functions on every connection that writes the table, the `sqlite3` shell included, since its maintenance calls them.
+- *Stored results*: what `parse_decimal`, `parse_decimal_key` and `parse_decimal_float32` return for a stored value is a persisted format, held by every index on them; the bytes of `parse_decimal_key` are pinned by golden vectors in `internal/decimals`. Any change in what one of them returns for a value already stored is a breaking change, whether it changes a key's bytes or which values have a result at all: 0.15.0 reads a BLOB as no decimal (NULL), where 0.14.0 read the decimal text a BLOB held. SQLite trusts a deterministic function to return what it returned when an index entry was written, so after such a release an index built before it answers equality, ranges, sorts and keyset seeks with other rows than a scan finds, without an error, until it is rebuilt: see [upgrading across a change in results](#upgrading-across-a-change-in-results).
 - *Troubleshooting*:
   - `parsesql: SQLite 3.x.y is older than 3.47.0`: the driver links, or with mattn's `libsqlite3` tag loads, an older SQLite. Move to a driver release that bundles a newer one, or upgrade the system library; `SELECT sqlite_version()` shows what it runs.
+  - `parsesql: dsn: …`, `parsesql: max_open_conns: …`, `parsesql: busy_timeout: …`, `parsesql: settle_timeout: …`: `Open` refused that setting; the message says why, and never quotes the DSN.
   - `parsesql: reading sqlite_version(): …`: `New` could not reach the database: the DSN names a path the process cannot open, or the driver is not registered under the name `sql.Open` used.
   - `database is locked` / `SQLITE_BUSY`: another writer held the database past the busy timeout; set `_busy_timeout`, and keep transactions short.
   - A call that hangs where it should have panicked (a goroutine dump shows it in `(*sql.Rows).close`): the panic came from inside `rows.Scan` — an `sql.Scanner` field's own `Scan` — where `database/sql` holds the rows' lock without releasing it, so closing the rows as the panic unwinds waits forever and the connection is lost. Fix the scanner. A panic anywhere else, a document's `UnmarshalJSON` included, rolls the update back and frees the connection.
   - `no such savepoint: parsesql_update`: the caller's transaction ended under the update (a `COMMIT` or `ROLLBACK` from another goroutine on the same `*sql.Tx`).
   - `parse.ErrUpdateBatchTargets`: a batch named a key that is missing, deleted, another tenant's, outside the policy or at another revision; nothing was written.
   - `parse.ErrProviderMismatch` from `In`: the transaction is another provider's (a `parsepgx.Tx`); scope the resource to a transaction on its own provider.
-  - `no such column` means the table and the columns `T`'s fields compile to disagree. `JSON scan source must be string or []byte` means a document column holds a number or a blob: store JSON text. `timestamp text` errors mean a timestamp column holds text parse did not write; write `core.FormatTimestamp` or declare the column `DATETIME` for a driver that parses it. `no such function: parse_decimal` means `parsesqlite.Register` ran after the database opened a connection, or not at all.
+  - `no such column` means the table and the columns `T`'s fields compile to disagree. `JSON scan source must be string or []byte` means a document column holds a number or a blob: store JSON text. `timestamp text` errors mean a timestamp column holds text parse did not write; write `core.FormatTimestamp` or declare the column `DATETIME` for a driver that parses it. `no such function: parse_decimal` means `Register` ran after a database the application opened itself opened a connection, or not at all; `Open` registers first.
+  - A build that fails at `contract.go`: parse and this module are at different releases ([versions](#versions)).
+
+### Upgrading across a change in results
+
+Run these on a connection with the functions registered, through the application's driver: maintaining an index on them calls them, and the `sqlite3` shell has none of them. For each table `t` with an index on a decimal function of a column `amount`:
+
+1. Find the values whose result changed; for 0.15.0, BLOBs: `SELECT count(*) FROM t WHERE typeof(amount) = 'blob'`. parse writes a decimal as canonical TEXT, so only rows the application wrote itself, from a Go `[]byte`, hold one.
+2. Convert them to TEXT: `UPDATE t SET amount = CAST(amount AS TEXT) WHERE typeof(amount) = 'blob'`.
+3. Rebuild the indexes: `REINDEX t`, or each index by name. A value left unconverted is then NULL in the index as in a scan.
+4. Check: `PRAGMA integrity_check(t)` returns `ok`. Before the rebuild it names each index that disagrees with its rows: `row 1 missing from index t_amount`.
+
+Converting before the upgrade, on the release that wrote the BLOBs, keeps the indexes consistent throughout, since that release reads the converted text as it read the BLOB; steps 3 and 4 after the upgrade cost a rebuild and confirm it.
 
 ## Security
 
-SQL text comes from the resource's compiled plans, never from request strings, and every value is a bound argument. The tenant, policy and deleted-row visibility come only from the `parse.Scope` the call is given; the provider adds no predicate. Relation statements are keyed by the rows the owner statement returned, never by the keys the request named, so a request cannot change memberships of rows its scope does not admit. Stored documents are decoded into fresh values, so a document whose member names do not match its Go type never reaches a row.
+SQL text comes from the resource's compiled plans, never from request strings, and every value is a bound argument. The tenant, policy and deleted-row visibility come only from the `parse.Scope` the call is given; the provider adds no predicate. Relation statements are keyed by the rows the owner statement returned, never by the keys the request named, so a request cannot change memberships of rows its scope does not admit. Stored documents are decoded into fresh values, so a document whose member names do not match its Go type never reaches a row. The DSN is a secret (`sensitive`): `Open`'s errors never quote it. The functions read only their argument, allocate at most the value's digits (bounded by `core.MaxDecimalDigits`), and have no side effects. A decimal string member longer than 1000 characters is NULL before it is parsed. A polygon blob must hold exactly the points its header counts, at least four of them with the last repeating the first, and its points must be finite, before it is read.
 
 ## Code Map
 
 | File | Responsibility |
 |------|----------------|
+| [`open.go`](open.go) | `Config`, `Open`, `Database`, `Choice`: the database opened from configuration, its DSN checked and its connection limits set |
 | [`parsesql.go`](parsesql.go) | `New`, `Tx`, `Name`, `SettleTimeout`; the database and transaction the root package's steps run on: statements one after another, the transaction an update begins on a connection taken under the caller's context, the savepoint in a scoped transaction, and their settle |
+| [`functions.go`](functions.go) | `Function` and the `Functions` table, `Register`, `RegisterOn`, `Decimal`, `DecimalKey`, `DecimalFloat32`, `GeoNear`, `GeoInBox`, `GeoCoveredBy` and the function names |
 | [`version.go`](version.go) | `MinSQLiteVersion`, `CheckVersion`, `VersionError`, and the `sqlite_version()` read `New` checks |
+| [`contract.go`](contract.go) | The compile-time check that parse is at this module's release ([versions](#versions)) |
+| [`../internal/decimals`](../internal/decimals/decimals.go) | `Value` (a SQLite value as a decimal), `Float32Value` (as a float32), `Member` (a document member as a decimal), `Key`, the function names |
+| [`../internal/geo`](../internal/geo/geo.go) | `Distance` (WGS 84 geodesic, ported from GeographicLib), `Geodetic`, `Box`, `CoveredBy`, `Near`, `ReadPoint` / `ReadPointJSON` and `Coordinate` (a stored point, its members read as float8), the polygon WKB, the function names |
+| [`example_test.go`](example_test.go) | The parse README's quick start and a membership update, run with their output checked |
 | [`corpus_integration_test.go`](corpus_integration_test.go) | `TestCorpus`: parse's database corpus on SQLite |
+| [`sqlite_test.go`](sqlite_test.go) | `MemoryDB`, `HookedMemoryDB`: the in-memory databases this module's tests open |
 | [`drivers_test.go`](drivers_test.go) | The [supported SQLite](#supported-sqlite) check: the required driver's release and the constructs the minimum is for |

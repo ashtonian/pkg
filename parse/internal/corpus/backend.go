@@ -136,7 +136,8 @@ func (b sqlBackend) openSettling(t *testing.T, settle time.Duration) (*parse.Pro
 	t.Helper()
 	v := b.variant
 	v.Settle = settle
-	if pg, ok := b.dialect.(filter.PostgresDialect); ok {
+	pg, isPostgres := b.dialect.(filter.PostgresDialect)
+	if isPostgres {
 		v.Collation, v.ContainmentMaxValues = pg.Collation, pg.ContainmentMaxValues
 	}
 	return b.opener.Open(t, v)

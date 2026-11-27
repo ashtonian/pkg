@@ -329,7 +329,7 @@ func caseWhen(guard string, terms []string) string {
 }
 
 // geoCondition renders the geo operators over a JSONB point through
-// parsesqlite's functions (internal/geo), so SQLite decides them as PostGIS
+// parsesql's functions (internal/geo), so SQLite decides them as PostGIS
 // and Evaluate do: $near by the WGS 84 geodesic distance, $within and
 // $intersects a box or polygon planar in lon/lat, boundary included. Each
 // function reads the point from its JSON text, with the member names bound,
@@ -468,7 +468,7 @@ func (SQLiteDialect) ReadColumn(column string, t core.SQLType) string {
 }
 
 // DecimalValue reads a column or a member through parse_decimal
-// (parsesqlite): its canonical decimal text, exact for an INTEGER or for
+// (parsesql): its canonical decimal text, exact for an INTEGER or for
 // TEXT holding the number, where CAST(… AS NUMERIC) keeps 15 significant
 // digits. A parameter is the canonical text already.
 func (d SQLiteDialect) DecimalValue(o DecimalOperand) string {
@@ -483,7 +483,7 @@ func (d SQLiteDialect) DecimalValue(o DecimalOperand) string {
 	panic(o.invalid())
 }
 
-// DecimalOrder reads the operand through parse_decimal_key (parsesqlite), a
+// DecimalOrder reads the operand through parse_decimal_key (parsesql), a
 // BLOB that orders bytewise as the decimal does. parse_decimal_key reads
 // what parse_decimal reads, so a column and a member are keyed from their
 // own text, one function call per row, not two.
@@ -574,7 +574,7 @@ func (d SQLiteDialect) numberKey(f *FieldSchema) string {
 // text: json_type selects the member's kind; json_extract reads it. A
 // decimal member is read as the JSON literal `->` returns, which keeps the
 // number as written where json_extract would round it to a double, through
-// parse_decimal (parsesqlite). An element path reads its json_each row: its
+// parse_decimal (parsesql). An element path reads its json_each row: its
 // type and value are json_type's and json_extract's of the element, and
 // its literal is the source document's (the hidden json column) at its
 // fullkey.

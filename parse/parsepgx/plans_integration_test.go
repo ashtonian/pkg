@@ -6,9 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/ashtonian/pkg/parse/parsepgx/internal/pgtest"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
@@ -17,7 +18,6 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/filter/filtertest"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
 // planDoc is a document store's row: a GIN-indexed jsonb document with
@@ -35,7 +35,7 @@ type planDoc struct {
 // join, and a large column set is served by the column's index.
 func TestSetPlans(t *testing.T) {
 	ctx := t.Context()
-	conn, err := pgx.ConnectConfig(ctx, dbtest.PostgresConfig(t))
+	conn, err := pgx.ConnectConfig(ctx, pgtest.PostgresConfig(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
 
@@ -131,7 +131,7 @@ func TestSetPlans(t *testing.T) {
 	})
 	t.Run("a large path set is a hash join in a generic plan", func(t *testing.T) {
 		_, generic := plans(t, `{"doc.k":{"$in":`+keys(100_000)+`}}`)
-		assert.Regexp(t, regexp.MustCompile(`Hash (Right )?(Semi )?Join`), generic)
+		assert.Regexp(t, `Hash (Right )?(Semi )?Join`, generic)
 		assert.NotContains(t, generic, "= ANY", "the set is not probed row by row")
 	})
 	t.Run("a large path set under or is a hashed subplan", func(t *testing.T) {
@@ -145,7 +145,7 @@ func TestSetPlans(t *testing.T) {
 		// InitPlan.
 		body := `{"$not":{"doc.tags":{"$contains":` + keys(100_000) + `}}}`
 		_, generic := plans(t, body)
-		assert.Regexp(t, regexp.MustCompile(`Hash (Semi )?Join`), generic)
+		assert.Regexp(t, `Hash (Semi )?Join`, generic)
 		assert.Contains(t, generic, "InitPlan")
 
 		ast, err := parser.Parse(body)
@@ -157,8 +157,8 @@ func TestSetPlans(t *testing.T) {
 		lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
 		require.NoError(t, err)
 		analyzed := strings.Join(lines, "\n")
-		assert.Regexp(t, regexp.MustCompile(`Seq Scan on `+table+` \(actual rows=50000(\.00)? loops=1\)`), analyzed, "every row qualifies")
-		assert.Regexp(t, regexp.MustCompile(`Hash \(actual rows=100000(\.00)? loops=1\)`), analyzed, "the list is hashed once")
+		assert.Regexp(t, `Seq Scan on `+table+` \(actual rows=50000(\.00)? loops=1\)`, analyzed, "every row qualifies")
+		assert.Regexp(t, `Hash \(actual rows=100000(\.00)? loops=1\)`, analyzed, "the list is hashed once")
 	})
 	t.Run("a large column set uses the column's index in a generic plan", func(t *testing.T) {
 		_, generic := plans(t, `{"id":{"$in":`+ids(100_000)+`}}`)

@@ -10,7 +10,8 @@ import { parseArgs } from 'node:util';
 import { GitHub, Manifest, VERSION } from 'release-please';
 import { fetchBranchHead, readHistory } from './first-parent.mjs';
 import { Output, outputPullRequests, outputReleases } from './outputs.mjs';
-import { FIRST_PARENT, FirstParentPlugin, registerFirstParent } from './plugin.mjs';
+import { LinkedVersions } from 'release-please/build/src/plugins/linked-versions.js';
+import { FIRST_PARENT, FirstParentLinkedVersions, FirstParentPlugin, registerFirstParent } from './plugin.mjs';
 import { installReleaseBody } from './release-body.mjs';
 
 function parseOptions() {
@@ -63,14 +64,16 @@ async function main() {
     const loaded = await Manifest.fromManifest(github, branch, args['config-file'], args['manifest-file']);
     // The config names the plugin so the stock action refuses it; a config
     // that does not still gets it. It runs first, before any plugin that
-    // rewrites the messages it matches headers by.
+    // rewrites the messages it matches headers by, and a linked-versions group
+    // takes its version from the commits it keeps.
     let plugin = loaded.plugins.find(p => p instanceof FirstParentPlugin);
     if (plugin === undefined) {
       if (!warned) console.warn(`${args['config-file']} on ${branch} names no ${FIRST_PARENT} plugin; adding it`);
       warned = true;
       plugin = new FirstParentPlugin(github, branch, loaded.repositoryConfig, history);
     }
-    loaded.plugins = [plugin, ...loaded.plugins.filter(p => p !== plugin)];
+    const linked = p => (p instanceof LinkedVersions ? new FirstParentLinkedVersions(p, plugin) : p);
+    loaded.plugins = [plugin, ...loaded.plugins.filter(p => p !== plugin).map(linked)];
     return loaded;
   };
 

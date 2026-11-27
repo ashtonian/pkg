@@ -16,8 +16,8 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/parsepgx"
+	"github.com/ashtonian/pkg/parse/parsepgx/internal/pgtest"
 )
 
 type JSONFields struct {
@@ -75,7 +75,7 @@ func jsonResource(p *parse.Provider, opts ...parse.ResourceOption) *parse.Resour
 }
 
 func TestJSONStorage_QueryAndUpdateEveryExecMode(t *testing.T) {
-	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
+	c := &catalog{config: pgtest.PostgresPoolConfig(t)}
 	ctx := testContext(t)
 	setup := c.open(t, ctx, pgx.QueryExecModeCacheStatement)
 	_, err := setup.Exec(ctx, `CREATE TABLE documents (
@@ -143,7 +143,7 @@ type jsonValueRow[T any] struct {
 }
 
 func TestJSONStorage_RejectsLossyRowsEveryExecMode(t *testing.T) {
-	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
+	c := &catalog{config: pgtest.PostgresPoolConfig(t)}
 	ctx := testContext(t)
 	setup := c.open(t, ctx, pgx.QueryExecModeCacheStatement)
 	_, err := setup.Exec(ctx, `CREATE TABLE stored_values (id text PRIMARY KEY, value json, name text);

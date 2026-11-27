@@ -3,11 +3,14 @@
 package parse_test
 
 import (
+	"cmp"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/doc"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -32,33 +35,48 @@ import (
 // exampleMarker precedes a fenced block that shows what an example prints:
 //
 //	<!-- output of Example_jsonDocuments -->
+//	<!-- output of parsesql.Example_quickStart -->
 //
-// The block is that example's Output under one elision rule: "…" stands for
-// any run of characters, line breaks included, and nothing else is elided.
-// The example's own Output comment is checked by go test, so a change to
-// what the compiler prints fails the example, then the guide.
-var exampleMarker = regexp.MustCompile(`^<!-- output of (Example\w*) -->$`)
+// An example of this package is named alone, and one of a provider module's
+// package by its directory first: an example that runs on a database is the
+// provider's. The block is that example's Output under one elision rule:
+// "…" stands for any run of characters, line breaks included, and nothing
+// else is elided. The example's own Output comment is checked by go test,
+// so a change to what the compiler prints fails the example, then the
+// guide.
+var exampleMarker = regexp.MustCompile(`^<!-- output of (?:(parsesql|parsepgx)\.)?(Example\w*) -->$`)
 
 // compilerOutput is a line only compiler output holds: SQL, bound
 // arguments' dialect labels, or a refused request's code.
 var compilerOutput = regexp.MustCompile(`\b(SELECT|INSERT INTO|UPDATE|DELETE FROM|WHERE|SET)\b|^(postgres|sqlite)\b|\[E\d{4}\]`)
 
 func TestGuideBlocksMatchTheirExamples(t *testing.T) {
-	outputs := exampleOutputs(t)
+	read := map[string]map[string]string{}
+	examples := func(pkg string) (map[string]string, bool) {
+		outputs, ok := read[pkg]
+		if !ok {
+			outputs = exampleOutputs(t, pkg)
+			read[pkg] = outputs
+		}
+		return outputs, outputs != nil
+	}
 	guides, err := filepath.Glob(filepath.Join("docs", "*.md"))
 	require.NoError(t, err)
 	for _, guide := range append([]string{"README.md"}, guides...) {
 		raw, err := os.ReadFile(guide)
 		require.NoError(t, err)
-		for _, problem := range guideProblems(string(raw), outputs) {
+		for _, problem := range guideProblems(string(raw), examples) {
 			t.Errorf("%s:%s", guide, problem)
 		}
 	}
 }
 
 // guideProblems are a guide's blocks that show compiler output without
-// naming an example, name an example outputs lacks, or are not its output.
-func guideProblems(doc string, outputs map[string]string) []string {
+// naming an example, name an example its package lacks, or are not its
+// output. examples returns the Output of a package's examples by name ("" is
+// this package), and false for a provider package whose module is not
+// beside this one, as in this module's archive: its blocks are not checked.
+func guideProblems(doc string, examples func(pkg string) (map[string]string, bool)) []string {
 	var problems []string
 	for _, b := range fencedBlocks(doc) {
 		if b.example == "" {
@@ -67,9 +85,13 @@ func guideProblems(doc string, outputs map[string]string) []string {
 			}
 			continue
 		}
+		outputs, beside := examples(b.pkg)
+		if !beside {
+			continue
+		}
 		output, ok := outputs[b.example]
 		if !ok {
-			problems = append(problems, fmt.Sprintf("%d: %s is no example of this package with an Output comment", b.line, b.example))
+			problems = append(problems, fmt.Sprintf("%d: %s is no example of %s with an Output comment", b.line, b.example, cmp.Or(b.pkg, "this package")))
 			continue
 		}
 		if !elided(b.body).MatchString(output) {
@@ -81,6 +103,16 @@ func guideProblems(doc string, outputs map[string]string) []string {
 
 func TestGuideProblems(t *testing.T) {
 	outputs := map[string]string{"Example_x": "{\"a\":1}\npostgres WHERE (a = $1) ORDER BY id [1]\nsqlite   WHERE (a = ?1) ORDER BY id [1]"}
+	examples := func(pkg string) (map[string]string, bool) {
+		switch pkg {
+		case "":
+			return outputs, true
+		case "parsesql":
+			provider := map[string]string{"Example_quickStart": "d1 switch"}
+			return provider, true
+		}
+		return nil, false
+	}
 	pinned := func(body string) string { return "Text.\n\n<!-- output of Example_x -->\n```text\n" + body + "\n```\n" }
 	tests := []struct {
 		name     string
@@ -96,6 +128,10 @@ func TestGuideProblems(t *testing.T) {
 		{"a changed character", pinned("{\"a\":1}\npostgres WHERE (a = $2) …"), 1},
 		{"metacharacters are literal", pinned("{.\"a\":1}\npostgres WHERE (a = $1) …"), 1},
 		{"an example the package lacks", "<!-- output of Example_y -->\n```text\nx\n```\n", 1},
+		{"a provider's example", "<!-- output of parsesql.Example_quickStart -->\n```text\nd1 switch\n```\n", 0},
+		{"a provider's example it lacks", "<!-- output of parsesql.Example_y -->\n```text\nd1 switch\n```\n", 1},
+		{"a provider module not beside this one", "<!-- output of parsepgx.Example_y -->\n```text\nx\n```\n", 0},
+		{"a package that is no provider's", "<!-- output of core.Example_x -->\n```text\nWHERE x\n```\n", 1},
 		{"compiler output with no marker", "```text\npostgres WHERE (a = $1)\n```\n", 1},
 		{"a marker a line away from its block", "<!-- output of Example_x -->\n\n```sql\nSELECT 1\n```\n", 1},
 		{"a refused request with no marker", "```text\n[E2071] field 'x' is not filterable\n```\n", 1},
@@ -104,7 +140,7 @@ func TestGuideProblems(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Len(t, guideProblems(tt.doc, outputs), tt.problems)
+			assert.Len(t, guideProblems(tt.doc, examples), tt.problems)
 		})
 	}
 }
@@ -112,6 +148,7 @@ func TestGuideProblems(t *testing.T) {
 type fencedBlock struct {
 	line    int // of the opening fence, 1-based
 	lang    string
+	pkg     string // the example's package: "" for this one
 	example string
 	body    string
 }
@@ -130,7 +167,7 @@ func fencedBlocks(doc string) []fencedBlock {
 		if i > 0 {
 			m := exampleMarker.FindStringSubmatch(lines[i-1])
 			if m != nil {
-				b.example = m[1]
+				b.pkg, b.example = m[1], m[2]
 			}
 		}
 		var body []string
@@ -162,11 +199,18 @@ func trimLines(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// exampleOutputs are this package's examples' Output comments, by function
-// name, as go test reads them.
-func exampleOutputs(t *testing.T) map[string]string {
+// exampleOutputs are the Output comments of the examples of pkg ("" for
+// this package), by function name, as go test reads them; nil when pkg's
+// directory is not beside this module.
+func exampleOutputs(t *testing.T, pkg string) map[string]string {
 	t.Helper()
-	names, err := filepath.Glob("*_test.go")
+	dir := cmp.Or(pkg, ".")
+	_, err := os.Stat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	require.NoError(t, err)
+	names, err := filepath.Glob(filepath.Join(dir, "*_test.go"))
 	require.NoError(t, err)
 	fset := token.NewFileSet()
 	var files []*ast.File

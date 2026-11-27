@@ -6,20 +6,21 @@ import (
 	"context"
 	"testing"
 
+	"github.com/ashtonian/pkg/parse/parsepgx/internal/pgtest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
 // Through a native pgx connection — the production driver — UUID
 // include keys come back in the canonical text items carry.
 func TestIncludeQuery_NativeUUIDKeysAreCanonicalText(t *testing.T) {
 	ctx := t.Context()
-	conn, err := pgx.ConnectConfig(ctx, dbtest.PostgresConfig(t))
+	conn, err := pgx.ConnectConfig(ctx, pgtest.PostgresConfig(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close(context.WithoutCancel(ctx)) })
 	_, err = conn.Exec(ctx, `CREATE TABLE widget_tags (widget_id UUID, tag_id UUID)`)

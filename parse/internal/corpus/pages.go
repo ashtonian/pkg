@@ -19,7 +19,8 @@ import (
 	"github.com/ashtonian/pkg/parse/internal/parsetest"
 )
 
-type widget struct {
+// pagedWidget is the row the list cases page, facet and include through.
+type pagedWidget struct {
 	ID        string     `json:"id"         db:"id"         parse:"filter,sort"`
 	TenantID  string     `json:"tenant_id"  db:"tenant_id"`
 	Name      string     `json:"name"       db:"name"       parse:"filter,sort,facet,search" facet:"terms:10"`
@@ -28,12 +29,12 @@ type widget struct {
 	Tags      []string   `json:"tags"       db:"-"          parse:"filter,include" relation:"widget_tags,widget_id,tag_id,id,tenant_id" indexed:"true"`
 }
 
-func widgetID(w widget) string { return w.ID }
+func widgetID(w pagedWidget) string { return w.ID }
 
 // widgetStore is the widget resource on a fresh database of b: tenant t1
 // holds w1–w5 (w4 deleted; w1–w3 share rank 1), t2 holds x1; tags are pairs
 // in each row's tenant. The resource's clock reads one instant.
-func widgetStore(t *testing.T, b sqlBackend) (*parse.Resource[widget], *sql.DB) {
+func widgetStore(t *testing.T, b sqlBackend) (*parse.Resource[pagedWidget], *sql.DB) {
 	t.Helper()
 	p, db := b.open(t)
 	deleted := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -46,14 +47,14 @@ func widgetStore(t *testing.T, b sqlBackend) (*parse.Resource[widget], *sql.DB) 
 	b.load(t, db, sqlTable{name: "widget_tags", columns: []sqlColumn{column[string]("widget_id"), column[string]("tag_id"), column[string]("tenant_id")}},
 		[][]any{{"w1", "red", "t1"}, {"w1", "blue", "t1"}, {"w2", "red", "t1"}, {"x1", "red", "t2"}, {"w1", "green", "t2"}})
 	clock := core.WithClock(func() time.Time { return deleted })
-	r, err := parse.NewResource[widget](p, "widgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"), parse.PageSize(2, 3), parse.ParserOptions(clock))
+	r, err := parse.NewResource[pagedWidget](p, "widgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"), parse.PageSize(2, 3), parse.ParserOptions(clock))
 	require.NoError(t, err)
 	return r, db
 }
 
 // widgetList builds query under s and reads the plan's page by hand on r's
 // database, for a case that reads the plan's other statements itself.
-func widgetList(t *testing.T, r *parse.Resource[widget], query string, s parse.Scope) (*filter.Page[widget], *parse.ListPlan) {
+func widgetList(t *testing.T, r *parse.Resource[pagedWidget], query string, s parse.Scope) (*filter.Page[pagedWidget], *parse.ListPlan) {
 	t.Helper()
 	q, err := url.ParseQuery(query)
 	require.NoError(t, err)
@@ -113,7 +114,7 @@ func runWidgetLists(t *testing.T, b sqlBackend) {
 		scope := parse.Scope{Tenant: "t1"}
 		var seen []string
 		query := "sort=rank&include_total=true"
-		var last *filter.Page[widget]
+		var last *filter.Page[pagedWidget]
 		for range 5 {
 			page, plan := widgetList(t, r, query, scope)
 			require.NotNil(t, plan.Count)
@@ -186,7 +187,7 @@ func runWidgetLists(t *testing.T, b sqlBackend) {
 		require.NoError(t, err)
 		plan, err := r.BuildList(req, parse.Scope{Tenant: "t1"})
 		require.NoError(t, err)
-		var ptrs []*widget
+		var ptrs []*pagedWidget
 		for _, w := range parsetest.ResourceRows(t, r, plan.Page) {
 			ptrs = append(ptrs, &w)
 		}
@@ -206,10 +207,10 @@ func runWidgetLists(t *testing.T, b sqlBackend) {
 		scanned := parsetest.ResourceRows(t, r, plan.Page)
 		require.Empty(t, scanned)
 
-		rows := func(items []widget) func() (any, error) {
+		rows := func(items []pagedWidget) func() (any, error) {
 			return func() (any, error) { return r.Page(items, plan) }
 		}
-		pointers := func(items []*widget) func() (any, error) {
+		pointers := func(items []*pagedWidget) func() (any, error) {
 			return func() (any, error) { return r.PagePointers(items, plan) }
 		}
 		for _, tt := range []struct {
@@ -218,9 +219,9 @@ func runWidgetLists(t *testing.T, b sqlBackend) {
 		}{
 			{"the scanned rows", rows(scanned)},
 			{"nil rows", rows(nil)},
-			{"no rows", rows([]widget{})},
+			{"no rows", rows([]pagedWidget{})},
 			{"nil pointers", pointers(nil)},
-			{"no pointers", pointers([]*widget{})},
+			{"no pointers", pointers([]*pagedWidget{})},
 		} {
 			t.Run(tt.name, func(t *testing.T) {
 				page, err := tt.page()

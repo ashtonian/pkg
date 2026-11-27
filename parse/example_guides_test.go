@@ -3,8 +3,6 @@
 package parse_test
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,8 +18,6 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/parsesql"
-	"github.com/ashtonian/pkg/parse/parsesqlite"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -191,71 +187,6 @@ type Tag struct {
 	TenantID  string     `json:"tenant_id"  db:"tenant_id"`
 	Label     string     `json:"label"      db:"label"      parse:"filter"`
 	DeletedAt *time.Time `json:"-"          db:"deleted_at"`
-}
-
-// A membership change pairs only owners and targets the request may relate:
-// its INSERT selects both rows, live and in the tenant, rather than binding
-// raw keys, so of red (live, in t1), blue (deleted) and green (in t2) the
-// update pairs d1 with red alone. It runs here on an in-memory SQLite
-// database.
-func ExampleResource_Update_membership() {
-	ctx := context.Background()
-	err := parsesqlite.Register()
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	db, err := sql.Open("sqlite", ":memory:?_txlock=immediate")
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	defer func() { _ = db.Close() }()
-	// Every connection to :memory: is a database of its own.
-	db.SetMaxOpenConns(1)
-	for _, stmt := range []string{
-		`CREATE TABLE devices (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL)`,
-		`CREATE TABLE tags (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, label TEXT NOT NULL, deleted_at TEXT)`,
-		`CREATE TABLE device_tags (device_id TEXT NOT NULL, tag_id TEXT NOT NULL, tenant_id TEXT NOT NULL, PRIMARY KEY (device_id, tag_id))`,
-		`INSERT INTO devices VALUES ('d1', 't1', 'sensor', 'active')`,
-		`INSERT INTO tags VALUES ('red', 't1', 'Red', NULL), ('blue', 't1', 'Blue', '2026-01-01T00:00:00.000000000Z'), ('green', 't2', 'Green', NULL)`,
-	} {
-		_, err := db.ExecContext(ctx, stmt)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-	}
-	provider, err := parsesql.New(ctx, db)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	devices := parse.MustResource[Device](provider, "devices", parse.TenantColumn("tenant_id"))
-	tags := parse.MustResource[Tag](provider, "tags", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
-	devices.MustRelate("tags", parse.ManyToMany(tags, parse.Junction{Table: "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"}, parse.Writable()))
-
-	parsed, err := devices.ParsePatch([]byte(`[{"op":"add","path":"/tags","value":["red","blue","green"]}]`))
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	res, err := devices.Update(ctx, parsed, parse.ByID("d1"), parse.Scope{Tenant: "t1"})
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	fmt.Println("pairs written:", res.RelationRows)
-	var device, tag, tenant string
-	err = db.QueryRowContext(ctx, `SELECT device_id, tag_id, tenant_id FROM device_tags`).Scan(&device, &tag, &tenant)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	fmt.Println(device, tag, tenant)
-	// Output:
-	// pairs written: 1
-	// d1 red t1
 }
 
 type Team struct {

@@ -49,9 +49,9 @@ const (
 	codeTimeout    = "E5004" // the request timeout expired
 )
 
-// database is what the server needs of the database it runs on
-// (parseprovider.Database): the provider its resources are built on, and a
-// ping for the readiness route.
+// database is what the server needs of the database it runs on, which
+// parseprovider.Database holds: the provider its resources are built on,
+// and a ping for the readiness route.
 type database interface {
 	Provider() *parse.Provider
 	Ping(ctx context.Context) error

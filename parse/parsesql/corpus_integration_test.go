@@ -6,16 +6,25 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"flag"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/internal/corpus"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
-	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/parsesql"
 )
+
+// TestMain registers -update, with which the corpus's fixture cases
+// (SDKWire) rewrite parse's testdata from what this provider serves instead
+// of comparing it.
+func TestMain(m *testing.M) {
+	flag.Bool("update", false, "rewrite parse's testdata/sdk_wire.json from the exchanges this provider serves")
+	flag.Parse()
+	os.Exit(m.Run())
+}
 
 func TestCorpus(t *testing.T) {
 	corpus.RunSQL(t, corpus.Engine{Kind: corpus.SQLite, Open: openCorpusDB, CallerTx: callerTx})
@@ -28,11 +37,13 @@ func openCorpusDB(t *testing.T, v corpus.Variant) (*parse.Provider, *sql.DB) {
 	require.False(t, v.PostGIS || len(v.SessionParams) > 0, "SQLite has no PostGIS server or session parameters")
 	var db *sql.DB
 	if v.Hooked {
-		db = dbtest.SQLiteHooked(t)
+		db = parsesql.HookedMemoryDB(t)
 	} else {
-		db = dbtest.SQLite(t)
+		db = parsesql.MemoryDB(t)
 	}
-	return providertest.SQLiteOn(t, db, parsesql.SettleTimeout(v.Settle)), db
+	p, err := parsesql.New(t.Context(), db, parsesql.SettleTimeout(v.Settle))
+	require.NoError(t, err)
+	return p, db
 }
 
 // callerTx runs fn in a *sql.Tx begun on conn, through parsesql.Tx, and

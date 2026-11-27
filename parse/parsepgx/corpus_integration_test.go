@@ -6,8 +6,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"flag"
 	"fmt"
 	"maps"
+	"os"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -19,9 +21,18 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/internal/corpus"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
-	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/parsepgx"
+	"github.com/ashtonian/pkg/parse/parsepgx/internal/pgtest"
 )
+
+// TestMain registers -update, with which the corpus's fixture cases
+// (SDKWire) rewrite parse's testdata from what this provider serves instead
+// of comparing it.
+func TestMain(m *testing.M) {
+	flag.Bool("update", false, "rewrite parse's testdata/sdk_wire.json from the exchanges this provider serves")
+	flag.Parse()
+	os.Exit(m.Run())
+}
 
 func TestCorpus(t *testing.T) {
 	corpus.RunSQL(t, corpus.Engine{Kind: corpus.Postgres, Open: openCorpusDB, CallerTx: callerTx})
@@ -34,15 +45,15 @@ func openCorpusDB(t *testing.T, v corpus.Variant) (*parse.Provider, *sql.DB) {
 	t.Helper()
 	var config *pgxpool.Config
 	if v.PostGIS {
-		config = dbtest.PostGISPoolConfig(t)
+		config = pgtest.PostGISPoolConfig(t)
 	} else {
-		config = dbtest.PostgresPoolConfig(t)
+		config = pgtest.PostgresPoolConfig(t)
 	}
 	maps.Copy(config.ConnConfig.RuntimeParams, v.SessionParams)
-	pool, err := pgxpool.NewWithConfig(dbtest.Context(t), config)
+	pool, err := pgxpool.NewWithConfig(pgtest.Context(t), config)
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
-	return providertest.PostgresOn(t, pool,
+	return pgtest.ProviderOn(t, pool,
 		parsepgx.Collation(v.Collation), parsepgx.ContainmentMaxValues(v.ContainmentMaxValues), parsepgx.SettleTimeout(v.Settle))
 }
 
@@ -73,7 +84,7 @@ func callerTx(ctx context.Context, conn *sql.Conn, fn func(tx *parse.Tx, query f
 
 // announced is a caller's pgx.Tx that reports each statement it sends to
 // the hook dbtest.OnStatement put in the statement's context, as the
-// database dbtest.SQLiteHooked opens does on SQLite.
+// database parsesql.HookedMemoryDB opens does on SQLite (dbtest.Hooked).
 type announced struct {
 	pgx.Tx
 }

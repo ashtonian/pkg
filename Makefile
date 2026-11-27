@@ -3,7 +3,8 @@ CORE_MODULES := gowalker jsonvalue gitx
 CONFIG_MODULES := config config/kongprovider
 HTTPX_MODULES := httpx httpx/oauth2 httpx/codec/msgpack httpx/codec/proto httpx/compress/brotli
 NATIVE_MODULES := process state onepassword
-PARSE_MODULES := parse
+# parse and its provider modules, which release together at one version.
+PARSE_MODULES := parse parse/parsepgx parse/parsesql
 # The Go request builder and wire types: standard library only, no SQL suites.
 PARSE_CLIENT_MODULES := parse/client
 TAGGED_MODULES := $(HTTPX_MODULES) $(PARSE_MODULES) $(PARSE_CLIENT_MODULES) $(NATIVE_MODULES)

@@ -1,8 +1,9 @@
 //go:build unit || integration || concurrency
 
-// Package providertest opens parse providers for parse's tests: one that
-// compiles statements for a dialect without a database, which every test
-// lane builds, and providers on the fresh databases dbtest opens.
+// Package providertest is what every provider's tests share without a
+// database: a provider that compiles statements for a dialect and runs none
+// (Compile), which every test lane builds, and a provider Config as its
+// default tags describe it (Defaults).
 package providertest
 
 import (

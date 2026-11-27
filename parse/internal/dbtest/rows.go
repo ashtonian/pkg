@@ -1,5 +1,11 @@
 //go:build unit || integration
 
+// Package dbtest reads rows back from the databases parse's result-based
+// tests run on (QueryRows, Exec), so the SQL the builders emit is executed
+// and the rows returned and stored are asserted, never the SQL text alone,
+// and reports each statement a hooked connection runs (Hooked,
+// OnStatement). It imports no driver: each provider's tests open their own
+// databases.
 package dbtest
 
 import (

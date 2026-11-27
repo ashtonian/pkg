@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/ashtonian/pkg/parse/parsepgx/internal/pgtest"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
@@ -14,7 +16,6 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
 type endpoint struct {
@@ -40,7 +41,7 @@ var endpointTypes = []parse.ResourceOption{
 // binary encoding of them pgx scans into no string: lists and updates read
 // them as text, an address in its display form and an interval as ISO 8601.
 func TestColumnType_ReadsNetworkAndIntervalColumns(t *testing.T) {
-	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
+	c := &catalog{config: pgtest.PostgresPoolConfig(t)}
 	ctx := testContext(t)
 	setup := c.open(t, ctx, pgx.QueryExecModeCacheStatement)
 	full, empty := uuid.Must(uuid.NewV7()), uuid.Must(uuid.NewV7())

@@ -26,7 +26,7 @@ import (
 )
 
 // Exact decimals on each backend: SQLite holds amounts as decimal text and
-// prices in JSON text, compared through parsesqlite's functions;
+// prices in JSON text, compared through parsesql's functions;
 // PostgreSQL numeric amounts and jsonb prices.
 func decimalMatrix(t *testing.T, engine Engine) {
 	runOn(t, engine, runDecimalMatrix)
@@ -377,7 +377,7 @@ func runFoldMatrix(t *testing.T, b sqlBackend, unicode bool) {
 	filtertest.RunFold(t, unicode, b.filterIDs(db, schema))
 }
 
-// Stored points on each backend: JSON text read through parsesqlite's
+// Stored points on each backend: JSON text read through parsesql's
 // functions on SQLite, jsonb read as PostgreSQL casts its members on
 // PostGIS.
 func geoMatrix(t *testing.T, engine Engine) {
