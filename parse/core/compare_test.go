@@ -135,7 +135,7 @@ func TestCompareCanonical_NonFiniteDecimals(t *testing.T) {
 		require.Error(t, err, "%s has no canonical text", text)
 	}
 	_, err := core.CompareCanonical(decimal, "NaN", "abc")
-	require.ErrorContains(t, err, "cannot compare decimal values string and string")
+	require.ErrorContains(t, err, "decimal values string and string are incomparable")
 }
 
 // A value its type cannot hold, NaN outside a float column, a type with
@@ -147,15 +147,15 @@ func TestCompareCanonical_Refuses(t *testing.T) {
 		a, b    any
 		wantErr string
 	}{
-		"text as an integer":       {core.TypeInfo{Type: core.FieldTypeInt}, "7", int64(7), "cannot compare int values string and int64"},
-		"NaN as an integer":        {core.TypeInfo{Type: core.FieldTypeInt}, math.NaN(), int64(1), "cannot compare int values float64 and int64"},
-		"NaN as a decimal":         {core.TypeInfo{Type: core.FieldTypeDecimal}, math.NaN(), "1", "cannot compare decimal values float64 and string"},
+		"text as an integer":       {core.TypeInfo{Type: core.FieldTypeInt}, "7", int64(7), "int values string and int64 are incomparable"},
+		"NaN as an integer":        {core.TypeInfo{Type: core.FieldTypeInt}, math.NaN(), int64(1), "int values float64 and int64 are incomparable"},
+		"NaN as a decimal":         {core.TypeInfo{Type: core.FieldTypeDecimal}, math.NaN(), "1", "decimal values float64 and string are incomparable"},
 		"a float no float32 holds": {core.TypeInfo{Type: core.FieldTypeFloat, NumberKind: reflect.Float32}, math.MaxFloat64, 0.0, "overflows float32"},
-		"an untyped NaN":           {core.TypeInfo{}, math.NaN(), 1.0, "cannot compare float64 with float64"},
+		"an untyped NaN":           {core.TypeInfo{}, math.NaN(), 1.0, "float64 and float64 are incomparable"},
 		"not a UUID":               {core.TypeInfo{Type: core.FieldTypeUUID}, "nope", "00000000-0000-0000-0000-000000000001", `invalid UUID "nope"`},
 		"a document":               {core.TypeInfo{Type: core.FieldTypeJSON}, "a", "b", "a json value has no order"},
-		"a number and text object": {core.TypeInfo{Type: core.FieldTypeObject}, int64(1), "1", "cannot compare object values int64 and string"},
-		"untyped mixed kinds":      {core.TypeInfo{}, true, "true", "cannot compare bool with string"},
+		"a number and text object": {core.TypeInfo{Type: core.FieldTypeObject}, int64(1), "1", "object values int64 and string are incomparable"},
+		"untyped mixed kinds":      {core.TypeInfo{}, true, "true", "bool and string are incomparable"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := core.CompareCanonical(tc.t, tc.a, tc.b)

@@ -3,6 +3,7 @@ package parsesqlite
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -94,9 +95,8 @@ func libraryVersion(conn sqlite.ExecQuerierContext) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parsesqlite: reading sqlite_version(): %w", err)
 	}
-	defer rows.Close()
 	row := make([]driver.Value, 1)
-	err = rows.Next(row)
+	err = errors.Join(rows.Next(row), rows.Close())
 	if err != nil {
 		return "", fmt.Errorf("parsesqlite: reading sqlite_version(): %w", err)
 	}

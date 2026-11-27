@@ -8,8 +8,6 @@ import (
 	"github.com/ashtonian/pkg/gowalker"
 )
 
-var valuerType = reflect.TypeFor[driver.Valuer]()
-
 // maxValuerDepth bounds how many Valuers StoredValue reads in a chain, each
 // returning the next, so a Valuer that returns itself cannot loop.
 const maxValuerDepth = 8
@@ -84,7 +82,8 @@ func StoredValue(v any) (value any, null bool, err error) {
 // typedScalar reports a type TypeOf classifies by the type itself rather
 // than by its kind: one whose canonical form parse defines.
 func typedScalar(t reflect.Type) bool {
-	if _, ok := valueTypes[t]; ok {
+	_, ok := valueTypes[t]
+	if ok {
 		return true
 	}
 	return t == timeType || IsUUIDType(t) || IsDecimalType(t)
@@ -94,13 +93,14 @@ func typedScalar(t reflect.Type) bool {
 // method: a value read from a row need not be addressable, so it is given
 // a copy rather than losing its pointer methods.
 func valuerOf(v any) (driver.Valuer, bool) {
-	if valuer, ok := v.(driver.Valuer); ok {
+	valuer, ok := v.(driver.Valuer)
+	if ok {
 		return valuer, true
 	}
 	rv := reflect.ValueOf(v)
-	if !reflect.PointerTo(rv.Type()).Implements(valuerType) {
+	if !reflect.PointerTo(rv.Type()).Implements(reflect.TypeFor[driver.Valuer]()) {
 		return nil, false
 	}
-	valuer, ok := addressable(rv).Interface().(driver.Valuer)
+	valuer, ok = addressable(rv).Interface().(driver.Valuer)
 	return valuer, ok
 }

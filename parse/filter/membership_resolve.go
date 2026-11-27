@@ -487,7 +487,8 @@ func lookupEqual(stored, want any) bool {
 // type (core.TypeOf), or no type when it names no scalar.
 func lookupType(stored, want any) core.TypeInfo {
 	if isLookupDecimal(stored) || isLookupDecimal(want) {
-		return core.TypeInfo{Type: core.FieldTypeDecimal}
+		decimal := core.TypeInfo{Type: core.FieldTypeDecimal}
+		return decimal
 	}
 	if core.IsNumber(stored) && core.IsNumber(want) {
 		return core.TypeInfo{}
@@ -556,7 +557,8 @@ func lookupStored(column string, v any) (any, error) {
 // it: a UUID column scans to a UUID type (core.IsUUIDType), and
 // normalization reads UUIDs as text.
 func projectedValue(stored any) any {
-	if u, ok := core.UUIDText(stored); ok {
+	u, ok := core.UUIDText(stored)
+	if ok {
 		return u
 	}
 	return stored

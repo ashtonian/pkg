@@ -24,8 +24,8 @@ func TestGenerateSortSchema_StructKeyDeclaresItsScalar(t *testing.T) {
 	}
 	_, err := filter.GenerateSortSchema[untagged](core.NewSchemaGenerator())
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "field Code")
-	assert.ErrorContains(t, err, `storage:"scalar:<type>"`)
+	require.ErrorContains(t, err, "field Code")
+	require.ErrorContains(t, err, `storage:"scalar:<type>"`)
 
 	sorts, err := filter.GenerateSortSchema[codedItem](core.NewSchemaGenerator())
 	require.NoError(t, err)

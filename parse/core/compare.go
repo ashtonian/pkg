@@ -232,9 +232,9 @@ func compareBools(a, b bool) int {
 
 func incomparable(t FieldType, x, y any) error {
 	if t == "" {
-		return fmt.Errorf("cannot compare %s with %s", gowalker.TypeText(reflect.TypeOf(x)), gowalker.TypeText(reflect.TypeOf(y)))
+		return fmt.Errorf("%s and %s are incomparable", gowalker.TypeText(reflect.TypeOf(x)), gowalker.TypeText(reflect.TypeOf(y)))
 	}
-	return fmt.Errorf("cannot compare %s values %s and %s", t, gowalker.TypeText(reflect.TypeOf(x)), gowalker.TypeText(reflect.TypeOf(y)))
+	return fmt.Errorf("%s values %s and %s are incomparable", t, gowalker.TypeText(reflect.TypeOf(x)), gowalker.TypeText(reflect.TypeOf(y)))
 }
 
 // CanonicalText is the canonical text of v, a value of a column of type t,

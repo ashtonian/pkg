@@ -74,9 +74,10 @@ func runCanonicalOrderSQL(t *testing.T, db *sql.DB, d filter.Dialect, cases []or
 				require.NoError(t, err)
 				rows, err := db.QueryContext(ctx, q.SQL, q.Args...)
 				require.NoError(t, err)
+				defer func() { require.NoError(t, rows.Close()) }()
 				results, err := filter.ScanFacetUnion(rows)
-				require.NoError(t, rows.Close())
 				require.NoError(t, err)
+				require.NoError(t, rows.Err())
 				require.Len(t, results, 1)
 
 				counts := map[string]int64{}

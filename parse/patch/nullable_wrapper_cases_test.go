@@ -31,7 +31,8 @@ type wrapperDB struct {
 	stamp         func(sql.NullTime) any
 }
 
-var rankedSeen = time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+// rankedSeen is the seen_at a stored rankedVisit holds.
+func rankedSeen() time.Time { return time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC) }
 
 // runNullableWrapperPatches holds a wrapper column's patch to one result in
 // the database and in Go: a replace stores the value, Valid, and a remove
@@ -46,7 +47,7 @@ func runNullableWrapperPatches(t *testing.T, wdb wrapperDB) {
 	require.NoError(t, err)
 	applier, err := patch.NewApplier[rankedVisit](gen, nil)
 	require.NoError(t, err)
-	seeded := rankedVisit{ID: 1, Score: sql.NullInt64{Int64: 3, Valid: true}, SeenAt: sql.NullTime{Time: rankedSeen, Valid: true}}
+	seeded := rankedVisit{ID: 1, Score: sql.NullInt64{Int64: 3, Valid: true}, SeenAt: sql.NullTime{Time: rankedSeen(), Valid: true}}
 
 	for _, tt := range []struct {
 		name  string

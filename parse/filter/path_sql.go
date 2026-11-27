@@ -36,13 +36,6 @@ const (
 	uuidRegex      = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
 )
 
-// maxDecimalMember is decimals.MaxMemberLength as SQL text, and
-// maxNumberDigits core.MaxDecimalDigits.
-var (
-	maxDecimalMember = strconv.Itoa(decimals.MaxMemberLength)
-	maxNumberDigits  = strconv.Itoa(core.MaxDecimalDigits)
-)
-
 // pgMember is the jsonb member of doc at segs, read one object member at a
 // time with ->, and pgMemberText its text, the last member read with ->>.
 // Both operators take a text key, which reads an object's member and is
@@ -102,7 +95,7 @@ func pgTypedMember(t core.FieldType, kind, text string) string {
 	case core.FieldTypeInt, core.FieldTypeFloat:
 		return "(CASE WHEN " + pgNumberMember(kind, text) + " THEN " + text + "::numeric END)"
 	case core.FieldTypeDecimal:
-		return "(CASE WHEN " + pgNumberMember(kind, text) + " THEN " + text + "::numeric WHEN " + kind + " = 'string' AND length" + text + " <= " + maxDecimalMember +
+		return "(CASE WHEN " + pgNumberMember(kind, text) + " THEN " + text + "::numeric WHEN " + kind + " = 'string' AND length" + text + " <= " + strconv.Itoa(decimals.MaxMemberLength) +
 			" AND " + text + " ~ '" + decimals.PlainRegex + "' THEN " + text + "::numeric END)"
 	case core.FieldTypeBool:
 		return "(CASE WHEN " + kind + " = 'boolean' THEN " + text + "::boolean END)"
@@ -121,7 +114,7 @@ func pgTypedMember(t core.FieldType, kind, text string) string {
 // its fraction's trailing zeros are dropped.
 func pgNumberMember(kind, text string) string {
 	digits := "length(split_part(ltrim(" + text + ", '-'), '.', 1)) + length(rtrim(split_part(" + text + ", '.', 2), '0'))"
-	return "(" + kind + " = 'number' AND " + digits + " <= " + maxNumberDigits + ")"
+	return "(" + kind + " = 'number' AND " + digits + " <= " + strconv.Itoa(core.MaxDecimalDigits) + ")"
 }
 
 // sqliteNumber holds for a JSON number of kind; for a document member
@@ -136,7 +129,7 @@ func sqliteNumber(kind, literal string, member bool) string {
 		return number
 	}
 	literal = "(" + literal + ")"
-	return "(" + number + " AND ((length(" + literal + ") <= " + maxNumberDigits + " AND " + literal + " NOT GLOB '*[eE]*') OR " +
+	return "(" + number + " AND ((length(" + literal + ") <= " + strconv.Itoa(core.MaxDecimalDigits) + " AND " + literal + " NOT GLOB '*[eE]*') OR " +
 		decimals.SQLiteValueFunc + "(" + literal + ") IS NOT NULL))"
 }
 

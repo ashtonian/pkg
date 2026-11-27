@@ -292,9 +292,10 @@ func pathMember(v any, t core.FieldType) (any, bool, error) {
 // as PostgreSQL compares it (::numeric); any other in t.
 func memberType(t core.FieldType) core.TypeInfo {
 	if t == core.FieldTypeInt || t == core.FieldTypeFloat {
-		return core.TypeInfo{Type: core.FieldTypeDecimal}
+		t = core.FieldTypeDecimal
 	}
-	return core.TypeInfo{Type: t}
+	info := core.TypeInfo{Type: t}
+	return info
 }
 
 // canonicalTimestamp pads a UTC RFC 3339 member's fraction to nine digits —

@@ -27,16 +27,15 @@ type codedItem struct {
 	Code sortCode `json:"code" db:"code" parse:"sort" storage:"scalar:string"`
 }
 
-// codedSeeds are codes whose code-point order (A B a b z é) is not a
-// collation's (a A b B é z).
-var codedSeeds = []string{"B", "a", "A", "b", "é", "z"}
-
 // runCodedWalks stores codedSeeds in a text column of the database's
 // default collation and walks the list by the declared codec, forwards and
 // backwards at every page size, holding each walk to the order the cursor
 // comparator gives the codes (filter.CompareKeyValues): code points, not
 // the collation the column's own ORDER BY follows.
 func runCodedWalks(t *testing.T, db *sql.DB, d filter.Dialect) {
+	// Codes whose code-point order (A B a b z é) is not a collation's
+	// (a A b B é z).
+	codedSeeds := []string{"B", "a", "A", "b", "é", "z"}
 	sorts, err := filter.GenerateSortSchema[codedItem](core.NewSchemaGenerator())
 	require.NoError(t, err)
 	code := sorts.Fields["code"]
@@ -77,7 +76,8 @@ func runCodedWalks(t *testing.T, db *sql.DB, d filter.Dialect) {
 	slices.Reverse(descending)
 	w.check(t, "-code", descending)
 
-	if _, ok := d.(filter.PostgresDialect); ok {
+	_, ok := d.(filter.PostgresDialect)
+	if ok {
 		collated := orderedIDs(t, db, "SELECT id FROM "+table+" ORDER BY code, id")
 		assert.NotEqual(t, toInts(want), collated, "the column's own collation orders the codes otherwise")
 	}

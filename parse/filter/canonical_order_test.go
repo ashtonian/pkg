@@ -61,7 +61,8 @@ func TestCanonicalOrder_SQLiteTimeColumns(t *testing.T) {
 	declared := map[string]string{"date": "DATE", "timestamp": "TIMESTAMP"}
 	var cases []ordertest.Case
 	for _, c := range ordertest.Cases() {
-		if _, ok := declared[c.Name]; ok {
+		_, ok := declared[c.Name]
+		if ok {
 			cases = append(cases, c)
 		}
 	}

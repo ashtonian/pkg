@@ -16,7 +16,7 @@ import (
 // float64 apart order apart: the walk resumes at each boundary without
 // repeating or skipping a row.
 func TestPathNumberWalk_Postgres(t *testing.T) {
-	runPathNumberWalks(t, postgresMeasures(t), postgresMeasureOrder)
+	runPathNumberWalks(t, postgresMeasures(t), postgresMeasureOrder())
 }
 
 // A token an earlier release minted carries the member as a float64, which
@@ -31,7 +31,7 @@ func TestPathNumberWalk_PostgresResumesAFloat64TokenFromItsRoundedValue(t *testi
 		{Name: "id", Value: int64(2), Direction: filter.SortAsc},
 	}})
 	require.NoError(t, err)
-	res, err := lq.Build(filter.ListSort("n"), filter.ListLimit(len(measureSeeds)), filter.ListCursor(cursor))
+	res, err := lq.Build(filter.ListSort("n"), filter.ListLimit(len(measureSeeds())), filter.ListCursor(cursor))
 	require.NoError(t, err)
 	var ids []int64
 	for _, r := range queryMeasures(t, m.db, res) {
@@ -56,5 +56,6 @@ func TestPathNumberFacets_Postgres(t *testing.T) {
 }
 
 func postgresMeasures(t *testing.T) measureDB {
-	return measureDB{db: dbtest.Postgres(t), dialect: filter.PostgresDialect{}, docType: "JSONB", storage: filter.StorageJSONB}
+	measures := measureDB{db: dbtest.Postgres(t), dialect: filter.PostgresDialect{}, docType: "JSONB", storage: filter.StorageJSONB}
+	return measures
 }

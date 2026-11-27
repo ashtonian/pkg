@@ -71,8 +71,8 @@ func TestGeneratePatchSchema_RemoveNeedsATypeThatHoldsNull(t *testing.T) {
 	}
 	_, err := patch.GeneratePatchSchema[unclearable](core.NewSchemaGenerator())
 	require.ErrorIs(t, err, patch.ErrRemoveNeedsNull)
-	assert.ErrorContains(t, err, "field Name: patch operation remove requires a type that holds null")
-	assert.ErrorContains(t, err, "got string")
+	require.ErrorContains(t, err, "field Name: patch operation remove requires a type that holds null")
+	require.ErrorContains(t, err, "got string")
 }
 
 func TestPatch_AnSQLNullColumnClearsToNull(t *testing.T) {
@@ -124,7 +124,7 @@ func TestPatch_ATestReadsAWrapperColumnsValue(t *testing.T) {
 	require.NoError(t, err)
 	applier, err := patch.NewApplier[rankedVisit](gen, nil)
 	require.NoError(t, err)
-	seen := rankedVisit{ID: 1, Score: sql.NullInt64{Int64: 3, Valid: true}, SeenAt: sql.NullTime{Time: rankedSeen, Valid: true}}
+	seen := rankedVisit{ID: 1, Score: sql.NullInt64{Int64: 3, Valid: true}, SeenAt: sql.NullTime{Time: rankedSeen(), Valid: true}}
 	unseen := rankedVisit{ID: 1, Score: sql.NullInt64{Int64: 3, Valid: true}}
 	rescored := sql.NullInt64{Int64: 8, Valid: true}
 	for _, tt := range []struct {

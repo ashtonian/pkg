@@ -130,8 +130,10 @@ func sameValue(got, want any) bool {
 	if got == nil || want == nil {
 		return got == nil && want == nil
 	}
-	if n, ok := want.(json.Number); ok {
-		if g, isFloat := got.(float64); isFloat {
+	n, ok := want.(json.Number)
+	if ok {
+		g, isFloat := got.(float64)
+		if isFloat {
 			wf, _ := strconv.ParseFloat(string(n), 64) // ±Inf beyond float64's range, as SQLite reads it
 			return g == wf
 		}

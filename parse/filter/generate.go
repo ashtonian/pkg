@@ -193,10 +193,12 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			fs.GeoConfig = geoConfig
 		}
 
-		if err := applyStorage(g, fs, field); err != nil {
+		err = applyStorage(g, fs, field)
+		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
-		if err := CheckOperators(fs); err != nil {
+		err = CheckOperators(fs)
+		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 		// After storage, which can make a document field a scalar.
