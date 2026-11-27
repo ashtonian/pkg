@@ -52,6 +52,7 @@ func sqlCases() []sqlCase {
 		{name: "CompositeKeyUpdates", run: compositeKeyUpdates},
 		{name: "KeyTypes", run: keyTypes},
 		{name: "UUIDKeyRanges", run: uuidKeyRangesCase},
+		{name: "ValuerKeys", run: valuerKeys},
 
 		{name: "KeysetWalk", run: keysetWalk},
 		{name: "KeysetWalk_LinguisticCollationWalksByCodePoint", only: Postgres, run: keysetWalkLinguisticCollationWalksByCodePoint},
@@ -62,12 +63,17 @@ func sqlCases() []sqlCase {
 		{name: "GovernedMixedTypes", run: governedMixedTypes},
 		{name: "ListBodyTransport", run: listBodyTransport},
 
+		{name: "RequestViewPaths", run: requestViewPaths},
+		{name: "WidgetLists", run: widgetLists},
+
 		{name: "SetPlans_SQLiteDecimalKeyIndex", only: SQLite, run: setPlansSQLiteDecimalKeyIndex},
 
 		{name: "PolicyServerFields", run: policyServerFields},
 		{name: "RawPolicy", run: rawPolicy},
 
 		{name: "ReadExpr", run: readExpr},
+		{name: "ReadExpr_RelationIncludesCompileTheTargetsPolicy", run: readExprRelationIncludesCompileTheTargetsPolicy},
+		{name: "ReadExpr_UpdateRereadsAfterRelationChanges", run: readExprUpdateRereadsAfterRelationChanges},
 
 		{name: "CompositeKeyRelations", run: compositeKeyRelations},
 		{name: "DeclaredRelations", run: declaredRelations},
@@ -78,8 +84,16 @@ func sqlCases() []sqlCase {
 		{name: "DeclaredRelations_Writes", run: declaredRelationsWrites},
 		{name: "RelationAlgebra", run: relationAlgebra},
 
+		{name: "List_NamesAScanFailureOnce", run: listNamesAScanFailureOnce},
+		{name: "RowScanner_EmbeddedStructs", run: rowScannerEmbeddedStructs},
+		{name: "RowScanner_RefusesWhatTheRowCannotHold", run: rowScannerRefusesWhatTheRowCannotHold},
+		{name: "RowScanner_Storage", run: rowScannerStorage},
+
 		{name: "IntegerTenantKeys", run: integerTenantKeys},
+		{name: "IntegerTenantKeys_PairsHoldTheBoundKey", run: integerTenantKeysPairsHoldTheBoundKey},
 		{name: "TenantKeyGraph", run: tenantKeyGraph},
+
+		{name: "In_TransactionsOfItsProvider", run: inTransactionsOfItsProvider},
 
 		{name: "BuildUpdate_AnEmptyPatchIsAScopedRead", run: buildUpdateAnEmptyPatchIsAScopedRead},
 		{name: "BuildUpdate_ChangesOnlyTheScopedTargetRows", run: buildUpdateChangesOnlyTheScopedTargetRows},
@@ -91,19 +105,28 @@ func sqlCases() []sqlCase {
 		{name: "MergePatch_MapKeys", run: mergePatchMapKeys},
 		{name: "PathPatches", run: pathPatches},
 		{name: "SkipUnchanged_Relations", run: skipUnchangedRelations},
+		{name: "SkipUnchanged_RowKeys", run: skipUnchangedRowKeys},
 		{name: "SkipUnchanged_WritesOnlyRowsThePatchChanges", run: skipUnchangedWritesOnlyRowsThePatchChanges},
 		{name: "TypedMergePatchPreservesSiblings", run: typedMergePatchPreservesSiblings},
 		{name: "UpdateBatchDatabase", run: updateBatchDatabase},
+		{name: "UpdateBatch_CanonicalKeys", run: updateBatchCanonicalKeys},
+		{name: "UpdateBatch_MissingTargetNamesItsResourceOnce", run: updateBatchMissingTargetNamesItsResourceOnce},
+		{name: "UpdateClock_MembershipAtThePlansInstant", run: updateClockMembershipAtThePlansInstant},
 		{name: "Update_Members", run: updateMembers},
 
 		{name: "CivilDateSQL", run: civilDateSQL},
 		{name: "DecimalSQL", run: decimalSQL},
 		{name: "DecimalSQL_PostgresIsExact", only: Postgres, run: decimalSQLPostgresIsExact},
+		{name: "ExactIntegers", run: exactIntegers},
 		{name: "Float32FilterAndPatchSQLiteParity", only: SQLite, run: float32FilterAndPatchSQLiteParity},
 		{name: "RowContract", run: rowContract},
 		{name: "SQLTextValuesSQL", run: sqlTextValuesSQL},
 		{name: "Timestamps", run: timestamps},
 		{name: "TypedDocumentSQLiteParity", only: SQLite, run: typedDocumentSQLiteParity},
+
+		{name: "FacetExternalName", run: facetExternalName},
+		{name: "QuotedRelationKeys", run: quotedRelationKeys},
+		{name: "SDKWire", run: sdkWireFixture},
 	}
 	return cases
 }
