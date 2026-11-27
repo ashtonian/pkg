@@ -318,10 +318,7 @@ func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQuer
 // has-many, the target for a many-to-many. Policy values bind through s.
 func relatedScope(field *FieldSchema, dialect Dialect, scope relationScope, related relatedPolicies, s *buildState, bindTenant func(any) string, join, target string) (string, error) {
 	rel := field.Relation
-	exprs, err := targetExprs(field, dialect)
-	if err != nil {
-		return "", err
-	}
+	exprs := targetExprs(field)
 	var b strings.Builder
 	clause, err := scope.clause(dialect, rel.JoinTable, rel.TenantColumn, join, joinTenantType(field), bindTenant)
 	if err != nil {
@@ -348,15 +345,13 @@ func relatedScope(field *FieldSchema, dialect Dialect, scope relationScope, rela
 	return b.String(), nil
 }
 
-// targetExprs are a declared relation's target's computed columns resolved
-// for dialect: a statement that reads the target compiles its schema, and a
-// dialect one of its expressions refuses fails it.
-func targetExprs(field *FieldSchema, dialect Dialect) (columnExprs, error) {
+// targetExprs are a declared relation's target's computed columns: a
+// statement that reads the target compiles its schema.
+func targetExprs(field *FieldSchema) columnExprs {
 	if field.Related == nil {
-		return nil, nil
+		return nil
 	}
-	exprs, err := field.Related.ComputedSQL(dialect)
-	return exprs, err
+	return field.Related.ComputedSQL()
 }
 
 // targetScope is a many-to-many target's tenant and live-row predicate on
@@ -396,7 +391,7 @@ func policyScope(field *FieldSchema, exprs columnExprs, dialect Dialect, scope r
 	pb := &SQLBuilder{schema: &ResourceSchema{Name: alias}, dialect: dialect, scope: scope, related: related, depth: 1, visible: append(others, alias), exprs: exprs}
 	cond, err := pb.buildNode(s, root)
 	if err != nil {
-		return "", computedCause(err)
+		return "", err
 	}
 	return " AND " + cond, nil
 }
@@ -413,10 +408,7 @@ func VisibleRelated(field *FieldSchema, dialect Dialect, alias string, scope Rel
 	if field == nil || field.Relation == nil || field.Relation.TargetTable == "" {
 		return "", fmt.Errorf("VisibleRelated: field is not a many-to-many with a target")
 	}
-	exprs, err := targetExprs(field, dialect)
-	if err != nil {
-		return "", err
-	}
+	exprs := targetExprs(field)
 	tenancy := relationScope{tenant: scope.Tenant}
 	tc, err := targetScope(field, dialect, tenancy, bind, alias)
 	if err != nil {

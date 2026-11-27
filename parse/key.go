@@ -114,8 +114,8 @@ func (kc keyColumns) requested(key Key) (Key, error) {
 }
 
 // stored is a normalized key as d's database holds it
-// (Dialect.StoredKeyValue): a timestamp at the database's precision.
-func (kc keyColumns) stored(d Dialect, key Key) (Key, error) {
+// (filter.Dialect.StoredKeyValue): a timestamp at the database's precision.
+func (kc keyColumns) stored(d filter.Dialect, key Key) (Key, error) {
 	out := make(Key, len(key))
 	for i, info := range kc.types {
 		v, err := d.StoredKeyValue(info, key[i])
@@ -163,7 +163,7 @@ func (kc keyColumns) compare(a, b Key) (int, error) {
 
 // order is the ORDER BY list that reads the key columns of table in
 // compare's order (filter.KeyOrder).
-func (kc keyColumns) order(d Dialect, table string) string {
+func (kc keyColumns) order(d filter.Dialect, table string) string {
 	order := make([]string, len(kc.names))
 	for i, column := range kc.names {
 		order[i] = filter.KeyOrder(d, d.QuoteIdent(table)+"."+d.QuoteIdent(column), kc.types[i])

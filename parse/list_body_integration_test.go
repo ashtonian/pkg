@@ -4,7 +4,6 @@ package parse_test
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -35,25 +34,16 @@ func TestListBodyTransport(t *testing.T) {
 }
 
 func runListBodyTransport(t *testing.T, b sqlBackend) {
-	db := b.open(t)
-	d := b.dialect
+	p, db := b.open(t)
 	execStatements(t, db, gizmoFixture...)
-	gizmos := parse.MustResource[gizmo]("gizmos", parse.PageSize(2, 10))
+	gizmos := parse.MustResource[gizmo](p, "gizmos", parse.PageSize(2, 10))
 	const doc = `{"name":{"$in":["a","b","c"]}}`
 
 	page := func(r *http.Request) *filter.Page[gizmo] {
 		t.Helper()
 		req, err := parsehttp.ParseList(r, gizmos)
 		require.NoError(t, err)
-		plan, err := gizmos.BuildList(d, req, parse.Scope{})
-		require.NoError(t, err)
-		var items []gizmo
-		for _, row := range queryRows[[]any](t, db, plan.Page.SQL, plan.Page.Args...) {
-			items = append(items, gizmo{ID: int(listInt(t, row[0])), Name: fmt.Sprint(row[1]), Rank: int(listInt(t, row[2]))})
-		}
-		p, err := gizmos.Page(items, plan)
-		require.NoError(t, err)
-		return p
+		return listPage(t, gizmos, req, parse.Scope{})
 	}
 	get := func(cursor string) *http.Request {
 		q := url.Values{filter.ParamFilter: {doc}, filter.ParamSort: {"name,-rank"}}
@@ -94,16 +84,4 @@ func runListBodyTransport(t *testing.T, b sqlBackend) {
 		cursor = string(p.PageInfo.EndCursor)
 	}
 	assert.Equal(t, []int{5, 2, 6, 1, 3, 4}, walked, "name ascending, then rank descending; z is filtered out")
-}
-
-func listInt(t *testing.T, v any) int64 {
-	t.Helper()
-	switch n := v.(type) {
-	case int64:
-		return n
-	case int32:
-		return int64(n)
-	}
-	require.Fail(t, fmt.Sprintf("not an integer: %T %v", v, v))
-	return 0
 }

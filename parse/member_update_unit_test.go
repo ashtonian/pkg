@@ -11,7 +11,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -19,42 +19,54 @@ import (
 // to: Current locks the targets, Conflict names the failing operation, and
 // Owner's WHERE holds the same precondition.
 func TestBuildUpdate_MembersPlanAConflictRead(t *testing.T) {
-	r := gadgetAttrsResource(t)
+	r := gadgetAttrsResource(t, onPostgres)
 	parsed, err := r.ParsePatch([]byte(`[{"op":"replace","path":"/attrs/color","value":"red"}]`))
 	require.NoError(t, err)
-	plan, err := r.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID(int64(1)), parse.Scope{})
+	plan, err := r.BuildUpdate(parsed, parse.ByID(int64(1)), parse.Scope{})
 	require.NoError(t, err)
 	require.NotNil(t, plan.Current)
 	require.NotNil(t, plan.Conflict)
 	assert.Contains(t, plan.Owner.SQL, `#> $3::text[]) IS NOT NULL`)
 	assert.Contains(t, plan.Conflict.SQL, `SELECT CASE WHEN NOT (("attrs"::jsonb #> $2::text[]) IS NOT NULL) THEN 0 END`)
 
-	pe, ok := errors.AsType[*core.ParseError](plan.ConflictError(0))
-	require.True(t, ok)
-	assert.Equal(t, core.CodePatchValueInvalid.String(), pe.Code)
-	assert.Equal(t, "/attrs/color", pe.Path)
-
 	whole, err := r.ParsePatch([]byte(`[{"op":"replace","path":"/attrs","value":{"color":"red"}}]`))
 	require.NoError(t, err)
-	plan, err = r.BuildUpdate(filter.PostgresDialect{}, whole, parse.ByID(int64(1)), parse.Scope{})
+	plan, err = r.BuildUpdate(whole, parse.ByID(int64(1)), parse.Scope{})
 	require.NoError(t, err)
 	assert.Nil(t, plan.Conflict, "a whole-document write needs nothing of the stored row")
+}
+
+// The row Conflict reads fails the update with the operation it fails,
+// before anything is written.
+func TestUpdate_MembersConflictNamesTheFailingOperation(t *testing.T) {
+	provider, db := providertest.SQLite(t)
+	execStatements(t, db, `CREATE TABLE gadget_attrs (id INTEGER PRIMARY KEY, attrs TEXT NOT NULL)`,
+		`INSERT INTO gadget_attrs VALUES (1, '{}')`)
+	r := gadgetAttrsResource(t, provider)
+	parsed, err := r.ParsePatch([]byte(`[{"op":"replace","path":"/attrs/color","value":"red"}]`))
+	require.NoError(t, err)
+	_, err = r.Update(t.Context(), parsed, parse.ByID(int64(1)), parse.Scope{})
+	pe, ok := errors.AsType[*core.ParseError](err)
+	require.True(t, ok, "%v is no ParseError", err)
+	assert.Equal(t, core.CodePatchValueInvalid.String(), pe.Code)
+	assert.Equal(t, "/attrs/color", pe.Path)
+	assert.Equal(t, []string{"{}"}, queryRows[string](t, db, `SELECT attrs FROM gadget_attrs`), "no row is written")
 }
 
 // A batch compiles its rows' documents whole: a member operation the stored
 // row decides is refused, one the row's own patch settles is not.
 func TestBuildUpdateBatch_MembersTheStoredRowDecides(t *testing.T) {
-	r := gadgetAttrsResource(t)
+	r := gadgetAttrsResource(t, onPostgres)
 	member, err := r.ParsePatch([]byte(`[{"op":"remove","path":"/attrs/old"}]`))
 	require.NoError(t, err)
-	_, err = r.BuildUpdateBatch(filter.SQLiteDialect{}, []parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: member}}, parse.Scope{}, parse.UpdateBatchLimits{})
+	_, err = r.BuildUpdateBatch([]parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: member}}, parse.Scope{}, parse.UpdateBatchLimits{})
 	pe, ok := errors.AsType[*core.ParseError](err)
 	require.True(t, ok, "%v is no ParseError", err)
 	assert.Equal(t, patch.ECodeOpNotSQLCompilable.String(), pe.Code)
 
 	settled, err := r.ParsePatch([]byte(`[{"op":"replace","path":"/attrs","value":{}},{"op":"add","path":"/attrs/new","value":1}]`))
 	require.NoError(t, err)
-	_, err = r.BuildUpdateBatch(filter.SQLiteDialect{}, []parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: settled}}, parse.Scope{}, parse.UpdateBatchLimits{})
+	_, err = r.BuildUpdateBatch([]parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: settled}}, parse.Scope{}, parse.UpdateBatchLimits{})
 	require.NoError(t, err)
 }
 
@@ -76,7 +88,7 @@ type typedGadget struct {
 // a map key as encoding/json writes it, and a value that decodes as the
 // member, tag options included.
 func TestParsePatch_TypedDocumentMembers(t *testing.T) {
-	r, err := parse.NewResource[typedGadget]("typed_gadgets", parse.CustomizeSchemas(func(s parse.Schemas) error {
+	r, err := parse.NewResource[typedGadget](onPostgres, "typed_gadgets", parse.CustomizeSchemas(func(s parse.Schemas) error {
 		ops := []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpReplace, patch.PatchOpRemove}
 		for path, column := range map[string]string{"/spec/**": "spec", "/sizes/*": "sizes"} {
 			err := s.Patch.AddPath(path, &patch.PathSchema{AllowedOps: ops, DataType: core.FieldTypeAny, SQLColumn: column})

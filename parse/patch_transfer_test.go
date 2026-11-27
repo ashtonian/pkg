@@ -20,7 +20,7 @@ type transferRow struct {
 }
 
 func TestPatchTransferDestinationValidation(t *testing.T) {
-	p, err := parse.NewResource[transferRow]("transfer_rows")
+	p, err := parse.NewResource[transferRow](onSQLite, "transfer_rows")
 	require.NoError(t, err)
 	for _, verb := range []string{"copy", "move"} {
 		for _, tc := range []struct {
@@ -59,7 +59,7 @@ func TestPatchTransferDestinationValidation(t *testing.T) {
 
 func TestPatchTransferUsesCurrentValueAndCustomValidator(t *testing.T) {
 	sentinel := errors.New("destination validator")
-	p, err := parse.NewResource[transferRow]("transfer_rows", parse.CustomizeSchemas(func(s parse.Schemas) error {
+	p, err := parse.NewResource[transferRow](onSQLite, "transfer_rows", parse.CustomizeSchemas(func(s parse.Schemas) error {
 		return s.Patch.UpdatePath("/status", func(status *patch.PathSchema) {
 			status.Validators = append(status.Validators, func(value any) error {
 				if value == "offline" {
@@ -97,7 +97,7 @@ type emptyKeyRow struct {
 
 func emptyKeyParser(t *testing.T, opts ...core.Option) *parse.Resource[emptyKeyRow] {
 	t.Helper()
-	p, err := parse.NewResource[emptyKeyRow]("empty_key_rows", parse.ParserOptions(opts...), parse.CustomizeSchemas(func(s parse.Schemas) error {
+	p, err := parse.NewResource[emptyKeyRow](onSQLite, "empty_key_rows", parse.ParserOptions(opts...), parse.CustomizeSchemas(func(s parse.Schemas) error {
 		return s.Patch.AddPath("/meta/**", &patch.PathSchema{AllowedOps: []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpCopy, patch.PatchOpMove, patch.PatchOpTest}})
 	}))
 	require.NoError(t, err)

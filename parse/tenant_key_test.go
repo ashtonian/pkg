@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
 type int32TenantDevice struct {
@@ -47,17 +47,17 @@ type tenantKeyCase struct {
 
 func tenantKeyStatements[T any](t *testing.T, tenant string) (parse.Statement, parse.Statement, parse.Statement, error) {
 	t.Helper()
-	r, err := parse.NewResource[T]("devices", parse.TenantColumn("tenant_id"))
+	r, err := parse.NewResource[T](onPostgres, "devices", parse.TenantColumn("tenant_id"))
 	require.NoError(t, err)
 	req, err := r.ParseListInput(parse.ListInput{IncludeTotal: true})
 	require.NoError(t, err)
-	plan, err := r.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: tenant})
+	plan, err := r.BuildList(req, parse.Scope{Tenant: tenant})
 	if err != nil {
 		return parse.Statement{}, parse.Statement{}, parse.Statement{}, err
 	}
 	p, err := r.ParseMergePatch([]byte(`{"name":"renamed"}`))
 	require.NoError(t, err)
-	update, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID(1), parse.Scope{Tenant: tenant})
+	update, err := r.BuildUpdate(p, parse.ByID(1), parse.Scope{Tenant: tenant})
 	if err != nil {
 		return parse.Statement{}, parse.Statement{}, parse.Statement{}, err
 	}
@@ -125,9 +125,9 @@ func TestTenantColumn_RefusesTypesThatAreNoTenantKey(t *testing.T) {
 		ID       int       `json:"id" db:"id"`
 		TenantID time.Time `json:"-"  db:"tenant_id"`
 	}
-	_, err := parse.NewResource[floatTenant]("a", parse.TenantColumn("tenant_id"))
+	_, err := parse.NewResource[floatTenant](onPostgres, "a", parse.TenantColumn("tenant_id"))
 	assert.ErrorContains(t, err, "a tenant key is a string, a UUID or an integer")
-	_, err = parse.NewResource[timeTenant]("b", parse.TenantColumn("tenant_id"))
+	_, err = parse.NewResource[timeTenant](onPostgres, "b", parse.TenantColumn("tenant_id"))
 	assert.ErrorContains(t, err, "a tenant key is a string, a UUID or an integer")
 }
 
@@ -139,43 +139,42 @@ type tenantKeyLabel struct {
 }
 
 func TestRelate_TenantKeysAgree(t *testing.T) {
-	commands := parse.MustResource[tenantKeyCommand]("commands", parse.TenantColumn("tenant_id"))
-	labels := parse.MustResource[tenantKeyLabel]("labels", parse.TenantColumn("tenant_id"))
+	commands := parse.MustResource[tenantKeyCommand](onPostgres, "commands", parse.TenantColumn("tenant_id"))
+	labels := parse.MustResource[tenantKeyLabel](onPostgres, "labels", parse.TenantColumn("tenant_id"))
 
 	t.Run("a target holding the tenant as another type is refused", func(t *testing.T) {
-		devices := parse.MustResource[int32TenantDevice]("devices", parse.TenantColumn("tenant_id"))
+		devices := parse.MustResource[int32TenantDevice](onPostgres, "devices", parse.TenantColumn("tenant_id"))
 		err := devices.Relate("labels", parse.HasMany(labels, "device_id"))
 		assert.ErrorContains(t, err, "tenant columns tenant_id (int) and labels.tenant_id (string) hold different types")
 	})
 
 	t.Run("a policy-scoped target's tenancy is its policy's", func(t *testing.T) {
-		devices := parse.MustResource[int32TenantDevice]("devices", parse.TenantColumn("tenant_id"))
+		devices := parse.MustResource[int32TenantDevice](onPostgres, "devices", parse.TenantColumn("tenant_id"))
 		require.NoError(t, devices.Relate("labels", parse.HasMany(labels, "device_id", parse.PolicyScoped())))
 	})
 
 	t.Run("an owner without a tenant takes its target's key type", func(t *testing.T) {
-		devices := parse.MustResource[untenantedDevice]("devices")
+		devices := parse.MustResource[untenantedDevice](onPostgres, "devices")
 		devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed()))
 		req, err := devices.ParseListInput(parse.ListInput{Filter: `{"commands":{"$some":{"status":"pending"}}}`})
 		require.NoError(t, err)
-		plan, err := devices.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: "44"})
+		plan, err := devices.BuildList(req, parse.Scope{Tenant: "44"})
 		require.NoError(t, err)
 		assert.Contains(t, plan.Page.Args, int64(44))
 		assert.NotContains(t, plan.Page.Args, "44")
 
-		_, err = devices.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: "t-44"})
+		_, err = devices.BuildList(req, parse.Scope{Tenant: "t-44"})
 		assert.ErrorIs(t, err, parse.ErrTenantInvalid)
 	})
 
 	t.Run("pair tables, includes and membership writes bind the typed key", func(t *testing.T) {
-		devices := parse.MustResource[int32TenantDevice]("devices", parse.TenantColumn("tenant_id"))
-		devices.MustRelate("commands", parse.ManyToMany(commands,
-			parse.Junction{Table: "device_commands", Source: []string{"device_id"}, Target: []string{"command_id"}, Tenant: "tenant_id"},
-			parse.Includable(), parse.Writable()))
+		junction := parse.Junction{Table: "device_commands", Source: []string{"device_id"}, Target: []string{"command_id"}, Tenant: "tenant_id"}
+		devices := parse.MustResource[int32TenantDevice](onPostgres, "devices", parse.TenantColumn("tenant_id"))
+		devices.MustRelate("commands", parse.ManyToMany(commands, junction, parse.Includable(), parse.Writable()))
 
 		req, err := devices.ParseListInput(parse.ListInput{Include: []string{"commands"}})
 		require.NoError(t, err)
-		plan, err := devices.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: "44"})
+		plan, err := devices.BuildList(req, parse.Scope{Tenant: "44"})
 		require.NoError(t, err)
 		includes, err := devices.IncludeQueries(plan, []parse.Key{{1}})
 		require.NoError(t, err)
@@ -183,16 +182,27 @@ func TestRelate_TenantKeysAgree(t *testing.T) {
 		assert.Contains(t, includes[0].Args, int64(44))
 		assert.NotContains(t, includes[0].Args, "44")
 
-		p, err := devices.ParseMergePatch([]byte(`{"commands":[7]}`))
+		// The pair table declares no column types, so each pair holds what
+		// the membership statements bound: the tenant as text would be
+		// stored as text, and would delete no pair it replaces.
+		provider, db := providertest.SQLite(t)
+		execStatements(t, db,
+			`CREATE TABLE devices (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, name TEXT NOT NULL)`,
+			`CREATE TABLE commands (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, device_id INTEGER NOT NULL, status TEXT NOT NULL)`,
+			`CREATE TABLE device_commands (device_id, command_id, tenant_id)`,
+			`INSERT INTO devices VALUES (1, 44, 'alpha')`,
+			`INSERT INTO commands VALUES (7, 44, 1, 'sent'), (8, 44, 1, 'sent')`,
+			`INSERT INTO device_commands VALUES (1, 8, 44)`,
+		)
+		stored := parse.MustResource[int32TenantDevice](provider, "devices", parse.TenantColumn("tenant_id"))
+		stored.MustRelate("commands", parse.ManyToMany(parse.MustResource[tenantKeyCommand](provider, "commands", parse.TenantColumn("tenant_id")),
+			junction, parse.Includable(), parse.Writable()))
+		p, err := stored.ParseMergePatch([]byte(`{"commands":[7]}`))
 		require.NoError(t, err)
-		update, err := devices.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID(1), parse.Scope{Tenant: "44"})
+		res, err := stored.Update(t.Context(), p, parse.ByID(1), parse.Scope{Tenant: "44"})
 		require.NoError(t, err)
-		stmts, err := devices.RelationStatements(update, []parse.Key{{int64(1)}})
-		require.NoError(t, err)
-		require.NotEmpty(t, stmts)
-		for _, st := range stmts {
-			assert.Contains(t, st.Args, int64(44), st.SQL)
-			assert.NotContains(t, st.Args, "44", st.SQL)
-		}
+		assert.Equal(t, int64(2), res.RelationRows, "the pair to 8 removed, the pair to 7 added")
+		assert.Equal(t, [][]any{{int64(1), int64(7), "integer", int64(44)}},
+			queryRows[[]any](t, db, `SELECT device_id, command_id, typeof(tenant_id), tenant_id FROM device_commands`))
 	})
 }

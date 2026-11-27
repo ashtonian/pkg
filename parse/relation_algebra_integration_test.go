@@ -86,13 +86,14 @@ func relWidgetTags() sqlTable {
 	return table
 }
 
-func relParser(t *testing.T) *parse.Resource[relWidget] {
+// relParser builds the widgets resource on p.
+func relParser(t *testing.T, p *parse.Provider) *parse.Resource[relWidget] {
 	t.Helper()
 	// Unindexed relation predicates exceed the default cost ceiling; the
 	// cost gate is orthogonal to the semantics under test.
-	p, err := parse.NewResource[relWidget]("widgets", parse.ParserOptions(core.WithMaxCost(1000)))
+	r, err := parse.NewResource[relWidget](p, "widgets", parse.ParserOptions(core.WithMaxCost(1000)))
 	require.NoError(t, err)
-	return p
+	return r
 }
 
 func seedRelDB(t *testing.T, b sqlBackend, db *sql.DB) {
@@ -113,11 +114,11 @@ func tenantA() *filter.PolicyConstraints {
 
 func runRelationAlgebra(t *testing.T, b sqlBackend) {
 	t.Helper()
-	db := b.open(t)
+	provider, db := b.open(t)
 	seedRelDB(t, b, db)
-	p := relParser(t)
+	p := relParser(t, provider)
 
-	lq, err := p.ListQuery(b.dialect)
+	lq, err := p.ListQuery()
 	require.NoError(t, err)
 	for name, tc := range relCases() {
 		t.Run(name, func(t *testing.T) {

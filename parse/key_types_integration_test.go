@@ -64,15 +64,16 @@ type ktGraph struct {
 	alerts   *parse.Resource[ktAlert]
 }
 
-func ktResources(t *testing.T) ktGraph {
+// ktResources declares the key-type resources on p and relates them.
+func ktResources(t *testing.T, p *parse.Provider) ktGraph {
 	t.Helper()
 	g := ktGraph{
-		prices:   parse.MustResource[ktPrice]("kt_prices"),
-		notes:    parse.MustResource[ktNote]("kt_notes"),
-		tags:     parse.MustResource[ktTag]("kt_tags"),
-		ticks:    parse.MustResource[ktTick]("kt_ticks", parse.PrimaryKey("at")),
-		readings: parse.MustResource[ktReading]("kt_readings", parse.PrimaryKey("device_id", "at")),
-		alerts:   parse.MustResource[ktAlert]("kt_alerts"),
+		prices:   parse.MustResource[ktPrice](p, "kt_prices"),
+		notes:    parse.MustResource[ktNote](p, "kt_notes"),
+		tags:     parse.MustResource[ktTag](p, "kt_tags"),
+		ticks:    parse.MustResource[ktTick](p, "kt_ticks", parse.PrimaryKey("at")),
+		readings: parse.MustResource[ktReading](p, "kt_readings", parse.PrimaryKey("device_id", "at")),
+		alerts:   parse.MustResource[ktAlert](p, "kt_alerts"),
 	}
 	all := []parse.RelationOption{parse.Indexed(), parse.Includable(), parse.Facetable()}
 	writable := slices.Concat(all, []parse.RelationOption{parse.Writable()})
@@ -110,11 +111,12 @@ func ktReadingText(device string, at time.Time) string {
 // numeric columns of two scales on PostgreSQL, and two 20-digit keys one
 // apart, which a float64 holds as one. Timestamps are stored as each
 // backend stores them (Dialect.MarshalValue); t1 is t0 and a microsecond.
-func ktFixture(t *testing.T, db *sql.DB, d filter.Dialect) {
+func ktFixture(t *testing.T, db *sql.DB, b sqlBackend) {
 	t.Helper()
+	d := b.dialect
 	ktT0, ktT1, ktT2 := ktInstants()
 	price, scaled, at := "TEXT", "TEXT", "TEXT"
-	if isPostgres(d) {
+	if b.engine == postgresEngine {
 		price, scaled, at = "NUMERIC(30,2)", "NUMERIC", "TIMESTAMPTZ"
 	}
 	for _, stmt := range []string{
@@ -165,17 +167,17 @@ func TestKeyTypes(t *testing.T) {
 }
 
 func testKeyTypes(t *testing.T, b sqlBackend) {
-	open := b.open
 	d := b.dialect
 	ktT0, ktT1, ktT2 := ktInstants()
-	g := ktResources(t)
-	setup := func(t *testing.T) *sql.DB {
+	// setup is a fresh fixture database and the resources on its provider.
+	setup := func(t *testing.T) (*sql.DB, ktGraph) {
 		t.Helper()
-		db := open(t)
-		ktFixture(t, db, d)
-		return db
+		provider, db := b.open(t)
+		ktFixture(t, db, b)
+		g := ktResources(t, provider)
+		return db, g
 	}
-	db := setup(t)
+	db, g := setup(t)
 	// An instant in another zone, a microsecond after t0: t1.
 	t1Elsewhere := ktT1.In(time.FixedZone("", 3600)).Format(time.RFC3339Nano)
 
@@ -185,19 +187,19 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 			list         func(t *testing.T, doc string) []string
 			want         []string
 		}{
-			{name: "decimal pair table", filter: `{"tags":"blue"}`, list: crxList(db, d, g.prices, ktPriceKey), want: []string{"1.5", "12345678901234567890"}},
-			{name: "decimal has-many", filter: `{"notes":{"$some":{"id":"n3"}}}`, list: crxList(db, d, g.prices, ktPriceKey), want: []string{"1.5"}},
-			{name: "decimal has-many $none", filter: `{"notes":{"$none":{}}}`, list: crxList(db, d, g.prices, ktPriceKey), want: []string{"2"}},
-			{name: "20-digit belongs-to", filter: `{"price":{"$is":{"name":"big"}}}`, list: crxList(db, d, g.notes, ktNoteKey), want: []string{"n2"}},
-			{name: "decimal pair table target", filter: `{"prices":{"$some":{"name":"one"}}}`, list: crxList(db, d, g.tags, crxTagKeyOf), want: []string{"blue", "red"}},
-			{name: "decimal key set", filter: `{"prices":{"$in":["1.500","12345678901234567891"]}}`, list: crxList(db, d, g.tags, crxTagKeyOf), want: []string{"blue", "green", "red"}},
-			{name: "20-digit key set", filter: `{"prices":"12345678901234567891"}`, list: crxList(db, d, g.tags, crxTagKeyOf), want: []string{"green"}},
-			{name: "timestamp pair table", filter: `{"tags":"blue"}`, list: crxList(db, d, g.ticks, ktTickKey), want: []string{ktText(ktT1)}},
-			{name: "timestamp key set", filter: `{"ticks":{"$in":["` + t1Elsewhere + `"]}}`, list: crxList(db, d, g.tags, crxTagKeyOf), want: []string{"blue"}},
-			{name: "composite has-many", filter: `{"alerts":{"$some":{"id":"a2"}}}`, list: crxList(db, d, g.readings, ktReadingKey), want: []string{"d1/" + ktText(ktT1)}},
-			{name: "composite pair table", filter: `{"tags":"red"}`, list: crxList(db, d, g.readings, ktReadingKey), want: []string{"d1/" + ktText(ktT0), "d2/" + ktText(ktT0)}},
-			{name: "composite belongs-to $null", filter: `{"reading":{"$null":true}}`, list: crxList(db, d, g.alerts, ktAlertKey), want: []string{"a4"}},
-			{name: "composite pair table target", filter: `{"readings":{"$some":{"device_id":"d2"}}}`, list: crxList(db, d, g.tags, crxTagKeyOf), want: []string{"red"}},
+			{name: "decimal pair table", filter: `{"tags":"blue"}`, list: crxList(g.prices, ktPriceKey), want: []string{"1.5", "12345678901234567890"}},
+			{name: "decimal has-many", filter: `{"notes":{"$some":{"id":"n3"}}}`, list: crxList(g.prices, ktPriceKey), want: []string{"1.5"}},
+			{name: "decimal has-many $none", filter: `{"notes":{"$none":{}}}`, list: crxList(g.prices, ktPriceKey), want: []string{"2"}},
+			{name: "20-digit belongs-to", filter: `{"price":{"$is":{"name":"big"}}}`, list: crxList(g.notes, ktNoteKey), want: []string{"n2"}},
+			{name: "decimal pair table target", filter: `{"prices":{"$some":{"name":"one"}}}`, list: crxList(g.tags, crxTagKeyOf), want: []string{"blue", "red"}},
+			{name: "decimal key set", filter: `{"prices":{"$in":["1.500","12345678901234567891"]}}`, list: crxList(g.tags, crxTagKeyOf), want: []string{"blue", "green", "red"}},
+			{name: "20-digit key set", filter: `{"prices":"12345678901234567891"}`, list: crxList(g.tags, crxTagKeyOf), want: []string{"green"}},
+			{name: "timestamp pair table", filter: `{"tags":"blue"}`, list: crxList(g.ticks, ktTickKey), want: []string{ktText(ktT1)}},
+			{name: "timestamp key set", filter: `{"ticks":{"$in":["` + t1Elsewhere + `"]}}`, list: crxList(g.tags, crxTagKeyOf), want: []string{"blue"}},
+			{name: "composite has-many", filter: `{"alerts":{"$some":{"id":"a2"}}}`, list: crxList(g.readings, ktReadingKey), want: []string{"d1/" + ktText(ktT1)}},
+			{name: "composite pair table", filter: `{"tags":"red"}`, list: crxList(g.readings, ktReadingKey), want: []string{"d1/" + ktText(ktT0), "d2/" + ktText(ktT0)}},
+			{name: "composite belongs-to $null", filter: `{"reading":{"$null":true}}`, list: crxList(g.alerts, ktAlertKey), want: []string{"a4"}},
+			{name: "composite pair table target", filter: `{"readings":{"$some":{"device_id":"d2"}}}`, list: crxList(g.tags, crxTagKeyOf), want: []string{"red"}},
 		} {
 			t.Run(tt.name, func(t *testing.T) {
 				assert.Equal(t, tt.want, tt.list(t, tt.filter))
@@ -208,31 +210,31 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 	t.Run("resolved outside SQL", func(t *testing.T) {
 		store, lookups := resolvedStores(t, db, d, "kt_prices", "kt_notes", "kt_tags", "kt_price_tags",
 			"kt_ticks", "kt_tick_tags", "kt_readings", "kt_alerts", "kt_reading_tags")
-		assertResolvedFilters(t, db, d, store, lookups, g.prices,
+		assertResolvedFilters(t, store, lookups, g.prices,
 			`{"tags":"blue"}`, `{"notes":{"$some":{"id":"n3"}}}`, `{"notes":{"$none":{}}}`)
-		assertResolvedFilters(t, db, d, store, lookups, g.notes, `{"price":{"$is":{"name":"big"}}}`)
-		assertResolvedFilters(t, db, d, store, lookups, g.tags,
+		assertResolvedFilters(t, store, lookups, g.notes, `{"price":{"$is":{"name":"big"}}}`)
+		assertResolvedFilters(t, store, lookups, g.tags,
 			`{"prices":{"$some":{"name":"one"}}}`, `{"prices":{"$in":["1.500","12345678901234567891"]}}`, `{"prices":"12345678901234567891"}`,
 			`{"ticks":{"$in":["`+t1Elsewhere+`"]}}`, `{"readings":{"$some":{"device_id":"d2"}}}`, `{"readings":{"$none":{"at":"`+ktText(ktT1)+`"}}}`)
-		assertResolvedFilters(t, db, d, store, lookups, g.ticks, `{"tags":"blue"}`)
-		assertResolvedFilters(t, db, d, store, lookups, g.readings,
+		assertResolvedFilters(t, store, lookups, g.ticks, `{"tags":"blue"}`)
+		assertResolvedFilters(t, store, lookups, g.readings,
 			`{"alerts":{"$some":{"id":"a2"}}}`, `{"tags":"red"}`, `{"tags":{"$ne":"red"}}`)
-		assertResolvedFilters(t, db, d, store, lookups, g.alerts, `{"reading":{"$null":true}}`, `{"reading":{"$is":{"value":2}}}`)
-		assertResolvedIncludes(t, db, d, lookups, g.prices, "notes", "tags")
-		assertResolvedIncludes(t, db, d, lookups, g.tags, "prices", "ticks", "readings")
-		assertResolvedIncludes(t, db, d, lookups, g.ticks, "tags")
-		assertResolvedIncludes(t, db, d, lookups, g.readings, "alerts", "tags")
+		assertResolvedFilters(t, store, lookups, g.alerts, `{"reading":{"$null":true}}`, `{"reading":{"$is":{"value":2}}}`)
+		assertResolvedIncludes(t, lookups, g.prices, "notes", "tags")
+		assertResolvedIncludes(t, lookups, g.tags, "prices", "ticks", "readings")
+		assertResolvedIncludes(t, lookups, g.ticks, "tags")
+		assertResolvedIncludes(t, lookups, g.readings, "alerts", "tags")
 	})
 
 	t.Run("includes and facets", func(t *testing.T) {
-		prices := crxPage(t, db, d, g.prices, url.Values{filter.ParamInclude: {"notes,tags"}, filter.ParamFacets: {"tags"}})
+		prices := crxPage(t, g.prices, url.Values{filter.ParamInclude: {"notes,tags"}, filter.ParamFacets: {"tags"}})
 		assert.Equal(t, map[string][]string{"1.5": {"n1", "n3"}, "12345678901234567890": {"n2"}, "12345678901234567891": {"n4"}}, prices.Relations["notes"])
 		assert.Equal(t, map[string][]string{
 			"1.5": {"blue", "red"}, "2": {"red"}, "12345678901234567890": {"blue"}, "12345678901234567891": {"green"},
 		}, prices.Relations["tags"])
 		assert.ElementsMatch(t, []filter.FacetBucket{{Key: "blue", Count: 2}, {Key: "red", Count: 2}, {Key: "green", Count: 1}}, prices.Facets["tags"])
 
-		tags := crxPage(t, db, d, g.tags, url.Values{filter.ParamInclude: {"prices,ticks,readings"}, filter.ParamFacets: {"prices,ticks,readings"}})
+		tags := crxPage(t, g.tags, url.Values{filter.ParamInclude: {"prices,ticks,readings"}, filter.ParamFacets: {"prices,ticks,readings"}})
 		assert.Equal(t, map[string][]string{
 			"blue": {"1.5", "12345678901234567890"}, "green": {"12345678901234567891"}, "red": {"1.5", "2"},
 		}, tags.Relations["prices"])
@@ -248,11 +250,11 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 			{Key: ktReadingText("d1", ktT0), Count: 1}, {Key: ktReadingText("d1", ktT1), Count: 1}, {Key: ktReadingText("d2", ktT0), Count: 1},
 		}, tags.Facets["readings"])
 
-		ticks := crxPage(t, db, d, g.ticks, url.Values{filter.ParamInclude: {"tags"}, filter.ParamFacets: {"tags"}})
+		ticks := crxPage(t, g.ticks, url.Values{filter.ParamInclude: {"tags"}, filter.ParamFacets: {"tags"}})
 		assert.Equal(t, map[string][]string{ktText(ktT0): {"red"}, ktText(ktT1): {"blue"}}, ticks.Relations["tags"])
 		assert.ElementsMatch(t, []filter.FacetBucket{{Key: "blue", Count: 1}, {Key: "red", Count: 1}}, ticks.Facets["tags"])
 
-		readings := crxPage(t, db, d, g.readings, url.Values{filter.ParamInclude: {"alerts,tags"}, filter.ParamFacets: {"tags,alerts"}})
+		readings := crxPage(t, g.readings, url.Values{filter.ParamInclude: {"alerts,tags"}, filter.ParamFacets: {"tags,alerts"}})
 		assert.Equal(t, map[string][]string{
 			ktReadingText("d1", ktT0): {"a1"}, ktReadingText("d1", ktT1): {"a2"}, ktReadingText("d2", ktT0): {"a3"},
 		}, readings.Relations["alerts"])
@@ -279,30 +281,30 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 			}}}
 			return scope
 		}
-		assert.Equal(t, []string{"1.5", "12345678901234567890"}, ktKeys(t, db, d, g.prices, member("id", "kt_allowed_prices", "price_id"), ktPriceKey))
-		assert.Equal(t, []string{"d1/" + ktText(ktT1)}, ktKeys(t, db, d, g.readings, member("at", "kt_allowed_at", "at"), ktReadingKey))
-		assert.Equal(t, []string{ktText(ktT1)}, ktKeys(t, db, d, g.ticks, member("at", "kt_allowed_at", "at"), ktTickKey))
+		assert.Equal(t, []string{"1.5", "12345678901234567890"}, ktKeys(t, g.prices, member("id", "kt_allowed_prices", "price_id"), ktPriceKey))
+		assert.Equal(t, []string{"d1/" + ktText(ktT1)}, ktKeys(t, g.readings, member("at", "kt_allowed_at", "at"), ktReadingKey))
+		assert.Equal(t, []string{ktText(ktT1)}, ktKeys(t, g.ticks, member("at", "kt_allowed_at", "at"), ktTickKey))
 	})
 
 	t.Run("batch updates", func(t *testing.T) {
-		db := setup(t)
-		prices := ktBatch(t, db, d, g.prices, []parse.RowUpdate{
+		_, g := setup(t)
+		prices := ktBatch(t, g.prices, []parse.RowUpdate{
 			{Key: parse.Key{"12345678901234567890"}, Patch: ktPatch(t, g.prices, `{"name":"b"}`)},
 			{Key: parse.Key{1.5}, Patch: ktPatch(t, g.prices, `{"name":"a"}`)},
 		}, ktPriceKey)
 		assert.Equal(t, []string{"1.5", "12345678901234567890"}, prices)
 		assert.Equal(t, []string{"1.5=a", "2=two", "12345678901234567890=b", "12345678901234567891=bigger"},
-			ktNames(t, db, d, g.prices, func(p ktPrice) string { return ktPriceKey(p) + "=" + p.Name }))
+			ktNames(t, g.prices, func(p ktPrice) string { return ktPriceKey(p) + "=" + p.Name }))
 
-		readings := ktBatch(t, db, d, g.readings, []parse.RowUpdate{
+		readings := ktBatch(t, g.readings, []parse.RowUpdate{
 			{Key: parse.Key{"d2", ktT0}, Patch: ktPatch(t, g.readings, `{"value":8}`)},
 			{Key: parse.Key{"d1", t1Elsewhere}, Patch: ktPatch(t, g.readings, `{"value":7}`)},
 		}, ktReadingKey)
 		assert.Equal(t, []string{"d1/" + ktText(ktT1), "d2/" + ktText(ktT0)}, readings)
 		assert.Equal(t, []string{"d1/" + ktText(ktT0) + "=1", "d1/" + ktText(ktT1) + "=7", "d2/" + ktText(ktT0) + "=8"},
-			ktNames(t, db, d, g.readings, func(r ktReading) string { return ktReadingKey(r) + "=" + fmt.Sprint(r.Value) }))
+			ktNames(t, g.readings, func(r ktReading) string { return ktReadingKey(r) + "=" + fmt.Sprint(r.Value) }))
 
-		ticks := ktBatch(t, db, d, g.ticks, []parse.RowUpdate{
+		ticks := ktBatch(t, g.ticks, []parse.RowUpdate{
 			{Key: parse.Key{ktT2.In(time.FixedZone("", 7200))}, Patch: ktPatch(t, g.ticks, `{"name":"deux"}`)},
 		}, ktTickKey)
 		assert.Equal(t, []string{ktText(ktT2)}, ticks)
@@ -310,10 +312,8 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 		// PostgreSQL holds microseconds and rounds a finer key to them, so a
 		// key 400ns past t0 names t0's row there and no row on SQLite.
 		finer := []parse.RowUpdate{{Key: parse.Key{ktT0.Add(400 * time.Nanosecond)}, Patch: ktPatch(t, g.ticks, `{"name":"zéro"}`)}}
-		plan, err := g.ticks.BuildUpdateBatch(d, finer, parse.Scope{}, parse.UpdateBatchLimits{})
-		require.NoError(t, err)
-		res, err := applyUpdateBatch(t, db, g.ticks, d, plan)
-		if isPostgres(d) {
+		res, err := g.ticks.UpdateBatch(t.Context(), finer, parse.Scope{}, parse.UpdateBatchLimits{})
+		if b.engine == postgresEngine {
 			require.NoError(t, err)
 			require.Len(t, res.Changed, 1)
 			assert.Equal(t, ktText(ktT0), ktTickKey(res.Changed[0]))
@@ -326,12 +326,12 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 	// which is the order its keys are chunked in: decimals by value, not by
 	// their text, and timestamps by instant.
 	t.Run("batch lock order", func(t *testing.T) {
-		db := setup(t)
+		db, g := setup(t)
 		rename := func(r parse.Key) parse.RowUpdate {
 			update := parse.RowUpdate{Key: r, Patch: ktPatch(t, g.prices, `{"name":"n"}`)}
 			return update
 		}
-		prices, err := g.prices.BuildUpdateBatch(d, []parse.RowUpdate{
+		prices, err := g.prices.BuildUpdateBatch([]parse.RowUpdate{
 			rename(parse.Key{"12345678901234567891"}), rename(parse.Key{"2"}), rename(parse.Key{"12345678901234567890"}), rename(parse.Key{"1.50"}),
 		}, parse.Scope{}, parse.UpdateBatchLimits{})
 		require.NoError(t, err)
@@ -345,7 +345,7 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 			update := parse.RowUpdate{Key: r, Patch: ktPatch(t, g.readings, `{"value":0}`)}
 			return update
 		}
-		readings, err := g.readings.BuildUpdateBatch(d, []parse.RowUpdate{
+		readings, err := g.readings.BuildUpdateBatch([]parse.RowUpdate{
 			revalue(parse.Key{"d2", ktT0}), revalue(parse.Key{"d1", t1Elsewhere}), revalue(parse.Key{"d1", ktT0}),
 		}, parse.Scope{}, parse.UpdateBatchLimits{})
 		require.NoError(t, err)
@@ -357,67 +357,67 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 	})
 
 	t.Run("updates by keys", func(t *testing.T) {
-		db := setup(t)
-		crxUpdate(t, db, d, g.readings, `{"value":9}`, parse.ByKeys(parse.Key{"d1", t1Elsewhere}, parse.Key{"d2", ktT0}))
+		_, g := setup(t)
+		crxUpdate(t, g.readings, `{"value":9}`, parse.ByKeys(parse.Key{"d1", t1Elsewhere}, parse.Key{"d2", ktT0}))
 		assert.Equal(t, []string{"d1/" + ktText(ktT0) + "=1", "d1/" + ktText(ktT1) + "=9", "d2/" + ktText(ktT0) + "=9"},
-			ktNames(t, db, d, g.readings, func(r ktReading) string { return ktReadingKey(r) + "=" + fmt.Sprint(r.Value) }))
-		crxUpdate(t, db, d, g.prices, `{"name":"x"}`, parse.ByKeys(parse.Key{"1.500"}, parse.Key{"12345678901234567891"}))
+			ktNames(t, g.readings, func(r ktReading) string { return ktReadingKey(r) + "=" + fmt.Sprint(r.Value) }))
+		crxUpdate(t, g.prices, `{"name":"x"}`, parse.ByKeys(parse.Key{"1.500"}, parse.Key{"12345678901234567891"}))
 		assert.Equal(t, []string{"1.5=x", "2=two", "12345678901234567890=big", "12345678901234567891=x"},
-			ktNames(t, db, d, g.prices, func(p ktPrice) string { return ktPriceKey(p) + "=" + p.Name }))
+			ktNames(t, g.prices, func(p ktPrice) string { return ktPriceKey(p) + "=" + p.Name }))
 	})
 
 	t.Run("relation writes", func(t *testing.T) {
 		for _, tt := range []struct {
 			name   string
-			update func(t *testing.T, db *sql.DB)
+			update func(t *testing.T, g ktGraph)
 			pairs  string
 			want   []string
 		}{
 			{
 				// 1.5 is red's under another spelling; 2 leaves.
 				name: "decimal targets replace",
-				update: func(t *testing.T, db *sql.DB) {
-					crxUpdate(t, db, d, g.tags, `{"prices":["1.50","12345678901234567891"]}`, parse.ByID("red"))
+				update: func(t *testing.T, g ktGraph) {
+					crxUpdate(t, g.tags, `{"prices":["1.50","12345678901234567891"]}`, parse.ByID("red"))
 				},
 				pairs: "SELECT price_id, tag_id FROM kt_price_tags",
 				want:  []string{"1.5/blue", "1.5/red", "12345678901234567890/blue", "12345678901234567891/green", "12345678901234567891/red"},
 			},
 			{
 				name: "decimal owner adds what it holds under another spelling",
-				update: func(t *testing.T, db *sql.DB) {
-					crxUpdatePatch(t, db, d, g.prices, `[{"op":"add","path":"/tags","value":["red","green"]}]`, parse.ByKey(parse.Key{"1.5"}))
+				update: func(t *testing.T, g ktGraph) {
+					crxUpdatePatch(t, g.prices, `[{"op":"add","path":"/tags","value":["red","green"]}]`, parse.ByKey(parse.Key{"1.5"}))
 				},
 				pairs: "SELECT price_id, tag_id FROM kt_price_tags",
 				want:  []string{"1.5/blue", "1.5/green", "1.5/red", "2/red", "12345678901234567890/blue", "12345678901234567891/green"},
 			},
 			{
 				name: "decimal targets remove",
-				update: func(t *testing.T, db *sql.DB) {
-					crxUpdatePatch(t, db, d, g.tags, `[{"op":"remove","path":"/prices","value":["1.5","12345678901234567890"]}]`, parse.ByID("blue"))
+				update: func(t *testing.T, g ktGraph) {
+					crxUpdatePatch(t, g.tags, `[{"op":"remove","path":"/prices","value":["1.5","12345678901234567890"]}]`, parse.ByID("blue"))
 				},
 				pairs: "SELECT price_id, tag_id FROM kt_price_tags",
 				want:  []string{"1.5/red", "2/red", "12345678901234567891/green"},
 			},
 			{
 				name: "composite targets replace",
-				update: func(t *testing.T, db *sql.DB) {
-					crxUpdate(t, db, d, g.tags, `{"readings":[["d1","`+t1Elsewhere+`"],["d2","`+ktText(ktT0)+`"]]}`, parse.ByID("red"))
+				update: func(t *testing.T, g ktGraph) {
+					crxUpdate(t, g.tags, `{"readings":[["d1","`+t1Elsewhere+`"],["d2","`+ktText(ktT0)+`"]]}`, parse.ByID("red"))
 				},
 				pairs: "SELECT device_id, at, tag_id FROM kt_reading_tags",
 				want:  []string{"d1/" + ktText(ktT1) + "/blue", "d1/" + ktText(ktT1) + "/red", "d2/" + ktText(ktT0) + "/red"},
 			},
 			{
 				name: "timestamp owner adds",
-				update: func(t *testing.T, db *sql.DB) {
-					crxUpdatePatch(t, db, d, g.ticks, `[{"op":"add","path":"/tags","value":["green"]}]`, parse.ByKey(parse.Key{t1Elsewhere}))
+				update: func(t *testing.T, g ktGraph) {
+					crxUpdatePatch(t, g.ticks, `[{"op":"add","path":"/tags","value":["green"]}]`, parse.ByKey(parse.Key{t1Elsewhere}))
 				},
 				pairs: "SELECT tick_at, tag_id FROM kt_tick_tags",
 				want:  []string{ktText(ktT0) + "/red", ktText(ktT1) + "/blue", ktText(ktT1) + "/green"},
 			},
 		} {
 			t.Run(tt.name, func(t *testing.T) {
-				db := setup(t)
-				tt.update(t, db)
+				db, g := setup(t)
+				tt.update(t, g)
 				assert.ElementsMatch(t, tt.want, ktPairs(t, db, tt.pairs))
 			})
 		}
@@ -432,23 +432,21 @@ func ktAlertKey(a ktAlert) string     { return a.ID }
 func crxTagKeyOf(t ktTag) string      { return t.ID }
 
 // ktKeys lists the rows of r a scope admits, each as key names it.
-func ktKeys[T any](t *testing.T, db *sql.DB, d filter.Dialect, r *parse.Resource[T], scope parse.Scope, key func(T) string) []string {
+func ktKeys[T any](t *testing.T, r *parse.Resource[T], scope parse.Scope, key func(T) string) []string {
 	t.Helper()
 	req, err := r.ParseList(url.Values{})
 	require.NoError(t, err)
-	plan, err := r.BuildList(d, req, scope)
-	require.NoError(t, err)
 	var out []string
-	for _, item := range listPage(t, db, r, d, plan).Items {
+	for _, item := range listPage(t, r, req, scope).Items {
 		out = append(out, key(item))
 	}
 	return out
 }
 
 // ktNames lists every row of r, each as name writes it, in key order.
-func ktNames[T any](t *testing.T, db *sql.DB, d filter.Dialect, r *parse.Resource[T], name func(T) string) []string {
+func ktNames[T any](t *testing.T, r *parse.Resource[T], name func(T) string) []string {
 	t.Helper()
-	return ktKeys(t, db, d, r, parse.Scope{}, name)
+	return ktKeys(t, r, parse.Scope{}, name)
 }
 
 func ktPatch[T any](t *testing.T, r *parse.Resource[T], raw string) *patch.ParsedPatch {
@@ -460,11 +458,9 @@ func ktPatch[T any](t *testing.T, r *parse.Resource[T], raw string) *patch.Parse
 
 // ktBatch applies one update batch and returns the changed rows' keys, as
 // key names them, in the order the batch returns them.
-func ktBatch[T any](t *testing.T, db *sql.DB, d filter.Dialect, r *parse.Resource[T], rows []parse.RowUpdate, key func(T) string) []string {
+func ktBatch[T any](t *testing.T, r *parse.Resource[T], rows []parse.RowUpdate, key func(T) string) []string {
 	t.Helper()
-	plan, err := r.BuildUpdateBatch(d, rows, parse.Scope{}, parse.UpdateBatchLimits{})
-	require.NoError(t, err)
-	res, err := applyUpdateBatch(t, db, r, d, plan)
+	res, err := r.UpdateBatch(t.Context(), rows, parse.Scope{}, parse.UpdateBatchLimits{})
 	require.NoError(t, err)
 	var out []string
 	for _, row := range res.Changed {

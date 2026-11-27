@@ -13,7 +13,7 @@ import (
 )
 
 func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {
-	r := governedDocuments(t)
+	r := governedDocuments(t, onPostgres)
 	build := func(t *testing.T, scope parse.Scope) (*parse.ListPlan, error) {
 		t.Helper()
 		req, err := r.ParseListInput(parse.ListInput{
@@ -21,7 +21,7 @@ func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {
 			Facets: []string{"notes", "labels"}, Include: []string{"notes", "labels"},
 		})
 		require.NoError(t, err)
-		return r.BuildList(filter.PostgresDialect{}, req, scope)
+		return r.BuildList(req, scope)
 	}
 
 	t.Run("every relation tenant column is compared with the row's", func(t *testing.T) {
@@ -88,16 +88,16 @@ func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {
 	})
 
 	t.Run("a resource without a tenant column holds relations to Scope.Tenant", func(t *testing.T) {
-		labels := parse.MustResource[govLabel]("labels", parse.TenantColumn("tenant_id"))
-		boards := parse.MustResource[untenantedDevice]("boards")
+		labels := parse.MustResource[govLabel](onPostgres, "labels", parse.TenantColumn("tenant_id"))
+		boards := parse.MustResource[untenantedDevice](onPostgres, "boards")
 		boards.MustRelate("labels", parse.ManyToMany(labels,
 			parse.Junction{Table: "board_labels", Source: []string{"device_id"}, Target: []string{"label_id"}, Tenant: "tenant_id"}, parse.Indexed()))
 		req, err := boards.ParseListInput(parse.ListInput{Filter: `{"labels":"la"}`})
 		require.NoError(t, err)
-		plan, err := boards.BuildList(filter.PostgresDialect{}, req, parse.Scope{Governance: govEq("id", int64(1)), Tenant: "A"})
+		plan, err := boards.BuildList(req, parse.Scope{Governance: govEq("id", int64(1)), Tenant: "A"})
 		require.NoError(t, err)
 		assert.Contains(t, plan.Page.Args, "A")
-		_, err = boards.BuildList(filter.PostgresDialect{}, req, parse.Scope{Governance: govEq("id", int64(1))})
+		_, err = boards.BuildList(req, parse.Scope{Governance: govEq("id", int64(1))})
 		assert.ErrorContains(t, err, "tenant-scoped", "its relations still need a tenant")
 	})
 }

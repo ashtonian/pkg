@@ -19,7 +19,7 @@ import (
 // query, keyed as BuildFacetQuery and FacetKeys give them.
 func TestNumberKeys(t *testing.T) {
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
-		db := b.open(t)
+		_, db := b.open(t)
 		schema, err := filtertest.NumberKeySchema()
 		require.NoError(t, err)
 		table := schemaTable(schema)

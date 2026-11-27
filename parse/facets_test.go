@@ -39,21 +39,21 @@ func TestBuildFacets_TheStatementAListPageCarries(t *testing.T) {
 	}
 	req, err := res.ParseFacets(q)
 	require.NoError(t, err)
-	got, err := res.BuildFacets(filter.PostgresDialect{}, req, scope)
+	got, err := res.BuildFacets(req, scope)
 	require.NoError(t, err)
 
 	q.Set(filter.ParamSort, "-rank")
 	q.Set(filter.ParamPageSize, "2")
 	page, err := res.ParseList(q)
 	require.NoError(t, err)
-	plan, err := res.BuildList(filter.PostgresDialect{}, page, scope)
+	plan, err := res.BuildList(page, scope)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, plan.Facets, got)
 
 	none, err := res.ParseFacets(url.Values{"name": {"a"}})
 	require.NoError(t, err)
-	got, err = res.BuildFacets(filter.PostgresDialect{}, none, scope)
+	got, err = res.BuildFacets(none, scope)
 	require.NoError(t, err)
 	assert.Nil(t, got, "no facets, no statement")
 }

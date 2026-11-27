@@ -1,6 +1,6 @@
 //go:build unit
 
-package parsesqlite_test
+package parsesql_test
 
 import (
 	"database/sql"
@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 
-	"github.com/ashtonian/pkg/parse/parsesqlite"
+	"github.com/ashtonian/pkg/parse/parsesql"
 )
 
 // sqliteMinimum is the supported SQLite release as the README states it.
@@ -27,7 +27,7 @@ func TestDriver_MeetsTheSQLiteMinimum(t *testing.T) {
 	require.NoError(t, err)
 	stated := sqliteMinimum.FindSubmatch(readme)
 	require.NotNil(t, stated, "README.md states the SQLite minimum as %s", sqliteMinimum)
-	assert.Equal(t, parsesqlite.MinSQLiteVersion, string(stated[1]), "the README states the minimum CheckVersion enforces")
+	assert.Equal(t, parsesql.MinSQLiteVersion, string(stated[1]), "the README states the minimum CheckVersion enforces")
 
 	queries := []struct {
 		name, query, want string
@@ -47,7 +47,7 @@ func TestDriver_MeetsTheSQLiteMinimum(t *testing.T) {
 
 	var version string
 	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT sqlite_version()`).Scan(&version))
-	require.NoError(t, parsesqlite.CheckVersion(version), "modernc.org/sqlite")
+	require.NoError(t, parsesql.CheckVersion(version), "modernc.org/sqlite")
 
 	_, err = db.ExecContext(t.Context(), `CREATE TABLE probe (k INTEGER PRIMARY KEY)`)
 	require.NoError(t, err)

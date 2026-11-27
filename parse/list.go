@@ -509,7 +509,8 @@ type Statement struct {
 	Args []any
 }
 
-// ListPlan is a list request compiled for one dialect.
+// ListPlan is a list request compiled for its resource's provider
+// (BuildList).
 type ListPlan struct {
 	// Page selects Columns for the page: up to Limit+1 rows, in keyset order.
 	Page Statement
@@ -528,9 +529,8 @@ type ListPlan struct {
 	Keyset filter.CursorPlan
 	Limit  int
 
-	dialect filter.Dialect
 	// fields is the filter schema the plan compiled, its includes' targets
-	// compiled for dialect.
+	// included.
 	fields *filter.ResourceSchema
 	table  string
 	// relations is the scope the plan's statements reach related rows
@@ -540,31 +540,27 @@ type ListPlan struct {
 	relations filter.RelationScope
 }
 
-// Dialect is the dialect the plan's statements are written for.
-func (p *ListPlan) Dialect() filter.Dialect { return p.dialect }
-
-// BuildList compiles req for dialect d under scope s: the tenant floor (or
-// governance), soft-delete masking and policy ANDed with the request's
-// filter, the request's sort with the key as the final keyset column, the
-// cursor's seek, search, and the count and facets when asked. A nil req is a
-// first page with no filter; a request another resource parsed, a WithPaths
-// view's or its base's included, is ErrForeign. Computed columns (ReadExpr)
-// compile as d's expressions; a dialect one refuses is an error.
-func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*ListPlan, error) {
+// BuildList compiles req under scope s into the statements List runs: the
+// tenant floor (or governance), soft-delete masking and policy ANDed with
+// the request's filter, the request's sort with the key as the final keyset
+// column, the cursor's seek, search, and the count and facets when asked.
+// The SQL is the provider's dialect's. A nil req is a first page with no
+// filter; a request another resource parsed, a WithPaths view's or its
+// base's included, is ErrForeign.
+func (r *Resource[T]) BuildList(req *ListRequest, s Scope) (*ListPlan, error) {
 	if req == nil {
 		req = &ListRequest{pageSize: r.pageSize, now: r.cfg.Now(), schema: r.filterSchema}
 	}
 	if req.schema != r.filterSchema {
 		return nil, fmt.Errorf("parse: %s: list request: %w", r.table, ErrForeign)
 	}
-	exprs, err := r.computedSQL(d)
-	if err != nil {
-		return nil, err
-	}
 	// A governed list's rows span tenants; a resource with a tenant column
 	// holds each row's relations to the row's own.
 	rowTenant := s.governed() && r.tenant != ""
-	var tenant any
+	var (
+		tenant any
+		err    error
+	)
 	if !rowTenant {
 		if tenant, err = r.bindTenant(s.Tenant); err != nil {
 			return nil, err
@@ -574,10 +570,6 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		TenantColumn: r.tenant, TenantID: tenant,
 		DeleteColumn: r.deleted, IncludeDeleted: s.IncludeDeleted && r.deleted != "",
 	}, s.Governance, s.Policy)
-
-	if err := r.checkTargets(d, req.include...); err != nil {
-		return nil, err
-	}
 
 	relations := filter.RelationScope{Tenant: tenant, Related: s.Related, Now: req.now}
 	if rowTenant {
@@ -602,7 +594,7 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 	if len(req.facets) > 0 {
 		opts = append(opts, filter.ListFacets(req.facets...))
 	}
-	lq, err := newListQuery(r.filterSchema, r.sortSchema, r.searchSchema, d, r.cfg)
+	lq, err := newListQuery(r.filterSchema, r.sortSchema, r.searchSchema, r.dialect, r.cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -611,13 +603,12 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		return nil, err
 	}
 	plan := &ListPlan{
-		Page:      Statement{SQL: "SELECT " + strings.Join(r.columns(d, exprs), ", ") + " FROM " + d.QuoteIdent(r.table) + " " + res.Fragment, Args: res.Args},
+		Page:      Statement{SQL: "SELECT " + r.projection + " FROM " + r.dialect.QuoteIdent(r.table) + " " + res.Fragment, Args: res.Args},
 		Fragment:  res.Fragment,
 		Facets:    res.Facets,
 		Include:   slices.Clone(req.include),
 		Keyset:    res.Cursor,
 		Limit:     res.Limit,
-		dialect:   d,
 		fields:    r.filterSchema,
 		table:     r.table,
 		relations: relations,
@@ -633,7 +624,8 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 // seek, with has-next / has-previous and both cursors read from the rows'
 // columns.
 func (r *Resource[T]) Page(items []T, plan *ListPlan) (*filter.Page[T], error) {
-	if err := r.ownsPlan(plan); err != nil {
+	err := r.ownsPlan(plan)
+	if err != nil {
 		return nil, err
 	}
 	return filter.NewPage(items, plan.Limit, plan.Keyset, func(item T, column string) (any, error) {
@@ -644,7 +636,8 @@ func (r *Resource[T]) Page(items []T, plan *ListPlan) (*filter.Page[T], error) {
 
 // PagePointers is Page for rows scanned as pointers.
 func (r *Resource[T]) PagePointers(items []*T, plan *ListPlan) (*filter.Page[*T], error) {
-	if err := r.ownsPlan(plan); err != nil {
+	err := r.ownsPlan(plan)
+	if err != nil {
 		return nil, err
 	}
 	return filter.NewPage(items, plan.Limit, plan.Keyset, func(item *T, column string) (any, error) {
@@ -670,7 +663,7 @@ func (r *Resource[T]) IncludeQueries(plan *ListPlan, ownerKeys []Key) ([]filter.
 	opts := []filter.IncludeQueryOption{filter.WithIncludeRelationScope(plan.relations), filter.WithIncludeOwner(plan.fields)}
 	out := make([]filter.IncludeQuery, 0, len(plan.Include))
 	for _, name := range plan.Include {
-		q, err := filter.BuildIncludeQuery(plan.fields.Fields[name], plan.dialect, owners, opts...)
+		q, err := filter.BuildIncludeQuery(plan.fields.Fields[name], r.dialect, owners, opts...)
 		if err != nil {
 			return nil, err
 		}
@@ -680,7 +673,3 @@ func (r *Resource[T]) IncludeQueries(plan *ListPlan, ownerKeys []Key) ([]filter.
 	}
 	return out, nil
 }
-
-// ownsPlan refuses a plan r did not build: its keyset and includes name
-// another table's columns.
-func (r *Resource[T]) ownsPlan(plan *ListPlan) error { return r.owns(plan.header()) }

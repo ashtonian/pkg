@@ -15,7 +15,7 @@ import (
 
 func TestCivilDateSQL(t *testing.T) {
 	runSQLBackends(t, func(t *testing.T, backend sqlBackend) {
-		db := backend.open(t)
+		provider, db := backend.open(t)
 		_, err := db.ExecContext(t.Context(), `CREATE TABLE tasks (id TEXT PRIMARY KEY, due_on DATE)`)
 		require.NoError(t, err)
 		_, err = db.ExecContext(t.Context(), `INSERT INTO tasks VALUES ('leap','2028-02-29'),('today','2026-10-26'),('empty',NULL)`)
@@ -24,12 +24,10 @@ func TestCivilDateSQL(t *testing.T) {
 			_, err = db.ExecContext(t.Context(), `INSERT INTO tasks VALUES ('legacy','2026-10-26T00:00:00Z')`)
 			require.NoError(t, err)
 		}
-		resource := parse.MustResource[civilTask]("tasks")
+		resource := parse.MustResource[civilTask](provider, "tasks")
 		query, err := resource.ParseList(url.Values{"filter": {`{"due_on":{"$lte":"2026-10-26"}}`}, "sort": {"due_on,id"}})
 		require.NoError(t, err)
-		plan, err := resource.BuildList(backend.dialect, query, parse.Scope{})
-		require.NoError(t, err)
-		found := listPage(t, db, resource, backend.dialect, plan).Items
+		found := listPage(t, resource, query, parse.Scope{}).Items
 		if backend.engine == sqliteEngine {
 			require.Len(t, found, 2)
 			assert.Equal(t, "legacy", found[0].ID)
@@ -43,9 +41,7 @@ func TestCivilDateSQL(t *testing.T) {
 		for _, body := range []string{`{"due_on":"2028-02-29"}`, `{"due_on":null}`} {
 			patch, err := resource.ParseMergePatch([]byte(body))
 			require.NoError(t, err)
-			update, err := resource.BuildUpdate(backend.dialect, patch, parse.ByID("today"), parse.Scope{})
-			require.NoError(t, err)
-			res, err := applyUpdate(t, db, resource, backend.dialect, update, false)
+			res, err := applyUpdate(t, resource, false, patch, parse.ByID("today"), parse.Scope{})
 			require.NoError(t, err)
 			require.Len(t, res.Changed, 1)
 			row := res.Changed[0]

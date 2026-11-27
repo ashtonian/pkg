@@ -14,6 +14,8 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
 type walkBase struct {
@@ -364,7 +366,7 @@ func TestStructFields_ReadBooleanTagsStrictly(t *testing.T) {
 		ID   string `json:"id" db:"id"`
 		Slug string `json:"slug" db:"slug" parse:"filter" indexed:"yes"`
 	}
-	_, err := parse.NewResource[misspelt]("misspelts")
+	_, err := parse.NewResource[misspelt](providertest.Compile(filter.SQLiteDialect{}), "misspelts")
 	assert.ErrorContains(t, err, `field Slug: indexed: "yes" is neither true nor false`)
 }
 

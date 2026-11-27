@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -24,7 +23,7 @@ type policyDoc struct {
 // however the request reaches it: through its parent, a whole-array write, or
 // a remove carrying a stray value.
 func TestPatchPolicy_JudgesWhatIsWritten(t *testing.T) {
-	docs, err := parse.NewResource[policyDoc]("docs")
+	docs, err := parse.NewResource[policyDoc](onSQLite, "docs")
 	require.NoError(t, err)
 
 	secret := mustPolicy(t, patch.ForbidPaths("/attrs/secret/**"))
@@ -68,13 +67,13 @@ func mustPolicy(t *testing.T, opts ...patch.PolicyOption) *patch.PatchPolicyCons
 
 // A remove clears the field whatever value the client attached.
 func TestPatch_RemoveCarriesNoValue(t *testing.T) {
-	docs, err := parse.NewResource[policyDoc]("docs")
+	docs, err := parse.NewResource[policyDoc](onSQLite, "docs")
 	require.NoError(t, err)
 	parsed, err := docs.ParsePatch([]byte(`[{"op":"remove","path":"/status","value":"active"}]`))
 	require.NoError(t, err)
 	assert.Nil(t, parsed.Operations[0].Value)
 
-	plan, err := docs.BuildUpdate(filter.SQLiteDialect{}, parsed, parse.ByID("1"), parse.Scope{})
+	plan, err := docs.BuildUpdate(parsed, parse.ByID("1"), parse.Scope{})
 	require.NoError(t, err)
 	assert.Contains(t, plan.Owner.SQL, `SET "status" = NULL`)
 }

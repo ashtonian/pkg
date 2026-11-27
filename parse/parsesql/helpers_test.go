@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/patch"
 )
 
 type tagged struct {
@@ -19,12 +19,10 @@ type tagged struct {
 	Tags []string `json:"tags" db:"-"    parse:"patch" relation:"tagged_tags,item_id,tag_id,id" indexed:"true"`
 }
 
-// taggedItems builds the resource each test runs on.
-func taggedItems() *parse.Resource[tagged] {
-	return parse.MustResource[tagged]("tagged")
-}
-
-func taggedDB(t *testing.T) *sql.DB {
+// taggedItems opens the provider on a fresh SQLite database whose
+// statements dbtest.OnStatement can observe, holding row a named one, and
+// returns the resource each test runs on with the database under it.
+func taggedItems(t *testing.T) (*parse.Resource[tagged], *sql.DB) {
 	t.Helper()
 	db := dbtest.SQLiteHooked(t)
 	for _, stmt := range []string{
@@ -35,24 +33,25 @@ func taggedDB(t *testing.T) *sql.DB {
 		_, err := db.ExecContext(t.Context(), stmt)
 		require.NoError(t, err, stmt)
 	}
-	return db
+	p, err := New(t.Context(), db)
+	require.NoError(t, err)
+	items := parse.MustResource[tagged](p, "tagged")
+	return items, db
 }
 
-func renamePlan(t *testing.T, items *parse.Resource[tagged], body string) *parse.UpdatePlan {
+// rename is a merge patch of row a's name.
+func rename(t *testing.T, items *parse.Resource[tagged], name string) *patch.ParsedPatch {
 	t.Helper()
-	p, err := items.ParseMergePatch([]byte(body))
+	p, err := items.ParseMergePatch([]byte(`{"name":"` + name + `"}`))
 	require.NoError(t, err)
-	plan, err := items.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByID("a"), parse.Scope{})
-	require.NoError(t, err)
-	return plan
+	return p
 }
 
-// storedName reads row a's name through db, which may be any Queryer.
-func storedName(t *testing.T, db Queryer, items *parse.Resource[tagged]) string {
+// storedName reads row a's name through items, which may be scoped to a
+// transaction.
+func storedName(t *testing.T, items *parse.Resource[tagged]) string {
 	t.Helper()
-	list, err := items.BuildList(filter.SQLiteDialect{}, nil, parse.Scope{})
-	require.NoError(t, err)
-	page, err := QueryPage(t.Context(), db, items, list)
+	page, err := items.List(t.Context(), nil, parse.Scope{})
 	require.NoError(t, err)
 	require.Len(t, page.Items, 1)
 	return page.Items[0].Name

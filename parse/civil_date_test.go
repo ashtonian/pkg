@@ -1,3 +1,5 @@
+//go:build unit || integration
+
 package parse_test
 
 import (
@@ -18,22 +20,25 @@ type civilTask struct {
 }
 
 func TestCivilDateRequestContract(t *testing.T) {
-	resource := parse.MustResource[civilTask]("tasks")
-	_, err := parse.NewResource[civilTask]("tasks", parse.ColumnType("due_on", core.SQLDate))
+	resource := parse.MustResource[civilTask](onSQLite, "tasks")
+	_, err := parse.NewResource[civilTask](onSQLite, "tasks", parse.ColumnType("due_on", core.SQLDate))
 	require.NoError(t, err)
 	_, err = parse.NewResource[struct {
 		ID  string `db:"id"`
 		Day string `db:"day"`
-	}]("bad", parse.ColumnType("day", core.SQLDate))
+	}](onSQLite, "bad", parse.ColumnType("day", core.SQLDate))
 	require.Error(t, err)
 
+	for _, provider := range []*parse.Provider{onPostgres, onSQLite} {
+		tasks := parse.MustResource[civilTask](provider, "tasks")
+		for _, day := range []string{"2026-10-26", "2028-02-29"} {
+			query, err := tasks.ParseList(url.Values{"filter": {`{"due_on":{"$lte":"` + day + `"}}`}, "sort": {"due_on,id"}})
+			require.NoError(t, err)
+			_, err = tasks.BuildList(query, parse.Scope{})
+			require.NoError(t, err, provider.Name())
+		}
+	}
 	for _, day := range []string{"2026-10-26", "2028-02-29"} {
-		query, err := resource.ParseList(url.Values{"filter": {`{"due_on":{"$lte":"` + day + `"}}`}, "sort": {"due_on,id"}})
-		require.NoError(t, err)
-		_, err = resource.BuildList(filter.PostgresDialect{}, query, parse.Scope{})
-		require.NoError(t, err)
-		_, err = resource.BuildList(filter.SQLiteDialect{}, query, parse.Scope{})
-		require.NoError(t, err)
 		patch, err := resource.ParseMergePatch([]byte(`{"due_on":"` + day + `"}`))
 		require.NoError(t, err)
 		target, err := resource.ApplyValidatedPatch(patch, civilTask{ID: "one"})
@@ -53,7 +58,7 @@ func TestCivilDateRequestContract(t *testing.T) {
 }
 
 func TestCivilDateNullableBindings(t *testing.T) {
-	for _, dialect := range []parse.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
+	for _, dialect := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
 		var value *core.Date
 		normalized, err := dialect.MarshalValue(value, core.TypeInfo{Type: core.FieldTypeDate})
 		require.NoError(t, err)

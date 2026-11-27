@@ -16,7 +16,7 @@ import (
 // A merge patch into a map keyed by an integer or by a type with text
 // methods applies as encoding/json decodes the members over the map.
 func TestMergePatch_MapKeysDecodeAsEncodingJSON(t *testing.T) {
-	r := parse.MustResource[keyedMaps]("keyed_maps")
+	r := parse.MustResource[keyedMaps](onSQLite, "keyed_maps")
 	for _, tc := range keyedMapMerges() {
 		t.Run(tc.name, func(t *testing.T) {
 			parsed, err := r.ParseMergePatch([]byte(tc.body))
@@ -29,7 +29,7 @@ func TestMergePatch_MapKeysDecodeAsEncodingJSON(t *testing.T) {
 }
 
 func TestMergePatch_MapKeysRefused(t *testing.T) {
-	r := parse.MustResource[keyedMaps]("keyed_maps")
+	r := parse.MustResource[keyedMaps](onSQLite, "keyed_maps")
 	for _, tc := range keyedMapRefusals() {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := r.ParseMergePatch([]byte(tc.body))

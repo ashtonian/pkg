@@ -27,19 +27,19 @@ import (
 func TestTimestamps(t *testing.T) {
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
 		if b.engine == postgresEngine {
-			db := b.open(t)
+			provider, db := b.open(t)
 			var zone, style string
 			require.NoError(t, db.QueryRowContext(t.Context(), "SELECT current_setting('TimeZone'), current_setting('DateStyle')").Scan(&zone, &style))
 			require.Equal(t, "Asia/Kolkata", zone)
 			require.Equal(t, "SQL, DMY", style)
-			runTimestamps(t, b, db)
+			runTimestamps(t, b, provider, db)
 			return
 		}
 		for _, atType := range []string{"TEXT", "DATETIME"} {
 			t.Run(atType, func(t *testing.T) {
 				b := b.with(storing(core.FieldTypeTimestamp, atType))
-				db := b.open(t)
-				runTimestamps(t, b, db)
+				provider, db := b.open(t)
+				runTimestamps(t, b, provider, db)
 				if atType != "DATETIME" {
 					return
 				}
@@ -56,14 +56,14 @@ func TestTimestamps(t *testing.T) {
 // runTimestamps writes TimestampRecords through the dialect's MarshalValue,
 // each row in its own offset, then checks that facets, filters, sorts and
 // keyset walks on the column read instants: the buckets, rows and orders
-// the fixture names, the same on every backend.
-func runTimestamps(t *testing.T, b sqlBackend, db *sql.DB) {
+// the fixture names, the same on every backend. provider is the one on db.
+func runTimestamps(t *testing.T, b sqlBackend, provider *parse.Provider, db *sql.DB) {
 	t.Helper()
 	schema, err := filtertest.TimestampSchema()
 	require.NoError(t, err)
 	table := schemaTable(schema)
 	b.load(t, db, table, recordRows(t, table, filtertest.TimestampRecords()))
-	res, err := parse.NewResource[filtertest.TimestampRecord](schema.Name, parse.PageSize(walkPage, walkPage))
+	res, err := parse.NewResource[filtertest.TimestampRecord](provider, schema.Name, parse.PageSize(walkPage, walkPage))
 	require.NoError(t, err)
 
 	t.Run("facet", func(t *testing.T) {
@@ -82,6 +82,6 @@ func runTimestamps(t *testing.T, b sqlBackend, db *sql.DB) {
 		})
 	}
 
-	walkOrders(t, walker[filtertest.TimestampRecord]{db: db, dialect: b.dialect, resource: res,
+	walkOrders(t, walker[filtertest.TimestampRecord]{resource: res,
 		id: func(r filtertest.TimestampRecord) string { return r.ID }}, filtertest.TimestampOrders)
 }

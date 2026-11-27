@@ -4,8 +4,10 @@ package parse_test
 
 import (
 	"encoding/json"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
@@ -29,10 +31,8 @@ func TestTypedDocumentSQLiteParity(t *testing.T) {
 		ID  string   `json:"id,omitempty" db:"id"`
 		Doc document `json:"doc" db:"doc" parse:"patch"`
 	}
-	p, err := parse.NewResource[row]("rows")
-	if err != nil {
-		t.Fatal(err)
-	}
+	p, err := parse.NewResource[row](onSQLite, "rows")
+	require.NoError(t, err)
 	for _, tc := range []struct {
 		name, body string
 		merge      bool
@@ -49,55 +49,31 @@ func TestTypedDocumentSQLiteParity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db := dbtest.SQLite(t)
 			ctx := t.Context()
-			if _, err := db.ExecContext(ctx, `CREATE TABLE docs (doc TEXT NOT NULL)`); err != nil {
-				t.Fatal(err)
-			}
+			_, err := db.ExecContext(ctx, `CREATE TABLE docs (doc TEXT NOT NULL)`)
+			require.NoError(t, err)
 			initial := row{Doc: document{Dims: dimensions{W: 2, H: 7}, Label: "old", Labels: map[string]string{"old": "value"}, ByName: map[string]dimensions{"old": {W: 3, H: 4}}}}
 			start, err := json.Marshal(initial.Doc)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.ExecContext(ctx, `INSERT INTO docs (doc) VALUES (?)`, string(start)); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+			_, err = db.ExecContext(ctx, `INSERT INTO docs (doc) VALUES (?)`, string(start))
+			require.NoError(t, err)
 			var parsed *patch.ParsedPatch
 			if tc.merge {
 				parsed, err = p.ParseMergePatch([]byte(tc.body))
 			} else {
 				parsed, err = p.ParsePatch([]byte(tc.body))
 			}
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			set, err := patch.BuildPatchSQL(parsed, filter.SQLiteDialect{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.ExecContext(ctx, "UPDATE docs SET "+set.SetClause, set.Args...); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+			_, err = db.ExecContext(ctx, "UPDATE docs SET "+set.SetClause, set.Args...)
+			require.NoError(t, err)
 			got, err := p.ApplyValidatedPatch(parsed, initial)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			encoded, err := json.Marshal(got.Doc)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			var stored string
-			if err := db.QueryRowContext(ctx, "SELECT doc FROM docs").Scan(&stored); err != nil {
-				t.Fatal(err)
-			}
-			var sqlDoc, goDoc any
-			if err := json.Unmarshal([]byte(stored), &sqlDoc); err != nil {
-				t.Fatal(err)
-			}
-			if err := json.Unmarshal(encoded, &goDoc); err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(sqlDoc, goDoc) {
-				t.Fatalf("SQL=%s; Go=%s", stored, encoded)
-			}
+			require.NoError(t, db.QueryRowContext(ctx, "SELECT doc FROM docs").Scan(&stored))
+			assert.JSONEq(t, string(encoded), stored, "SQL and Go agree")
 		})
 	}
 }

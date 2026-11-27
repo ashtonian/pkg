@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"database/sql"
 	"net/url"
 	"slices"
 	"strconv"
@@ -13,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/filter/filtertest"
 )
 
@@ -25,18 +23,16 @@ const walkPage = 2
 // every PathOrders sort.
 func TestPathWalks(t *testing.T) {
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
-		db := loadPathRecords(t, b, pathSchema(t, ""))
-		r, err := parse.NewResource[filtertest.PathRecord]("path_records", parse.PageSize(walkPage, 10))
+		p, _ := loadPathRecords(t, b, pathSchema(t, ""))
+		r, err := parse.NewResource[filtertest.PathRecord](p, "path_records", parse.PageSize(walkPage, 10))
 		require.NoError(t, err)
-		walkOrders(t, walker[filtertest.PathRecord]{db: db, dialect: b.dialect, resource: r,
+		walkOrders(t, walker[filtertest.PathRecord]{resource: r,
 			id: func(r filtertest.PathRecord) string { return r.ID }}, filtertest.PathOrders)
 	})
 }
 
-// walker lists a resource's rows from db; id names a row.
+// walker lists a resource's rows on its provider; id names a row.
 type walker[T any] struct {
-	db       *sql.DB
-	dialect  filter.Dialect
 	resource *parse.Resource[T]
 	id       func(T) string
 }
@@ -72,10 +68,7 @@ func (w walker[T]) walk(t *testing.T, sortParam, cursor string, backward bool) (
 		}
 		req, err := w.resource.ParseList(q)
 		require.NoError(t, err)
-		plan, err := w.resource.BuildList(w.dialect, req, parse.Scope{})
-		require.NoError(t, err)
-		page, err := w.resource.Page(resourceRows(t, w.db, w.resource, w.dialect, plan.Page), plan)
-		require.NoError(t, err)
+		page := listPage(t, w.resource, req, parse.Scope{})
 		ids := ""
 		for _, it := range page.Items {
 			ids += w.id(it)

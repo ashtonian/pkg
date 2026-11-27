@@ -46,9 +46,9 @@ func TestParseList_AListParameterIsGivenOnce(t *testing.T) {
 
 	req, err := res.ParseList(url.Values{"name": {"a", "b"}})
 	require.NoError(t, err)
-	plan, err := res.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: "t1"})
+	plan, err := res.BuildList(req, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
-	assert.Contains(t, plan.Page.SQL, `"widgets"."name" = ANY(`, "a repeated field filter is a set")
+	assert.Contains(t, plan.Page.SQL, `"widgets"."name" IN (SELECT value AS v FROM json_each(?1))`, "a repeated field filter is a set")
 }
 
 func assertListParam(t *testing.T, err error, name string) {

@@ -67,7 +67,7 @@ func TestKeyField_OperatorsFollowItsType(t *testing.T) {
 
 // keyOperators are the operators the key field of a resource of T takes.
 func keyOperators[T any](t *testing.T) []filter.FilterOperator {
-	r, err := parse.NewResource[T]("keyed")
+	r, err := parse.NewResource[T](onSQLite, "keyed")
 	require.NoError(t, err)
 	key, ok := r.FilterSchema().RequestField("id")
 	require.True(t, ok)
@@ -82,7 +82,7 @@ type inetKeyed struct {
 // An inet key's $gt is refused as the field's operator: SQLite would
 // compare its text (10.0.0.10 < 10.0.0.9) and PostgreSQL its address.
 func TestKeyField_RefusesAnUnorderedTypesRange(t *testing.T) {
-	r, err := parse.NewResource[inetKeyed]("inet_keyed")
+	r, err := parse.NewResource[inetKeyed](onSQLite, "inet_keyed")
 	require.NoError(t, err)
 	_, err = r.ParseListInput(parse.ListInput{Filter: `{"id":{"$gt":"10.0.0.9"}}`})
 	var pe *core.ParseError

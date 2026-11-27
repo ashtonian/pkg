@@ -33,9 +33,9 @@ type narrowUser struct {
 
 func ownershipResources(t *testing.T, opts ...parse.ResourceOption) (*parse.Resource[wideUser], *parse.Resource[narrowUser]) {
 	t.Helper()
-	wide, err := parse.NewResource[wideUser]("users", parse.TenantColumn("tenant_id"))
+	wide, err := parse.NewResource[wideUser](onPostgres, "users", parse.TenantColumn("tenant_id"))
 	require.NoError(t, err)
-	narrow, err := parse.NewResource[narrowUser]("users", append([]parse.ResourceOption{
+	narrow, err := parse.NewResource[narrowUser](onPostgres, "users", append([]parse.ResourceOption{
 		parse.TenantColumn("tenant_id"), parse.ReadColumns("id", "tenant_id", "name"),
 	}, opts...)...)
 	require.NoError(t, err)
@@ -55,19 +55,19 @@ func TestBuildList_RefusesARequestItDidNotParse(t *testing.T) {
 
 	wideReq, err := wide.ParseList(secretQuery)
 	require.NoError(t, err)
-	_, err = narrow.BuildList(filter.PostgresDialect{}, wideReq, scope)
+	_, err = narrow.BuildList(wideReq, scope)
 	require.ErrorIs(t, err, parse.ErrForeign)
 	assert.ErrorContains(t, err, "parse: users: list request")
 
-	_, err = narrow.BuildList(filter.PostgresDialect{}, &parse.ListRequest{}, scope)
+	_, err = narrow.BuildList(&parse.ListRequest{}, scope)
 	require.ErrorIs(t, err, parse.ErrForeign, "a hand-built request")
 
 	own, err := narrow.ParseList(url.Values{filter.ParamFilter: {`{"name":"a"}`}})
 	require.NoError(t, err)
-	plan, err := narrow.BuildList(filter.PostgresDialect{}, own, scope)
+	plan, err := narrow.BuildList(own, scope)
 	require.NoError(t, err)
 	assert.NotContains(t, plan.Page.SQL, "secret")
-	_, err = narrow.BuildList(filter.PostgresDialect{}, nil, scope)
+	_, err = narrow.BuildList(nil, scope)
 	require.NoError(t, err, "a nil request is a first page")
 }
 
@@ -84,20 +84,20 @@ func TestWithPaths_ViewAndBaseKeepTheirOwnRequests(t *testing.T) {
 	require.NoError(t, err)
 	viewReq, err := view.ParseList(q)
 	require.NoError(t, err)
-	_, err = view.BuildList(filter.SQLiteDialect{}, viewReq, scope)
+	_, err = view.BuildList(viewReq, scope)
 	require.NoError(t, err)
-	_, err = view.BuildList(filter.SQLiteDialect{}, baseReq, scope)
+	_, err = view.BuildList(baseReq, scope)
 	require.ErrorIs(t, err, parse.ErrForeign)
-	_, err = base.BuildList(filter.SQLiteDialect{}, viewReq, scope)
+	_, err = base.BuildList(viewReq, scope)
 	require.ErrorIs(t, err, parse.ErrForeign)
 
 	baseFilter, err := base.ParseFilterMap(map[string]any{"name": "a"})
 	require.NoError(t, err)
 	p, err := base.ParseMergePatch([]byte(`{"name":"b"}`))
 	require.NoError(t, err)
-	_, err = view.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByFilter(baseFilter), scope)
+	_, err = view.BuildUpdate(p, parse.ByFilter(baseFilter), scope)
 	require.ErrorIs(t, err, parse.ErrForeign)
-	_, err = view.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByID("u1"), scope)
+	_, err = view.BuildUpdate(p, parse.ByID("u1"), scope)
 	require.NoError(t, err, "the view shares its base's patch schema")
 }
 
@@ -106,7 +106,6 @@ func TestWithPaths_ViewAndBaseKeepTheirOwnRequests(t *testing.T) {
 func TestBuildUpdate_RefusesAFilterOrPatchItDidNotParse(t *testing.T) {
 	wide, narrow := ownershipResources(t)
 	scope := parse.Scope{Tenant: "t1"}
-	d := filter.PostgresDialect{}
 
 	ownPatch, err := narrow.ParseMergePatch([]byte(`{"name":"b"}`))
 	require.NoError(t, err)
@@ -127,14 +126,14 @@ func TestBuildUpdate_RefusesAFilterOrPatchItDidNotParse(t *testing.T) {
 		"a nil patch":               {nil, parse.ByID("u1")},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := narrow.BuildUpdate(d, tc.patch, tc.target, scope)
+			_, err := narrow.BuildUpdate(tc.patch, tc.target, scope)
 			require.ErrorIs(t, err, parse.ErrForeign)
 		})
 	}
 
 	_, err = narrow.ApplyValidatedPatch(widePatch, narrowUser{})
 	require.ErrorIs(t, err, parse.ErrForeign)
-	_, err = narrow.BuildUpdateBatch(d, []parse.RowUpdate{{Key: parse.Key{"u1"}, Patch: ownPatch}, {Key: parse.Key{"u2"}, Patch: widePatch}}, scope, parse.UpdateBatchLimits{})
+	_, err = narrow.BuildUpdateBatch([]parse.RowUpdate{{Key: parse.Key{"u1"}, Patch: ownPatch}, {Key: parse.Key{"u2"}, Patch: widePatch}}, scope, parse.UpdateBatchLimits{})
 	require.ErrorIs(t, err, parse.ErrForeign)
 	assert.ErrorContains(t, err, "update batch row 1 patch")
 
@@ -142,7 +141,7 @@ func TestBuildUpdate_RefusesAFilterOrPatchItDidNotParse(t *testing.T) {
 	require.NoError(t, err)
 	ownFilter, err := narrow.ParseFilterMap(map[string]any{"name": "a"})
 	require.NoError(t, err)
-	_, err = narrow.BuildUpdate(d, serverPatch, parse.ByFilter(ownFilter), scope)
+	_, err = narrow.BuildUpdate(serverPatch, parse.ByFilter(ownFilter), scope)
 	require.NoError(t, err, "the server patch schema is the resource's too")
 }
 
@@ -165,7 +164,7 @@ func TestListRequest_WithFilterKeepsTheRequestSealed(t *testing.T) {
 	assert.Same(t, own, filtered.Filter())
 	assert.Equal(t, 7, filtered.PageSize())
 	assert.Nil(t, req.Filter(), "the original request is unchanged")
-	_, err = narrow.BuildList(filter.SQLiteDialect{}, filtered, parse.Scope{Tenant: "t1"})
+	_, err = narrow.BuildList(filtered, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
 }
 
@@ -201,13 +200,13 @@ func TestSchemaAccessors_HandOutCopies(t *testing.T) {
 // Customization runs before the read-set checks, and a schema the function
 // keeps changes nothing once the resource is built.
 func TestCustomizeSchemas_IsHeldToTheReadSet(t *testing.T) {
-	_, err := parse.NewResource[narrowUser]("users", parse.ReadColumns("id", "tenant_id", "name"), parse.CustomizeSchemas(func(s parse.Schemas) error {
+	_, err := parse.NewResource[narrowUser](onPostgres, "users", parse.ReadColumns("id", "tenant_id", "name"), parse.CustomizeSchemas(func(s parse.Schemas) error {
 		s.Filter.Fields["secret"] = &filter.FieldSchema{ExternalName: "secret", Table: "users", Column: "secret", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq}}
 		return nil
 	}))
 	require.ErrorContains(t, err, `"secret"`, "a customized field over a withheld column is refused")
 
-	_, err = parse.NewResource[narrowUser]("users", parse.CustomizeSchemas(func(parse.Schemas) error { return assert.AnError }))
+	_, err = parse.NewResource[narrowUser](onPostgres, "users", parse.CustomizeSchemas(func(parse.Schemas) error { return assert.AnError }))
 	require.ErrorIs(t, err, assert.AnError)
 
 	var kept parse.Schemas

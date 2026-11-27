@@ -15,7 +15,6 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
-	"github.com/ashtonian/pkg/parse/parsepgx"
 )
 
 type endpoint struct {
@@ -43,7 +42,7 @@ var endpointTypes = []parse.ResourceOption{
 func TestColumnType_ReadsNetworkAndIntervalColumns(t *testing.T) {
 	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
 	ctx := testContext(t)
-	setup := c.open(t, pgx.QueryExecModeCacheStatement)
+	setup := c.open(t, ctx, pgx.QueryExecModeCacheStatement)
 	full, empty := uuid.Must(uuid.NewV7()), uuid.Must(uuid.NewV7())
 	for _, stmt := range []string{
 		`CREATE TABLE endpoints (id uuid PRIMARY KEY, addr inet NOT NULL, net cidr, every interval NOT NULL,
@@ -60,37 +59,33 @@ func TestColumnType_ReadsNetworkAndIntervalColumns(t *testing.T) {
 			Allowed: []string{"10.0.0.1", "10.1.0.0/16", "::1"}, Nets: []string{"192.168.0.0/16"}, Spans: []string{"PT1H", "P3D"}},
 		{ID: empty, Addr: "10.1.0.0/16", Every: "PT0S", Nets: []string{}},
 	}
-	list := func(t *testing.T, r *parse.Resource[endpoint]) *parse.ListPlan {
+	list := func(t *testing.T, r *parse.Resource[endpoint]) (*filter.Page[endpoint], error) {
 		t.Helper()
 		req, err := r.ParseList(url.Values{"sort": {"id"}})
 		require.NoError(t, err)
-		plan, err := r.BuildList(filter.PostgresDialect{}, req, parse.Scope{})
-		require.NoError(t, err)
-		return plan
+		return r.List(ctx, req, parse.Scope{})
 	}
 
-	plain := parse.MustResource[endpoint]("endpoints")
-	_, err := parsepgx.QueryPage(ctx, setup, plain, list(t, plain))
+	onSetup := provider(t, ctx, setup)
+	_, err := list(t, parse.MustResource[endpoint](onSetup, "endpoints"))
 	require.ErrorContains(t, err, "cannot scan inet", "the defect the declarations fix")
 
-	typed := parse.MustResource[endpoint]("endpoints", endpointTypes...)
 	for name, mode := range map[string]pgx.QueryExecMode{
 		"extended": pgx.QueryExecModeCacheStatement,
 		"simple":   pgx.QueryExecModeSimpleProtocol,
 	} {
 		t.Run(name, func(t *testing.T) {
-			pool := c.open(t, mode)
-			page, err := parsepgx.QueryPage(ctx, pool, typed, list(t, typed))
+			typed := parse.MustResource[endpoint](provider(t, ctx, c.open(t, ctx, mode)), "endpoints", endpointTypes...)
+			page, err := list(t, typed)
 			require.NoError(t, err)
 			assert.Equal(t, want, page.Items)
 		})
 	}
 
+	typed := parse.MustResource[endpoint](onSetup, "endpoints", endpointTypes...)
 	p, err := typed.ParseMergePatch([]byte(`{"addr":"192.168.1.1","allowed":["::2","10.2.0.0/24"]}`))
 	require.NoError(t, err)
-	plan, err := typed.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID(empty), parse.Scope{})
-	require.NoError(t, err)
-	got, err := parsepgx.Update(ctx, setup, typed, plan)
+	got, err := typed.Update(ctx, p, parse.ByID(empty), parse.Scope{})
 	require.NoError(t, err)
 	require.Len(t, got.Changed, 1)
 	assert.Equal(t, "192.168.1.1", got.Changed[0].Addr, "RETURNING reads the column as the list does")

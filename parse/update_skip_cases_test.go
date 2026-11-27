@@ -31,9 +31,9 @@ func noteColumns() []string {
 	return columns
 }
 
-func notes(t *testing.T) *parse.Resource[note] {
+func notes(t *testing.T, p *parse.Provider) *parse.Resource[note] {
 	t.Helper()
-	r, err := parse.NewResource[note]("notes", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"),
+	r, err := parse.NewResource[note](p, "notes", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"),
 		parse.ReadColumns(noteColumns()...))
 	require.NoError(t, err)
 	return r
@@ -43,13 +43,22 @@ func skipAt() time.Time {
 	return time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 }
 
-// skipUpdate builds a SkipUnchanged plan that stamps and counts.
-func skipUpdate(t *testing.T, r *parse.Resource[note], d parse.Dialect, body string, target parse.Target) *parse.UpdatePlan {
+// skipOptions are a SkipUnchanged update's that stamps and counts.
+func skipOptions() []parse.UpdateOption {
+	opts := []parse.UpdateOption{parse.Stamp("updated_at", skipAt()), parse.Increment("version"), parse.SkipUnchanged()}
+	return opts
+}
+
+// skipUpdate builds body, a merge patch, for target in tenant t1 with opts,
+// skipOptions when there are none.
+func skipUpdate(t *testing.T, r *parse.Resource[note], body string, target parse.Target, opts ...parse.UpdateOption) *parse.UpdatePlan {
 	t.Helper()
+	if len(opts) == 0 {
+		opts = skipOptions()
+	}
 	p, err := r.ParseMergePatch([]byte(body))
 	require.NoError(t, err)
-	plan, err := r.BuildUpdate(d, p, target, parse.Scope{Tenant: "t1"},
-		parse.Stamp("updated_at", skipAt()), parse.Increment("version"), parse.SkipUnchanged())
+	plan, err := r.BuildUpdate(p, target, parse.Scope{Tenant: "t1"}, opts...)
 	require.NoError(t, err)
 	return plan
 }

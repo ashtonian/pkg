@@ -29,11 +29,11 @@ func listResources(t *testing.T) map[string]listEntryPoints {
 		ID   string `db:"id"   parse:"filter,sort"`
 		Name string `db:"name" parse:"filter"`
 	}
-	bare, err := parse.NewResource[widget]("widgets", atOneInstant())
+	bare, err := parse.NewResource[widget](onSQLite, "widgets", atOneInstant())
 	require.NoError(t, err)
-	plain, err := parse.NewResource[unsearchable]("plains", atOneInstant())
+	plain, err := parse.NewResource[unsearchable](onSQLite, "plains", atOneInstant())
 	require.NoError(t, err)
-	accepting, err := parse.NewResource[widget]("widgets", parse.AcceptParams("_", "view"), atOneInstant())
+	accepting, err := parse.NewResource[widget](onSQLite, "widgets", parse.AcceptParams("_", "view"), atOneInstant())
 	require.NoError(t, err)
 	return map[string]listEntryPoints{"widgets": widgets(t), "bare": bare, "unsearchable": plain, "accepting": accepting}
 }
@@ -218,7 +218,7 @@ func TestParseListInput_FieldFiltersAreNeverListParameters(t *testing.T) {
 		ID   string `json:"id"   db:"id"   parse:"filter,sort"`
 		Sort string `json:"sort" db:"sort" parse:"filter"`
 	}
-	views, err := parse.NewResource[view]("views")
+	views, err := parse.NewResource[view](onSQLite, "views")
 	require.NoError(t, err)
 	req, err := views.ParseListInput(parse.ListInput{FieldFilters: map[string][]string{"sort": {"name"}}})
 	require.NoError(t, err)
@@ -242,7 +242,7 @@ func TestParseListInput_FieldMask(t *testing.T) {
 		Avatar string   `json:"avatar" db:"-"`
 		Roles  []string `json:"roles"  db:"-"      parse:"filter" relation:"account_roles,account_id,role_id"`
 	}
-	accounts, err := parse.NewResource[account]("accounts",
+	accounts, err := parse.NewResource[account](onSQLite, "accounts",
 		parse.ReadColumns("id", "email", "label", "secret"), parse.QueryOnlyColumns("notes"),
 		parse.ReadExpr("label", parse.SQL("upper(accounts.email)")))
 	require.NoError(t, err)
@@ -286,7 +286,7 @@ func TestParseListInput_FieldMembersFollowTheJSONEncoding(t *testing.T) {
 		Title string `bson:"title"            db:"title"`
 		Score int    `bson:"score" json:"-"  db:"score"`
 	}
-	records, err := parse.NewResource[record]("records", parse.ParserOptions(core.WithGeneratorOptions(core.WithFieldNameTag("bson"))))
+	records, err := parse.NewResource[record](onSQLite, "records", parse.ParserOptions(core.WithGeneratorOptions(core.WithFieldNameTag("bson"))))
 	require.NoError(t, err)
 
 	tests := []struct {

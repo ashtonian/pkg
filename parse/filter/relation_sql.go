@@ -32,12 +32,8 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	if err != nil {
 		return "", unresolvableRelation(node.Field, err.Error())
 	}
-	// The target's predicates read its computed columns as the owner's
-	// dialect does; one the dialect refuses fails the build.
-	exprs, err := target.resolve(b.dialect)
-	if err != nil {
-		return "", err
-	}
+	// The target's predicates read its computed columns.
+	exprs := target.ComputedSQL()
 	depth := b.depth + 1
 	visible := append([]string{b.schema.Name}, b.visible...)
 	bind := s.binder(b.dialect)

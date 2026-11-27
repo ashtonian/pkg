@@ -47,13 +47,14 @@ func resolvedStores(t *testing.T, db *sql.DB, d filter.Dialect, tables ...string
 }
 
 // assertResolvedFilters requires each filter document to select the rows
-// of r outside SQL that it selects in SQL, through every lookup.
-func assertResolvedFilters[T any](t *testing.T, db *sql.DB, d filter.Dialect, store governedMemory, lookups map[string]resolvedLookup, r *parse.Resource[T], docs ...string) {
+// of r outside SQL that it selects in SQL on r's provider, through every
+// lookup.
+func assertResolvedFilters[T any](t *testing.T, store governedMemory, lookups map[string]resolvedLookup, r *parse.Resource[T], docs ...string) {
 	t.Helper()
 	types := resourceKeyTypes(t, r)
 	for _, doc := range docs {
 		var want []string
-		for _, item := range crxPage(t, db, d, r, url.Values{filter.ParamFilter: {doc}}).Items {
+		for _, item := range crxPage(t, r, url.Values{filter.ParamFilter: {doc}}).Items {
 			key, err := r.Key(&item)
 			require.NoError(t, err)
 			want = append(want, keyText(t, types, key))
@@ -81,10 +82,11 @@ func assertResolvedFilters[T any](t *testing.T, db *sql.DB, d filter.Dialect, st
 }
 
 // assertResolvedIncludes requires each include of every row of r outside
-// SQL to name the owners and targets SQL names, through every lookup.
-func assertResolvedIncludes[T any](t *testing.T, db *sql.DB, d filter.Dialect, lookups map[string]resolvedLookup, r *parse.Resource[T], fields ...string) {
+// SQL to name the owners and targets SQL on r's provider names, through
+// every lookup.
+func assertResolvedIncludes[T any](t *testing.T, lookups map[string]resolvedLookup, r *parse.Resource[T], fields ...string) {
 	t.Helper()
-	page := crxPage(t, db, d, r, url.Values{filter.ParamInclude: {strings.Join(fields, ",")}})
+	page := crxPage(t, r, url.Values{filter.ParamInclude: {strings.Join(fields, ",")}})
 	owners := make([]core.Key, len(page.Items))
 	for i := range page.Items {
 		key, err := r.Key(&page.Items[i])

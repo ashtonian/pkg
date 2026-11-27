@@ -19,7 +19,7 @@ import (
 
 func limitedDocs(t *testing.T, opts ...core.Option) *parse.Resource[limitedDoc] {
 	t.Helper()
-	r, err := parse.NewResource[limitedDoc]("limited", parse.ParserOptions(opts...))
+	r, err := parse.NewResource[limitedDoc](onSQLite, "limited", parse.ParserOptions(opts...))
 	require.NoError(t, err)
 	return r
 }

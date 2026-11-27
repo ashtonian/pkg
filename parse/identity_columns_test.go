@@ -83,49 +83,49 @@ func TestNewResource_RefusesIdentityDeclarations(t *testing.T) {
 		build func() error
 		want  string
 	}{
-		{"a patched key", func() error { _, err := parse.NewResource[patchedKey]("docs"); return err },
+		{"a patched key", func() error { _, err := parse.NewResource[patchedKey](onPostgres, "docs"); return err },
 			`parse: docs: patch path /id: writes the key column "id"`},
 		{"a patched tenant column", func() error {
-			_, err := parse.NewResource[patchedTenant]("docs", parse.TenantColumn("tenant_id"))
+			_, err := parse.NewResource[patchedTenant](onPostgres, "docs", parse.TenantColumn("tenant_id"))
 			return err
 		}, `parse: docs: patch path /tenant_id: writes the tenant column "tenant_id"`},
-		{"a server-patched key", func() error { _, err := parse.NewResource[serverKey]("docs"); return err },
+		{"a server-patched key", func() error { _, err := parse.NewResource[serverKey](onPostgres, "docs"); return err },
 			`parse: docs: patch path /id: writes the key column "id"`},
 		{"the key as the deleted column", func() error {
-			_, err := parse.NewResource[softDeleted]("odds", parse.DeletedColumn("id"))
+			_, err := parse.NewResource[softDeleted](onPostgres, "odds", parse.DeletedColumn("id"))
 			return err
 		}, `parse: odds: deleted column "id" is a key column`},
 		{"the tenant column as the deleted column", func() error {
-			_, err := parse.NewResource[softDeleted]("odds", parse.TenantColumn("tenant_id"), parse.DeletedColumn("tenant_id"))
+			_, err := parse.NewResource[softDeleted](onPostgres, "odds", parse.TenantColumn("tenant_id"), parse.DeletedColumn("tenant_id"))
 			return err
 		}, `parse: odds: deleted column "tenant_id" is the tenant column`},
 		{"a bool deleted column", func() error {
-			_, err := parse.NewResource[softDeleted]("odds", parse.DeletedColumn("deleted"))
+			_, err := parse.NewResource[softDeleted](onPostgres, "odds", parse.DeletedColumn("deleted"))
 			return err
 		}, `parse: odds: deleted column "deleted" is bool, which cannot hold NULL`},
 		{"an int deleted column", func() error {
-			_, err := parse.NewResource[softDeleted]("odds", parse.DeletedColumn("n"))
+			_, err := parse.NewResource[softDeleted](onPostgres, "odds", parse.DeletedColumn("n"))
 			return err
 		}, `parse: odds: deleted column "n" is int, which cannot hold NULL`},
 		// Each is an sql.Scanner that never holds NULL: the UUID scans NULL
 		// as the nil UUID it writes back, and the decimal refuses it.
 		{"a UUID deleted column", func() error {
-			_, err := parse.NewResource[softDeleted]("odds", parse.DeletedColumn("ref"))
+			_, err := parse.NewResource[softDeleted](onPostgres, "odds", parse.DeletedColumn("ref"))
 			return err
 		}, `parse: odds: deleted column "ref" is uuid.UUID, which cannot hold NULL`},
 		{"a decimal deleted column", func() error {
-			_, err := parse.NewResource[softDeleted]("odds", parse.DeletedColumn("amount"))
+			_, err := parse.NewResource[softDeleted](onPostgres, "odds", parse.DeletedColumn("amount"))
 			return err
 		}, `parse: odds: deleted column "amount" is decimal.Decimal, which cannot hold NULL`},
 		{"a Scanner that writes nothing", func() error {
-			_, err := parse.NewResource[softDeleted]("odds", parse.DeletedColumn("scanned"))
+			_, err := parse.NewResource[softDeleted](onPostgres, "odds", parse.DeletedColumn("scanned"))
 			return err
 		}, `parse: odds: deleted column "scanned" is parse_test.scanOnly, which cannot hold NULL`},
 		{"a Scanner whose zero value writes a value", func() error {
-			_, err := parse.NewResource[softDeleted]("odds", parse.DeletedColumn("marked"))
+			_, err := parse.NewResource[softDeleted](onPostgres, "odds", parse.DeletedColumn("marked"))
 			return err
 		}, `parse: odds: deleted column "marked" is parse_test.markedNull, which cannot hold NULL`},
-		{"an immutable patched field", func() error { _, err := parse.NewResource[immutablePatch]("imms"); return err },
+		{"an immutable patched field", func() error { _, err := parse.NewResource[immutablePatch](onPostgres, "imms"); return err },
 			`field Slug: an immutable field cannot have the patch capability`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -145,7 +145,7 @@ func TestNewResource_AcceptsWhatARowCanBeServedBy(t *testing.T) {
 		DeletedAt *time.Time          `json:"deleted_at" db:"deleted_at" parse:"patch"`
 	}
 	for _, deleted := range []string{"at", "null_time", "generic"} {
-		_, err := parse.NewResource[nullable]("rows", parse.TenantColumn("tenant_id"), parse.DeletedColumn(deleted))
+		_, err := parse.NewResource[nullable](onPostgres, "rows", parse.TenantColumn("tenant_id"), parse.DeletedColumn(deleted))
 		assert.NoError(t, err, deleted)
 	}
 
@@ -153,7 +153,7 @@ func TestNewResource_AcceptsWhatARowCanBeServedBy(t *testing.T) {
 		TenantID string `json:"tenant_id" db:"tenant_id" parse:"filter"`
 		Name     string `json:"name"      db:"name"      parse:"patch"`
 	}
-	_, err := parse.NewResource[tenantKeyed]("tenants", parse.PrimaryKey("tenant_id"), parse.TenantColumn("tenant_id"))
+	_, err := parse.NewResource[tenantKeyed](onPostgres, "tenants", parse.PrimaryKey("tenant_id"), parse.TenantColumn("tenant_id"))
 	require.NoError(t, err, "a resource whose tenant column is its key")
 
 	// A pointer or a nullable wrapper is the type it holds, for a key or a
@@ -162,16 +162,16 @@ func TestNewResource_AcceptsWhatARowCanBeServedBy(t *testing.T) {
 		ID       *int64  `json:"id"        db:"id"`
 		TenantID *string `json:"tenant_id" db:"tenant_id" parse:"filter"`
 	}
-	_, err = parse.NewResource[pointerKeys]("pointed", parse.TenantColumn("tenant_id"))
+	_, err = parse.NewResource[pointerKeys](onPostgres, "pointed", parse.TenantColumn("tenant_id"))
 	require.NoError(t, err, "a pointer key and tenant column")
 	type wrappedKeys struct {
 		ID       sql.NullInt64  `json:"id"        db:"id"`
 		TenantID sql.NullString `json:"tenant_id" db:"tenant_id" parse:"filter"`
 	}
-	_, err = parse.NewResource[wrappedKeys]("wrapped", parse.TenantColumn("tenant_id"))
+	_, err = parse.NewResource[wrappedKeys](onPostgres, "wrapped", parse.TenantColumn("tenant_id"))
 	require.NoError(t, err, "a wrapper key and tenant column")
 
-	r, err := parse.NewResource[nullable]("rows", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+	r, err := parse.NewResource[nullable](onPostgres, "rows", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
 	require.NoError(t, err)
 	reg := parse.NewSchemaRegistry()
 	require.NoError(t, parse.RegisterResource(reg, r))
@@ -191,7 +191,7 @@ func TestDeletedColumn_AWrapperRowIsLiveWhileNull(t *testing.T) {
 		ID        string       `json:"id"         db:"id"`
 		DeletedAt sql.NullTime `json:"deleted_at" db:"deleted_at"`
 	}
-	r, err := parse.NewResource[note]("notes", parse.DeletedColumn("deleted_at"))
+	r, err := parse.NewResource[note](onPostgres, "notes", parse.DeletedColumn("deleted_at"))
 	require.NoError(t, err)
 	schema := r.FilterSchema()
 	assert.Equal(t, core.FieldTypeTimestamp, schema.SystemFields["deleted_at"].DataType)
@@ -225,7 +225,7 @@ func TestUpdateBuilders_RefuseIdentityWritesAlike(t *testing.T) {
 		Name     string `json:"name"      db:"name"      parse:"patch"`
 		Version  int64  `json:"version"   db:"version"   parse:"server"`
 	}
-	r, err := parse.NewResource[versioned]("versioned", parse.TenantColumn("tenant_id"))
+	r, err := parse.NewResource[versioned](onPostgres, "versioned", parse.TenantColumn("tenant_id"))
 	require.NoError(t, err)
 	scope := parse.Scope{Tenant: "t1"}
 	for _, tc := range []struct {
@@ -247,8 +247,8 @@ func TestUpdateBuilders_RefuseIdentityWritesAlike(t *testing.T) {
 				parsed, err = r.ParseServerMergePatch([]byte(tc.body))
 			}
 			require.NoError(t, err)
-			_, single := r.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID(int64(1)), scope, tc.opts...)
-			_, batch := r.BuildUpdateBatch(filter.PostgresDialect{}, []parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: parsed}}, scope, parse.UpdateBatchLimits{}, tc.opts...)
+			_, single := r.BuildUpdate(parsed, parse.ByID(int64(1)), scope, tc.opts...)
+			_, batch := r.BuildUpdateBatch([]parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: parsed}}, scope, parse.UpdateBatchLimits{}, tc.opts...)
 			if tc.refuse == "" {
 				assert.NoError(t, single)
 				assert.NoError(t, batch)

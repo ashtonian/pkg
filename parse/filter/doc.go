@@ -52,10 +52,10 @@
 // dialect parse supports, whatever it compiles to: the built-in methods call
 // their own receiver's (a statement quotes and binds as the embedded dialect
 // does, whatever the outer type declares), and a plan is matched to its
-// executor by Name alone. Every piece of SQL whose form differs between
+// provider by Name alone. Every piece of SQL whose form differs between
 // databases is a [Dialect] method, the SQL a patch writes and what a row scan
 // decodes included, so a new SQL provider is one type in this package
-// implementing it, and [DialectFromDSN] maps its connection strings to it. A
+// implementing it and a provider package that runs its statements. A
 // dialect's Condition builds a predicate's SQL and arguments together. A
 // `$in` / `$nin` set binds as one array parameter whatever its size:
 // PostgreSQL compares a column with `= ANY`, typed by the column, and joins
@@ -65,11 +65,10 @@
 // through deterministic functions the database must have: [github.com/ashtonian/pkg/parse/parsesqlite.Register] registers
 // them, and [github.com/ashtonian/pkg/parse/parsesqlite.Functions] lists
 // them for another driver. The plans need at least
-// [github.com/ashtonian/pkg/parse/parsesqlite.MinSQLiteVersion], whose JSON
-// paths read every quoted label as written; Register refuses an older library
-// on each connection. A statement cannot tell which release runs
-// it, so SQLiteDialect refuses to write or test a document member whose
-// name holds a double quote or a backslash, as E2070.
+// [github.com/ashtonian/pkg/parse/parsesql.MinSQLiteVersion], whose JSON
+// paths read every quoted label as written, so they write and test a
+// document member whatever its name holds; parsesql.New refuses an older
+// library when it opens the provider.
 //
 // A dialect's TwoValuedCondition renders some predicates a second way that
 // an index serves, used where an even number of $not (usually none) enclose

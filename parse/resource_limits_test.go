@@ -39,7 +39,7 @@ func (c countingCodec) Decode(data []byte, v any) error {
 // built with the resource's config, never the defaults.
 func TestLimitsThreadThroughResource(t *testing.T) {
 	t.Run("MaxConditions", func(t *testing.T) {
-		tp, err := parse.NewResource[limitsDevice]("limits_devices", parse.ParserOptions(core.WithMaxConditions(1)))
+		tp, err := parse.NewResource[limitsDevice](onSQLite, "limits_devices", parse.ParserOptions(core.WithMaxConditions(1)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -53,7 +53,7 @@ func TestLimitsThreadThroughResource(t *testing.T) {
 	})
 
 	t.Run("MaxInputSize filter", func(t *testing.T) {
-		tp, err := parse.NewResource[limitsDevice]("limits_devices", parse.ParserOptions(core.WithMaxInputSize(4)))
+		tp, err := parse.NewResource[limitsDevice](onSQLite, "limits_devices", parse.ParserOptions(core.WithMaxInputSize(4)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -63,7 +63,7 @@ func TestLimitsThreadThroughResource(t *testing.T) {
 	})
 
 	t.Run("MaxInputSize patch", func(t *testing.T) {
-		tp, err := parse.NewResource[limitsDevice]("limits_devices", parse.ParserOptions(core.WithMaxInputSize(4)))
+		tp, err := parse.NewResource[limitsDevice](onSQLite, "limits_devices", parse.ParserOptions(core.WithMaxInputSize(4)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -73,7 +73,7 @@ func TestLimitsThreadThroughResource(t *testing.T) {
 	})
 
 	t.Run("MaxInputSize merge patch", func(t *testing.T) {
-		tp, err := parse.NewResource[limitsDevice]("limits_devices", parse.ParserOptions(core.WithMaxInputSize(4)))
+		tp, err := parse.NewResource[limitsDevice](onSQLite, "limits_devices", parse.ParserOptions(core.WithMaxInputSize(4)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -83,7 +83,7 @@ func TestLimitsThreadThroughResource(t *testing.T) {
 	})
 
 	t.Run("MaxDepth", func(t *testing.T) {
-		tp, err := parse.NewResource[limitsDevice]("limits_devices", parse.ParserOptions(core.WithMaxDepth(1)))
+		tp, err := parse.NewResource[limitsDevice](onSQLite, "limits_devices", parse.ParserOptions(core.WithMaxDepth(1)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -94,7 +94,7 @@ func TestLimitsThreadThroughResource(t *testing.T) {
 	})
 
 	t.Run("MaxArraySize", func(t *testing.T) {
-		tp, err := parse.NewResource[limitsDevice]("limits_devices", parse.ParserOptions(core.WithMaxArraySize(2)))
+		tp, err := parse.NewResource[limitsDevice](onSQLite, "limits_devices", parse.ParserOptions(core.WithMaxArraySize(2)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -104,7 +104,7 @@ func TestLimitsThreadThroughResource(t *testing.T) {
 	})
 
 	t.Run("MaxCost", func(t *testing.T) {
-		tp, err := parse.NewResource[limitsDevice]("limits_devices", parse.ParserOptions(core.WithMaxCost(1)))
+		tp, err := parse.NewResource[limitsDevice](onSQLite, "limits_devices", parse.ParserOptions(core.WithMaxCost(1)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -115,7 +115,7 @@ func TestLimitsThreadThroughResource(t *testing.T) {
 
 	t.Run("Codec used by ParseFilter", func(t *testing.T) {
 		calls := 0
-		tp, err := parse.NewResource[limitsDevice]("limits_devices", parse.ParserOptions(core.WithCodec(countingCodec{unmarshals: &calls})))
+		tp, err := parse.NewResource[limitsDevice](onSQLite, "limits_devices", parse.ParserOptions(core.WithCodec(countingCodec{unmarshals: &calls})))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -129,7 +129,7 @@ func TestLimitsThreadThroughResource(t *testing.T) {
 
 	t.Run("Codec used by ParsePatch", func(t *testing.T) {
 		calls := 0
-		tp, err := parse.NewResource[limitsDevice]("limits_devices", parse.ParserOptions(core.WithCodec(countingCodec{unmarshals: &calls})))
+		tp, err := parse.NewResource[limitsDevice](onSQLite, "limits_devices", parse.ParserOptions(core.WithCodec(countingCodec{unmarshals: &calls})))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -146,7 +146,7 @@ func TestLimitsThreadThroughResource(t *testing.T) {
 // relative-time anchor for `now±N` tokens through the primary API.
 func TestClockThreadsThroughResource(t *testing.T) {
 	frozen := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
-	tp, err := parse.NewResource[limitsDevice]("limits_devices", parse.ParserOptions(core.WithClock(func() time.Time { return frozen })))
+	tp, err := parse.NewResource[limitsDevice](onSQLite, "limits_devices", parse.ParserOptions(core.WithClock(func() time.Time { return frozen })))
 	if err != nil {
 		t.Fatal(err)
 	}

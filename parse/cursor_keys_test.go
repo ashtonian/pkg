@@ -50,21 +50,21 @@ func TestGenerateSortSchema_ScalarKeysOnly(t *testing.T) {
 		ID     string         `json:"id" db:"id" parse:"sort"`
 		Labels map[string]any `json:"labels" db:"labels" parse:"sort"`
 	}
-	_, err := parse.NewResource[labelled]("labelleds")
+	_, err := parse.NewResource[labelled](onSQLite, "labelleds")
 	assert.ErrorContains(t, err, "json fields are not sortable")
 
 	type tagged struct {
 		ID   string   `json:"id" db:"id" parse:"sort"`
 		Tags []string `json:"tags" db:"tags" parse:"sort"`
 	}
-	_, err = parse.NewResource[tagged]("taggeds")
+	_, err = parse.NewResource[tagged](onSQLite, "taggeds")
 	assert.ErrorContains(t, err, "array fields are not sortable")
 
 	type priced struct {
 		ID    string          `json:"id" db:"id" parse:"sort"`
 		Price decimal.Decimal `json:"price" db:"price" parse:"sort"`
 	}
-	p, err := parse.NewResource[priced]("priceds")
+	p, err := parse.NewResource[priced](onSQLite, "priceds")
 	require.NoError(t, err)
 	assert.Contains(t, p.SortSchema().Fields, "price")
 }

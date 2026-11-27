@@ -46,6 +46,6 @@ type untenantedTag struct {
 
 const depthTwoFilter = `{"commands":{"$some":{"logs":{"$some":{"level":"error"}}}}}`
 
-func tenanted[T any](table string) *parse.Resource[T] {
-	return parse.MustResource[T](table, parse.TenantColumn("tenant_id"))
+func tenanted[T any](p *parse.Provider, table string) *parse.Resource[T] {
+	return parse.MustResource[T](p, table, parse.TenantColumn("tenant_id"))
 }

@@ -10,8 +10,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -91,7 +90,7 @@ func TestNewResource_RefusesAColumnNoRowScanCanFill(t *testing.T) {
 		{
 			name: "value row",
 			build: func() error {
-				_, err := parse.NewResource[hiddenColumnRow]("rows")
+				_, err := parse.NewResource[hiddenColumnRow](onSQLite, "rows")
 				return err
 			},
 			want: []string{"column extra: field Extra:", "unexported embedded *parse_test.hiddenColumns"},
@@ -99,7 +98,7 @@ func TestNewResource_RefusesAColumnNoRowScanCanFill(t *testing.T) {
 		{
 			name: "pointer row",
 			build: func() error {
-				_, err := parse.NewResource[*hiddenColumnRow]("rows")
+				_, err := parse.NewResource[*hiddenColumnRow](onSQLite, "rows")
 				return err
 			},
 			want: []string{"column extra: field Extra:", "unexported embedded *parse_test.hiddenColumns"},
@@ -107,7 +106,7 @@ func TestNewResource_RefusesAColumnNoRowScanCanFill(t *testing.T) {
 		{
 			name: "behind an exported embedded pointer",
 			build: func() error {
-				_, err := parse.NewResource[deepHiddenColumnRow]("rows")
+				_, err := parse.NewResource[deepHiddenColumnRow](onSQLite, "rows")
 				return err
 			},
 			want: []string{"column extra: field Extra:", "unexported embedded *parse_test.hiddenColumns"},
@@ -115,7 +114,7 @@ func TestNewResource_RefusesAColumnNoRowScanCanFill(t *testing.T) {
 		{
 			name: "computed column",
 			build: func() error {
-				_, err := parse.NewResource[hiddenColumnRow]("rows", parse.ReadExpr("extra", parse.SQL("'computed'")))
+				_, err := parse.NewResource[hiddenColumnRow](onSQLite, "rows", parse.ReadExpr("extra", parse.SQL("'computed'")))
 				return err
 			},
 			want: []string{"column extra: field Extra:", "unexported embedded *parse_test.hiddenColumns"},
@@ -123,7 +122,7 @@ func TestNewResource_RefusesAColumnNoRowScanCanFill(t *testing.T) {
 		{
 			name: "stored document",
 			build: func() error {
-				_, err := parse.NewResource[hiddenDocRow]("rows")
+				_, err := parse.NewResource[hiddenDocRow](onSQLite, "rows")
 				return err
 			},
 			want: []string{"column doc: parse_test.hiddenDoc: field X:", "unexported embedded *parse_test.hiddenMembers"},
@@ -131,7 +130,7 @@ func TestNewResource_RefusesAColumnNoRowScanCanFill(t *testing.T) {
 		{
 			name: "declared JSON document",
 			build: func() error {
-				_, err := parse.NewResource[hiddenDocRow]("rows", parse.ColumnType("doc", core.SQLJSONB))
+				_, err := parse.NewResource[hiddenDocRow](onSQLite, "rows", parse.ColumnType("doc", core.SQLJSONB))
 				return err
 			},
 			want: []string{"column doc: parse_test.hiddenDoc: field X:", "unexported embedded *parse_test.hiddenMembers"},
@@ -139,7 +138,7 @@ func TestNewResource_RefusesAColumnNoRowScanCanFill(t *testing.T) {
 		{
 			name: "document held in a map of slices",
 			build: func() error {
-				_, err := parse.NewResource[hiddenDocsRow]("rows")
+				_, err := parse.NewResource[hiddenDocsRow](onSQLite, "rows")
 				return err
 			},
 			want: []string{"column docs: parse_test.hiddenDoc: field X:", "unexported embedded *parse_test.hiddenMembers"},
@@ -147,7 +146,7 @@ func TestNewResource_RefusesAColumnNoRowScanCanFill(t *testing.T) {
 		{
 			name: "patched document, resource",
 			build: func() error {
-				_, err := parse.NewResource[patchedHiddenDocRow]("rows")
+				_, err := parse.NewResource[patchedHiddenDocRow](onSQLite, "rows")
 				return err
 			},
 			want: []string{"field Doc: parse_test.hiddenDoc: field X:", "unexported embedded *parse_test.hiddenMembers"},
@@ -173,15 +172,15 @@ func TestNewResource_RefusesAColumnNoRowScanCanFill(t *testing.T) {
 }
 
 func TestRowScanner_RefusesScanJSONOnADocumentItCannotDecode(t *testing.T) {
-	r, err := parse.NewResource[scannedHiddenDocRow]("rows")
-	require.NoError(t, err, "the driver hands the column to its sql.Scanner")
-	for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
-		_, err = r.RowScanner(d)
+	for _, p := range []*parse.Provider{onPostgres, onSQLite} {
+		r, err := parse.NewResource[scannedHiddenDocRow](p, "rows")
+		require.NoError(t, err, "the driver hands the column to its sql.Scanner")
+		_, err = r.RowScanner()
 		require.NoError(t, err)
+		_, err = r.RowScanner(parse.ScanJSON("doc"))
+		require.ErrorContains(t, err, `ScanJSON names "doc": parse_test.scannedHiddenDoc: field X:`)
+		require.ErrorContains(t, err, "unexported embedded *parse_test.hiddenMembers")
 	}
-	_, err = r.RowScanner(filter.PostgresDialect{}, parse.ScanJSON("doc"))
-	require.ErrorContains(t, err, `ScanJSON names "doc": parse_test.scannedHiddenDoc: field X:`)
-	require.ErrorContains(t, err, "unexported embedded *parse_test.hiddenMembers")
 }
 
 // byValueDoc embeds an unexported struct by value: encoding/json decodes the
@@ -200,30 +199,26 @@ type byValueRow struct {
 }
 
 func TestRowScanner_ScansFieldsAnUnexportedStructEmbeddedByValuePromotes(t *testing.T) {
-	db := dbtest.SQLite(t)
+	p, db := providertest.SQLite(t)
 	_, err := db.ExecContext(t.Context(), `CREATE TABLE "by_value" ("id" TEXT PRIMARY KEY, "extra" TEXT NOT NULL, "doc" TEXT NOT NULL)`)
 	require.NoError(t, err)
 	_, err = db.ExecContext(t.Context(), `INSERT INTO "by_value" VALUES ('a', 'promoted', '{"x":"member","y":"own"}')`)
 	require.NoError(t, err)
-	r, err := parse.NewResource[byValueRow]("by_value")
+	r, err := parse.NewResource[byValueRow](p, "by_value")
 	require.NoError(t, err)
-	columns, err := r.Columns(filter.SQLiteDialect{})
-	require.NoError(t, err)
-	rows := resourceRows(t, db, r, filter.SQLiteDialect{}, parse.Statement{SQL: `SELECT ` + joinColumns(columns) + ` FROM "by_value"`})
+	rows := resourceRows(t, r, parse.Statement{SQL: `SELECT ` + joinColumns(r.Columns()) + ` FROM "by_value"`})
 	want := byValueRow{ID: "a", hiddenColumns: hiddenColumns{Extra: "promoted"}, Doc: byValueDoc{hiddenMembers: hiddenMembers{X: "member"}, Y: "own"}}
 	assert.Equal(t, []byValueRow{want}, rows)
 }
 
 func TestRowScanner_LeavesAnUnreadColumnBehindAnUnexportedEmbeddedPointer(t *testing.T) {
-	db := dbtest.SQLite(t)
+	p, db := providertest.SQLite(t)
 	_, err := db.ExecContext(t.Context(), `CREATE TABLE "rows" ("id" TEXT PRIMARY KEY, "extra" TEXT)`)
 	require.NoError(t, err)
 	_, err = db.ExecContext(t.Context(), `INSERT INTO "rows" VALUES ('a', 'unread')`)
 	require.NoError(t, err)
-	r, err := parse.NewResource[hiddenColumnRow]("rows", parse.ReadColumns("id"))
+	r, err := parse.NewResource[hiddenColumnRow](p, "rows", parse.ReadColumns("id"))
 	require.NoError(t, err, "a column the resource does not read is never scanned")
-	columns, err := r.Columns(filter.SQLiteDialect{})
-	require.NoError(t, err)
-	rows := resourceRows(t, db, r, filter.SQLiteDialect{}, parse.Statement{SQL: `SELECT ` + joinColumns(columns) + ` FROM "rows"`})
+	rows := resourceRows(t, r, parse.Statement{SQL: `SELECT ` + joinColumns(r.Columns()) + ` FROM "rows"`})
 	assert.Equal(t, []hiddenColumnRow{{ID: "a"}}, rows)
 }

@@ -137,18 +137,19 @@ type confCorpusResources struct {
 
 // confResources builds the corpus's resources. The corpus leaves the cost
 // guard out (it is deployment configuration, not grammar), so the entity
-// lifts it.
+// lifts it. Its SQL compiles from the filter schema for each dialect
+// (buildWhere), so the resources' own provider is any.
 func confResources(t *testing.T) confCorpusResources {
 	t.Helper()
-	parts, err := parse.NewResource[confPart]("parts")
+	parts, err := parse.NewResource[confPart](onSQLite, "parts")
 	require.NoError(t, err)
-	owners, err := parse.NewResource[confOwner]("owners")
+	owners, err := parse.NewResource[confOwner](onSQLite, "owners")
 	require.NoError(t, err)
-	entities, err := parse.NewResource[confEntity](confEntities, parse.ParserOptions(core.WithClock(confClock), core.WithMaxCost(1<<20)))
+	entities, err := parse.NewResource[confEntity](onSQLite, confEntities, parse.ParserOptions(core.WithClock(confClock), core.WithMaxCost(1<<20)))
 	require.NoError(t, err)
 	require.NoError(t, entities.Relate("parts", parse.HasMany(parts, "entity_id", parse.Indexed(), parse.Includable())))
 	require.NoError(t, entities.Relate("owner", parse.BelongsTo(owners, "owner_id", parse.Indexed())))
-	bare, err := parse.NewResource[confBareEntity](confBare)
+	bare, err := parse.NewResource[confBareEntity](onSQLite, confBare)
 	require.NoError(t, err)
 	reg := parse.NewSchemaRegistry()
 	require.NoError(t, parse.RegisterResource(reg, entities))
@@ -647,7 +648,7 @@ func listVerdict[T any](t *testing.T, name string, res *parse.Resource[T], q url
 	t.Helper()
 	req, err := res.ParseList(q)
 	if err == nil {
-		_, err = res.BuildList(filter.PostgresDialect{}, req, parse.Scope{})
+		_, err = res.BuildList(req, parse.Scope{})
 	}
 	if err == nil {
 		return true, ""

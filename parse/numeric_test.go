@@ -34,7 +34,7 @@ type numericEntity struct {
 
 func numericParser(t *testing.T) *parse.Resource[numericEntity] {
 	t.Helper()
-	p, err := parse.NewResource[numericEntity]("numeric_entities")
+	p, err := parse.NewResource[numericEntity](onSQLite, "numeric_entities")
 	require.NoError(t, err)
 	return p
 }
@@ -224,7 +224,7 @@ func openNumericDB(t *testing.T) *sql.DB {
 
 // A patch that fails part-way must not leave a pointer target half-written.
 func TestApplyValidatedPatch_PointerTargetUntouchedOnFailure(t *testing.T) {
-	p, err := parse.NewResource[*numericEntity]("numeric_entities")
+	p, err := parse.NewResource[*numericEntity](onSQLite, "numeric_entities")
 	require.NoError(t, err)
 	parsed, err := p.ParseMergePatch([]byte(`{"big": 5, "meta": {"a": 1}}`))
 	require.NoError(t, err)

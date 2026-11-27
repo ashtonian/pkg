@@ -22,7 +22,7 @@ func FuzzPatchApplyPreservesTarget(f *testing.F) {
 	} {
 		f.Add(seed)
 	}
-	p, err := parse.NewResource[*productionPatchRow]("production_patch_rows")
+	p, err := parse.NewResource[*productionPatchRow](onSQLite, "production_patch_rows")
 	require.NoError(f, err)
 	f.Fuzz(func(t *testing.T, body string) {
 		if len(body) > 4096 {

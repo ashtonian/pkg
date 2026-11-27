@@ -76,7 +76,7 @@ type retryingJob struct {
 // round-trips through the codec, and responses write a time.Duration as
 // nanoseconds, which encoding/json/v2's defaults refuse to read back.
 func TestStdlibJSON_ReadsDocumentsAsResponsesWriteThem(t *testing.T) {
-	r, err := parse.NewResource[retryingJob]("jobs")
+	r, err := parse.NewResource[retryingJob](onSQLite, "jobs")
 	require.NoError(t, err)
 	p, err := r.ParseMergePatch([]byte(`{"policy":{"attempts":5}}`))
 	require.NoError(t, err)

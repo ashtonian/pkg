@@ -7,13 +7,16 @@ import (
 	"testing"
 	"uuid"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/stretchr/testify/require"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
 func TestUpdateBatchRefusals(t *testing.T) {
-	r := updateBatchResource(t)
+	r := updateBatchResource(t, onPostgres)
 	patch := updateBatchPatch(t, r, `{"reference":"new"}`)
 	for _, test := range []struct {
 		name   string
@@ -34,32 +37,38 @@ func TestUpdateBatchRefusals(t *testing.T) {
 		{"tenant-write", []parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, []parse.UpdateOption{parse.StampSQL("tenant_id", "'t2'")}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			plan, err := r.BuildUpdateBatch(filter.SQLiteDialect{}, test.rows, test.scope, test.limits, test.opts...)
+			plan, err := r.BuildUpdateBatch(test.rows, test.scope, test.limits, test.opts...)
 			require.Error(t, err)
 			require.Nil(t, plan)
 		})
 	}
-	empty, err := r.BuildUpdateBatch(filter.PostgresDialect{}, nil, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{})
+	empty, err := r.BuildUpdateBatch(nil, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{})
 	require.NoError(t, err)
 	require.Empty(t, empty.Chunks)
 }
 
+// A batch's targets are found by their keys' canonical values: the row a
+// key names is its target, a key no row holds fails the batch, and a key
+// spelled two ways is one row twice.
 func TestUpdateBatchCanonicalKeys(t *testing.T) {
 	type row struct {
 		ID   uuid.UUID `db:"id"`
 		Name string    `json:"name" db:"name" parse:"patch"`
 	}
-	r, err := parse.NewResource[row]("uuid_rows")
+	id := uuid.MustParse("018c018c-0123-7123-8123-0123456789ab")
+	provider, db := providertest.SQLite(t)
+	execStatements(t, db, `CREATE TABLE uuid_rows (id TEXT PRIMARY KEY, name TEXT NOT NULL)`,
+		`INSERT INTO uuid_rows VALUES ('`+id.String()+`', 'old')`)
+	r, err := parse.NewResource[row](provider, "uuid_rows")
 	require.NoError(t, err)
 	p, err := r.ParseMergePatch([]byte(`{"name":"new"}`))
 	require.NoError(t, err)
-	id := uuid.MustParse("018c018c-0123-7123-8123-0123456789ab")
-	plan, err := r.BuildUpdateBatch(filter.PostgresDialect{}, []parse.RowUpdate{{Key: parse.Key{id}, Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
+	res, err := r.UpdateBatch(t.Context(), []parse.RowUpdate{{Key: parse.Key{id}, Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
 	require.NoError(t, err)
-	require.NoError(t, plan.Chunks[0].CheckCurrent([]parse.Key{{id}}))
-	require.ErrorIs(t, plan.Chunks[0].CheckCurrent(nil), parse.ErrUpdateBatchTargets)
-	require.ErrorIs(t, plan.Chunks[0].CheckCurrent([]parse.Key{{uuid.MustParse("018c018c-0123-7123-8123-0123456789ac")}}), parse.ErrUpdateBatchTargets)
-	_, err = r.BuildUpdateBatch(filter.PostgresDialect{}, []parse.RowUpdate{{Key: parse.Key{id}, Patch: p}, {Key: parse.Key{strings.ToUpper(id.String())}, Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
+	assert.Equal(t, []row{{ID: id, Name: "new"}}, res.Changed)
+	_, err = r.UpdateBatch(t.Context(), []parse.RowUpdate{{Key: parse.Key{uuid.MustParse("018c018c-0123-7123-8123-0123456789ac")}, Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
+	require.ErrorIs(t, err, parse.ErrUpdateBatchTargets)
+	_, err = r.BuildUpdateBatch([]parse.RowUpdate{{Key: parse.Key{id}, Patch: p}, {Key: parse.Key{strings.ToUpper(id.String())}, Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
 	require.Error(t, err)
 }
 
@@ -70,12 +79,12 @@ func TestUpdateBatchLocksInTheDialectsCodePointOrder(t *testing.T) {
 		Code string `db:"code"`
 		Name string `json:"name" db:"name" parse:"patch"`
 	}
-	r, err := parse.NewResource[row]("coded_rows", parse.PrimaryKey("code"))
-	require.NoError(t, err)
-	p, err := r.ParseMergePatch([]byte(`{"name":"new"}`))
-	require.NoError(t, err)
-	for _, d := range []parse.Dialect{filter.PostgresDialect{}, filter.PostgresDialect{Collation: filter.CollationC}, filter.SQLiteDialect{}} {
-		plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{{Key: parse.Key{"b"}, Patch: p}, {Key: parse.Key{"a"}, Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
+	for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.PostgresDialect{Collation: filter.CollationC}, filter.SQLiteDialect{}} {
+		r, err := parse.NewResource[row](providertest.Compile(d), "coded_rows", parse.PrimaryKey("code"))
+		require.NoError(t, err)
+		p, err := r.ParseMergePatch([]byte(`{"name":"new"}`))
+		require.NoError(t, err)
+		plan, err := r.BuildUpdateBatch([]parse.RowUpdate{{Key: parse.Key{"b"}, Patch: p}, {Key: parse.Key{"a"}, Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
 		require.NoError(t, err)
 		require.Contains(t, plan.Chunks[0].Current.SQL, " ORDER BY "+d.CodePointOrder(`"coded_rows"."code"`)+d.RowLock())
 	}

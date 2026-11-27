@@ -13,7 +13,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
 )
 
 // keyTextRow has a column of each scalar type a key's text is read as.
@@ -81,7 +80,7 @@ func TestResource_ParseKey(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r, err := parse.NewResource[keyTextRow]("key_text_rows", parse.PrimaryKey(tt.key...))
+			r, err := parse.NewResource[keyTextRow](onPostgres, "key_text_rows", parse.PrimaryKey(tt.key...))
 			require.NoError(t, err)
 			got, err := r.ParseKey(tt.texts...)
 			if tt.wantErr != "" {
@@ -104,16 +103,16 @@ func TestResource_ParseKey(t *testing.T) {
 // A key ParseKey reads from text targets the row the same key's values
 // target through ByKey.
 func TestResource_ParseKeyTargetsAsByKey(t *testing.T) {
-	r, err := parse.NewResource[keyTextRow]("key_text_rows", parse.PrimaryKey("s", "i64"))
+	r, err := parse.NewResource[keyTextRow](onPostgres, "key_text_rows", parse.PrimaryKey("s", "i64"))
 	require.NoError(t, err)
 	p, err := r.ParseMergePatch([]byte(`{"qty":7}`))
 	require.NoError(t, err)
 	parsed, err := r.ParseKey("w1", "42")
 	require.NoError(t, err)
 
-	fromText, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByKey(parsed), parse.Scope{})
+	fromText, err := r.BuildUpdate(p, parse.ByKey(parsed), parse.Scope{})
 	require.NoError(t, err)
-	fromValues, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByKey(parse.Key{"w1", 42}), parse.Scope{})
+	fromValues, err := r.BuildUpdate(p, parse.ByKey(parse.Key{"w1", 42}), parse.Scope{})
 	require.NoError(t, err)
 	assert.Equal(t, fromValues.Owner, fromText.Owner)
 }

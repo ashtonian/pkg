@@ -1,39 +1,44 @@
 # github.com/ashtonian/pkg/parse
 
-Parse resource API filters, sorts, pagination, search, facets, relations, and patches from Go struct tags. Compile validated requests to parameterized PostgreSQL or SQLite SQL, or apply supported patches to Go values. The core performs no database I/O; your application owns execution, authorization, and transactions, and the optional [`parsepgx`](parsepgx/README.md) runs the plans on PostgreSQL through pgx.
+Parse resource API filters, sorts, pagination, search, facets, relations, and patches from Go struct tags, and run them on the database the application's configuration names: SQLite ([`parsesql`](parsesql/README.md)) or PostgreSQL ([`parsepgx`](parsepgx/README.md)), one API on either, selected at startup ([`parseprovider`](parseprovider/README.md)). Requests compile to parameterized SQL in the provider's dialect; supported patches also apply to Go values. Your application owns its schema, authorization, the scope each request runs under, and any transaction it shares with parse.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    repo["Application repository"] -->|"ParseList / BuildList / BuildUpdate / BuildUpdateBatch"| resource["parse.Resource"]
-    pgx["parse/parsepgx"] -->|"Run plans / build pages"| resource
+    app["Application"] -->|"Open(config)"| selector["parse/parseprovider"]
+    selector -->|"parsesql.New / parsepgx.New"| provider["parse.Provider"]
+    app -->|"ParseList / List / Update / UpdateBatch / In(tx)"| resource["parse.Resource"]
+    resource -->|"Run statements, scan rows"| provider
+    provider --> db[("SQLite or PostgreSQL")]
     resource -->|"Walk fields / normalize values"| core["parse/core"]
     resource -->|"Compile lists / cursors"| filter["parse/filter"]
     resource -->|"Validate patches / compile writes"| patch["parse/patch"]
 ```
 
-**Entry points:** `NewResource` declares a table and key; `ParseList`, `BuildList`, `BuildUpdate`, `BuildUpdateBatch`, `Page` and the filter/patch methods serve requests.
+**Entry points:** a provider (`parseprovider.Open`, or `parsesql.New` / `parsepgx.New` on a database the application opened); `NewResource` declares a table and key on it; `ParseList`, `List`, `Facets`, `Update`, `UpdateBatch`, `Query` and the filter/patch methods serve requests; `In` runs a resource in a transaction (`Provider.Begin`, or the application's own through `parsesql.Tx` / `parsepgx.Tx`).
 
-**Exit points:** Parameterized statements, parsed values and pages. Repositories execute statements; `parsepgx` provides optional pgx execution.
+**Exit points:** Pages, update results and parsed values; the plans behind them (`BuildList`, `BuildUpdate`, `BuildUpdateBatch`) for an application that composes their SQL with its own.
 
-**Failure modes:** Invalid declarations fail construction; request validation returns `core.ParseError` with its code and path (patch failures can be joined); missing tenant scope (no `Scope.Tenant`, and for a list no `Scope.Governance`) returns `ErrTenantRequired`, and a tenant a reached tenant column cannot hold `ErrTenantInvalid`; `Relate` refuses a relation that would make one request bind its tenant to a string or UUID column and an integer one; unreadable row keys return an error while building a cursor.
+**Failure modes:** Invalid declarations fail construction, a computed column whose expression the provider's dialect refuses included; request validation returns `core.ParseError` with its code and path (patch failures can be joined); missing tenant scope (no `Scope.Tenant`, and for a list no `Scope.Governance`) returns `ErrTenantRequired`, and a tenant a reached tenant column cannot hold `ErrTenantInvalid`; `Relate` refuses a relation that would make one request bind its tenant to a string or UUID column and an integer one, and a target on another provider (`ErrProviderMismatch`, as `In` refuses another provider's transaction); a statement the database fails is a `*StatementError` naming the table and the statement; an update whose `COMMIT` went unanswered is `ErrCommitUnknown`.
 
-**Dependencies:** `Resource` composes `core`, `filter` and `patch`. The compiler packages import no application code; callers own connections, authorization and transactions.
+**Dependencies:** `Resource` composes `core`, `filter` and `patch`, and runs on the provider it was built on. The compiler packages import no application code; the application owns the database handle under the provider, its schema, authorization and scope.
 
 ## Quick start
 
-Declare the resource once; then each list request is parsed, compiled under the server's scope, and turned into a page. This complete program compiles a request without opening a database. Requires Go 1.27 or later. Install with `go get github.com/ashtonian/pkg/parse@latest`.
+Open the provider the configuration names, declare each resource on it once, then serve each request under the server's scope. This complete program runs on an in-memory SQLite database and needs no server. Requires Go 1.27 or later. Install with `go get github.com/ashtonian/pkg/parse@latest`.
 
 ```go
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/url"
+	"time"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/parseprovider"
 )
 
 type Device struct {
@@ -44,7 +49,29 @@ type Device struct {
 }
 
 func main() {
-	devices := parse.MustResource[Device]("devices", parse.TenantColumn("tenant_id"), parse.PageSize(25, 100))
+	ctx := context.Background()
+	db, err := parseprovider.Open(ctx, parseprovider.Config{
+		Provider:      "sqlite",
+		DSN:           ":memory:",
+		SettleTimeout: parse.DefaultSettleTimeout,
+		SQLite:        parseprovider.SQLiteConfig{MaxOpenConns: 1, BusyTimeout: 5 * time.Second},
+	})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer func() { _ = db.Close() }()
+	sqlDB, _ := db.SQLite()
+	_, err = sqlDB.ExecContext(ctx, `CREATE TABLE devices (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL);
+		INSERT INTO devices VALUES ('d1', 't1', 'switch', 'active'), ('d2', 't1', 'router', 'active'),
+			('d3', 't1', 'spare', 'active'), ('d4', 't1', 'desk', 'offline'), ('d5', 't2', 'core', 'active')`)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	devices := parse.MustResource[Device](db.Provider(), "devices", parse.TenantColumn("tenant_id"), parse.PageSize(25, 100))
+	scope := parse.Scope{Tenant: "t1"}
 
 	q, _ := url.ParseQuery(`status=active&filter={"name":{"$ne":"spare"}}&sort=name&page_size=10`)
 	req, err := devices.ParseList(q)
@@ -52,42 +79,65 @@ func main() {
 		fmt.Println(err)
 		return
 	}
-	plan, err := devices.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: "t1"})
+	page, err := devices.List(ctx, req, scope)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	fmt.Println(plan.Page.SQL)
-	fmt.Println(plan.Page.Args)
+	for _, d := range page.Items {
+		fmt.Println(d.ID, d.Name)
+	}
+
+	patch, err := devices.ParseMergePatch([]byte(`{"status":"offline"}`))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	res, err := devices.Update(ctx, patch, parse.ByID("d1"), scope)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(res.Changed[0].ID, res.Changed[0].Status)
+
+	// d5 is another tenant's: the scope does not reach it, so it is not found.
+	other, err := devices.Update(ctx, patch, parse.ByID("d5"), scope)
+	fmt.Println(len(other.Changed)+len(other.Unchanged), err)
 }
 ```
 
-<!-- output of ExampleResource_BuildList -->
+<!-- output of Example_quickStart -->
 ```text
-SELECT "devices"."id", "devices"."tenant_id", "devices"."name", "devices"."status" FROM "devices" WHERE (("devices"."name" <> $1 AND "devices"."status" = $2) AND "devices"."tenant_id" = $3) ORDER BY "devices"."name" COLLATE pg_c_utf8 ASC, "devices"."id" COLLATE pg_c_utf8 ASC LIMIT 11
-[spare active t1]
+d2 router
+d1 switch
+d1 offline
+0 <nil>
 ```
 
-`parsepgx.QueryPage(ctx, pool, devices, plan)` on PostgreSQL and `parsesql.QueryPage(ctx, db, devices, plan)` on SQLite run the plan and return the page with its cursors, total, facets and includes. Another executor runs `plan.Page` and passes the rows to `devices.Page(rows, plan)`, then `plan.Count`, `plan.Facets` (`filter.ScanFacetUnion`, then `filter.FacetMap`) and `devices.IncludeQueries(plan, keys)` for the page's keys, each through `Page.SetInclude`. `parse.Scope` carries what the server decides — tenant, authorization policy, governance, deleted-row visibility — and never comes from the request. Write a request error with `parsehttp.WriteError`. The output above is `ExampleResource_BuildList`, checked by the unit lane. Updates take the same `Scope`: `devices.BuildUpdate(dialect, patch, parse.ByID(id), scope)` returns one `UPDATE … RETURNING` scoped to the tenant, live rows and policy, which `parsepgx.Update` or `parsesql.Update` applies with its relation changes in one transaction, reporting the rows it changed apart from the rows it left (`UpdateResult`; [Resource updates](docs/patches.md#resource-updates), `ExampleResource_BuildUpdate`). See the [complete SQLite HTTP server](examples/server/) and the [pgx recipe](parsepgx/recipe_test.go).
+`parse.Scope` carries what the server decides — tenant, authorization policy, governance, deleted-row visibility — and never comes from the request: the list and the update reach the tenant's live rows alone, so another tenant's `d5` is not found. `List` reads the page with its cursors and, when the request asks, its total, facets and includes; `Update` applies a patch with its relation changes in one transaction and reports the rows it changed apart from the rows it left (`UpdateResult`; [Resource updates](docs/patches.md#resource-updates)). Write a request error with `parsehttp.WriteError`. The program is `Example_quickStart`, checked by the unit lane.
+
+A service loads `parseprovider.Config` with [`github.com/ashtonian/pkg/config`](../config/README.md), whose tag defaults are the literal above, so the same binary runs on PostgreSQL with `provider: postgres` and a `postgres://` DSN, and nothing else changes ([provider settings](parseprovider/README.md#configuration)). The SQL a request compiles to is the provider's dialect's (`devices.BuildList(req, scope)` returns it without running it; `ExampleResource_BuildList`). See the [complete HTTP server](examples/server/) and the [pgx recipe](parsepgx/recipe_test.go).
 
 ## Choose the feature
 
 | Need | Entry point | Guide |
 |---|---|---|
-| Serve a list endpoint: parse, scope, compile, page | `NewResource[T]`, `ParseList` (or `ParseListInput` off HTTP), `BuildList`, `Page`, `IncludeQueries` | [List queries](docs/queries.md#lists-and-keyset-pagination) |
-| Run a list, update or batch plan | PostgreSQL: `parsepgx.QueryPage`, `parsepgx.Update`, `parsepgx.UpdateBatch`; SQLite: the same in `parsesql` | [pgx](docs/integrations.md#pgx), [database/sql](docs/integrations.md#databasesql-and-sqlite) |
+| Open the database the configuration names | `parseprovider.Config`, `parseprovider.Open`; or `parsesql.New` / `parsepgx.New` on a handle the application opened | [Providers](parseprovider/README.md), [PostgreSQL](docs/integrations.md#postgresql), [SQLite](docs/integrations.md#sqlite) |
+| Serve a list endpoint: parse, scope, read the page | `NewResource[T](provider, …)`, `ParseList` (or `ParseListInput` off HTTP), `List` | [List queries](docs/queries.md#lists-and-keyset-pagination) |
+| Run parse's statements in the application's transaction | `Provider.Begin`, `parsesql.Tx`, `parsepgx.Tx`, `Resource.In` | [Transactions](docs/integrations.md#transactions) |
+| Read rows of the application's own statement through the row contract | `Resource.Query`, `Columns`, `RowScanner` | [Integrations](docs/integrations.md#row-contract) |
 | Answer a request error | `parsehttp.WriteError` | [HTTP and errors](docs/http-errors.md) |
 | Serve a list too large for a URL: the same request as a POST body | `ParseListBody`, `parsehttp.ParseList` (route `POST` on the collection path), `WithMaxListBodySize`, `ListParams.Body` in `parse/client`, the SDK's opt-in `maxURLLength` | [HTTP contract](docs/http-errors.md#the-same-request-as-a-post-body) |
 | Parse a stored/server-policy filter with a per-call cost budget | `Resource.ParseFilterWithCost` | [Parser configuration](docs/schema-configuration.md#parser-and-generator-options) |
 | Parse an HTTP filter alone, including flat parameters | `Resource.ParseRequestFilter` | [Queries](docs/queries.md) |
-| Compose list fragments over a declared resource | `Resource.ListQuery(dialect)`, then `Build` (the primary key joins every keyset) | [List queries](docs/queries.md#lists-and-keyset-pagination) |
+| Compose list fragments over a declared resource | `Resource.ListQuery()`, then `Build` (the primary key joins every keyset), or `ListPlan.Fragment` | [List queries](docs/queries.md#lists-and-keyset-pagination) |
 | Compile only a predicate for existing SQL | `filter.NewSQLBuilder` | [Query composition](docs/queries.md#configuration) |
 | Filter, sort and facet typed members of JSON documents | `paths` / `storage` tags, struct member tags, `Resource.WithPaths` (per request: custom fields) | [JSON paths](docs/queries.md#json-paths) |
 | Filter JSON arrays by their elements, every predicate on one element | `elements` tag or a slice-of-struct document; `$some`, `$none` | [Array elements](docs/queries.md#array-elements) |
 | Filter by related rows' attributes (has-many, belongs-to, many-to-many) | `Resource.Relate` with `HasMany`, `BelongsTo`, `ManyToMany`; `$some`, `$none`, `$is`, `$is_not` | [Relations](docs/relations.md#declare-relations) |
 | Match related IDs or return relation memberships | Relation tags, `filter.BuildIncludeQuery` | [Pair tables](docs/pair-tables.md) |
-| Serve an update endpoint: patch rows scoped to tenant, live rows and policy | `parsehttp.ParsePatch` (`ParsePatchRequest`), `ParseMergePatch` / `ParsePatch`, `BuildUpdate`, an executor's `Update` (`UpdateResult`) | [Resource updates](docs/patches.md#resource-updates) |
-| Compile distinct column patches with per-key revision/policy fences in one transaction | `BuildUpdateBatch`, `RowUpdate`, an executor's `UpdateBatch` | [Varied update batches](docs/operations.md#varied-native-update-batches) |
+| Serve an update endpoint: patch rows scoped to tenant, live rows and policy | `parsehttp.ParsePatch` (`ParsePatchRequest`), `ParseMergePatch` / `ParsePatch`, `Update` (`UpdateResult`) | [Resource updates](docs/patches.md#resource-updates) |
+| Apply distinct column patches with per-key revision/policy fences in one transaction | `UpdateBatch`, `RowUpdate`, `UpdateBatchLimits` | [Varied update batches](docs/operations.md#varied-native-update-batches) |
 | Write, stamp and count only the rows a patch changes, and tell unchanged from not found | `SkipUnchanged`, `UpdateResult.Changed` / `Unchanged` | [Skipping unchanged rows](docs/patches.md#skipping-unchanged-rows) |
 | Merge fields or replace a JSON document | `ParseMergePatch`, `ParsePatch`, `patch.BuildPatchSQL` | [Patches](docs/patches.md) |
 | Apply a patch to an existing Go value | `ApplyValidatedPatch`, `ApplyPatch` | [Typed documents](docs/patches.md#typed-document-behavior) |
@@ -99,15 +149,15 @@ SELECT "devices"."id", "devices"."tenant_id", "devices"."name", "devices"."statu
 
 Use this package when a resource API needs validated user-controlled query/update expressions. Keep hand-written SQL for workflows that require a different query model; the lower-level AST, schemas, and SQL fragments can be composed independently.
 
-## Backends and boundaries
+## Providers and boundaries
 
-Select a dialect when building SQL; connection setup and drivers belong to the caller.
+A resource runs on one provider: the database an application selects at startup, with one API on either. They are alternatives for different runtime requirements, never layered, nested or run side by side: nothing moves data between them.
 
-| Backend | Selection | Important differences |
+| Provider | Opened by | Important differences |
 |---|---|---|
-| PostgreSQL | `filter.PostgresDialect{}` | Native arrays/JSONB, full-text search; geo predicates require PostGIS |
-| SQLite | `filter.SQLiteDialect{}` | JSON text and JSON functions; timestamps stored as canonical UTC text ([timestamps](docs/schema-configuration.md#timestamps)); phrase search and ASCII case folding; geo predicates on JSONB points through `parsesqlite`'s functions, no native geometry storage |
-| CockroachDB | Not supported | `filter.DialectFromDSN` refuses `cockroach://` and `crdb://`. A `postgres://` or `postgresql://` URL to a CockroachDB cluster still selects `PostgresDialect`, whose SQL (the `pg_c_utf8` collation, PostGIS functions, `jsonb_path_query_first`) has never run on CockroachDB |
+| SQLite (`sqlite`) | `parseprovider` `provider: sqlite`, or `parsesql.New(ctx, *sql.DB)` on modernc.org/sqlite with parse's functions registered (`parsesqlite.Register`) | In-process, a file or `:memory:`; JSON text and JSON functions; timestamps stored as canonical UTC text ([timestamps](docs/schema-configuration.md#timestamps)); phrase search and ASCII case folding; geo predicates on JSONB points through `parsesqlite`'s functions, no native geometry storage; one writer at a time |
+| PostgreSQL (`postgres`) | `parseprovider` `provider: postgres`, or `parsepgx.New(ctx, *pgxpool.Pool)` | Native arrays/JSONB, full-text search, row locks; geo predicates require PostGIS; batches send a request's statements in one round trip |
+| CockroachDB | Not supported | `parseprovider` refuses `cockroach://` and `crdb://`. A `postgres://` URL to a CockroachDB cluster opens the PostgreSQL provider, whose collation check fails, and whose SQL (the `pg_c_utf8` collation, PostGIS functions, `jsonb_path_query_first`) has never run on CockroachDB |
 | Go values | `ApplyValidatedPatch` | Supports allowed nested paths, `test`, `copy`, and `move`; persist the result yourself |
 
 String ordering uses PostgreSQL's `pg_c_utf8` collation (PostgreSQL 17+; `filter.CollationC` for 14–16) and SQLite binary ordering. A flat parameter naming no filterable field is refused (E2071) on every entry point unless the endpoint accepts it, and so is a facet, include or `fields` name that names no field it can serve. The `fields` mask is validated, not applied: the query reads every column the resource reads, and the service drops the members the mask leaves out ([field mask](docs/queries.md#field-mask)). Documents filter whole or by declared typed members (`{"attrs.color": "red"}`, [JSON paths](docs/queries.md#json-paths)); related rows filter by their own attributes through declared relations (`{"commands": {"$some": {"status": "pending"}}}`, [Relations](docs/relations.md)). SQL patch compilation rejects unsupported operations rather than skipping them. [Backend details](docs/queries.md#type-capabilities) · [Patch limits](docs/patches.md)
@@ -125,7 +175,7 @@ Construct a resource once and share it. Its schemas are fixed when `NewResource`
 | `parse.AcceptParams(names...)` | `ResourceOption` | none | Query parameters the endpoint reads itself; any other unknown parameter is E2071. `NewResource` refuses a name that is a list parameter, the search parameter or a flat filter on a field, and `Relate` and `WithPaths` one that would be a flat filter on the field they add: `ParseList` would skip that filter |
 | `parse.ReadColumns(columns...)` | `ResourceOption` | every column of T | The columns lists select and updates return; sensitive columns stay in the database, and no page, cursor or facet carries their values. Must include the key, the column of every sort key and facet, the correlation columns of a relation that includes or facets, and every filter, search and relation correlation column that `QueryOnlyColumns` does not name; a relation is held to its target's read set too ([read columns](docs/relations.md#read-columns)). `NewResource`, `Relate` and `WithPaths` refuse a declaration that needs another column |
 | `parse.QueryOnlyColumns(columns...)` | `ResourceOption` | none | Columns `ReadColumns` leaves out that requests may still filter and search by, directly or through a relation correlating on them, such as a large text column searched but never listed. Which rows match discloses their values, so name only columns the caller may learn. Never a sort key, a facet, or the correlation of a relation that includes or facets |
-| `parse.ReadExpr(column, expr)` | `ResourceOption` | none | Reads a column through a trusted SQL expression per dialect (`parse.ColumnExpr`; `parse.SQL(sql)` for one every dialect reads alike), such as a correlated count, a pair table's keys as an array, or `coalesce` over a nullable column. Lists, updates' `RETURNING` and `parsepgx` select it as `(sql) AS column`, and its filter, sort, facet and search tags, and server policies naming it, compile against the dialect's expression; a dialect the expression refuses fails every statement built for it. It can't be the key, tenant or deleted column, be patched, stamped or incremented, hold document paths or correlate a relation; a relation to the resource filters by it through the target's expression for the owner's dialect; [computed columns](docs/queries.md#computed-columns) |
+| `parse.ReadExpr(column, expr)` | `ResourceOption` | none | Reads a column through a trusted SQL expression per dialect (`parse.ColumnExpr`; `parse.SQL(sql)` for one every dialect reads alike), such as a correlated count, a pair table's keys as an array, or `coalesce` over a nullable column. Lists and updates' `RETURNING` select it as `(sql) AS column`, and its filter, sort, facet and search tags, and server policies naming it, compile against the provider's dialect's expression; `NewResource` refuses a provider whose dialect the expression refuses (`filter.ErrUnsupportedDialect`). It can't be the key, tenant or deleted column, be patched, stamped or incremented, hold document paths or correlate a relation; a relation to the resource filters by it through the target's expression for the owner's dialect; [computed columns](docs/queries.md#computed-columns) |
 | `parse.ColumnType(column, t)` | `ResourceOption` | none | Physical storage profile, including `core.SQLJSON` / `SQLJSONB`, native arrays and PostgreSQL inet/cidr/interval text projection; [storage declarations](docs/schema-configuration.md#fields-and-embedding) |
 | `parse.CustomizeSchemas(fn)` | `ResourceOption` | none | Changes the generated schemas (`parse.Schemas`: filter, sort, search, patch, server patch) while the resource is built, before its read-set and column checks; calls run in order, an error fails `NewResource`, and the resource keeps copies |
 | `parse.ParserOptions(opts...)` | `ResourceOption` | bounded parser defaults | Limits, codec, clock and schema generation; [complete table](docs/schema-configuration.md#parser-and-generator-options) |
@@ -133,16 +183,18 @@ Construct a resource once and share it. Its schemas are fixed when `NewResource`
 | `parsehttp.WithErrorHandler(fn)` | `parsehttp.Option` | none (failures are not reported) | `fn(*http.Request, error)` receives what `parsehttp`'s responses cannot carry: a parse error's `Details` entries that cannot be encoded, left out of `WriteError`'s body and matching `parsehttp.ErrUnencodableDetails`; a schema document that cannot be encoded, answered 500/E2120 and matching `parse.ECodeSchemaEncodingFailed`; a `Write` that fails after the status is sent, best effort since net/http buffers small responses ([error handling](docs/http-errors.md#error-handling)) |
 | `filter.QueryParamAccept(names...)` | `filter.QueryParamOption` | none | Parameters `ParseRequestFilter` / `NewQueryParamParser` leave to the endpoint; any other unknown parameter is E2071. A name that is a list parameter or a flat filter on a field (`price`, `price_gte`) is refused with an error that is not a `*core.ParseError`, as `AcceptParams` refuses it at `NewResource` (`filter.CheckAcceptedParam`) |
 | `filter.QueryParamLenient()` | `filter.QueryParamOption` | off | Ignore unknown flat parameters instead of refusing them |
-| `filter.PostgresDialect{Collation: c}` | `filter.PostgresCollation` | `filter.CollationPgCUTF8` | Code-point collation for string sorts and ranges; `filter.CollationC` on PostgreSQL 14–16 |
+| `parseprovider.Config` | struct | in-memory SQLite | The provider, its DSN and connection limits, and the settle timeout; [provider settings](parseprovider/README.md#configuration) |
+| `parsepgx.Collation(c)` | `parsepgx.Option` | `filter.CollationPgCUTF8` | Code-point collation for string sorts and ranges, checked against the database when the provider opens; `filter.CollationC` on PostgreSQL 14–16 ([parsepgx](parsepgx/README.md#configuration)) |
+| `parsesql.SettleTimeout(d)`, `parsepgx.SettleTimeout(d)` | provider `Option` | `parse.DefaultSettleTimeout` (10s) | Bound on each statement that settles an update's transaction, which runs past the request's cancellation |
 | `filter.List*` / builder options | functional options | bounded list defaults | [List, filter, facet, include options](docs/queries.md#configuration) |
 | `Indexed`, `Includable`, `Facetable`, `Writable`, `PolicyScoped`, `References`, `Describe` | `RelationOption` | a relation that filters only | [Relation options](docs/relations.md#declare-relations) |
 | `Stamp`, `StampSQL`, `Increment`, `SkipUnchanged` | `UpdateOption` | no stamp, no increment, every target row written | [Update options](docs/patches.md#resource-updates) |
-| `parse.ScanJSON(columns...)` | `ScanOption` | the resource's declared JSON columns | Columns `RowScanner` decodes as stored JSON documents where the resource declares none, for a driver that learns them from the result: `parsepgx` names the columns PostgreSQL reports as json or jsonb. An `sql.Scanner` column whose type holds a member encoding/json cannot decode (promoted through an unexported embedded pointer) is refused |
+| `parse.ScanJSON(columns...)` | `ScanOption` | the resource's declared JSON columns | Columns `RowScanner` decodes as stored JSON documents where the resource declares none, for a driver that learns them from the result, as the PostgreSQL provider names the columns PostgreSQL reports as json or jsonb. An `sql.Scanner` column whose type holds a member encoding/json cannot decode (promoted through an unexported embedded pointer) is refused |
 | `patch.With*` | `patch.PatchSQLOption` | no timestamp column | [SQL patch options](docs/patches.md#configuration) |
 | `patch.DefaultMaxOperations` | int | `50` | Operation limit of every `PatchSchema` (generated, or built with `patch.NewPatchSchema`) unless its `MaxOperations` is set; 0 is unlimited. [Patch limits](docs/patches.md#validation) |
 | `patch.DefaultMaxRelationValues` | int | `1000` | Keys one operation on a relation path may name, repeats counted once, unless the schema's `MaxRelationValues` is set; 0 is unlimited; beyond it E2119. Served as `max_relation_values`. [Patch limits](docs/patches.md#validation) |
-| `UpdateBatchLimits.MaxRows` | int | `500` | Total keys admitted by one `BuildUpdateBatch` plan; zero selects the default and negative refuses |
-| `UpdateBatchLimits.MaxParameters` | int | SQLite `999`; PostgreSQL `65535` | Parameters per batch statement; zero selects the dialect default and negative refuses |
+| `UpdateBatchLimits.MaxRows` | int | `500` | Total keys admitted by one `UpdateBatch` (`BuildUpdateBatch`); zero selects the default and negative refuses |
+| `UpdateBatchLimits.MaxParameters` | int | SQLite `999`; PostgreSQL `65535` | Parameters per batch statement; zero selects the provider's default and negative refuses |
 
 Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,include,server"`, `filter_ops`, `patch_ops`, `enum`, `minlen` / `maxlen` / `min` / `max` / `minitems` / `maxitems`, `relation`, `facet`, and search/geo metadata. Unknown capability names fail schema construction. [All tags and defaults](docs/schema-configuration.md)
 
@@ -156,7 +208,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 | [Pair tables](docs/pair-tables.md) | The `relation` struct tag: pair tables compared by key, include queries, junction statements |
 | [Patches and JSON](docs/patches.md) | JSON Patch/Merge Patch, typed documents, policy, SQL limits |
 | [HTTP and errors](docs/http-errors.md) | Request/response contract, schema routes, E-code catalog |
-| [Integrations](docs/integrations.md) | pgx, database/sql, TypeScript, custom schemas |
+| [Integrations](docs/integrations.md) | Providers, transactions, the row contract, TypeScript, custom schemas |
 | [Operations](docs/operations.md) | Security, concurrency, indexing, query costs, verification |
 | [Mapping from PostgREST, django-filter and ent](docs/grammar-mapping.md) | Each operator, list parameter, sort, paging, relation and patch form against its counterparts, the semantic differences and the gaps on both sides |
 
@@ -164,26 +216,28 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 
 | Package / file | Responsibility |
 |---|---|
-| [`resource.go`](resource.go) | `NewResource[T]`, `MustResource`, resource options (`CustomizeSchemas`, `Schemas`, `PrimaryKey`), identity, system fields, projection (`Columns`, `ColumnNames`), `ParseFilterWithCost`, `Resource.Key` (a row's key), `PrimaryKeyColumns`, `WithPaths` (a request's view with declared JSON paths) |
+| [`provider.go`](provider.go) | `Provider` (the database a resource runs on: `Name`, `Begin`), `Tx` (`Commit`, `Rollback`), `ErrProviderMismatch`; `NewProvider` and `NewTx`, which only parse's provider packages can call, since they take the internal `backend` types |
+| [`resource.go`](resource.go) | `NewResource[T]` (on a provider), `MustResource`, resource options (`CustomizeSchemas`, `Schemas`, `PrimaryKey`), identity, system fields, projection (`Columns`, `ColumnNames`), `ParseFilterWithCost`, `Resource.Key` (a row's key), `PrimaryKeyColumns`, `WithPaths` (a request's view with declared JSON paths) |
 | [`key.go`](key.go) | `Key` (a row's key: a value per key column, `core.Key`); how keys are checked against the key columns, normalized, compared and ordered for targets, batches and relation statements |
 | [`key_text.go`](key_text.go) | `Resource.ParseKey`: a key read from its columns' texts, as an item route's path segments carry them (`parsehttp.ItemKey`): an integer as decimal digits, a float as a JSON number, a bool as `strconv.ParseBool` reads it, any other column its value's text; normalized as `ByKey` normalizes. `ErrNoSuchKey`: a text no key column can hold, the request's |
-| [`list.go`](list.go) | `ListInput`, `ParseListInput`, `ListRequest` (sealed: read through methods, `WithFilter`), `ParseList`, `Scope`, `ListPlan` (`Dialect`), `BuildList`, `Page`, `PagePointers`, `IncludeQueries` |
-| [`facets.go`](facets.go) | `ParseFacets`: a facets request, refusing the parameters that shape a page; `BuildFacets`: its facet statement, the one a list page carries |
+| [`list.go`](list.go) | `ListInput`, `ParseListInput`, `ListRequest` (sealed: read through methods, `WithFilter`), `ParseList`, `Scope`, `Statement`, `ListPlan`, `BuildList`, `Page`, `PagePointers`, `IncludeQueries` |
+| [`facets.go`](facets.go) | `ParseFacets`: a facets request, refusing the parameters that shape a page; `BuildFacets`: its facet statement, the one a list page carries, which `Resource.Facets` runs |
 | [`body.go`](body.go) | `ParsePatchRequest`: a patch request's body in the grammar its media type names (`MediaTypeMergePatch`, `MediaTypeJSONPatch`, `application/json`), bounded by `MaxInputSize`, or 1 MiB when it is unlimited; `BodyReadError`: a list or patch body that could not be read |
 | [`list_body.go`](list_body.go) | `ParseListBody`: a list request as one JSON document, a POST body beside the query string; `ParseListPost`: a POST's list from its query string, content type and body; `Accepts` |
 | [`relate.go`](relate.go) | `Relate`, `MustRelate`, `RelationOption`, `HasMany`, `BelongsTo`, `ManyToMany` (`KeyColumns`: one column or a key of several), `Junction` / `Through`, `Indexed`, `Includable`, `Facetable`, `Writable`, `PolicyScoped`, `References`, `RelatedResource` |
-| [`scan.go`](scan.go) | `RowScanner`, `ScanOption`, `ScanJSON`: the row contract every executor scans through — each column into the field the resource compiled it from, stored documents decoded with presence and key checks, and the JSON and timestamp text a dialect stores (`filter.Dialect.StoresAsText`, SQLite's) decoded, and a dialect that reports any other type as text refused; `NewResource` refuses a read column no scan can fill, one whose field or stored document member is promoted through an unexported embedded pointer |
+| [`scan.go`](scan.go) | `RowScanner`, `ScanOption`, `ScanJSON`: the row contract every provider's rows are scanned through — each column into the field the resource compiled it from, stored documents decoded with presence and key checks, and the JSON and timestamp text a dialect stores (`filter.Dialect.StoresAsText`, SQLite's) decoded, and a dialect that reports any other type as text refused; `NewResource` refuses a read column no scan can fill, one whose field or stored document member is promoted through an unexported embedded pointer |
 | [`read_expr.go`](read_expr.go) | `ReadExpr`, `ColumnExpr`, `SQL`: computed columns, declared on the filter schema (`filter.ResourceSchema.Computed`) and resolved for each statement's dialect |
 | [`tenant.go`](tenant.go) | `ErrTenantInvalid`; the tenant key: the one value every statement binds `Scope.Tenant` as, checked against every tenant column a resource reaches through its relations at any depth, and the relation graph `Relate` keeps it in |
-| [`update.go`](update.go) | `Target` (`ByID`, `ByIDs` for a one-column key, `ByKey`, `ByKeys` for keys of any length, `ByFilter`), `ErrForeign` (a request value another resource parsed, or one built by hand), `ErrKeyInvalid` (a target key of another length than the key, or one a key column cannot hold), `BuildUpdate` and its `UpdateOption`s, `UpdatePlan` (`Dialect`, `Current`, `Lock`: an unguarded multi-row `UPDATE`'s targets locked in key order), `UpdateResult`, `UpdatedRows`, `RelationStatements`, `Reread`, `Stamp`, `StampSQL`, `Increment`, `SkipUnchanged`, `Unchanged`, `Dialect` |
-| [`execute.go`](execute.go) | The steps every executor runs, I/O-free: `CheckPlan` (`Plan`, `ErrDialect`) before any statement, `ListPage` (`ListRows`) for a page and its include statements, `FollowUp` (`UpdateFollowUp`) for an update's split, relation statements and rereads, `CheckBatchCurrent` and `BatchResult` for a batch; `StatementError` / `StatementFailed`, a statement's failure by name |
-| [`settle.go`](settle.go) | How an executor settles an update's transaction: `ExecOption`, `WithSettleTimeout`, `DefaultSettleTimeout`, `ExecConfig` (`NewExecConfig`, `SettleContext`), and `ErrCommitUnknown`, the one update error after which its writes may have been applied |
-| [`update_batch.go`](update_batch.go) | `RowUpdate`, `UpdateBatchLimits`, `BuildUpdateBatch`, `UpdateBatchPlan` (`Dialect`), `UpdateBatchChunk.CheckCurrent`, `ErrUpdateBatchTargets`: bounded varied column updates with exact preimage checks |
+| [`update.go`](update.go) | `Target` (`ByID`, `ByIDs` for a one-column key, `ByKey`, `ByKeys` for keys of any length, `ByFilter`), `ErrForeign` (a request value another resource parsed, or one built by hand), `ErrKeyInvalid` (a target key of another length than the key, or one a key column cannot hold), `BuildUpdate` and its `UpdateOption`s, `UpdatePlan` (`Owner`, `Current`, `Conflict`, `Lock`: an unguarded multi-row `UPDATE`'s targets locked in key order), `UpdateResult`, `Stamp`, `StampSQL`, `Increment`, `SkipUnchanged`; the relation statements and rereads an update runs after its owner statement |
+| [`execute.go`](execute.go) | What a resource runs on its provider: `List`, `Facets`, `Query`, `Update`, `UpdateBatch`, `In` (a view in a transaction), `Provider`; the order of each one's statements and how their rows are scanned and split; `StatementError` / `StatementFailed`, a statement's failure by table and name |
+| [`settle.go`](settle.go) | `DefaultSettleTimeout`, the bound each provider sets on the statements that settle an update's transaction, and `ErrCommitUnknown`, the one update error after which its writes may have been applied |
+| [`update_batch.go`](update_batch.go) | `RowUpdate`, `UpdateBatchLimits`, `BuildUpdateBatch`, `UpdateBatchPlan`, `UpdateBatchChunk`, `ErrUpdateBatchTargets`: bounded varied column updates with exact preimage checks |
 | [`typed.go`](typed.go) | `Resource` parse entry points (`MergePatchMap`, `ValidateOperations` and server variants), schema access (deep copies), typed patch application through `patch.Applier` |
 | [`parsehttp`](parsehttp/README.md) | parse's `net/http` adapter: `WriteError`, a parse error as an HTTP response; `WriteJSON`, a handler's own answer; `SchemaHandler` and `SchemaListHandler`, the discovery routes; `ParseList`, a list from a GET query string or a POST body; one `WithErrorHandler` hook for all of them |
-| [`parsepgx`](parsepgx/README.md) | `QueryPage`, `Update`, `UpdateBatch`, `Query`: plans and statements run on PostgreSQL through pgx batches |
-| [`parsesql`](parsesql/README.md) | `QueryPage`, `Update`, `UpdateBatch`, `Query`: plans and statements run on SQLite through `database/sql` |
-| [`parsesqlite`](parsesqlite/README.md) | `Register`: the SQLite functions plans compare decimals, bound an int or float path's number members and decide geo predicates through, registered with `modernc.org/sqlite` |
+| [`parseprovider`](parseprovider/README.md) | `Config`, `Open`, `Database`: the provider the application's configuration names, opened with its connection limits |
+| [`parsepgx`](parsepgx/README.md) | `New`, `Tx`, `Collation`, `ContainmentMaxValues`, `SettleTimeout`: the PostgreSQL provider on a pgx pool, which sends a request's statements in pgx batches |
+| [`parsesql`](parsesql/README.md) | `New`, `Tx`, `SettleTimeout`, `MinSQLiteVersion`, `CheckVersion`: the SQLite provider on a `database/sql` database |
+| [`parsesqlite`](parsesqlite/README.md) | `Register`, `RegisterOn`: the SQLite functions plans compare decimals, bound an int or float path's number members and decide geo predicates through, registered with `modernc.org/sqlite` |
 | [`registry.go`](registry.go) | `NewSchemaRegistry`, `RegisterResource`, `MustRegisterResource`, `Register[T]`, `MustRegister[T]`, `ErrRegistered` (one registration per name), the schema accessors; the versioned schema document (`SchemaResponse`, `SchemaVersion`) with relations, element paths and patch value metadata, its sections `FilterSchemaResponse` (`FilterFieldResponse`, `GeoFieldConfigResponse`, `RelationResponse`), `SortSchemaResponse` (`SortFieldResponse`), `PatchSchemaResponse` (`PatchPathResponse`, `RelationKeyResponse`: a membership path's target key columns) and `SearchSchemaResponse` |
 | [`codes.go`](codes.go) | `Code`, `Codes`, the `ECode*` aliases: the error catalog, one definition per code in `core` |
 | [`core`](core/README.md) | Configuration, schema generation, the field walk every schema shares (embedded structs promoted as encoding/json promotes them; a field promoted through an unexported embedded pointer is neither scanned nor patched: [fields and embedding](docs/schema-configuration.md#fields-and-embedding)), values, pointers, `ParseError` |
@@ -193,6 +247,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 | [`sdk/ts`](sdk/ts/README.md) | TypeScript builders, HTTP client, schema validation |
 | [`examples/server`](examples/server/README.md) | A runnable product API over SQLite serving every route the SDK calls; a module of its own, run against this working tree |
 | [`filter/filtertest`](filter/filtertest/README.md) | The conformance fixture every filter backend runs: operators, paths, sets, memberships, policies |
+| `internal/backend`, `internal/providertest` | What a provider package gives the root package: a database that sends named statements and runs a function in a transaction, and the rows it reads (`Provider`, `Conn`, `DB`, `Tx`, `Step`, `Rows`, `Settle`); and the providers parse's tests run on, one that compiles for a dialect without a database included |
 | `internal/dialect`, `internal/jsonkeys`, `internal/jsonmerge`, `internal/cursor`, `internal/decimals`, `internal/geo`, `internal/httpjson`, `internal/dbtest`, `internal/ordertest` | Dialect primitives and their names, SQL string literals (an escape string on PostgreSQL for text holding a backslash, so it reads as itself whatever `standard_conforming_strings` is) and SQLite JSON paths that read every label as itself, a stored document's member spelling against its Go type and whether encoding/json can decode every member it writes (`CheckDecodable`), RFC 7396 merge, the bounded MessagePack cursor envelope, decimals as documents and SQLite hold them with their order-preserving key, the WGS 84 geodesic distance and planar point-in-polygon test geo filters use outside PostGIS, the JSON media type and response encoding, without the transport, that a list body is read and `parsehttp` answers with, and the PostgreSQL and SQLite databases integration tests run against, SQLite also through a driver that reports each statement to a hook its context carries (`SQLiteHooked`, `OnStatement`), and the canonical order of every scalar type that comparators, canonical text, filters, keysets, keys, policies, facets and both dialects' ORDER BY are held to; the compiler has no private sibling imports |
 
 Packages under `internal/` have no README: no code outside the module imports them, and each is documented by its package comment (`go doc ./internal/<name>`) and its row above.
@@ -203,13 +258,14 @@ Patch parsers collect independent invalid values in order. Each declared enum/bo
 
 ## Operations
 
-parse is a library: it starts no goroutines, holds no connections and writes no logs or metrics. `parsepgx` and `parsesql` run its plans on the caller's pool and context, so timeouts, pool limits and tracing belong to the application ([parsepgx operations](parsepgx/README.md#operations)). Its errors say whose fault a failure is:
+parse is a library: it starts no goroutines and writes no logs or metrics. A provider runs on the database handle the application or `parseprovider.Open` opened, under the request's context, so deadlines, pool limits and tracing are the application's ([parseprovider operations](parseprovider/README.md#operations), [parsepgx operations](parsepgx/README.md#operations)). Its errors say whose fault a failure is:
 
 - A `*core.ParseError` is the request's: answer its code's status (`ErrorHTTPStatus()`) with its body ([error catalog](docs/http-errors.md#error-codes)); `parsehttp.WriteError` does.
-- A sentinel error is the server's: `ErrTenantRequired` (a tenant-scoped resource's plan built without `Scope.Tenant`), `ErrTenantInvalid` (a `Scope.Tenant` the tenant column cannot hold), `ErrNoTarget` and `ErrKeyInvalid` (an update with no target, or a key the key column cannot hold), `ErrUpdateScope` (an update built with `Governance` or `IncludeDeleted`), `ErrForeign` (a request another resource parsed), `ErrUpdateBatchTargets` (a batch whose locked rows did not match every key), `ErrCommitUnknown` (an executor's update whose `COMMIT` went unanswered: it may have been applied, so read before retrying), `ErrRegistered` (a schema name registered twice), and those of [filter](filter/README.md#operations) and [patch](patch/README.md#operations). Match them with `errors.Is`; none is the client's to fix, so a handler answers them as its own failures (500). The one sentinel that is the request's is `ErrNoSuchKey`: `ParseKey` (`parsehttp.ItemKey`) read an item route's text that no key column can hold, so no row has that key; answer it 404.
+- A sentinel error is the server's: `ErrTenantRequired` (a tenant-scoped resource's plan built without `Scope.Tenant`), `ErrTenantInvalid` (a `Scope.Tenant` the tenant column cannot hold), `ErrNoTarget` and `ErrKeyInvalid` (an update with no target, or a key the key column cannot hold), `ErrUpdateScope` (an update built with `Governance` or `IncludeDeleted`), `ErrForeign` (a request another resource parsed), `ErrUpdateBatchTargets` (a batch whose locked rows did not match every key), `ErrCommitUnknown` (an update whose `COMMIT` went unanswered: it may have been applied, so read before retrying), `ErrProviderMismatch` (a transaction or relation target of another provider), `ErrRegistered` (a schema name registered twice), and those of [filter](filter/README.md#operations) and [patch](patch/README.md#operations). Match them with `errors.Is`; none is the client's to fix, so a handler answers them as its own failures (500). The one sentinel that is the request's is `ErrNoSuchKey`: `ParseKey` (`parsehttp.ItemKey`) read an item route's text that no key column can hold, so no row has that key; answer it 404.
+- A `*StatementError` is a statement the database failed, or whose rows did not scan: `Table` and `Statement` (`page`, `count`, `facets`, `include <field>`, `query`, `current`, `conflict`, `lock`, `owner`, `relations`, `reread`, `begin`, `savepoint`, `release savepoint`, `rollback to savepoint`, `rollback`, `commit`) name it, for a log attribute or a metric label; the driver's error is its cause.
 - Every request is bounded by the [parser limits](docs/schema-configuration.md#parser-and-generator-options) and its cost by `MaxCost` ([query costs](docs/operations.md#query-costs-and-limits)).
 
-Build each resource once, at startup, and share it ([concurrency and ownership](docs/operations.md#concurrency-and-ownership)).
+Open the provider and build each resource on it once, at startup, and share them ([concurrency and ownership](docs/operations.md#concurrency-and-ownership)); close the database after the server has drained.
 
 ## Verification
 
@@ -222,10 +278,10 @@ Database setup, targeted examples, SDK checks, and benchmarks are in [Operations
 
 ## Dependencies and security
 
-The module uses MIT licensing and requires Go 1.27. Runtime dependencies are the released `pkg/gowalker` and `pkg/jsonvalue` modules, `github.com/evanphx/json-patch/v5` (JSON Patch application) and `github.com/vmihailenco/msgpack/v5` (the cursor envelope); UUIDs are the standard library's. The optional PostgreSQL adapter uses pgx, the SQLite functions `modernc.org/sqlite`, and the conformance fixture `filter/filtertest` `github.com/shopspring/decimal`. The runnable [server example](examples/server/README.md) is a module of its own, so its CLI and configuration requirements (Kong and the released config and Kong provider modules) are not parse's. The Go client and the published TypeScript SDK have no third-party runtime dependencies.
+The module uses MIT licensing and requires Go 1.27. Runtime dependencies are the released `pkg/gowalker` and `pkg/jsonvalue` modules, `github.com/evanphx/json-patch/v5` (JSON Patch application) and `github.com/vmihailenco/msgpack/v5` (the cursor envelope); UUIDs are the standard library's. The PostgreSQL provider uses pgx, the SQLite provider and functions `modernc.org/sqlite`, and the conformance fixture `filter/filtertest` `github.com/shopspring/decimal`; a program links only the providers it imports. The runnable [server example](examples/server/README.md) is a module of its own, so its CLI and configuration requirements (Kong and the released config and Kong provider modules) are not parse's. The Go client and the published TypeScript SDK have no third-party runtime dependencies.
 
-[`parse/client`](client/README.md) is a module of its own, `github.com/ashtonian/pkg/parse/client`, that requires nothing: a program that imports it lists that module alone in its module graph and links the standard library and that package (its release check fails on anything else). It imports no parse package, and this module does not require it, so the two version apart and the wire holds them together. The client's tests replay `testdata/sdk_wire.json`, the exchanges this module's handlers answered (`sdk_wire_fixture_test.go`): every answer decodes into the client's types and encodes back to the recorded JSON, and every request the client builds is the recorded one. They record what the client builds for the filter and patch corpora in `testdata/client_requests.json`, which `client_conformance_test.go` reads as the server. A change to either side that alters the wire fails the other side's tests in the same commit. Of the library packages only `parsehttp` imports `net/http`: `parse`, `core`, `filter`, `patch` and the executors link no HTTP stack, so a server on another transport carries neither `net/http` nor `crypto/tls` for them (`TestTransportFreePackages_ImportNoNetHTTP` holds the first four).
+[`parse/client`](client/README.md) is a module of its own, `github.com/ashtonian/pkg/parse/client`, that requires nothing: a program that imports it lists that module alone in its module graph and links the standard library and that package (its release check fails on anything else). It imports no parse package, and this module does not require it, so the two version apart and the wire holds them together. The client's tests replay `testdata/sdk_wire.json`, the exchanges this module's handlers answered (`sdk_wire_fixture_test.go`): every answer decodes into the client's types and encodes back to the recorded JSON, and every request the client builds is the recorded one. They record what the client builds for the filter and patch corpora in `testdata/client_requests.json`, which `client_conformance_test.go` reads as the server. A change to either side that alters the wire fails the other side's tests in the same commit. Of the library packages only `parsehttp` imports `net/http`: `parse`, `core`, `filter`, `patch` and the providers link no HTTP stack, so a server on another transport carries neither `net/http` nor `crypto/tls` for them (`TestTransportFreePackages_ImportNoNetHTTP` holds the first four).
 
-Before v1, minor releases may change the Go API or grammar; patch releases retain the published contract. Schema documents carry their own version, independent of module versions. The default PostgreSQL collation requires 17+; the test matrix targets PostgreSQL 17/18 and SQLite at the release [supported SQLite](parsesqlite/README.md#supported-sqlite) names, which `parsesqlite` checks on every connection it registers with, and CockroachDB is not supported. `CollationC` can compile for PostgreSQL 14–16, with matching index collation, but those versions are outside the CI matrix.
+Before v1, minor releases may change the Go API or grammar; patch releases retain the published contract. Schema documents carry their own version, independent of module versions. The default PostgreSQL collation requires 17+; the test matrix targets PostgreSQL 17/18 and SQLite at the release [supported SQLite](parsesql/README.md#supported-sqlite) names, which `parsesql.New` checks when it opens a provider, and CockroachDB is not supported. `CollationC` can compile for PostgreSQL 14–16, with matching index collation, but those versions are outside the CI matrix.
 
 Applications own authenticated scope and trusted SQL expressions. Cursors are opaque positions, not authorization credentials. Bound request size and complexity, propagate context deadlines through execution, and follow the [operations guide](docs/operations.md) and [security policy](SECURITY.md).

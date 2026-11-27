@@ -10,7 +10,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -42,7 +41,7 @@ type markedFilterRow struct {
 func TestTypeText_ErrorsLeaveOutTagValues(t *testing.T) {
 	docs := func(t *testing.T) *parse.Resource[markedDocRow] {
 		t.Helper()
-		r, err := parse.NewResource[markedDocRow]("docs", parse.ColumnType("doc", core.SQLJSONB), parse.CustomizeSchemas(func(s parse.Schemas) error {
+		r, err := parse.NewResource[markedDocRow](onPostgres, "docs", parse.ColumnType("doc", core.SQLJSONB), parse.CustomizeSchemas(func(s parse.Schemas) error {
 			return s.Patch.AddPath("/doc/*", &patch.PathSchema{AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeAny, SQLColumn: "doc"})
 		}))
 		require.NoError(t, err)
@@ -56,7 +55,7 @@ func TestTypeText_ErrorsLeaveOutTagValues(t *testing.T) {
 		{
 			name: "row type",
 			err: func(t *testing.T) error {
-				_, err := parse.NewResource[markedRow]("rows", parse.TenantColumn("tenant_id"))
+				_, err := parse.NewResource[markedRow](onPostgres, "rows", parse.TenantColumn("tenant_id"))
 				return err
 			},
 			want: `tenant column "tenant_id" is not a column of struct { ID string }`,
@@ -64,7 +63,7 @@ func TestTypeText_ErrorsLeaveOutTagValues(t *testing.T) {
 		{
 			name: "stored document type",
 			err: func(t *testing.T) error {
-				scanner, err := docs(t).RowScanner(filter.PostgresDialect{})
+				scanner, err := docs(t).RowScanner()
 				require.NoError(t, err)
 				_, err = scanner.Scan(scanStrings(`{"Kind":"x"}`))
 				return err
@@ -82,7 +81,7 @@ func TestTypeText_ErrorsLeaveOutTagValues(t *testing.T) {
 		{
 			name: "filter field type",
 			err: func(t *testing.T) error {
-				_, err := parse.NewResource[markedFilterRow]("filters", parse.ColumnType("meta", core.SQLDate))
+				_, err := parse.NewResource[markedFilterRow](onPostgres, "filters", parse.ColumnType("meta", core.SQLDate))
 				return err
 			},
 			want: `column "meta" declares a civil date; use core.Date, not struct { X int }`,

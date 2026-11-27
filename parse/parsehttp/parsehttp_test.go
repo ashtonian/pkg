@@ -19,7 +19,12 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
+
+// onSQLite is the provider the tests' resources compile for: the handlers
+// under test parse requests and write answers, and run no statement.
+var onSQLite = providertest.Compile(filter.SQLiteDialect{}) //nolint:gochecknoglobals // one provider: Relate joins resources of one provider only
 
 func TestWriteError_AnswersAParseErrorWithItsCodesStatus(t *testing.T) {
 	pe := core.NewError(filter.ECodeInvalidUUID, "invalid UUID", core.WithField("ref"))
@@ -144,7 +149,7 @@ type device struct {
 // binds it to a form field or a JSON Patch operation without reading the
 // message.
 func TestWriteError_AnswersAPatchErrorsPathAndIndex(t *testing.T) {
-	devices, err := parse.NewResource[device]("devices")
+	devices, err := parse.NewResource[device](onSQLite, "devices")
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodPatch, "/devices/d1", nil)
 

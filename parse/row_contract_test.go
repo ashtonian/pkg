@@ -12,8 +12,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
 type storedSettings struct {
@@ -36,7 +35,7 @@ type storedRow struct {
 }
 
 func TestRowScanner_SQLiteStorage(t *testing.T) {
-	db := dbtest.SQLite(t)
+	p, db := providertest.SQLite(t)
 	_, err := db.Exec(`CREATE TABLE "stored" ("id" TEXT PRIMARY KEY, "at" TEXT NOT NULL, "until" TEXT, "counts" TEXT, "settings" TEXT,
 		"tags" TEXT, "spans" TEXT, "raw" TEXT, "dynamic" TEXT, "every" TEXT)`)
 	require.NoError(t, err)
@@ -45,10 +44,8 @@ func TestRowScanner_SQLiteStorage(t *testing.T) {
 		"a", core.FormatTimestamp(at), core.FormatTimestamp(at.Add(time.Hour)), `{"x":1}`, `{"theme":"dark"}`, `["p","q"]`, `["P1D"]`, `null`, `[1,"two"]`, "PT1H",
 		"b", core.FormatTimestamp(at), "P1M")
 	require.NoError(t, err)
-	r := parse.MustResource[storedRow]("stored")
-	columns, err := r.Columns(filter.SQLiteDialect{})
-	require.NoError(t, err)
-	rows := resourceRows(t, db, r, filter.SQLiteDialect{}, parse.Statement{SQL: `SELECT ` + joinColumns(columns) + ` FROM "stored" ORDER BY "id"`})
+	r := parse.MustResource[storedRow](p, "stored")
+	rows := resourceRows(t, r, parse.Statement{SQL: `SELECT ` + joinColumns(r.Columns()) + ` FROM "stored" ORDER BY "id"`})
 	require.Len(t, rows, 2)
 	until := at.Add(time.Hour)
 	assert.Equal(t, storedRow{
@@ -60,14 +57,12 @@ func TestRowScanner_SQLiteStorage(t *testing.T) {
 }
 
 func TestRowScanner_RefusesWhatTheRowCannotHold(t *testing.T) {
-	db := dbtest.SQLite(t)
+	p, db := providertest.SQLite(t)
 	_, err := db.Exec(`CREATE TABLE "stored" ("id" TEXT PRIMARY KEY, "at" TEXT, "until" TEXT, "counts" TEXT, "settings" TEXT,
 		"tags" TEXT, "spans" TEXT, "raw" TEXT, "dynamic" TEXT, "every" TEXT)`)
 	require.NoError(t, err)
-	r := parse.MustResource[storedRow]("stored")
-	columns, err := r.Columns(filter.SQLiteDialect{})
-	require.NoError(t, err)
-	read := parse.Statement{SQL: `SELECT ` + joinColumns(columns) + ` FROM "stored"`}
+	r := parse.MustResource[storedRow](p, "stored")
+	read := parse.Statement{SQL: `SELECT ` + joinColumns(r.Columns()) + ` FROM "stored"`}
 	for name, values := range map[string]string{
 		"NULL into a time.Time":               `('a', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'PT1H')`,
 		"a member spelt in another case":      `('a', '2026-01-02T03:04:05.000000000Z', NULL, NULL, '{"Theme":"dark"}', NULL, NULL, NULL, NULL, 'PT1H')`,
@@ -79,13 +74,11 @@ func TestRowScanner_RefusesWhatTheRowCannotHold(t *testing.T) {
 			require.NoError(t, err)
 			_, err = db.Exec(`INSERT INTO "stored" VALUES ` + values)
 			require.NoError(t, err)
-			_, err = parsesqlQuery(t, db, r, read)
+			_, err = r.Query(t.Context(), read)
 			assert.Error(t, err)
 		})
 	}
 
-	_, err = r.RowScanner(filter.PostgresDialect{}, parse.ScanJSON("nope"))
+	_, err = r.RowScanner(parse.ScanJSON("nope"))
 	assert.ErrorContains(t, err, `ScanJSON names "nope", which the resource does not read`)
-	_, err = r.RowScanner(nil)
-	assert.ErrorContains(t, err, "row scanner needs a dialect")
 }

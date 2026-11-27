@@ -27,13 +27,13 @@ func (r *Resource[T]) ParseFacets(q url.Values) (*ListRequest, error) {
 	return r.ParseList(q)
 }
 
-// BuildFacets compiles a facets request (ParseFacets) for dialect d under
-// scope s into its facet statement, the one BuildList compiles for a page
+// BuildFacets compiles a facets request (ParseFacets) under scope s into
+// the facet statement Facets runs, the one BuildList compiles for a page
 // asking for the same facets: the same filter, search, tenant floor,
 // soft-delete masking and policy. A request naming no facets compiles to
 // nil.
-func (r *Resource[T]) BuildFacets(d filter.Dialect, req *ListRequest, s Scope) (*filter.FacetQuery, error) {
-	plan, err := r.BuildList(d, req, s)
+func (r *Resource[T]) BuildFacets(req *ListRequest, s Scope) (*filter.FacetQuery, error) {
+	plan, err := r.BuildList(req, s)
 	if err != nil {
 		return nil, err
 	}

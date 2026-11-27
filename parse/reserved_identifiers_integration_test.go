@@ -58,11 +58,11 @@ var reservedFixture = []string{
 	`INSERT INTO "grant" VALUES (1, 20, 1), (2, 20, 1), (2, 21, 1), (3, 22, 2)`,
 }
 
-func reservedUsers(t *testing.T) *parse.Resource[reservedUser] {
+func reservedUsers(t *testing.T, p *parse.Provider) *parse.Resource[reservedUser] {
 	t.Helper()
-	users := parse.MustResource[reservedUser]("user", parse.TenantColumn("tenant_id"))
-	checks := parse.MustResource[reservedCheck]("check", parse.TenantColumn("tenant_id"))
-	tables := parse.MustResource[reservedTable]("table", parse.TenantColumn("tenant_id"))
+	users := parse.MustResource[reservedUser](p, "user", parse.TenantColumn("tenant_id"))
+	checks := parse.MustResource[reservedCheck](p, "check", parse.TenantColumn("tenant_id"))
+	tables := parse.MustResource[reservedTable](p, "table", parse.TenantColumn("tenant_id"))
 	users.MustRelate("checks", parse.HasMany(checks, "user", parse.Indexed()))
 	users.MustRelate("tables", parse.ManyToMany(tables,
 		parse.Junction{Table: "grant", Source: []string{"user"}, Target: []string{"table"}, Tenant: "tenant_id"},
@@ -75,21 +75,14 @@ func TestReservedIdentifiers(t *testing.T) {
 }
 
 func runReservedIdentifiers(t *testing.T, b sqlBackend) {
-	db := b.open(t)
-	d := b.dialect
+	p, db := b.open(t)
 	execStatements(t, db, reservedFixture...)
-	users := reservedUsers(t)
-	list := func(q url.Values) *parse.ListPlan {
+	users := reservedUsers(t, p)
+	list := func(q url.Values) *filter.Page[reservedUser] {
 		t.Helper()
 		req, err := users.ParseList(q)
 		require.NoError(t, err)
-		plan, err := users.BuildList(d, req, parse.Scope{Tenant: "1"})
-		require.NoError(t, err)
-		return plan
-	}
-	page := func(plan *parse.ListPlan) *filter.Page[reservedUser] {
-		t.Helper()
-		return listPage(t, db, users, d, plan)
+		return listPage(t, users, req, parse.Scope{Tenant: "1"})
 	}
 	ids := func(p *filter.Page[reservedUser]) []int64 {
 		return itemIDs(p.Items, func(u reservedUser) int64 { return u.ID })
@@ -102,30 +95,27 @@ func runReservedIdentifiers(t *testing.T, b sqlBackend) {
 			filter.ParamPageSize:     {"2"},
 			filter.ParamIncludeTotal: {"true"},
 		}
-		plan := list(q)
-		first := page(plan)
+		first := list(q)
 		assert.Equal(t, []int64{1, 3}, ids(first))
 		require.True(t, first.PageInfo.HasNextPage)
 		require.NotNil(t, first.PageInfo.TotalCount)
 		assert.Equal(t, int64(3), *first.PageInfo.TotalCount)
 
 		q.Set(filter.ParamCursor, string(first.PageInfo.EndCursor))
-		assert.Equal(t, []int64{2}, ids(page(list(q))))
+		assert.Equal(t, []int64{2}, ids(list(q)))
 
 		byCreated := url.Values{filter.ParamSort: {"createdAt"}, filter.ParamPageSize: {"1"}}
-		p := page(list(byCreated))
-		assert.Equal(t, []int64{2}, ids(p))
-		byCreated.Set(filter.ParamCursor, string(p.PageInfo.EndCursor))
-		assert.Equal(t, []int64{3}, ids(page(list(byCreated))), "the mixed-case key seeks")
+		created := list(byCreated)
+		assert.Equal(t, []int64{2}, ids(created))
+		byCreated.Set(filter.ParamCursor, string(created.PageInfo.EndCursor))
+		assert.Equal(t, []int64{3}, ids(list(byCreated)), "the mixed-case key seeks")
 	})
 
 	t.Run("searches and facets", func(t *testing.T) {
-		assert.Equal(t, []int64{2, 3}, ids(page(list(url.Values{filter.ParamSearch: {"alpha"}, filter.ParamSort: {"id"}}))))
+		assert.Equal(t, []int64{2, 3}, ids(list(url.Values{filter.ParamSearch: {"alpha"}, filter.ParamSort: {"id"}})))
 
-		plan := list(url.Values{filter.ParamFacets: {"group,tables"}})
-		require.NotNil(t, plan.Facets)
 		counts := map[string]int64{}
-		for field, buckets := range page(plan).Facets {
+		for field, buckets := range list(url.Values{filter.ParamFacets: {"group,tables"}}).Facets {
 			for _, b := range buckets {
 				counts[field+"="+b.Key] = b.Count
 			}
@@ -143,36 +133,32 @@ func runReservedIdentifiers(t *testing.T, b sqlBackend) {
 			{`{"tables":21}`, []int64{2}},
 			{`{"tables":{"$some":{"column":"x"}}}`, []int64{1, 2}},
 		} {
-			got := ids(page(list(url.Values{filter.ParamFilter: {tc.filter}, filter.ParamSort: {"id"}})))
+			got := ids(list(url.Values{filter.ParamFilter: {tc.filter}, filter.ParamSort: {"id"}}))
 			assert.Equal(t, tc.want, got, tc.filter)
 		}
 	})
 
 	t.Run("includes the tenant's pairs", func(t *testing.T) {
-		got := page(list(url.Values{filter.ParamInclude: {"tables"}}))
+		got := list(url.Values{filter.ParamInclude: {"tables"}})
 		assert.Equal(t, map[string][]string{"1": {"20"}, "2": {"20", "21"}}, got.Relations["tables"])
 	})
 
 	t.Run("updates columns and memberships", func(t *testing.T) {
-		p, err := users.ParseMergePatch([]byte(`{"order":7,"group":"gamma"}`))
+		parsed, err := users.ParseMergePatch([]byte(`{"order":7,"group":"gamma"}`))
 		require.NoError(t, err)
-		plan, err := users.BuildUpdate(d, p, parse.ByID(int64(1)), parse.Scope{Tenant: "1"}, parse.SkipUnchanged())
-		require.NoError(t, err)
-		res, err := applyUpdate(t, db, users, d, plan, false)
+		res, err := users.Update(t.Context(), parsed, parse.ByID(int64(1)), parse.Scope{Tenant: "1"}, parse.SkipUnchanged())
 		require.NoError(t, err)
 		require.Len(t, res.Changed, 1)
 		assert.Equal(t, int64(7), res.Changed[0].Order)
 		assert.Equal(t, "gamma", res.Changed[0].Group)
-		res, err = applyUpdate(t, db, users, d, plan, false)
+		res, err = users.Update(t.Context(), parsed, parse.ByID(int64(1)), parse.Scope{Tenant: "1"}, parse.SkipUnchanged())
 		require.NoError(t, err)
 		assert.Empty(t, res.Changed, "the unchanged row is skipped")
 		require.Len(t, res.Unchanged, 1)
 
-		p, err = users.ParseMergePatch([]byte(`{"tables":[21]}`))
+		parsed, err = users.ParseMergePatch([]byte(`{"tables":[21]}`))
 		require.NoError(t, err)
-		plan, err = users.BuildUpdate(d, p, parse.ByID(int64(1)), parse.Scope{Tenant: "1"})
-		require.NoError(t, err)
-		res, err = applyUpdate(t, db, users, d, plan, false)
+		res, err = users.Update(t.Context(), parsed, parse.ByID(int64(1)), parse.Scope{Tenant: "1"})
 		require.NoError(t, err)
 		require.Len(t, res.Unchanged, 1)
 		assert.Equal(t, int64(2), res.RelationRows, "20 removed, 21 added")
@@ -186,14 +172,11 @@ func runReservedIdentifiers(t *testing.T, b sqlBackend) {
 			id  int64
 			raw string
 		}{{2, `{"order":5}`}, {3, `{"group":"delta"}`}} {
-			p, err := users.ParseMergePatch([]byte(u.raw))
+			parsed, err := users.ParseMergePatch([]byte(u.raw))
 			require.NoError(t, err)
-			rows = append(rows, parse.RowUpdate{Key: parse.Key{u.id}, Patch: p})
+			rows = append(rows, parse.RowUpdate{Key: parse.Key{u.id}, Patch: parsed})
 		}
-		plan, err := users.BuildUpdateBatch(d, rows, parse.Scope{Tenant: "1"}, parse.UpdateBatchLimits{}, parse.SkipUnchanged())
-		require.NoError(t, err)
-		require.Len(t, plan.Chunks, 1)
-		res, err := applyUpdateBatch(t, db, users, d, plan)
+		res, err := users.UpdateBatch(t.Context(), rows, parse.Scope{Tenant: "1"}, parse.UpdateBatchLimits{}, parse.SkipUnchanged())
 		require.NoError(t, err)
 		assert.Len(t, res.Changed, 2)
 		assert.Empty(t, res.Unchanged)
@@ -207,20 +190,15 @@ func runReservedIdentifiers(t *testing.T, b sqlBackend) {
 	// unqualified quoted name that matches no column as a string, which
 	// would compare and sort a misspelt column as a constant.
 	t.Run("a misspelt column fails", func(t *testing.T) {
-		typo := parse.MustResource[reservedTypo]("user")
+		typo := parse.MustResource[reservedTypo](p, "user")
 		for _, q := range []url.Values{
 			{filter.ParamFilter: {`{"ordr":1}`}},
 			{filter.ParamSort: {"ordr"}},
 		} {
 			req, err := typo.ParseList(q)
 			require.NoError(t, err)
-			plan, err := typo.BuildList(d, req, parse.Scope{})
-			require.NoError(t, err)
-			rows, err := db.Query(plan.Page.SQL, plan.Page.Args...)
-			if err == nil {
-				err = rows.Close()
-			}
-			assert.Error(t, err, plan.Page.SQL)
+			_, err = typo.List(t.Context(), req, parse.Scope{})
+			assert.ErrorContains(t, err, "ordr", q.Encode())
 		}
 	})
 }

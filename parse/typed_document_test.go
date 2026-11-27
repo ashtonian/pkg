@@ -22,7 +22,7 @@ type documentRow struct {
 }
 
 func TestTypedDocumentReplacementCanonicalizes(t *testing.T) {
-	p, err := parse.NewResource[documentRow]("document_rows")
+	p, err := parse.NewResource[documentRow](onSQLite, "document_rows")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestTypedDocumentReplacementCanonicalizes(t *testing.T) {
 }
 
 func TestTypedDocumentMergePreservesSiblings(t *testing.T) {
-	p, err := parse.NewResource[documentRow]("document_rows")
+	p, err := parse.NewResource[documentRow](onSQLite, "document_rows")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestTypedDocumentMergePreservesSiblings(t *testing.T) {
 }
 
 func TestTypedDocumentRejectsUnknownMembersAndRequiredDeletion(t *testing.T) {
-	p, err := parse.NewResource[documentRow]("document_rows")
+	p, err := parse.NewResource[documentRow](onSQLite, "document_rows")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestTypedDocumentMergeNestedAndNullable(t *testing.T) {
 		ID  string `json:"id,omitempty" db:"id"`
 		Doc nested `json:"doc" db:"doc" parse:"patch"`
 	}
-	p, err := parse.NewResource[row]("rows")
+	p, err := parse.NewResource[row](onSQLite, "rows")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestTypedDocumentTestKeepsSuppliedShape(t *testing.T) {
 		ID   string             `json:"id,omitempty" db:"id"`
 		Dims documentDimensions `json:"dims" db:"dims" parse:"patch" patch_ops:"replace,test"`
 	}
-	p, err := parse.NewResource[row]("rows")
+	p, err := parse.NewResource[row](onSQLite, "rows")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestTypedDocumentMergeHonorsJSONStringTag(t *testing.T) {
 		ID  string   `json:"id,omitempty" db:"id"`
 		Doc document `json:"doc" db:"doc" parse:"patch"`
 	}
-	p, err := parse.NewResource[row]("rows")
+	p, err := parse.NewResource[row](onSQLite, "rows")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestTypedDocumentMergeRejectsPotentiallyOmittedMap(t *testing.T) {
 		ID  string   `json:"id,omitempty" db:"id"`
 		Doc document `json:"doc" db:"doc" parse:"patch"`
 	}
-	p, err := parse.NewResource[row]("rows")
+	p, err := parse.NewResource[row](onSQLite, "rows")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestTypedDocumentRawMessageMerge(t *testing.T) {
 		ID  string          `json:"id,omitempty" db:"id"`
 		Doc json.RawMessage `json:"doc" db:"doc" parse:"patch"`
 	}
-	p, err := parse.NewResource[row]("rows")
+	p, err := parse.NewResource[row](onSQLite, "rows")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -40,11 +40,12 @@ var intTenantFixture = []string{
 	`INSERT INTO device_tags VALUES (1, 20, 1), (1, 21, 2), (3, 21, 2)`,
 }
 
-func intTenantResources(t *testing.T) *parse.Resource[intTenantDevice] {
+// intTenantResources builds the devices, with their relations, on p.
+func intTenantResources(t *testing.T, p *parse.Provider) *parse.Resource[intTenantDevice] {
 	t.Helper()
-	devices := parse.MustResource[intTenantDevice]("devices", parse.TenantColumn("tenant_id"))
-	commands := parse.MustResource[tenantKeyCommand]("commands", parse.TenantColumn("tenant_id"))
-	tags := parse.MustResource[intTenantTag]("tags", parse.TenantColumn("tenant_id"))
+	devices := parse.MustResource[intTenantDevice](p, "devices", parse.TenantColumn("tenant_id"))
+	commands := parse.MustResource[tenantKeyCommand](p, "commands", parse.TenantColumn("tenant_id"))
+	tags := parse.MustResource[intTenantTag](p, "tags", parse.TenantColumn("tenant_id"))
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed()))
 	devices.MustRelate("tags", parse.ManyToMany(tags,
 		parse.Junction{Table: "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"},
@@ -57,17 +58,14 @@ func TestIntegerTenantKeys(t *testing.T) {
 }
 
 func runIntegerTenantKeys(t *testing.T, b sqlBackend) {
-	db := b.open(t)
-	d := b.dialect
+	provider, db := b.open(t)
 	execStatements(t, db, intTenantFixture...)
-	devices := intTenantResources(t)
+	devices := intTenantResources(t, provider)
 	list := func(tenant string, q url.Values) *filter.Page[intTenantDevice] {
 		t.Helper()
 		req, err := devices.ParseList(q)
 		require.NoError(t, err)
-		plan, err := devices.BuildList(d, req, parse.Scope{Tenant: tenant})
-		require.NoError(t, err)
-		return listPage(t, db, devices, d, plan)
+		return listPage(t, devices, req, parse.Scope{Tenant: tenant})
 	}
 	ids := func(page *filter.Page[intTenantDevice]) []int {
 		return itemIDs(page.Items, func(dev intTenantDevice) int { return dev.ID })
@@ -97,17 +95,13 @@ func runIntegerTenantKeys(t *testing.T, b sqlBackend) {
 	t.Run("updates and membership writes stay in the tenant", func(t *testing.T) {
 		p, err := devices.ParseMergePatch([]byte(`{"name":"renamed"}`))
 		require.NoError(t, err)
-		plan, err := devices.BuildUpdate(d, p, parse.ByID(3), parse.Scope{Tenant: "1"})
-		require.NoError(t, err)
-		res, err := applyUpdate(t, db, devices, d, plan, false)
+		res, err := devices.Update(t.Context(), p, parse.ByID(3), parse.Scope{Tenant: "1"})
 		require.NoError(t, err)
 		assert.Zero(t, res, "device 3 is tenant 2's")
 
 		p, err = devices.ParseMergePatch([]byte(`{"tags":[20, 21]}`))
 		require.NoError(t, err)
-		plan, err = devices.BuildUpdate(d, p, parse.ByID(2), parse.Scope{Tenant: "1"})
-		require.NoError(t, err)
-		res, err = applyUpdate(t, db, devices, d, plan, false)
+		res, err = devices.Update(t.Context(), p, parse.ByID(2), parse.Scope{Tenant: "1"})
 		require.NoError(t, err)
 		require.Len(t, res.Unchanged, 1)
 		assert.Equal(t, int64(1), res.RelationRows, "only tenant 1's tag 20 is paired")

@@ -13,7 +13,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
 )
 
 type ownedDoc struct {
@@ -104,7 +103,7 @@ func TestFieldMetadata_CallerChangesReachNoOtherReader(t *testing.T) {
 		assert.Equal(t, []int{0}, kind.Route())
 	})
 
-	r := parse.MustResource[ownedRow]("owned", parse.ColumnType("doc", core.SQLJSONB))
+	r := parse.MustResource[ownedRow](onPostgres, "owned", parse.ColumnType("doc", core.SQLJSONB))
 	t.Run("a later resource", func(t *testing.T) {
 		_, err := r.ParseFilter(`{"name":"a"}`)
 		require.NoError(t, err)
@@ -120,7 +119,7 @@ func TestFieldMetadata_CallerChangesReachNoOtherReader(t *testing.T) {
 	})
 
 	t.Run("stored-document validation", func(t *testing.T) {
-		scanner, err := r.RowScanner(filter.PostgresDialect{})
+		scanner, err := r.RowScanner()
 		require.NoError(t, err)
 		_, err = scanner.Scan(scanStrings(`{"Kind":"x"}`))
 		require.ErrorContains(t, err, `JSON member "/Kind" is noncanonical`)

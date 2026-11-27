@@ -17,7 +17,7 @@ import (
 func TestPathFacets(t *testing.T) {
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
 		schema := pathSchema(t, "")
-		db := loadPathRecords(t, b, schema)
+		_, db := loadPathRecords(t, b, schema)
 		got := facetCounts(t, db, b.dialect, schema, slices.Sorted(maps.Keys(filtertest.PathFacets))...)
 		assert.Equal(t, filtertest.PathFacets, got)
 		assertFacetOrders(t, db, b.dialect, schema, filtertest.PathFacetOrders, filtertest.PathFacets)

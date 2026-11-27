@@ -38,11 +38,11 @@ type Product struct {
 	Reviews     []uuid.UUID    `json:"reviews"     db:"-" parse:"filter,include" relation:"reviews,product_id,id" indexed:"true"`
 }
 
-// products is the parser the examples share, with a fixed clock so
+// products is the resource the examples share, on p, with a fixed clock so
 // relative times print the same every run.
-func products() *parse.Resource[Product] {
+func products(p *parse.Provider) *parse.Resource[Product] {
 	clock := func() time.Time { return time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC) }
-	tp, err := parse.NewResource[Product]("products", parse.ParserOptions(core.WithClock(clock)))
+	tp, err := parse.NewResource[Product](p, "products", parse.ParserOptions(core.WithClock(clock)))
 	if err != nil {
 		panic(err)
 	}
@@ -52,7 +52,7 @@ func products() *parse.Resource[Product] {
 // Example_atAGlance: a filter and a sort, with the key as the unique
 // tie-breaker the cursors need.
 func Example_atAGlance() {
-	showList(products(),
+	showList(products,
 		filter.ListFilter(`{"price":{"$gte":10,"$lt":100},"stock":{"$null":false}}`),
 		filter.ListSort("-price"), filter.ListLimit(20))
 	// Output:
@@ -63,11 +63,10 @@ func Example_atAGlance() {
 // Example_filterOperators: comparison, membership, pattern, NULL and boolean
 // operators, and a relative time resolved against the parser clock.
 func Example_filterOperators() {
-	tp := products()
-	showFilter(tp, `{"category":"tools","name":{"$in":["saw","drill"]}}`)
-	showFilter(tp, `{"price":{"$gte":10,"$lt":100},"stock":{"$null":false}}`)
-	showFilter(tp, `{"$or":[{"category":"books"},{"$not":{"price":{"$gt":50}}}]}`)
-	showFilter(tp, `{"name":{"$ilike":"%pro%"},"created_at":{"$gte":"now-7d"}}`)
+	showFilter(products, `{"category":"tools","name":{"$in":["saw","drill"]}}`)
+	showFilter(products, `{"price":{"$gte":10,"$lt":100},"stock":{"$null":false}}`)
+	showFilter(products, `{"$or":[{"category":"books"},{"$not":{"price":{"$gt":50}}}]}`)
+	showFilter(products, `{"name":{"$ilike":"%pro%"},"created_at":{"$gte":"now-7d"}}`)
 	// Output:
 	// {"category":"tools","name":{"$in":["saw","drill"]}}
 	// postgres WHERE ("products"."category" = $1 AND "products"."name" = ANY($2)) ORDER BY "products"."created_at" DESC, "products"."id" DESC [tools [saw drill]]
@@ -86,7 +85,7 @@ func Example_filterOperators() {
 // Example_flatQueryParameters: field parameters (status=active,
 // price_gte=10) parse to the same filter a JSON filter does.
 func Example_flatQueryParameters() {
-	tp := products()
+	tp := products(onPostgres)
 	q, err := url.ParseQuery("category=tools&price_gte=10&stock_lt=5")
 	if err != nil {
 		panic(err)
@@ -100,7 +99,7 @@ func Example_flatQueryParameters() {
 		panic(err)
 	}
 	fmt.Println("?" + q.Encode())
-	showList(tp, filter.ListFilterAST(ast))
+	showList(products, filter.ListFilterAST(ast))
 	// Output:
 	// ?category=tools&price_gte=10&stock_lt=5
 	// postgres WHERE ("products"."category" = $1 AND "products"."price" >= $2 AND "products"."stock" < $3) ORDER BY "products"."created_at" DESC, "products"."id" DESC [tools 10 5]
@@ -110,8 +109,7 @@ func Example_flatQueryParameters() {
 // Example_keysetPages: a sort plus a unique tie-breaker gives a total
 // order; the next page seeks past the last row's key instead of offsetting.
 func Example_keysetPages() {
-	tp := products()
-	lq, err := tp.ListQuery(filter.PostgresDialect{})
+	lq, err := products(onPostgres).ListQuery()
 	if err != nil {
 		panic(err)
 	}
@@ -135,7 +133,7 @@ func Example_keysetPages() {
 		panic(err)
 	}
 	fmt.Println("items:", len(page.Items), "has_next_page:", page.PageInfo.HasNextPage)
-	showList(tp, filter.ListSort("-price"), filter.ListLimit(2),
+	showList(products, filter.ListSort("-price"), filter.ListLimit(2),
 		filter.ListCursor(string(page.PageInfo.EndCursor)))
 	// Output:
 	// first: WHERE 1=1 ORDER BY "products"."price" DESC, "products"."id" DESC LIMIT 3 []
@@ -147,7 +145,7 @@ func Example_keysetPages() {
 // Example_countFacetsSearch: one request can also produce its total, its
 // facet counts and a full-text predicate, all over the same filter.
 func Example_countFacetsSearch() {
-	lq, err := products().ListQuery(filter.PostgresDialect{})
+	lq, err := products(onPostgres).ListQuery()
 	if err != nil {
 		panic(err)
 	}
@@ -172,11 +170,10 @@ func Example_countFacetsSearch() {
 // Example_relations: a many-to-many filter, a one-to-many filter through
 // the child table, and a belongs-to, which is the plain foreign key.
 func Example_relations() {
-	tp := products()
-	showFilter(tp, `{"collections":"0190f3c2-0000-7000-8000-000000000001"}`)
-	showFilter(tp, `{"collections":{"$nin":["0190f3c2-0000-7000-8000-000000000001"]}}`)
-	showFilter(tp, `{"reviews":{"$null":false}}`)
-	showFilter(tp, `{"supplier_id":"0190f3c2-0000-7000-8000-0000000000aa"}`)
+	showFilter(products, `{"collections":"0190f3c2-0000-7000-8000-000000000001"}`)
+	showFilter(products, `{"collections":{"$nin":["0190f3c2-0000-7000-8000-000000000001"]}}`)
+	showFilter(products, `{"reviews":{"$null":false}}`)
+	showFilter(products, `{"supplier_id":"0190f3c2-0000-7000-8000-0000000000aa"}`)
 	// Output:
 	// {"collections":"0190f3c2-0000-7000-8000-000000000001"}
 	// postgres WHERE EXISTS (SELECT 1 FROM "product_collections" WHERE "product_collections"."product_id" = "products"."id" AND "product_collections"."collection_id" = $1) ORDER BY "products"."created_at" DESC, "products"."id" DESC [0190f3c2-0000-7000-8000-000000000001]
@@ -195,7 +192,7 @@ func Example_relations() {
 // Example_include: the related IDs for a page's owners, capped per owner
 // in SQL.
 func Example_include() {
-	tp := products()
+	tp := products(onPostgres)
 	q, err := filter.BuildIncludeQuery(tp.FilterSchema().Fields["collections"], filter.PostgresDialect{},
 		[]core.Key{{"0190f3c2-0000-7000-8000-000000000011"}, {"0190f3c2-0000-7000-8000-000000000012"}})
 	if err != nil {
@@ -211,11 +208,10 @@ func Example_include() {
 // Example_jsonDocuments: a JSON column is compared or contained as a whole
 // document; a plain object is equality, $contains is jsonb @> at any depth.
 func Example_jsonDocuments() {
-	tp := products()
-	showFilter(tp, `{"attrs":{"$contains":{"color":"red","dims":{"w":10}}}}`)
-	showFilter(tp, `{"tags":{"$contains":["sale"]}}`)
+	showFilter(products, `{"attrs":{"$contains":{"color":"red","dims":{"w":10}}}}`)
+	showFilter(products, `{"tags":{"$contains":["sale"]}}`)
 	undeclared := `{"attrs.color":"red"}`
-	_, err := tp.ParseFilter(undeclared)
+	_, err := products(onPostgres).ParseFilter(undeclared)
 	fmt.Println(undeclared)
 	fmt.Println(err)
 	// Output:
@@ -232,7 +228,7 @@ func Example_jsonDocuments() {
 // Example_patches: a merge patch and a JSON Patch, each compiled to one
 // SET clause with one expression per column.
 func Example_patches() {
-	tp := products()
+	tp := products(onPostgres)
 	mergeBody := `{"name":"Cordless drill","stock":null,"attrs":{"color":"blue","legacy":null}}`
 	merge, err := tp.ParseMergePatch([]byte(mergeBody))
 	if err != nil {
@@ -275,7 +271,7 @@ func Example_patches() {
 // bounds the combination as one filter: each part may be within MaxCost and
 // the two together over it.
 func TestParseRequestFilter(t *testing.T) {
-	tp := products()
+	tp := products(onPostgres)
 	parsed, err := tp.ParseRequestFilter(url.Values{
 		"filter":    {`{"category":"tools"}`},
 		"price_gte": {"10"},
@@ -283,7 +279,7 @@ func TestParseRequestFilter(t *testing.T) {
 		"debug":     {"true"},   // the endpoint's own parameter
 	}, filter.QueryParamAccept("debug"))
 	require.NoError(t, err)
-	lq, err := tp.ListQuery(filter.PostgresDialect{})
+	lq, err := tp.ListQuery()
 	require.NoError(t, err)
 	res, err := lq.Build(filter.ListFilterAST(parsed.AST()))
 	require.NoError(t, err)
@@ -291,7 +287,7 @@ func TestParseRequestFilter(t *testing.T) {
 	assert.Equal(t, []any{"tools", float64(10)}, res.Args)
 
 	// Each part is affordable alone; together they are not.
-	strict, err := parse.NewResource[Product]("products", parse.ParserOptions(core.WithMaxCost(25)))
+	strict, err := parse.NewResource[Product](onPostgres, "products", parse.ParserOptions(core.WithMaxCost(25)))
 	require.NoError(t, err)
 	q := url.Values{"filter": {`{"name":{"$like":"a%"}}`}, "price_gte": {"10"}, "created_at_gte": {"2026-01-01T00:00:00Z"}}
 	_, err = strict.ParseRequestFilter(url.Values{"filter": q["filter"]})

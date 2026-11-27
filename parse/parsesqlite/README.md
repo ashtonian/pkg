@@ -13,7 +13,7 @@ func openDB(ctx context.Context, dsn string) (*sql.DB, error) {
 }
 ```
 
-Register before the database opens its first connection: modernc.org/sqlite installs registered functions on each connection it opens afterwards. Declare decimal columns `TEXT` so they hold every decimal exactly ([decimals](../docs/schema-configuration.md#decimals)). Timestamp columns need no function: they hold canonical UTC text, which compares and sorts as the instant, and rows the application inserts itself must bind it too ([timestamps](../docs/schema-configuration.md#timestamps)). The [example server](../examples/server/main.go) registers in `openDB`.
+Register before the database opens its first connection: modernc.org/sqlite installs registered functions on each connection it opens afterwards. [`parsesql.New`](../parsesql/README.md) then opens the provider on the database and checks the SQLite release it runs ([supported SQLite](../parsesql/README.md#supported-sqlite)); [`parseprovider.Open`](../parseprovider/README.md) registers and opens from configuration. Declare decimal columns `TEXT` so they hold every decimal exactly ([decimals](../docs/schema-configuration.md#decimals)). Timestamp columns need no function: they hold canonical UTC text, which compares and sorts as the instant, and rows the application inserts itself must bind it too ([timestamps](../docs/schema-configuration.md#timestamps)). The [example server](../examples/server/main.go) opens its database through `parseprovider`.
 
 ## Architecture
 
@@ -29,9 +29,8 @@ flowchart LR
 ```
 
 **Entry points**
-- `Register()`: registers the six functions, and the connection hook that refuses a SQLite older than `MinSQLiteVersion`, with modernc.org/sqlite's `"sqlite"` driver, once per process.
+- `Register()`: registers the six functions with modernc.org/sqlite's `"sqlite"` driver, once per process.
 - `RegisterOn(d *sqlite.Driver)`: registers them on a `sqlite.Driver` the caller constructs, which then carries them on its own connections only. Package-level registrations, `Register`'s included, never reach a constructed driver.
-- `MinSQLiteVersion`, `CheckVersion(version)`, `VersionError{Have, Need}`: the oldest SQLite parse's plans run on, the check the hook runs on what `sqlite_version()` reports, and its refusal ([supported SQLite](#supported-sqlite)).
 - `Functions()`: the table both install, as `Function{Name, NArgs, Call}`, for registering with another SQLite driver ([below](#another-sqlite-driver)).
 - `Decimal(v)`, `DecimalKey(v)`, `DecimalFloat32(v)`: the functions over one SQLite value.
 - `GeoNear(point, latKey, lonKey, lat, lon, meters)`, `GeoInBox(point, latKey, lonKey, south, north, west, east)`, `GeoCoveredBy(point, latKey, lonKey, polygon)`: the geo functions over a stored point's JSON text, its member names and the bound operands.
@@ -40,7 +39,6 @@ flowchart LR
 - Function results: TEXT, a BLOB, 1 or 0, or NULL. Nothing is written or logged.
 
 **Failure modes**
-- `connection hook: parsesqlite: SQLite 3.46.1 is older than 3.47.0, the oldest release parse's plans run on`: the driver links, or with mattn's `libsqlite3` tag loads, a SQLite older than `MinSQLiteVersion`, and every connection it opens is refused. Move to a driver release that bundles a newer one, or upgrade the system library; `SELECT sqlite_version()` on a connection opened without the hook shows what it runs.
 - A connection opened before `Register`, or a database whose driver never registered the functions: every statement on a decimal field or an int or float path, and every facet of a number, fails with SQLite's `no such function: parse_decimal` (or `parse_decimal_key`, `parse_decimal_float32`), and every geo filter with `no such function: parse_geo_near` (or `parse_geo_in_box`, `parse_geo_covered_by`). parse never falls back to a rounded comparison or key, or to a spherical distance.
 - `Register` failing: `parsesqlite: register parse_decimal: a function named "parse_decimal" is already registered` means another package registered that name with modernc.org/sqlite first. The functions before the taken name in `Functions()` are registered and the rest are not, so fix the conflict rather than retrying: `Register` returns its first result on every call. `RegisterOn` fails the same way on a driver that already has a name, and is not memoized: call it once per driver.
 - A value that holds no decimal (a JSON boolean, a string with an exponent, text that is no number, a BLOB): NULL, so a filter treats it as missing, as `filter.PathValue` does.
@@ -48,8 +46,8 @@ flowchart LR
 - `parse_geo_near: geo: decode point: …`: the stored point is not JSON (`json()` in the plan reports malformed JSON first). `want the point's member names as text`, `want the point as JSON text`, `want a number for operand n`, `parse_geo_covered_by: want the polygon as a WKB blob` or `geo: want a little-endian one-ring polygon WKB`: hand-written SQL called a geo function with arguments `filter.SQLiteDialect` never binds. The operands are checked before the point, so the error comes on the first row, a NULL point's included. The dialect passes `json(column)`, the member names as text, numbers, and the polygon `geo.AppendPolygonWKB` writes.
 
 **Dependencies**
-- *Imports*: `parse/internal/decimals`, `parse/internal/geo`, `parse/internal/dialect` (the SQLite minimum), `gowalker` (type text in errors), `modernc.org/sqlite`
-- *Imported by*: applications running parse plans on SQLite, `parse/internal/dbtest`, the example server
+- *Imports*: `parse/internal/decimals`, `parse/internal/geo`, `gowalker` (type text in errors), `modernc.org/sqlite`
+- *Imported by*: applications running parse on SQLite, `parse/parseprovider`, `parse/internal/dbtest`
 - *Package boundary*: `filter` does not import this package, so the compiler stays driver-free; both read the function names from `internal/decimals` and `internal/geo`
 
 ## Functions
@@ -92,7 +90,7 @@ The key is a sign byte (negative, zero, positive), then for a nonzero value `0.d
 
 ### Another SQLite driver
 
-`Functions()` is the registration contract: each entry's `Name` is what `filter.SQLiteDialect` calls, `NArgs` how many arguments it passes, and `Call` the implementation over the `database/sql/driver` values a scalar function receives. Register every entry, as a deterministic function: SQLite uses an index on an expression only when its functions are deterministic. Check the release each connection runs as well, from the driver's connection hook: `CheckVersion` refuses one older than `MinSQLiteVersion` ([supported SQLite](#supported-sqlite)).
+`Functions()` is the registration contract: each entry's `Name` is what `filter.SQLiteDialect` calls, `NArgs` how many arguments it passes, and `Call` the implementation over the `database/sql/driver` values a scalar function receives. Register every entry, as a deterministic function: SQLite uses an index on an expression only when its functions are deterministic. `parsesql.New` checks the release the database runs ([supported SQLite](../parsesql/README.md#supported-sqlite)).
 
 | Name | Arguments |
 |---|---|
@@ -107,20 +105,7 @@ The functions need nothing from modernc.org/sqlite, but this package registers t
 
 ## Supported SQLite
 
-parse's SQLite plans need **SQLite 3.47.0** or later (`MinSQLiteVersion`), with its JSON functions, which are built in unless a build omits them. The JSON functions decide the release. From 3.45.0 they compare a path's label with a member's name as decoded, so a member encoding/json wrote escaped (`"a\u003cb"`) is the one `$."a<b"` names, where an older release finds none and `json_set` appends a second member. From 3.47.0 they read an escaped double quote inside a quoted label, where an older release ends the label there: `$."x\".y"` reads as the members `x\` and `y"`, and `json_set` creates them. The plans also use the `->` operator (3.38.0), which reads a document member's JSON text, row values (3.15.0: a keyset seek over several keys, `(a, b) > (?1, ?2)`, and a key set of several columns, `(a, b) IN (SELECT … FROM json_each(?1))`), `ON CONFLICT DO NOTHING` (3.24.0), window functions (3.25.0) and `NULLS FIRST` / `NULLS LAST` (3.30.0). An older SQLite refuses those when it prepares a statement; parse has no fallback SQL for any of them.
-
-The minimum is enforced, not only stated:
-
-- `Register` and `RegisterOn` also install a connection hook that reads `sqlite_version()` on every connection the driver opens and refuses a library older than `MinSQLiteVersion`. The open fails with `connection hook: parsesqlite: SQLite 3.46.1 is older than 3.47.0, the oldest release parse's plans run on`, a `*VersionError` (`Have`, `Need`) through `errors.As`.
-- Another driver calls `CheckVersion(version)` from its own connection hook with the release the connection reports: with `mattn/go-sqlite3`, a `sqlite3.SQLiteDriver` whose `ConnectHook` returns `parsesqlite.CheckVersion(v)` for `v, _, _ := sqlite3.Version()`.
-- A statement cannot ask which release runs it, and a connection no check reached may run an older one, so `filter.SQLiteDialect` refuses a JSON Patch operation on a document member whose name holds `"` or `\` whatever the release: it is E2070, and `ApplyValidatedPatch` applies it. A merge patch writes such a member, since it binds the member names inside its JSON rather than in a path; PostgreSQL writes any name.
-
-| Driver | SQLite it runs |
-|---|---|
-| `modernc.org/sqlite` | the release it bundles, at the version this module requires |
-| `github.com/mattn/go-sqlite3` | the release it bundles: 3.54.1 in v1.14.53 (`SQLITE_VERSION` in its `sqlite3-binding.c`); built with the `libsqlite3` tag, the system's library, which must meet the minimum itself |
-
-`TestDriver_MeetsTheSQLiteMinimum` opens `modernc.org/sqlite` at the version this module requires, checks that the release above is `MinSQLiteVersion` and that the bundled library passes `CheckVersion`, and runs each construct it lists, a label compared as decoded and one holding an escaped double quote included. This module does not require `mattn/go-sqlite3`, a cgo driver every consumer's module graph would carry: an application on it, or on a system `libsqlite3`, calls `CheckVersion` from its connection hook, as above. `TestRegisterOn_RefusesAnOlderSQLite` opens the bundled library through the hook `RegisterOn` installs with the release it needs raised past the bundled one, and gets the `*VersionError`.
+The SQLite release parse's statements need, and its check, are [`parsesql`'s](../parsesql/README.md#supported-sqlite): the functions here run on any release.
 
 ## Configuration
 
@@ -169,7 +154,5 @@ The functions read only their argument, allocate at most the value's digits (bou
 | File | Responsibility |
 |---|---|
 | [`parsesqlite.go`](parsesqlite.go) | `Function` and the `Functions` table, `Register`, `RegisterOn`, `Decimal`, `DecimalKey`, `DecimalFloat32`, `GeoNear`, `GeoInBox`, `GeoCoveredBy` and the function names |
-| [`version.go`](version.go) | `MinSQLiteVersion`, `CheckVersion`, `VersionError` and the connection hook that reads `sqlite_version()` |
-| [`drivers_test.go`](drivers_test.go) | The [supported SQLite](#supported-sqlite) check: the required driver's release and the constructs the minimum is for |
 | [`../internal/decimals`](../internal/decimals/decimals.go) | `Value` (a SQLite value as a decimal), `Float32Value` (as a float32), `Member` (a document member as a decimal), `Key`, the function names |
 | [`../internal/geo`](../internal/geo/geo.go) | `Distance` (WGS 84 geodesic, ported from GeographicLib), `Geodetic`, `Box`, `CoveredBy`, `Near`, `ReadPoint` / `ReadPointJSON` and `Coordinate` (a stored point, its members read as float8), the polygon WKB, the function names |

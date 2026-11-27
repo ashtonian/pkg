@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,7 +15,6 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/parsehttp"
-	"github.com/ashtonian/pkg/parse/parsesql"
 )
 
 // Product is the resource: its tags declare what clients may filter, sort,
@@ -47,16 +45,25 @@ const (
 	codeBadRequest = "E4001"
 	codeNotFound   = "E4004"
 	codeInternal   = "E5001"
+	codeNotReady   = "E5003" // the database does not answer
 	codeTimeout    = "E5004" // the request timeout expired
 )
+
+// database is what the server needs of the database it runs on
+// (parseprovider.Database): the provider its resources are built on, and a
+// ping for the readiness route.
+type database interface {
+	Provider() *parse.Provider
+	Ping(ctx context.Context) error
+}
 
 // server serves the routes the TypeScript SDK and parse/client call: lists
 // over GET and, for a filter too large for a URL, as a POST body to the same
 // path; OPTIONS facets; PATCH merge patches of one product or of the
-// products a batch's id[] keys name (through BuildUpdate); GET schema
-// discovery of one resource or of all of them.
+// products a batch's id[] keys name; GET schema discovery of one resource or
+// of all of them. It also answers a readiness probe.
 type server struct {
-	db             *sql.DB
+	db             database
 	products       *parse.Resource[Product]
 	log            *slog.Logger
 	requestTimeout time.Duration
@@ -64,24 +71,28 @@ type server struct {
 	report parsehttp.Option
 }
 
-// Schema discovery's routes, logged at trace: clients poll them.
+// Schema discovery's routes and the readiness probe, logged at trace:
+// clients and orchestrators poll them.
 const (
 	schemaRoute  = "GET /api/{resource}/schema"
 	schemasRoute = "GET /api/schemas"
+	readyRoute   = "GET /readyz"
 )
 
-// newServer serves the routes, each request under requestTimeout and logged
-// once; newRequestID mints the ID of a request that arrives without one.
-func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration, newRequestID func() string) (http.Handler, error) {
+// newServer serves the routes on db's provider, each request under
+// requestTimeout and logged once; newRequestID mints the ID of a request
+// that arrives without one.
+func newServer(db database, log *slog.Logger, requestTimeout time.Duration, newRequestID func() string) (http.Handler, error) {
 	if requestTimeout <= 0 {
 		return nil, fmt.Errorf("request timeout must be positive")
 	}
-	products, err := parse.NewResource[Product]("products", parse.PageSize(defaultPageSize, maxPageSize))
+	products, err := parse.NewResource[Product](db.Provider(), "products", parse.PageSize(defaultPageSize, maxPageSize))
 	if err != nil {
 		return nil, fmt.Errorf("products resource: %w", err)
 	}
 	reg := parse.NewSchemaRegistry()
-	if err := parse.RegisterResource(reg, products); err != nil {
+	err = parse.RegisterResource(reg, products)
+	if err != nil {
 		return nil, fmt.Errorf("schema registry: %w", err)
 	}
 	// A path segment per key column, so a resource keyed by several columns
@@ -95,12 +106,13 @@ func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration, newRe
 	mux := http.NewServeMux()
 	mux.HandleFunc(schemaRoute, parsehttp.SchemaHandler(reg, s.report))
 	mux.HandleFunc(schemasRoute, parsehttp.SchemaListHandler(reg, s.report))
+	mux.HandleFunc(readyRoute, s.ready)
 	mux.HandleFunc("GET "+productsPath, s.list)
 	mux.HandleFunc("POST "+productsPath, s.list)
 	mux.HandleFunc("OPTIONS "+productsPath, s.facets)
 	mux.HandleFunc("PATCH "+productsPath, s.patchMany)
 	mux.HandleFunc("PATCH "+productsPath+"/"+item, s.patch)
-	logged := requestLog{log: log, newID: newRequestID, routes: mux, traceRoutes: map[string]bool{schemaRoute: true, schemasRoute: true}}
+	logged := requestLog{log: log, newID: newRequestID, routes: mux, traceRoutes: map[string]bool{schemaRoute: true, schemasRoute: true, readyRoute: true}}
 	return logged.wrap(s.withDeadline(mux)), nil
 }
 
@@ -122,17 +134,12 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	plan, err := s.products.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+	page, err := s.products.List(r.Context(), req, parse.Scope{})
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	page, err := parsesql.QueryPage(r.Context(), s.db, s.products, plan)
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	// The plan reads whole rows; the answer carries the members the
+	// The list reads whole rows; the answer carries the members the
 	// request's field mask names.
 	err = parsehttp.WriteList(w, r, req, page, s.report)
 	if err != nil {
@@ -146,43 +153,42 @@ func (s *server) facets(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	query, err := s.products.BuildFacets(filter.SQLiteDialect{}, req, parse.Scope{})
+	counts, err := s.products.Facets(r.Context(), req, parse.Scope{})
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	counts := map[string][]filter.FacetBucket{}
-	if query != nil {
-		counts, err = s.facetCounts(r.Context(), query)
-		if err != nil {
-			s.fail(w, r, err)
-			return
-		}
+	// A request that names no facet, or whose facets match no row, has no
+	// buckets: the answer is an empty object, never null.
+	if counts == nil {
+		counts = map[string][]filter.FacetBucket{}
 	}
 	s.writeJSON(w, r, http.StatusOK, parsehttp.FacetsAnswer{Facets: counts})
 }
 
-func (s *server) facetCounts(ctx context.Context, query *filter.FacetQuery) (map[string][]filter.FacetBucket, error) {
-	rows, err := s.db.QueryContext(ctx, query.SQL, query.Args...)
+// ready answers 200 while the database answers a ping within the request
+// timeout, and 503 otherwise, so an orchestrator routes no traffic to a
+// process that cannot reach its database.
+func (s *server) ready(w http.ResponseWriter, r *http.Request) {
+	err := s.db.Ping(r.Context())
 	if err != nil {
-		return nil, fmt.Errorf("facet products: %w", err)
+		s.log.WarnContext(r.Context(), "database not ready", slog.Any("error", err))
+		s.writeJSON(w, r, http.StatusServiceUnavailable, parsehttp.Body{Code: codeNotReady, Message: "the database does not answer"})
+		return
 	}
-	results, err := filter.ScanFacetUnion(rows)
-	err = errors.Join(err, rows.Close())
-	if err != nil {
-		return nil, fmt.Errorf("facet products: %w", err)
-	}
-	counts := filter.FacetMap(results)
-	if counts == nil {
-		counts = map[string][]filter.FacetBucket{}
-	}
-	return counts, nil
+	s.writeJSON(w, r, http.StatusOK, readyAnswer{Status: "ready"})
+}
+
+// readyAnswer is the readiness probe's answer.
+type readyAnswer struct {
+	Status string `json:"status"`
 }
 
 // patch applies a merge patch to the product its item route's key names, a
 // path segment per key column.
 func (s *server) patch(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.patchQuery(w, r); !ok {
+	_, ok := s.patchQuery(w, r)
+	if !ok {
 		return
 	}
 	// The key as the path spells it, each segment still escaped, so a key
@@ -296,11 +302,7 @@ func (s *server) update(r *http.Request, target parse.Target) ([]Product, error)
 	if err != nil {
 		return nil, err
 	}
-	plan, err := s.products.BuildUpdate(filter.SQLiteDialect{}, parsed, target, parse.Scope{})
-	if err != nil {
-		return nil, err
-	}
-	res, err := parsesql.Update(r.Context(), s.db, s.products, plan)
+	res, err := s.products.Update(r.Context(), parsed, target, parse.Scope{})
 	if err != nil {
 		return nil, err
 	}

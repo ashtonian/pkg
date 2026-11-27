@@ -79,10 +79,9 @@ type resourceView struct {
 
 func viewOf[T any](t *testing.T, row func(id, name string, rank int64, hash string) T) resourceView {
 	t.Helper()
-	r, err := parse.NewResource[T]("devices", parse.TenantColumn("tenant_id"))
+	r, err := parse.NewResource[T](onPostgres, "devices", parse.TenantColumn("tenant_id"))
 	require.NoError(t, err)
-	columns, err := r.Columns(filter.PostgresDialect{})
-	require.NoError(t, err)
+	columns := r.Columns()
 	v := resourceView{Columns: columns, Filter: map[string]string{}, Sort: map[string]string{}, Patch: map[string]string{}, Server: map[string]string{}}
 	for name, f := range r.FilterSchema().Fields {
 		v.Filter[name] = filter.FieldExpr(filter.PostgresDialect{}, f) + " " + string(f.DataType)
@@ -102,7 +101,7 @@ func viewOf[T any](t *testing.T, row func(id, name string, rank int64, hash stri
 
 	req, err := r.ParseList(url.Values{"name": {"pump"}, "sort": {"-rank,name"}, "page_size": {"2"}})
 	require.NoError(t, err, "a promoted field is filterable and sortable")
-	plan, err := r.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: "t1"})
+	plan, err := r.BuildList(req, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
 	v.FilterSQL, v.FilterArgs = plan.Page.SQL, plan.Page.Args
 	rows := []T{row("a", "pump", 3, "x"), row("b", "pump", 2, "y"), row("c", "pump", 1, "z")}
@@ -156,7 +155,7 @@ func TestEmbeddedWireType_IsTheFlatResource(t *testing.T) {
 // A patch through a nil embedded pointer allocates it, as encoding/json does
 // when decoding; the caller's value is untouched.
 func TestEmbeddedWireType_PatchAllocatesANilEmbed(t *testing.T) {
-	r, err := parse.NewResource[devicePointer]("devices")
+	r, err := parse.NewResource[devicePointer](onPostgres, "devices")
 	require.NoError(t, err)
 	patch, err := r.ParseMergePatch([]byte(`{"name":"valve"}`))
 	require.NoError(t, err)

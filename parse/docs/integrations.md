@@ -4,46 +4,74 @@
 
 ## Ownership
 
-The core translates requests into validated values and plans. It does not select your database connection, scan rows, authenticate callers, open transactions, retry writes, or emit application audit events. Choose the smallest entry point your existing repository needs.
+parse validates requests, compiles them under the server's scope, and runs them on the provider the application opened. It does not create tables, migrations or indexes, authenticate callers, retry writes, or emit audit events. Choose the smallest entry point your application needs.
 
 | Existing application | Use |
 |---|---|
-| A list or update endpoint on PostgreSQL | `parse.NewResource[T]` and `parsepgx` |
-| A list or update endpoint on another driver | `parse.NewResource[T]`: `ParseList`, `BuildList`, `Page`, `BuildUpdate` |
-| A typed resource repository with its own statements | `parse.NewResource[T](table)` and `ListQuery` |
+| A list or update endpoint | A provider (`parseprovider.Open`), `parse.NewResource[T](provider, table)`, `List`, `Update` |
+| A typed repository with its own statements | `Resource.Query` with `Columns`, or `ListQuery` / `ListPlan.Fragment` to compose the request into its SQL |
+| Writes of its own that must commit with parse's | `Provider.Begin`, or its own transaction through `parsesql.Tx` / `parsepgx.Tx`, then `Resource.In` ([Transactions](#transactions)) |
 | An existing SELECT or UPDATE builder | `filter.NewSQLBuilder` and placeholder offsets |
 | A non-SQL store | Parsed filters plus your evaluator; typed patch application where supported |
 | A generated API | Generate tags/schemas once, then call the same public parser APIs |
 | A UI that builds filters dynamically | Schema registry plus the TypeScript validator/client |
 | A generated client SDK | Its types and a thin binding over the TypeScript SDK or `parse/client` ([generated SDKs](../sdk/ts/docs/generated-sdks.md)) |
 
-## pgx
+## Providers
 
-[`parsepgx`](../parsepgx/README.md) runs a resource's plans on PostgreSQL. `*pgxpool.Pool`, `*pgx.Conn` and `pgx.Tx` all satisfy its `Querier` / `DB` interfaces. The complete, compiled [pgx recipe](../parsepgx/recipe_test.go) declares a resource and serves its list and Merge Patch endpoints on `net/http`; `TestRecipe` runs it against PostgreSQL.
+A provider is the database every resource built on it runs on: SQLite or PostgreSQL, one API on either, chosen once at startup. They are alternatives for different runtime requirements — an embedded file or in-memory database, or a server — never layered or run side by side, and nothing moves data between them. [`parseprovider`](../parseprovider/README.md) opens the one a configuration names (`provider`, `dsn`, connection limits, the settle timeout), so the same binary runs on either:
+
+```go
+db, err := parseprovider.Open(ctx, settings.DB) // settings loaded with github.com/ashtonian/pkg/config
+defer db.Close()
+devices, err := parse.NewResource[Device](db.Provider(), "devices", parse.TenantColumn("tenant_id"))
+```
+
+An application that opens its database itself hands it to the provider package instead: `parsesql.New(ctx, *sql.DB, opts...)` or `parsepgx.New(ctx, *pgxpool.Pool, opts...)`. Each checks the database once as it opens — SQLite's release (`parsesql.MinSQLiteVersion`), PostgreSQL's collation — so a database a plan cannot run on fails at startup rather than on the first request.
 
 For lists:
 
-1. `parsehttp.ParseList(r, devices)` decodes the query string (`parsehttp.Query`) and validates the JSON and flat filters, sort, cursor, page size, total, facets and includes.
-2. `devices.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: tenant})` compiles it under the server's tenant, policy and deleted-row decision.
-3. `parsepgx.QueryPage(ctx, pool, devices, plan)` sends the page, count and facet statements in one `pgx.Batch`, scans rows through the resource's row contract (`devices.RowScanner`: each column into the field the resource compiled it from; fields of columns `parse.ReadColumns` leaves out stay zero, and a `parse.ReadExpr` column scans its expression's value), builds the page, then reads the includes for the page's keys in a second batch through `Page.SetInclude`. The page carries `page_info.total_count`, `facets` and `_relations` as the request asked.
+1. `parsehttp.ParseList(r, devices)` decodes the query string (`parsehttp.Query`), or a POST body, and validates the JSON and flat filters, sort, cursor, page size, total, facets and includes.
+2. `devices.List(ctx, req, parse.Scope{Tenant: tenant})` compiles it under the server's tenant, policy and deleted-row decision (`BuildList`), sends the page, count and facet statements together — one `pgx.Batch` on PostgreSQL — scans the rows through the [row contract](#row-contract), builds the page with its cursors, then reads the includes for the page's keys through `Page.SetInclude`. The page carries `page_info.total_count`, `facets` and `_relations` as the request asked. `devices.Facets(ctx, req, scope)` answers a facets request (`ParseFacets`) alone.
 
-Each statement sees its own snapshot on a pool; pass a REPEATABLE READ `pgx.Tx` when the total, facets and includes must describe exactly the page's rows. Give the request context a deadline.
+Each statement sees its own snapshot unless the resource runs in a transaction ([Transactions](#transactions)); on PostgreSQL run it in a REPEATABLE READ transaction when the total, facets and includes must describe exactly the page's rows. Give the request context a deadline.
 
-For updates, route one row as `"PATCH /api/devices/" + pattern`, where `pattern, err := parsehttp.ItemPattern(devices)` holds a wildcard per key column in key order (`{id}`, or `{warehouse_id}/{sku}` for a key of two), and read its key with `key, err := parsehttp.ItemKey(r, devices)`. An item URL carries a path segment per key value, each escaped on its own (`/stock/w1/a%2Fb` for the key `("w1", "a/b")`), as `client.ItemPath(key...)` writes it, and `ItemKey` reads each as its column's text (`Resource.ParseKey`); a text its column cannot hold is `parse.ErrNoSuchKey`, a row not found. A batch route reads each `id[]` the same way, with `devices.ParseKey(id)`, and targets the rows with `parse.ByKeys(keys...)`. Then `parsehttp.ParsePatch(r, devices)` (the body bounded, its grammar named by its `Content-Type`: [reading a patch request](patches.md#reading-a-patch-request)) and `devices.BuildUpdate(filter.PostgresDialect{}, patch, parse.ByKey(key), scope)` compiles the scoped `UPDATE … RETURNING`, and `parsepgx.Update(ctx, pool, devices, plan)` applies it. Its `parse.UpdateResult` holds the target rows as the update left them: `Changed`, the rows whose columns it wrote, and `Unchanged`, the rows it left — every row of an empty or relation-only patch, and under `parse.SkipUnchanged()` the rows the patch already described ([Skipping unchanged rows](patches.md#skipping-unchanged-rows)). Neither holding a row means not found. A patch that changes relations runs the owner statement and the membership changes for the rows it matched in one transaction (a savepoint in a caller's `pgx.Tx`), and `RelationRows` counts the junction rows they deleted and inserted. `parsepgx.UpdateBatch(ctx, pool, devices, batch)` applies a [batch plan](operations.md#varied-native-update-batches) in one transaction.
+For updates, route one row as `"PATCH /api/devices/" + pattern`, where `pattern, err := parsehttp.ItemPattern(devices)` holds a wildcard per key column in key order (`{id}`, or `{warehouse_id}/{sku}` for a key of two), and read its key with `key, err := parsehttp.ItemKey(r, devices)`. An item URL carries a path segment per key value, each escaped on its own (`/stock/w1/a%2Fb` for the key `("w1", "a/b")`), as `client.ItemPath(key...)` writes it, and `ItemKey` reads each as its column's text (`Resource.ParseKey`); a text its column cannot hold is `parse.ErrNoSuchKey`, a row not found. A batch route reads each `id[]` the same way, with `devices.ParseKey(id)`, and targets the rows with `parse.ByKeys(keys...)`. Then `parsehttp.ParsePatch(r, devices)` (the body bounded, its grammar named by its `Content-Type`: [reading a patch request](patches.md#reading-a-patch-request)) and `devices.Update(ctx, patch, parse.ByKey(key), scope)` applies the scoped `UPDATE … RETURNING`. Its `parse.UpdateResult` holds the target rows as the update left them: `Changed`, the rows whose columns it wrote, and `Unchanged`, the rows it left — every row of an empty or relation-only patch, and under `parse.SkipUnchanged()` the rows the patch already described ([Skipping unchanged rows](patches.md#skipping-unchanged-rows)). Neither holding a row means not found. A patch that changes relations runs the owner statement and the membership changes for the rows it matched in one transaction (a savepoint in the resource's transaction, under `In`), and `RelationRows` counts the junction rows they deleted and inserted. `devices.UpdateBatch(ctx, rows, scope, limits)` applies a [varied batch](operations.md#varied-native-update-batches) in one transaction.
 
-The plans' arguments are typed slices and scalars, so every pgx `QueryExecMode` — including `QueryExecModeExec` and the simple protocol — runs them. Preserve the driver's argument handling: interpolating values into SQL defeats parameterization. `pgx.NamedArgs` rewrites whole statements and is not a replacement for the plan's positional arguments.
+A failed statement is a `*parse.StatementError` naming the resource's table and the statement (`page`, `owner`, `commit`, …) with the driver's error as its cause. An update's error means nothing it wrote is kept, except `parse.ErrCommitUnknown`: the `COMMIT` went unanswered and may have been applied, so read before retrying.
 
-## database/sql and SQLite
+### PostgreSQL
 
-The [example server](../examples/server/) uses `net/http`, `database/sql`, and SQLite. Its [handlers](../examples/server/server.go) demonstrate combined filters, list pages, schema discovery, facets, and merge patches; its tests execute the requests against SQLite.
+[`parsepgx`](../parsepgx/README.md) is the PostgreSQL provider on a `*pgxpool.Pool`. The complete, compiled [pgx recipe](../parsepgx/recipe_test.go) declares a resource and serves its list and Merge Patch endpoints on `net/http`; `TestRecipe` runs it against PostgreSQL. Its options are the string collation (`parsepgx.Collation`, `pg_c_utf8` by default, `filter.CollationC` on PostgreSQL 14–16), the largest `$in` set a jsonb path compares by containment (`parsepgx.ContainmentMaxValues`) and the settle timeout (`parsepgx.SettleTimeout`).
 
-[`parsesql`](../parsesql/README.md) runs SQLite plans through `database/sql`, with the same calls and results as `parsepgx`: `parsesql.QueryPage(ctx, db, devices, plan)` returns the page with its total, facets and includes (through `Page.SetInclude`, which omits empty projections), `parsesql.Update(ctx, db, devices, plan)` returns the `parse.UpdateResult`, and `parsesql.UpdateBatch` applies a batch plan. Rows scan through the resource's row contract (`devices.RowScanner(d)`: every column into the field the resource compiled it from, SQLite's JSON text and timestamp text decoded). `db` is a `*sql.DB` or `*sql.Conn`, on which an update begins its own transaction, or a `*sql.Tx`, in which it runs under a savepoint the caller's rollback undoes; an update refuses any other `DB` (`parsesql.ErrNoTransaction`).
+The plans' arguments are typed slices and scalars, so every pgx `QueryExecMode` the pool's configuration selects — including `QueryExecModeExec` and the simple protocol — runs them. Interpolating values into SQL defeats parameterization; `pgx.NamedArgs` rewrites whole statements and is not a replacement for the plans' positional arguments.
 
-SQLite has no row lock, so such an update holds its targets only in a write transaction, and `database/sql` begins transactions in the mode the connection string names: open the database with `_txlock=immediate`, and with `_busy_timeout` so a second writer waits for the first rather than failing with `SQLITE_BUSY` (`sql.Open("sqlite", "app.db?_txlock=immediate&_busy_timeout=5000")`; `modernc.org/sqlite` and `mattn/go-sqlite3` both read them). Begin a `*sql.Tx` you pass in on such a connection.
+### SQLite
 
-Call `parsesqlite.Register()` before the database opens a connection: SQLite plans compare decimals, bound an int or float path's number members and decide geo filters through the functions it registers with `modernc.org/sqlite` ([`parsesqlite`](../parsesqlite/README.md)); another driver registers every entry of `parsesqlite.Functions()` under its name, as deterministic ([another SQLite driver](../parsesqlite/README.md#another-sqlite-driver)). A statement of your own over the table reads `devices.Columns(d)` and scans through `parsesql.Query` or `devices.RowScanner(d)`, never by position or by a driver's own name mapping, which can disagree with the column a field compiles to. The compiler does not create tables, migrations, indexes, or SQLite connections.
+[`parsesql`](../parsesql/README.md) is the SQLite provider on a `*sql.DB` of `modernc.org/sqlite`. The [example server](../examples/server/) runs on it by default: its [handlers](../examples/server/server.go) demonstrate combined filters, list pages, schema discovery, facets, and merge patches, and its tests execute the requests against SQLite.
 
-Each dialect has its own capabilities as well as its own SQL. Read [backend semantics](queries.md#type-capabilities), especially search, case folding, and geo differences. A custom SQL expression must be appropriate for the selected database.
+SQLite has no row lock, so an update holds its targets only in a write transaction, and `database/sql` begins transactions in the mode the connection string names: `parseprovider` opens the database with `_txlock=immediate` and `_busy_timeout`, so a second writer waits for the first rather than failing with `SQLITE_BUSY`. A database opened by hand needs both (`sql.Open("sqlite", "./app.db?_txlock=immediate&_busy_timeout=5000")`), one connection for `:memory:`, which is a database per connection, and `parsesqlite.Register()` before it opens one: SQLite plans compare decimals, bound an int or float path's number members and decide geo filters through the functions it registers ([`parsesqlite`](../parsesqlite/README.md)).
+
+Each provider has its own capabilities as well as its own SQL. Read [backend semantics](queries.md#type-capabilities), especially search, case folding, and geo differences. A custom SQL expression must be appropriate for the provider's database.
+
+## Transactions
+
+A resource runs each `List`, `Facets` and `Query` in its own statements and each `Update` and `UpdateBatch` in a transaction of its own. To commit parse's writes with the application's, run the resource in one transaction:
+
+```go
+tx, err := db.Provider().Begin(ctx) // or parsesql.Tx(sqlTx), parsepgx.Tx(pgxTx): the application's own
+defer tx.Rollback(ctx)              // nil once committed
+scoped, err := devices.In(tx)
+res, err := scoped.Update(ctx, patch, parse.ByID(id), scope)
+// … the application's own statements in the same transaction …
+err = tx.Commit(ctx)
+```
+
+`In` returns a view of the resource for the transaction's life: it parses and builds as the resource does, and declares no relation. An update in it runs under a savepoint, so a failed update leaves the transaction as it was and usable. A transaction another provider began, or a wrapped one of another kind of provider, is `parse.ErrProviderMismatch`; a wrapped transaction of the right kind must be on the provider's database, which its driver cannot tell. `Begin` begins without the context's cancellation, which `database/sql` would answer by rolling back; the transaction lasts until `Commit` or `Rollback`.
+
+## Row contract
+
+A row scans into the resource's type by column, never by position or by a driver's name mapping, which can disagree with the column a field compiles to: each column into the field the resource compiled it from, a stored document decoded with presence and key checks, SQLite's JSON and timestamp text decoded; fields of columns `parse.ReadColumns` leaves out stay zero, and a `parse.ReadExpr` column scans its expression's value. A statement of the application's own over the table selects `devices.Columns()`, in that order, and reads its rows through `devices.Query(ctx, parse.Statement{SQL: …, Args: …})`; one it runs on its own driver scans each row through `devices.RowScanner()`.
 
 ## TypeScript client
 

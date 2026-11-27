@@ -60,8 +60,7 @@ func Codes() []core.Code {
 }
 
 // ErrUnsupportedDialect is what application SQL, such as a computed column's
-// expression, returns for a dialect it has no rendering for. A DSN naming
-// an unsupported database is ErrUnknownDSN.
+// expression, returns for a dialect it has no rendering for.
 var ErrUnsupportedDialect = errors.New("unsupported SQL dialect")
 
 // fieldError is a refusal about one field the request named: its message

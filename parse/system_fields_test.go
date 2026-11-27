@@ -20,7 +20,7 @@ type keyedDevice struct {
 // the key's system field costs as an indexed condition: three key
 // equalities under $or fit the default MaxCost.
 func TestKeyFilter_CostsAsIndexed(t *testing.T) {
-	r := parse.MustResource[keyedDevice]("keyed_devices")
+	r := parse.MustResource[keyedDevice](onSQLite, "keyed_devices")
 	a, b, c := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	_, err := r.ParseListInput(parse.ListInput{Filter: `{"$or":[{"id":"` + a + `"},{"id":"` + b + `"},{"id":"` + c + `"}]}`})
 	require.NoError(t, err)

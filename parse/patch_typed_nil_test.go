@@ -25,7 +25,7 @@ type nullablePatchRow struct {
 }
 
 func TestValidateOperations_TypedNilTimestamp(t *testing.T) {
-	p, err := parse.NewResource[nullablePatchRow]("nullable_patch_rows")
+	p, err := parse.NewResource[nullablePatchRow](onSQLite, "nullable_patch_rows")
 	require.NoError(t, err)
 	at := time.Date(2026, 10, 25, 1, 2, 3, 123456789, time.UTC)
 	var absent *time.Time
@@ -70,7 +70,7 @@ func TestValidateOperations_TypedNilTimestamp(t *testing.T) {
 	assert.Equal(t, patch.ECodePatchValueInvalid.String(), pe.Code)
 	assert.Contains(t, pe.Message, "not nullable")
 
-	server, err := parse.NewResource[sensor]("sensors")
+	server, err := parse.NewResource[sensor](onSQLite, "sensors")
 	require.NoError(t, err)
 	cleared, err := server.ValidateServerOperations([]patch.RawPatchOp{{Op: "replace", Path: "/rotated", Value: absent}})
 	require.NoError(t, err)
@@ -78,7 +78,7 @@ func TestValidateOperations_TypedNilTimestamp(t *testing.T) {
 }
 
 func TestValidateOperations_TypedNilArrayElement(t *testing.T) {
-	p, err := parse.NewResource[nullablePatchRow]("nullable_patch_rows")
+	p, err := parse.NewResource[nullablePatchRow](onSQLite, "nullable_patch_rows")
 	require.NoError(t, err)
 	var absent *time.Time
 	for _, op := range []string{"replace", "array_append"} {
@@ -100,7 +100,7 @@ func TestValidateOperations_TypedNilArrayElement(t *testing.T) {
 }
 
 func TestValidateOperations_CyclicPointerIsNotNull(t *testing.T) {
-	p, err := parse.NewResource[nullablePatchRow]("nullable_patch_rows")
+	p, err := parse.NewResource[nullablePatchRow](onSQLite, "nullable_patch_rows")
 	require.NoError(t, err)
 	var cycle any
 	cycle = &cycle

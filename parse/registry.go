@@ -83,14 +83,14 @@ func Register[T any](r *SchemaRegistry) error {
 // live as the resource — relations declared after registering are served
 // too. A table already registered, by another resource over it or by
 // Register, is ErrRegistered, and the registry is unchanged: register the
-// one resource whose grammar discovery describes. A WithPaths view, a value
-// for one request, is not registered.
+// one resource whose grammar discovery describes. A view (WithPaths, In),
+// a value for one request, is not registered.
 func RegisterResource[T any](r *SchemaRegistry, res *Resource[T]) error {
 	if res == nil {
 		return errors.New("parse: registering a nil resource")
 	}
 	if res.view {
-		return fmt.Errorf("parse: %s: a WithPaths view is a value for one request and is not registered", res.table)
+		return fmt.Errorf("parse: %s: a view (WithPaths, In) is a value for one request and is not registered", res.table)
 	}
 	return r.add(res.table, res.filterSchema, res.patchSchema, res.sortSchema, res.searchSchema)
 }

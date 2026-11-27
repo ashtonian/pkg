@@ -21,7 +21,7 @@ type bsonDevice struct {
 // TestFieldNameTagThreadsToApply: with a non-json FieldNameTag, applying a
 // validated patch finds each field by that tag, not by its json name.
 func TestFieldNameTagThreadsToApply(t *testing.T) {
-	tp, err := parse.NewResource[bsonDevice]("bson_devices", parse.ParserOptions(core.WithGeneratorOptions(core.WithFieldNameTag("bson"))))
+	tp, err := parse.NewResource[bsonDevice](onSQLite, "bson_devices", parse.ParserOptions(core.WithGeneratorOptions(core.WithFieldNameTag("bson"))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestSchemaValidatedPathMissMustError(t *testing.T) {
 	// Schema reads bson ("name" patchable); the json tag hides the field from
 	// a json-keyed map. With bson threading the apply works; this pins that
 	// the two layers agree on the SAME tag rather than silently dropping ops.
-	tp, err := parse.NewResource[mixedTagDevice]("mixed_tag_devices", parse.ParserOptions(core.WithGeneratorOptions(core.WithFieldNameTag("bson"))))
+	tp, err := parse.NewResource[mixedTagDevice](onSQLite, "mixed_tag_devices", parse.ParserOptions(core.WithGeneratorOptions(core.WithFieldNameTag("bson"))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ type uintDevice struct {
 // not wrapped or truncated; an integral float into an int and any finite
 // float into a float apply.
 func TestNumericCoercionGuards(t *testing.T) {
-	tp, err := parse.NewResource[uintDevice]("uint_devices")
+	tp, err := parse.NewResource[uintDevice](onSQLite, "uint_devices")
 	if err != nil {
 		t.Fatal(err)
 	}

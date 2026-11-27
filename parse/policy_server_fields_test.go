@@ -22,9 +22,9 @@ type serverFieldDocument struct {
 	FolderID int    `json:"folderId"  db:"folder_id"  parse:"filter"`
 }
 
-func serverFieldDocuments(t *testing.T) *parse.Resource[serverFieldDocument] {
+func serverFieldDocuments(t *testing.T, p *parse.Provider) *parse.Resource[serverFieldDocument] {
 	t.Helper()
-	r, err := parse.NewResource[serverFieldDocument]("documents")
+	r, err := parse.NewResource[serverFieldDocument](p, "documents")
 	require.NoError(t, err)
 	return r
 }

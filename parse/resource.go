@@ -11,15 +11,19 @@ import (
 	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/backend"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
-// Resource is one table's request grammar and identity: its key,
-// tenant and soft-delete columns, its page bounds, and the filter, sort,
-// search and patch schemas T's struct tags declare. It parses list requests
-// (ParseList), compiles them for a dialect under a server-decided Scope
-// (BuildList) and turns fetched rows into a page (Page). It also parses
-// filters and patches. Build one per type at startup; it is safe for concurrent use.
+// Resource is one table's request grammar and identity on the provider it
+// runs on: its key, tenant and soft-delete columns, its page bounds, and
+// the filter, sort, search and patch schemas T's struct tags declare. It
+// parses list requests (ParseList) and patches (ParsePatch), and runs them
+// under a server-decided Scope on its provider's database: a page (List),
+// facet counts (Facets) and updates (Update, UpdateBatch). Its builds
+// (BuildList, BuildUpdate) compile the same statements for a caller who
+// wants the SQL. Build one per type at startup, on the application's
+// provider; it is safe for concurrent use.
 type Resource[T any] struct {
 	// cfg is shared by every parser, so limits, codec and clock apply
 	// consistently through the resource API; gen generated the schemas.
@@ -73,10 +77,27 @@ type Resource[T any] struct {
 	maskable map[string]string
 	// readExprs are the computed columns (ReadExpr); nil without any.
 	readExprs *computedColumns
-	// view marks a WithPaths view: a value for one request that shares its
-	// base's patch schemas and tenant graph, so it declares no relation and
-	// is no relation's target.
+	// view marks a WithPaths view or a resource scoped to a transaction
+	// (In): a value for one request that shares its base's patch schemas
+	// and tenant graph, so it declares no relation and is no relation's
+	// target.
 	view bool
+
+	// provider is the provider the resource was built on, and dialect its
+	// dialect, which every statement compiles for; conn is where the
+	// statements run: the provider's database, or a transaction (In).
+	provider *Provider
+	dialect  filter.Dialect
+	conn     backend.Conn
+	// computedSQL is each computed column's parenthesized SQL for dialect,
+	// by column, and projection the Columns every statement selects,
+	// joined; both are fixed at construction.
+	computedSQL map[string]string
+	projection  string
+	// scanner scans the rows of the resource's statements; a provider that
+	// reports a result's document columns gets one built for them
+	// (scanRows).
+	scanner *RowScanner[T]
 }
 
 // ResourceOption configures NewResource.
@@ -254,17 +275,23 @@ func (r *Resource[T]) customizeSchemas(fns []func(Schemas) error) error {
 	return nil
 }
 
-// NewResource builds the resource for T stored in table. Identifiers are
-// declared here, never taken from a request: table and every column option
-// must be SQL identifiers, and the columns must be T's (a `db` tag, or the
-// snake-case field name).
-func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], error) {
+// NewResource builds the resource for T stored in table, on provider p for
+// its whole life. Identifiers are declared here, never taken from a
+// request: table and every column option must be SQL identifiers, and the
+// columns must be T's (a `db` tag, or the snake-case field name). What the
+// provider's dialect decides is decided here too: a computed column's
+// expression (ReadExpr) the dialect refuses, or a column type the
+// dialect stores as text no row scan decodes, fails construction.
+func NewResource[T any](p *Provider, table string, opts ...ResourceOption) (*Resource[T], error) {
 	cfg := resourceConfig{pk: []string{core.DefaultPrimaryKey}, pageSize: filter.DefaultListLimit, maxPage: filter.MaxListLimit}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 	if !core.IsIdentifier(table) {
 		return nil, fmt.Errorf("parse: resource table %q is not a SQL identifier", table)
+	}
+	if p == nil {
+		return nil, fmt.Errorf("parse: %s: no provider", table)
 	}
 	if cfg.pageSize <= 0 || cfg.maxPage < cfg.pageSize {
 		return nil, fmt.Errorf("parse: %s: page size %d must be positive and at most the maximum %d", table, cfg.pageSize, cfg.maxPage)
@@ -284,6 +311,9 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		pageSize:    cfg.pageSize,
 		maxPageSize: cfg.maxPage,
 		accepted:    slices.Clone(cfg.accepted),
+		provider:    p,
+		dialect:     p.dialect,
+		conn:        p.db,
 	}
 	if err := r.generateSchemas(parserOpts); err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
@@ -346,7 +376,11 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	if r.readExprs, err = newComputedColumns(table, cfg, columns, read); err != nil {
 		return nil, err
 	}
-	r.filterSchema.Computed = r.readExprs.schemaColumns()
+	r.filterSchema.Computed, err = r.readExprs.resolve(r.dialect)
+	if err != nil {
+		return nil, err
+	}
+	r.computedSQL = r.filterSchema.ComputedSQL()
 	if err := r.readExprs.checkDocuments(r.filterSchema, r.sortSchema); err != nil {
 		return nil, err
 	}
@@ -395,6 +429,11 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		r.sqlTypes[name] = implied
 	}
 	err = r.checkScannable()
+	if err != nil {
+		return nil, err
+	}
+	r.projection = strings.Join(r.Columns(), ", ")
+	r.scanner, err = r.RowScanner()
 	if err != nil {
 		return nil, err
 	}
@@ -735,10 +774,10 @@ func (r *Resource[T]) checkRelation(name string, rs *core.RelationSchema, target
 	return nil
 }
 
-// MustResource is NewResource for package-level declarations; it panics on
-// a declaration error.
-func MustResource[T any](table string, opts ...ResourceOption) *Resource[T] {
-	r, err := NewResource[T](table, opts...)
+// MustResource is NewResource for declarations that cannot fail but for a
+// programming error; it panics on a declaration error.
+func MustResource[T any](p *Provider, table string, opts ...ResourceOption) *Resource[T] {
+	r, err := NewResource[T](p, table, opts...)
 	if err != nil {
 		panic(err)
 	}
@@ -768,28 +807,21 @@ func (r *Resource[T]) ColumnSQLType(column string) (core.SQLType, bool) {
 	return t, ok
 }
 
-// Columns is the projection every statement over the resource reads for
-// dialect d: a list's page, an update's RETURNING, and a repository's own
-// reads of the table. It is T's columns in field order, or the ReadColumns
-// among them, table-qualified and quoted by d; a computed column (ReadExpr) is read through
-// d's expression and a column with a declared ColumnType as d reads that
-// type, each under the column's own name, so rows scan by name. A dialect a
-// computed column's expression refuses is an error.
-func (r *Resource[T]) Columns(d filter.Dialect) ([]string, error) {
-	exprs, err := r.computedSQL(d)
-	if err != nil {
-		return nil, err
-	}
-	return r.columns(d, exprs), nil
-}
-
-// columns is Columns with the computed columns' SQL for d already resolved.
-func (r *Resource[T]) columns(d filter.Dialect, exprs map[string]string) []string {
+// Columns is the projection every statement over the resource reads: a
+// list's page, an update's RETURNING, and a repository's own reads of the
+// table (Query). It is T's columns in field order, or the ReadColumns among
+// them, table-qualified and quoted for the provider's dialect; a computed
+// column (ReadExpr) is read through its expression and a column with a
+// declared ColumnType as the dialect reads that type, each under the
+// column's own name, so rows scan by name.
+func (r *Resource[T]) Columns() []string {
+	d := r.dialect
 	out := make([]string, len(r.read))
 	for i, name := range r.read {
 		stored := d.QuoteIdent(r.table) + "." + d.QuoteIdent(name)
 		col := stored
-		if expr, ok := exprs[name]; ok {
+		expr, computed := r.computedSQL[name]
+		if computed {
 			col = expr
 		}
 		if t, ok := r.sqlTypes[name]; ok {
@@ -804,7 +836,7 @@ func (r *Resource[T]) columns(d filter.Dialect, exprs map[string]string) []strin
 }
 
 // ColumnNames is the unqualified name of each Columns entry, in the same
-// order: the name every row's value scans under, whichever dialect read it.
+// order: the name every row's value scans under.
 func (r *Resource[T]) ColumnNames() []string { return slices.Clone(r.read) }
 
 // Key reads the row's key from a model value or a pointer to one.

@@ -274,10 +274,7 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 	}
 	// The sort keys and search fields read computed columns as the filter
 	// does; the builder resolves its own.
-	exprs, err := lq.filterSchema.ComputedSQL(lq.dialect)
-	if err != nil {
-		return nil, err
-	}
+	exprs := lq.filterSchema.ComputedSQL()
 	search := columnExprs(exprs).search(lq.searchSchema)
 	builder := &SQLBuilder{schema: lq.filterSchema, dialect: lq.dialect, startParam: cfg.startParam, scope: cfg.scope.over(lq.dialect, lq.filterSchema), related: related}
 	filterSQL, err := builder.build(ast, exprs)

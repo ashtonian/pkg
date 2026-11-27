@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -24,38 +23,32 @@ func TestUpdate_Members(t *testing.T) {
 // ApplyValidatedPatch makes of them, and a patch a target row's document
 // does not take fails as ApplyValidatedPatch fails it, writing no row.
 func runMemberUpdates(t *testing.T, b sqlBackend) {
-	open := b.open
-	d := b.dialect
 	docType := b.columnType(core.TypeInfo{Type: core.FieldTypeJSON})
-	r := gadgetAttrsResource(t)
 	rows := []gadgetAttrs{
 		{ID: 1, Attrs: map[string]any{"color": "blue", "old": true, "n": map[string]any{"k": "v"}}},
 		{ID: 2, Attrs: map[string]any{"color": "green"}},
 	}
-	setup := func(t *testing.T) *sql.DB {
+	// setup seeds a fresh database of b with rows and returns the resource
+	// on it.
+	setup := func(t *testing.T) *parse.Resource[gadgetAttrs] {
 		t.Helper()
-		db := open(t)
+		provider, db := b.open(t)
 		_, err := db.ExecContext(t.Context(), `CREATE TABLE gadget_attrs (id BIGINT PRIMARY KEY, attrs `+docType+` NOT NULL)`)
 		require.NoError(t, err)
-		insert := `INSERT INTO gadget_attrs VALUES (?, ?)`
-		if isPostgres(d) {
-			insert = `INSERT INTO gadget_attrs VALUES ($1, $2)`
-		}
+		insert := `INSERT INTO gadget_attrs VALUES (` + b.dialect.Placeholder(1) + `, ` + b.dialect.Placeholder(2) + `)`
 		for _, row := range rows {
 			raw, err := json.Marshal(row.Attrs)
 			require.NoError(t, err)
 			_, err = db.ExecContext(t.Context(), insert, row.ID, string(raw))
 			require.NoError(t, err)
 		}
-		return db
+		return gadgetAttrsResource(t, provider)
 	}
-	stored := func(t *testing.T, db *sql.DB) []gadgetAttrs {
+	stored := func(t *testing.T, r *parse.Resource[gadgetAttrs]) []gadgetAttrs {
 		t.Helper()
 		req, err := r.ParseList(nil)
 		require.NoError(t, err)
-		plan, err := r.BuildList(d, req, parse.Scope{})
-		require.NoError(t, err)
-		return listPage(t, db, r, d, plan).Items
+		return listPage(t, r, req, parse.Scope{}).Items
 	}
 	jsonOf := func(t *testing.T, v any) string {
 		t.Helper()
@@ -65,18 +58,16 @@ func runMemberUpdates(t *testing.T, b sqlBackend) {
 	}
 
 	t.Run("members written in one statement", func(t *testing.T) {
-		db := setup(t)
+		r := setup(t)
 		parsed, err := r.ParsePatch([]byte(`[{"op":"replace","path":"/attrs/color","value":"red"},{"op":"add","path":"/attrs/n/size","value":{"w":2}},{"op":"remove","path":"/attrs/old"}]`))
 		require.NoError(t, err)
-		plan, err := r.BuildUpdate(d, parsed, parse.ByID(int64(1)), parse.Scope{})
-		require.NoError(t, err)
-		res, err := applyUpdate(t, db, r, d, plan, false)
+		res, err := applyUpdate(t, r, false, parsed, parse.ByID(int64(1)), parse.Scope{})
 		require.NoError(t, err)
 		require.Len(t, res.Changed, 1)
 		want, err := r.ApplyValidatedPatch(parsed, rows[0])
 		require.NoError(t, err)
 		assert.JSONEq(t, jsonOf(t, want), jsonOf(t, res.Changed[0]))
-		assert.JSONEq(t, jsonOf(t, []gadgetAttrs{want, rows[1]}), jsonOf(t, stored(t, db)))
+		assert.JSONEq(t, jsonOf(t, []gadgetAttrs{want, rows[1]}), jsonOf(t, stored(t, r)))
 	})
 
 	for _, tc := range []struct {
@@ -91,18 +82,16 @@ func runMemberUpdates(t *testing.T, b sqlBackend) {
 		{"an add below a member that is not an object", `[{"op":"add","path":"/attrs/color/x","value":1}]`, parse.ByID(int64(2)), 1, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := setup(t)
+			r := setup(t)
 			parsed, err := r.ParsePatch([]byte(tc.ops))
 			require.NoError(t, err)
-			plan, err := r.BuildUpdate(d, parsed, tc.target, parse.Scope{})
-			require.NoError(t, err)
-			_, err = applyUpdate(t, db, r, d, plan, false)
+			_, err = applyUpdate(t, r, false, parsed, tc.target, parse.Scope{})
 			pe, ok := errors.AsType[*core.ParseError](err)
 			require.True(t, ok, "%v is no ParseError", err)
 			assert.Equal(t, core.CodePatchValueInvalid.String(), pe.Code)
 			require.NotNil(t, pe.Index)
 			assert.Equal(t, tc.unmet, *pe.Index)
-			assert.JSONEq(t, jsonOf(t, rows), jsonOf(t, stored(t, db)), "no row is written")
+			assert.JSONEq(t, jsonOf(t, rows), jsonOf(t, stored(t, r)), "no row is written")
 
 			_, err = r.ApplyValidatedPatch(parsed, rows[tc.failing])
 			memory, ok := errors.AsType[*core.ParseError](err)
@@ -113,12 +102,10 @@ func runMemberUpdates(t *testing.T, b sqlBackend) {
 	}
 
 	t.Run("a member set to the value it holds is unchanged", func(t *testing.T) {
-		db := setup(t)
+		r := setup(t)
 		parsed, err := r.ParsePatch([]byte(`[{"op":"replace","path":"/attrs/color","value":"blue"}]`))
 		require.NoError(t, err)
-		plan, err := r.BuildUpdate(d, parsed, parse.ByID(int64(1)), parse.Scope{}, parse.SkipUnchanged())
-		require.NoError(t, err)
-		res, err := applyUpdate(t, db, r, d, plan, false)
+		res, err := applyUpdate(t, r, false, parsed, parse.ByID(int64(1)), parse.Scope{}, parse.SkipUnchanged())
 		require.NoError(t, err)
 		assert.Empty(t, res.Changed)
 		require.Len(t, res.Unchanged, 1)

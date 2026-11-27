@@ -28,7 +28,7 @@ func TestJSONIntegerEdges_SameRowsOnEveryBackend(t *testing.T) {
 		`{"doc":{"$contains":{"n":-9223372036854775808}}}`: {4},
 	}
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
-		db := b.open(t)
+		_, db := b.open(t)
 		rows := make([][]any, len(stored))
 		for i, doc := range stored {
 			rows[i] = []any{i + 1, doc}

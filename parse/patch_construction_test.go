@@ -35,7 +35,7 @@ func setSQL(t *testing.T, p *patch.ParsedPatch) (string, []any) {
 // A patch built in code validates as the same patch parsed from JSON does,
 // Go values of the paths' types included, without a JSON round trip.
 func TestMergePatchMap_IsTheBodysPatch(t *testing.T) {
-	p, err := parse.NewResource[sensor]("sensors")
+	p, err := parse.NewResource[sensor](onSQLite, "sensors")
 	require.NoError(t, err)
 	at := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 
@@ -82,7 +82,7 @@ type gauge struct {
 // is the merge patch's null, in a nested object too, so a map holding the
 // server's typed values patches as its JSON encoding would.
 func TestMergePatchMap_NilIsJSONNull(t *testing.T) {
-	p, err := parse.NewResource[gauge]("gauges")
+	p, err := parse.NewResource[gauge](onSQLite, "gauges")
 	require.NoError(t, err)
 	for name, tc := range map[string]struct {
 		m    map[string]any
@@ -125,7 +125,7 @@ func TestMergePatchMap_NilIsJSONNull(t *testing.T) {
 
 // Operations built in code validate like a JSON Patch body.
 func TestValidateOperations_IsTheBodysPatch(t *testing.T) {
-	p, err := parse.NewResource[sensor]("sensors")
+	p, err := parse.NewResource[sensor](onSQLite, "sensors")
 	require.NoError(t, err)
 	ops := []patch.RawPatchOp{{Op: "replace", Path: "/rate", Value: 7}, {Op: "remove", Path: "/seen_at"}}
 	built, err := p.ValidateOperations(ops)
@@ -148,11 +148,11 @@ func TestValidateOperations_IsTheBodysPatch(t *testing.T) {
 // A ParsedPatch assembled by hand skipped validation: applying or compiling
 // it is an error, never a panic or a write.
 func TestHandBuiltPatchIsRefused(t *testing.T) {
-	p, err := parse.NewResource[sensor]("sensors")
+	p, err := parse.NewResource[sensor](onSQLite, "sensors")
 	require.NoError(t, err)
 	byHand := &patch.ParsedPatch{Operations: []*patch.PatchOperation{{Op: patch.PatchOpReplace, Path: "/name", Value: "x"}}}
 	_, err = p.ApplyValidatedPatch(byHand, sensor{})
 	assert.ErrorIs(t, err, parse.ErrForeign)
-	_, err = p.BuildUpdate(filter.SQLiteDialect{}, byHand, parse.ByID("1"), parse.Scope{})
+	_, err = p.BuildUpdate(byHand, parse.ByID("1"), parse.Scope{})
 	assert.ErrorIs(t, err, parse.ErrForeign)
 }

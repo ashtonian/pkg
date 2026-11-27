@@ -21,7 +21,7 @@ type TestDevice struct {
 }
 
 func TestResource_ParsingSchemas(t *testing.T) {
-	tp, err := parse.NewResource[TestDevice]("test_devices")
+	tp, err := parse.NewResource[TestDevice](onPostgres, "test_devices")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestResource_ParsingSchemas(t *testing.T) {
 }
 
 func TestResource_ParseFilter(t *testing.T) {
-	tp := parse.MustResource[TestDevice]("test_devices")
+	tp := parse.MustResource[TestDevice](onPostgres, "test_devices")
 	result, err := tp.ParseFilter(`{"status":"active"}`)
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +48,7 @@ func TestResource_ParseFilter(t *testing.T) {
 }
 
 func TestResource_ParseFilter_InvalidEnum(t *testing.T) {
-	tp := parse.MustResource[TestDevice]("test_devices")
+	tp := parse.MustResource[TestDevice](onPostgres, "test_devices")
 	_, err := tp.ParseFilter(`{"status":"invalid"}`)
 	if err == nil {
 		t.Fatal("expected error for invalid enum")
@@ -56,7 +56,7 @@ func TestResource_ParseFilter_InvalidEnum(t *testing.T) {
 }
 
 func TestResource_ParseFilterMap(t *testing.T) {
-	tp := parse.MustResource[TestDevice]("test_devices")
+	tp := parse.MustResource[TestDevice](onPostgres, "test_devices")
 	result, err := tp.ParseFilterMap(map[string]any{"status": "active"})
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestResource_ParseFilterMap(t *testing.T) {
 }
 
 func TestResource_ParseFilterMap_Empty(t *testing.T) {
-	tp := parse.MustResource[TestDevice]("test_devices")
+	tp := parse.MustResource[TestDevice](onPostgres, "test_devices")
 	result, err := tp.ParseFilterMap(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestResource_ParseFilterMap_Empty(t *testing.T) {
 }
 
 func TestResource_ParseFilterMap_InvalidEnum(t *testing.T) {
-	tp := parse.MustResource[TestDevice]("test_devices")
+	tp := parse.MustResource[TestDevice](onPostgres, "test_devices")
 	_, err := tp.ParseFilterMap(map[string]any{"status": "invalid"})
 	if err == nil {
 		t.Fatal("expected error for invalid enum value")
@@ -89,7 +89,7 @@ func TestResource_ParseFilterMap_InvalidEnum(t *testing.T) {
 // the map and string paths produce structurally identical ParsedFilter
 // values for the same input.
 func TestResource_ParseFilterMap_EquivalentToParseFilter(t *testing.T) {
-	tp := parse.MustResource[TestDevice]("test_devices")
+	tp := parse.MustResource[TestDevice](onPostgres, "test_devices")
 	fromString, err := tp.ParseFilter(`{"status":"active"}`)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func TestResource_ParseFilterMap_EquivalentToParseFilter(t *testing.T) {
 }
 
 func TestResource_ParsePatch(t *testing.T) {
-	tp := parse.MustResource[TestDevice]("test_devices")
+	tp := parse.MustResource[TestDevice](onPostgres, "test_devices")
 	result, err := tp.ParsePatch([]byte(`[{"op":"replace","path":"/name","value":"new"}]`))
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestResource_ParsePatch(t *testing.T) {
 }
 
 func TestResource_ParsePatch_UnknownPath(t *testing.T) {
-	tp := parse.MustResource[TestDevice]("test_devices")
+	tp := parse.MustResource[TestDevice](onPostgres, "test_devices")
 	_, err := tp.ParsePatch([]byte(`[{"op":"replace","path":"/id","value":"x"}]`))
 	if err == nil {
 		t.Fatal("expected error for field not in patch schema")
@@ -124,7 +124,7 @@ func TestResource_ParsePatch_UnknownPath(t *testing.T) {
 }
 
 func TestResource_ApplyPatch(t *testing.T) {
-	tp := parse.MustResource[TestDevice]("test_devices")
+	tp := parse.MustResource[TestDevice](onPostgres, "test_devices")
 	original := TestDevice{ID: "d1", Name: "Old", Status: "active"}
 	updated, err := tp.ApplyPatch(
 		[]byte(`[{"op":"replace","path":"/name","value":"New"}]`),
@@ -142,8 +142,8 @@ func TestResource_ApplyPatch(t *testing.T) {
 }
 
 func TestResource_ListQuery(t *testing.T) {
-	tp := parse.MustResource[TestDevice]("test_devices")
-	lq, err := tp.ListQuery(filter.PostgresDialect{})
+	tp := parse.MustResource[TestDevice](onPostgres, "test_devices")
+	lq, err := tp.ListQuery()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestResource_Conventions(t *testing.T) {
 		Name string `bson:"name" parse:"filter,patch" filter_ops:"eq" patch_ops:"replace" sql:"item_name"`
 	}
 
-	tp, err := parse.NewResource[Item]("item", parse.PrimaryKey("item_id"), parse.ParserOptions(core.WithGeneratorOptions(
+	tp, err := parse.NewResource[Item](onPostgres, "item", parse.PrimaryKey("item_id"), parse.ParserOptions(core.WithGeneratorOptions(
 		core.WithFieldNameTag("bson"),
 		core.WithColumnTag("sql"),
 	)))
@@ -309,7 +309,7 @@ func TestSchemaRegistry_NotFound(t *testing.T) {
 // --- ApplyValidatedPatch fast path vs slow path ---
 
 func TestApplyPatch_DirectFastPath(t *testing.T) {
-	tp := parse.MustResource[TestDevice]("test_devices")
+	tp := parse.MustResource[TestDevice](onPostgres, "test_devices")
 	original := TestDevice{ID: "d1", Name: "Old", Status: "active"}
 
 	// Merge patch — all top-level replaces → uses direct reflection path.
@@ -332,7 +332,7 @@ func TestApplyPatch_DirectFastPath(t *testing.T) {
 }
 
 func TestApplyPatch_MergePatchFastPath(t *testing.T) {
-	tp := parse.MustResource[TestDevice]("test_devices")
+	tp := parse.MustResource[TestDevice](onPostgres, "test_devices")
 	original := TestDevice{ID: "d1", Name: "Old", Status: "active"}
 
 	parsed, err := tp.ParseMergePatch([]byte(`{"name":"Merged"}`))
@@ -361,7 +361,7 @@ type TestDeviceMovable struct {
 }
 
 func TestApplyPatch_SlowPathForMoveOp(t *testing.T) {
-	tp := parse.MustResource[TestDeviceMovable]("test_device_movables")
+	tp := parse.MustResource[TestDeviceMovable](onPostgres, "test_device_movables")
 	name := "Original"
 	original := TestDeviceMovable{ID: "d1", Name: &name}
 
@@ -417,7 +417,7 @@ func TestSchemaRegistry_ImmutableField(t *testing.T) {
 // --- Benchmarks ---
 
 func BenchmarkApplyPatch_DirectPath(b *testing.B) {
-	tp, err := parse.NewResource[TestDevice]("test_devices")
+	tp, err := parse.NewResource[TestDevice](onPostgres, "test_devices")
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -437,7 +437,7 @@ func BenchmarkApplyPatch_DirectPath(b *testing.B) {
 }
 
 func BenchmarkApplyPatch_JSONPath(b *testing.B) {
-	tp, err := parse.NewResource[TestDeviceMovable]("test_device_movables")
+	tp, err := parse.NewResource[TestDeviceMovable](onPostgres, "test_device_movables")
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -489,7 +489,7 @@ type TestDeviceTimestamped struct {
 // arrives from a merge-patch body, and the memory repositories apply
 // patches through this path (SQL backends coerce in the database).
 func TestApplyPatch_DirectPathCoercesRFC3339Timestamps(t *testing.T) {
-	tp, err := parse.NewResource[TestDeviceTimestamped]("test_device_timestampeds")
+	tp, err := parse.NewResource[TestDeviceTimestamped](onPostgres, "test_device_timestampeds")
 	if err != nil {
 		t.Fatal(err)
 	}

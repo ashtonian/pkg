@@ -3,79 +3,85 @@
 package parse_test
 
 import (
+	"errors"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
+	"github.com/ashtonian/pkg/parse/parsepgx"
 )
 
-// CheckPlan is the refusal every executor makes before its first statement;
-// the executor contract (executor_contract_cases_test.go) shows both
-// executors make it.
-func TestCheckPlan(t *testing.T) {
-	sqlite := filter.SQLiteDialect{}
-	list, err := execItems.BuildList(sqlite, nil, execScope)
-	require.NoError(t, err)
-	require.NoError(t, execItems.CheckPlan(list, sqlite))
-
-	err = execItems.CheckPlan(list, filter.PostgresDialect{})
-	require.ErrorIs(t, err, parse.ErrDialect)
-	require.ErrorContains(t, err, "parse: exec_items: list plan for sqlite, run on postgres")
-
-	var noUpdate *parse.UpdatePlan
-	require.ErrorContains(t, execItems.CheckPlan(noUpdate, sqlite), "parse: exec_items: nil update plan")
-	var noBatch *parse.UpdateBatchPlan
-	require.ErrorContains(t, execItems.CheckPlan(noBatch, sqlite), "parse: exec_items: nil update batch plan")
-	require.ErrorContains(t, execItems.CheckPlan(nil, sqlite), "parse: exec_items: nil plan")
-	require.ErrorIs(t, execItems.CheckPlan(list, nil), parse.ErrDialect)
-}
-
-// The batch steps take one read per chunk: an executor that lost a chunk's
-// rows is refused rather than reported as a missing or unchanged target.
-func TestBatchSteps_RefuseReadsOfAnotherChunkCount(t *testing.T) {
-	p, err := execItems.ParseMergePatch([]byte(`{"name":"x"}`))
-	require.NoError(t, err)
-	plan, err := execItems.BuildUpdateBatch(filter.SQLiteDialect{}, []parse.RowUpdate{{Key: parse.Key{"e1"}, Patch: p}}, execScope, parse.UpdateBatchLimits{})
-	require.NoError(t, err)
-	require.Len(t, plan.Chunks, 1)
-
-	err = execItems.CheckBatchCurrent(plan, nil)
-	require.ErrorContains(t, err, "parse: exec_items: Current rows of 0 chunks for a batch of 1")
-	_, err = execItems.BatchResult(plan, [][]execItem{{{ID: "e1"}}}, nil)
-	require.ErrorContains(t, err, "parse: exec_items: Owner rows of 0 chunks for a batch of 1")
-	_, err = execItems.BatchResult(nil, nil, nil)
-	require.ErrorContains(t, err, "parse: exec_items: nil update batch plan")
-
-	res, err := execItems.BatchResult(plan, [][]execItem{{{ID: "e1"}}}, [][]execItem{nil})
-	require.NoError(t, err)
-	assert.Empty(t, res.Changed)
-	assert.Equal(t, []execItem{{ID: "e1"}}, res.Unchanged, "a chunk's read row its owner left is unchanged")
-}
-
+// A statement's failure names its resource's table once, and a
+// transaction's own statement names none.
 func TestStatementFailed(t *testing.T) {
-	require.NoError(t, parse.StatementFailed("owner", nil))
 	cause := assert.AnError
-	err := parse.StatementFailed("include tags", cause)
-	require.ErrorIs(t, err, cause)
-	require.EqualError(t, err, "include tags: "+cause.Error())
-	var failed *parse.StatementError
-	require.ErrorAs(t, err, &failed)
-	assert.Equal(t, "include tags", failed.Statement)
+	for _, tc := range []struct {
+		name, table, statement, want string
+	}{
+		{"a resource's statement", "widgets", "include tags", "parse: widgets: include tags: " + cause.Error()},
+		{"a transaction's own statement", "", "commit", "commit: " + cause.Error()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, parse.StatementFailed(tc.table, tc.statement, nil))
+			err := parse.StatementFailed(tc.table, tc.statement, cause)
+			require.ErrorIs(t, err, cause)
+			require.EqualError(t, err, tc.want)
+			failed, ok := errors.AsType[*parse.StatementError](err)
+			require.True(t, ok)
+			assert.Equal(t, tc.table, failed.Table)
+			assert.Equal(t, tc.statement, failed.Statement)
+		})
+	}
 }
 
-func TestNewExecConfig(t *testing.T) {
-	cfg, err := parse.NewExecConfig()
+type countedRow struct {
+	ID     string         `json:"id"     db:"id"     parse:"filter,sort"`
+	Counts map[string]int `json:"counts" db:"counts"`
+}
+
+// A row that fails to scan fails the statement that read it, whose error
+// names the table once, then the statement, then the column.
+func TestList_NamesAScanFailureOnce(t *testing.T) {
+	p, db := providertest.SQLite(t)
+	execStatements(t, db,
+		`CREATE TABLE "counted" ("id" TEXT PRIMARY KEY, "counts" TEXT)`,
+		`INSERT INTO "counted" VALUES ('a', 'null')`)
+	r := parse.MustResource[countedRow](p, "counted")
+	_, err := r.List(t.Context(), nil, parse.Scope{})
+	require.EqualError(t, err, "parse: counted: page: column counts: JSON document decodes to nil map[string]int; use json.RawMessage to preserve JSON null")
+}
+
+// A resource scoped to a transaction is on its provider and is a view; a
+// transaction another provider began, a wrapped one of another kind of
+// provider, or none, is refused before it is used.
+func TestIn(t *testing.T) {
+	p, _ := providertest.SQLite(t)
+	r := execItems(p)
+	assert.Same(t, p, r.Provider())
+	tx, err := p.Begin(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, parse.DefaultSettleTimeout, cfg.SettleTimeout)
-	cfg, err = parse.NewExecConfig(parse.WithSettleTimeout(time.Second), nil)
+	defer func() { require.NoError(t, tx.Rollback(t.Context())) }()
+
+	scoped, err := r.In(tx)
 	require.NoError(t, err)
-	assert.Equal(t, time.Second, cfg.SettleTimeout, "a nil option is skipped")
-	for _, d := range []time.Duration{0, -time.Second} {
-		_, err := parse.NewExecConfig(parse.WithSettleTimeout(d))
-		require.ErrorContains(t, err, "must be positive", "%s", d)
-	}
+	assert.Same(t, p, scoped.Provider())
+	err = scoped.Relate("again", parse.HasMany(r, "id"))
+	require.ErrorContains(t, err, `parse: exec_items: relation "again": a view (WithPaths, In) declares no relations`)
+
+	other, _ := providertest.SQLite(t)
+	otherTx, err := other.Begin(t.Context())
+	require.NoError(t, err)
+	defer func() { require.NoError(t, otherTx.Rollback(t.Context())) }()
+	_, err = r.In(otherTx)
+	require.ErrorIs(t, err, parse.ErrProviderMismatch)
+	require.ErrorContains(t, err, "parse: exec_items: transaction another sqlite provider began")
+
+	_, err = r.In(parsepgx.Tx(nil))
+	require.ErrorIs(t, err, parse.ErrProviderMismatch)
+	require.ErrorContains(t, err, "parse: exec_items: postgres transaction for a resource on sqlite")
+	_, err = r.In(nil)
+	require.ErrorContains(t, err, "parse: exec_items: nil transaction")
 }

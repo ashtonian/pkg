@@ -51,7 +51,7 @@ type hasKeyDoc struct {
 // documents.
 func TestHasKey(t *testing.T) {
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
-		db := b.open(t)
+		_, db := b.open(t)
 		table := sqlTable{name: "has_key_docs", columns: []sqlColumn{column[string]("id"), column[json.RawMessage]("doc")}, key: []string{"id"}}
 		docs := hasKeyDocs()
 		rows := make([][]any, len(docs))

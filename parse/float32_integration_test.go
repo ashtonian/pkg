@@ -18,7 +18,7 @@ func TestFloat32FilterAndPatchSQLiteParity(t *testing.T) {
 		ID    int64   `json:"id" db:"id" parse:"filter,sort"`
 		Ratio float32 `json:"ratio" db:"ratio" parse:"filter,patch"`
 	}
-	p, err := parse.NewResource[row]("ratios")
+	p, err := parse.NewResource[row](onSQLite, "ratios")
 	require.NoError(t, err)
 	db := dbtest.SQLite(t)
 	_, err = db.ExecContext(t.Context(), "CREATE TABLE ratios (id INTEGER PRIMARY KEY, ratio REAL)")

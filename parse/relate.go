@@ -17,6 +17,7 @@ import (
 // tenancy, soft deletion and filter schema.
 type RelatedResource interface {
 	Table() string
+	Provider() *Provider
 	PrimaryKeyColumns() []string
 	TenantColumnName() string
 	DeletedColumnName() string
@@ -180,17 +181,19 @@ func Describe(label, description string) RelationOption {
 // Relate declares a relation named name on r: requests filter by it with
 // the target's own filter (`$some`, `$none`, `$is`, `$is_not`) or by the
 // target's key; the target's computed columns (ReadExpr) compile there as
-// the target's expressions for the owner's dialect. Columns are checked
+// the target's expressions. The target must be built on r's provider
+// (ErrProviderMismatch): a relation joins tables of one database. Columns are checked
 // against both resources' types, and the tenant columns r and every
 // resource relating to it then reach, at any depth, against each other:
 // one request binds one tenant to all of them. Declare every relation
 // before the resources serve requests; Relate changes the tenant key of
 // every resource that reaches r, so it is not safe for concurrent use with
-// any of them. A WithPaths view, a value for one request, neither declares
-// a relation nor is one's target: relate the resources it is derived from.
+// any of them. A view (WithPaths, In), a value for one request, neither
+// declares a relation nor is one's target: relate the resources it is
+// derived from.
 func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if r.view {
-		return fmt.Errorf("parse: %s: relation %q: a WithPaths view declares no relations; relate the resource it is derived from", r.table, name)
+		return fmt.Errorf("parse: %s: relation %q: a view (WithPaths, In) declares no relations; relate the resource it is derived from", r.table, name)
 	}
 	if !core.IsIdentifier(name) {
 		return fmt.Errorf("parse: %s: relation name %q is not an identifier", r.table, name)
@@ -211,7 +214,10 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		return fmt.Errorf("parse: %s: relation %q has no target", r.table, name)
 	}
 	if rel.target.isView() {
-		return fmt.Errorf("parse: %s: relation %q: the target is a WithPaths view, a value for one request; relate the resource it is derived from", r.table, name)
+		return fmt.Errorf("parse: %s: relation %q: the target is a view (WithPaths, In), a value for one request; relate the resource it is derived from", r.table, name)
+	}
+	if rel.target.Provider() != r.provider {
+		return fmt.Errorf("parse: %s: relation %q: target %s: %w", r.table, name, rel.target.Table(), ErrProviderMismatch)
 	}
 	rs, err := r.relationSchema(name, rel)
 	if err != nil {

@@ -197,8 +197,8 @@ func patchInputs() []patchCase {
 
 func buildPatchCorpus(t *testing.T) []byte {
 	t.Helper()
-	res := parse.MustResource[confPatch]("conf_patches")
-	res.MustRelate("quoted_tags", parse.ManyToMany(parse.MustResource[confTag]("conf_tags"),
+	res := parse.MustResource[confPatch](onSQLite, "conf_patches")
+	res.MustRelate("quoted_tags", parse.ManyToMany(parse.MustResource[confTag](onSQLite, "conf_tags"),
 		parse.Through("conf_patch_tags", "patch_id", "tag_id"), parse.Writable()))
 	reg := parse.NewSchemaRegistry()
 	require.NoError(t, parse.RegisterResource(reg, res))

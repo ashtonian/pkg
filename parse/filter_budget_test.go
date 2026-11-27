@@ -16,7 +16,7 @@ func TestParseFilterWithCostPreservesResolvedOptions(t *testing.T) {
 	t.Run("codec and clock", func(t *testing.T) {
 		frozen := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
 		decodes := 0
-		parser, err := parse.NewResource[limitsDevice]("filter_budget_devices", parse.ParserOptions(
+		parser, err := parse.NewResource[limitsDevice](onSQLite, "filter_budget_devices", parse.ParserOptions(
 			core.WithMaxCost(1),
 			core.WithClock(func() time.Time { return frozen }),
 			core.WithCodec(countingCodec{unmarshals: &decodes}),
@@ -38,7 +38,7 @@ func TestParseFilterWithCostPreservesResolvedOptions(t *testing.T) {
 		{"depth", core.WithMaxDepth(1), `{"$and":[{"$or":[{"status":"active"},{"count":1}]}]}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			parser, err := parse.NewResource[limitsDevice]("filter_budget_devices", parse.ParserOptions(core.WithMaxCost(1), test.limit))
+			parser, err := parse.NewResource[limitsDevice](onSQLite, "filter_budget_devices", parse.ParserOptions(core.WithMaxCost(1), test.limit))
 			require.NoError(t, err)
 			_, err = parser.ParseFilterWithCost(test.query, 1000)
 			require.Error(t, err, "cost allowance must retain the resource's other limits")
@@ -47,7 +47,7 @@ func TestParseFilterWithCostPreservesResolvedOptions(t *testing.T) {
 }
 
 func TestParseFilterWithCostRejectsInvalidBudget(t *testing.T) {
-	parser, err := parse.NewResource[filterBudgetDocument]("budget_documents")
+	parser, err := parse.NewResource[filterBudgetDocument](onSQLite, "budget_documents")
 	require.NoError(t, err)
 	for _, cost := range []int{0, -1} {
 		_, err := parser.ParseFilterWithCost("", cost)

@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/filter/filtertest"
@@ -34,13 +35,14 @@ func TestPathMatrix(t *testing.T) {
 }
 
 // loadPathRecords writes filtertest.PathRecords into path_records on a
-// fresh database of b, its documents held as schema declares them.
-func loadPathRecords(t *testing.T, b sqlBackend, schema *filter.ResourceSchema) *sql.DB {
+// fresh database of b, its documents held as schema declares them, and
+// returns the provider over it and the test's own handle on it.
+func loadPathRecords(t *testing.T, b sqlBackend, schema *filter.ResourceSchema) (*parse.Provider, *sql.DB) {
 	t.Helper()
-	db := b.open(t)
+	p, db := b.open(t)
 	table := schemaTable(schema)
 	b.load(t, db, table, recordRows(t, table, filtertest.PathRecords()))
-	return db
+	return p, db
 }
 
 // pathSchema is filtertest.PathSchema with its documents held as storage,
@@ -62,7 +64,7 @@ func pathSchema(t *testing.T, storage filter.JSONStorage) *filter.ResourceSchema
 func runPathMatrix(t *testing.T, b sqlBackend, storage filter.JSONStorage) {
 	t.Helper()
 	schema := pathSchema(t, storage)
-	db := loadPathRecords(t, b, schema)
+	_, db := loadPathRecords(t, b, schema)
 	query := b.filterIDs(db, schema)
 	t.Run("cases", func(t *testing.T) { filtertest.RunPaths(t, schema, query) })
 	t.Run("sets", func(t *testing.T) { filtertest.RunPathSets(t, schema, query) })

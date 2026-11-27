@@ -32,7 +32,7 @@ import (
 func TestRecipe(t *testing.T) {
 	ctx := testContext(t)
 	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
-	pool := c.open(t, pgx.QueryExecModeCacheStatement)
+	pool := c.open(t, ctx, pgx.QueryExecModeCacheStatement)
 	_, err := pool.Exec(ctx, `CREATE TABLE devices (id uuid PRIMARY KEY, tenant_id uuid NOT NULL, name text NOT NULL, status text NOT NULL)`)
 	require.NoError(t, err)
 	tenantA, tenantB := uuid.New(), uuid.New()
@@ -46,8 +46,10 @@ func TestRecipe(t *testing.T) {
 		require.NoError(t, err)
 	}
 
+	devices, err := newDevices(provider(t, ctx, pool))
+	require.NoError(t, err)
 	mux := http.NewServeMux()
-	(&deviceAPI{db: pool, tenant: authenticatedTenant, log: slog.New(slog.DiscardHandler)}).routes(mux)
+	(&deviceAPI{devices: devices, tenant: authenticatedTenant, log: slog.New(slog.DiscardHandler)}).routes(mux)
 	as := func(tenant uuid.UUID) *httptest.Server {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), tenantKey{}, tenant)))
@@ -140,7 +142,7 @@ func TestRecipe(t *testing.T) {
 	// WARN and never as the server's failure.
 	var logs bytes.Buffer
 	cut := http.NewServeMux()
-	(&deviceAPI{db: pool, tenant: authenticatedTenant, log: slog.New(slog.NewJSONHandler(&logs, nil))}).routes(cut)
+	(&deviceAPI{devices: devices, tenant: authenticatedTenant, log: slog.New(slog.NewJSONHandler(&logs, nil))}).routes(cut)
 	req := httptest.NewRequestWithContext(context.WithValue(ctx, tenantKey{}, tenantA), http.MethodPatch, "/devices/"+ids["pump"].String(),
 		io.MultiReader(strings.NewReader(`{"status":`), iotest.ErrReader(io.ErrUnexpectedEOF)))
 	req.Header.Set("Content-Type", parse.MediaTypeMergePatch)

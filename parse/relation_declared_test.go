@@ -19,7 +19,7 @@ import (
 // One `$some` is one correlated EXISTS over the target's live rows in the
 // tenant, its predicates on one aliased row.
 func TestDeclaredRelations_SQL(t *testing.T) {
-	r := relationResources(t)
+	r := relationResources(t, onPostgres)
 	plan := relationPlan(t, r.devices, `{"commands":{"$some":{"status":"pending","attempts":{"$gt":2}}}}`, relationScopeT1())
 	assert.Contains(t, plan.Page.SQL, `EXISTS (SELECT 1 FROM "commands" WHERE "commands"."device_id" = "devices"."id" AND "commands"."tenant_id" = $1 AND "commands"."deleted_at" IS NULL AND ("commands"."attempts" > $2 AND "commands"."status" = $3))`)
 
@@ -38,11 +38,11 @@ func relationPlan(t *testing.T, r interface {
 	require.NoError(t, err)
 	switch res := r.(type) {
 	case *parse.Resource[relDevice]:
-		plan, err := res.BuildList(filter.PostgresDialect{}, req, s)
+		plan, err := res.BuildList(req, s)
 		require.NoError(t, err)
 		return plan
 	case *parse.Resource[relAsset]:
-		plan, err := res.BuildList(filter.PostgresDialect{}, req, s)
+		plan, err := res.BuildList(req, s)
 		require.NoError(t, err)
 		return plan
 	}
@@ -51,7 +51,7 @@ func relationPlan(t *testing.T, r interface {
 }
 
 func TestDeclaredRelations_Refuse(t *testing.T) {
-	r := relationResources(t)
+	r := relationResources(t, onPostgres)
 	for _, tc := range []struct {
 		name, filter string
 		code         string
@@ -81,12 +81,12 @@ func TestDeclaredRelations_Refuse(t *testing.T) {
 
 	req, err := r.devices.ParseList(url.Values{filter.ParamFilter: {`{"type":{"$is":{}}}`}})
 	require.NoError(t, err)
-	_, err = r.devices.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: "t1"})
+	_, err = r.devices.BuildList(req, parse.Scope{Tenant: "t1"})
 	assert.ErrorIs(t, err, filter.ErrRelatedPolicyRequired, "a policy-scoped relation needs the target's policy")
 }
 
 func TestRelate_RefusesBadDeclarations(t *testing.T) {
-	commands := parse.MustResource[relCommand]("commands", parse.TenantColumn("tenant_id"))
+	commands := parse.MustResource[relCommand](onPostgres, "commands", parse.TenantColumn("tenant_id"))
 	for name, tc := range map[string]struct {
 		relName string
 		rel     parse.Relation
@@ -101,7 +101,7 @@ func TestRelate_RefusesBadDeclarations(t *testing.T) {
 		"references on a pairing": {"tags", parse.ManyToMany(commands, parse.Through("pairs", "device_id", "tag_id"), parse.References("id"))},
 	} {
 		t.Run(name, func(t *testing.T) {
-			devices := parse.MustResource[relDevice]("devices", parse.TenantColumn("tenant_id"))
+			devices := parse.MustResource[relDevice](onPostgres, "devices", parse.TenantColumn("tenant_id"))
 			assert.Error(t, devices.Relate(tc.relName, tc.rel))
 		})
 	}
@@ -145,8 +145,8 @@ type taggedDocs struct {
 // as a filter compares its type. A document has no equality to join by,
 // and paired columns of two types no comparison.
 func TestRelate_CorrelatesOnScalarKeys(t *testing.T) {
-	tiers := parse.MustResource[keyedTier]("tiers")
-	notes := parse.MustResource[keyedNote]("notes")
+	tiers := parse.MustResource[keyedTier](onPostgres, "tiers")
+	notes := parse.MustResource[keyedNote](onPostgres, "notes")
 	for name, tc := range map[string]struct {
 		relName string
 		rel     parse.Relation
@@ -166,7 +166,7 @@ func TestRelate_CorrelatesOnScalarKeys(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			lines := parse.MustResource[keyedLine]("lines")
+			lines := parse.MustResource[keyedLine](onPostgres, "lines")
 			err := lines.Relate(tc.relName, tc.rel)
 			if tc.want == "" {
 				assert.NoError(t, err)
@@ -176,11 +176,11 @@ func TestRelate_CorrelatesOnScalarKeys(t *testing.T) {
 		})
 	}
 
-	_, err := parse.NewResource[taggedWeights]("lines")
+	_, err := parse.NewResource[taggedWeights](onPostgres, "lines")
 	require.NoError(t, err, "float target keys")
-	_, err = parse.NewResource[taggedByWeight]("lines")
+	_, err = parse.NewResource[taggedByWeight](onPostgres, "lines")
 	require.NoError(t, err, "a float owner key")
-	_, err = parse.NewResource[taggedDocs]("lines")
+	_, err = parse.NewResource[taggedDocs](onPostgres, "lines")
 	assert.ErrorContains(t, err, "target column doc is json; a relation correlates on scalar keys")
 }
 
@@ -188,16 +188,16 @@ func TestRelate_CorrelatesOnScalarKeys(t *testing.T) {
 // constraint naming the relation — still tests only visible related rows,
 // and flat parameters are parsed as the JSON filter is.
 func TestDeclaredRelations_EveryEntryReachesOnlyVisibleRows(t *testing.T) {
-	r := relationResources(t)
+	r := relationResources(t, onPostgres)
 	s := relationScopeT1()
 	s.Policy = &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: "commands", Operator: filter.OpEq, Value: "c4"}}}
-	plan, err := r.devices.BuildList(filter.PostgresDialect{}, nil, s)
+	plan, err := r.devices.BuildList(nil, s)
 	require.NoError(t, err)
 	assert.Contains(t, plan.Page.SQL, `"commands"."deleted_at" IS NULL`, "the policy's key comparison is a relation predicate")
 
 	req, err := r.devices.ParseList(url.Values{"commands": {"c1"}})
 	require.NoError(t, err)
-	plan, err = r.devices.BuildList(filter.PostgresDialect{}, req, s)
+	plan, err = r.devices.BuildList(req, s)
 	require.NoError(t, err)
 	assert.Equal(t, 2, strings.Count(plan.Page.SQL, `"commands"."deleted_at" IS NULL`), plan.Page.SQL)
 }
@@ -205,8 +205,8 @@ func TestDeclaredRelations_EveryEntryReachesOnlyVisibleRows(t *testing.T) {
 // A relation's label and description reach schema discovery as a column's
 // tags do.
 func TestRelate_DescribeReachesDiscovery(t *testing.T) {
-	commands := parse.MustResource[relCommand]("commands", parse.TenantColumn("tenant_id"))
-	devices := parse.MustResource[relDevice]("devices", parse.TenantColumn("tenant_id"))
+	commands := parse.MustResource[relCommand](onPostgres, "commands", parse.TenantColumn("tenant_id"))
+	devices := parse.MustResource[relDevice](onPostgres, "devices", parse.TenantColumn("tenant_id"))
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Describe("Commands", "Commands sent to the device")))
 	reg := parse.NewSchemaRegistry()
 	require.NoError(t, parse.RegisterResource(reg, devices))

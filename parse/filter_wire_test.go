@@ -28,7 +28,7 @@ type docRow struct {
 // A JSON number some backend would round is rejected, not answered
 // differently per backend.
 func TestFilter_JSONNumbersStayInThePortableDomain(t *testing.T) {
-	p, err := parse.NewResource[docRow]("doc_rows")
+	p, err := parse.NewResource[docRow](onSQLite, "doc_rows")
 	require.NoError(t, err)
 
 	for _, bad := range []string{
@@ -100,7 +100,7 @@ type nullable struct {
 
 // not_null has a wire spelling, and every NULL test is one capability.
 func TestFilter_NotNullIsAWireOperator(t *testing.T) {
-	p, err := parse.NewResource[nullable]("nullables")
+	p, err := parse.NewResource[nullable](onSQLite, "nullables")
 	require.NoError(t, err)
 
 	for filterJSON, want := range map[string]filter.FilterOperator{
@@ -124,7 +124,7 @@ func TestQueryParams_NotNullSuffix(t *testing.T) {
 		Name    *string `json:"name"     parse:"filter" filter_ops:"not_null"`
 		NameNot *string `json:"name_not" parse:"filter" filter_ops:"null"`
 	}
-	p, err := parse.NewResource[row]("rows")
+	p, err := parse.NewResource[row](onSQLite, "rows")
 	require.NoError(t, err)
 	qp := queryParams(t, p.FilterSchema())
 

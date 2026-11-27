@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
@@ -86,10 +85,6 @@ var ErrForeign = errors.New("not parsed by this resource")
 // do not apply to it.
 var ErrUpdateScope = errors.New("an update reaches only its tenant's live rows")
 
-// Dialect is the dialect the filter and the patch compiler both speak:
-// filter.PostgresDialect or filter.SQLiteDialect.
-type Dialect = filter.Dialect
-
 // UpdateOption configures BuildUpdate.
 type UpdateOption func(*updateConfig)
 
@@ -130,31 +125,34 @@ func SkipUnchanged() UpdateOption {
 	return func(c *updateConfig) { c.skipUnchanged = true }
 }
 
-// UpdatePlan is a patch compiled for one dialect.
+// UpdatePlan is a patch compiled for its resource's provider
+// (BuildUpdate): the statements Update runs, in one transaction.
 type UpdatePlan struct {
 	// Owner returns the target rows' Columns as the update leaves them:
 	// an UPDATE … RETURNING when the patch writes a column; a SELECT that
-	// locks the rows (Dialect.RowLock) when it changes relations alone; a
-	// plain SELECT — a scoped read — when it changes nothing. It matches only
-	// rows the scope admits. Under SkipUnchanged the UPDATE returns only the
-	// rows it changed. It runs before RelationStatements, so a computed
-	// column (ReadExpr) over a relation's pairs reads them as they were;
-	// Reread reads the rows again once the pairs have changed.
+	// locks the rows (filter.Dialect.RowLock) when it changes relations
+	// alone; a plain SELECT — a scoped read — when it changes nothing. It
+	// matches only rows the scope admits. Under SkipUnchanged the UPDATE
+	// returns only the rows it changed. It runs before the relation
+	// statements, so a computed column (ReadExpr) over a relation's pairs
+	// reads them as they were; Update reads the rows again once the pairs
+	// have changed.
 	Owner Statement
 	// Current, set when SkipUnchanged or Conflict guards Owner's UPDATE,
 	// selects every target row the scope admits, as it stands, and locks it
-	// (Dialect.RowLock): Owner's WHERE without the change predicate and the
-	// patch's precondition. Run it first, then Conflict, then Owner, in one
-	// transaction: its lock holds every target while the others judge them,
-	// so Owner and Current split one set of rows. The rows it returns whose
-	// keys Owner's do not include are the ones the patch left unchanged
-	// (Unchanged); neither returning a row means the target is not found.
-	// Nil when Owner returns every target row.
+	// (filter.Dialect.RowLock): Owner's WHERE without the change predicate
+	// and the patch's precondition. It runs first, then Conflict, then
+	// Owner, in one transaction: its lock holds every target while the
+	// others judge them, so Owner and Current split one set of rows. The
+	// rows it returns whose keys Owner's do not include are the ones the
+	// patch left unchanged (UpdateResult.Unchanged); neither returning a row
+	// means the target is not found. Nil when Owner returns every target
+	// row.
 	Current *Statement
 	// Lock, set when Owner's UPDATE can write several target rows on a
 	// dialect with row locks and no Current locks them first, locks every
-	// target row the scope admits in key order and returns nothing an
-	// executor reads. Run it just before Owner, in one transaction: an
+	// target row the scope admits in key order and returns nothing Update
+	// reads. It runs just before Owner, in one transaction: an
 	// UPDATE locks rows in the order its plan reads them, and two updates of
 	// overlapping rows whose plans read them in opposite orders would each
 	// hold a row the other waits for (40P01).
@@ -164,8 +162,9 @@ type UpdatePlan struct {
 	// operation RFC 6902 cannot apply to a target row's stored document:
 	// a member a replace or a remove names that is missing, or an object an
 	// add sets a member of that is not there (patch.Precondition). It
-	// returns at most one row; a row is the update's failure (ConflictError),
-	// and Owner, whose WHERE holds the same precondition, must not run.
+	// returns at most one row; a row is the update's failure, that
+	// operation's E2077, and Owner, whose WHERE holds the same precondition,
+	// does not run.
 	Conflict *Statement
 	// Writes reports whether the plan changes anything: a column Owner
 	// assigns, or a relation membership. False for an empty patch, whose
@@ -175,12 +174,11 @@ type UpdatePlan struct {
 	// assigns reports whether Owner is an UPDATE: the patch assigns a
 	// column, so the rows it returns are the ones it wrote.
 	assigns bool
-	// preconditions are the operations Conflict judges, for ConflictError.
+	// preconditions are the operations Conflict judges, for conflictError.
 	preconditions []patch.Precondition
 	relations     []patch.RelationPatchOp
-	dialect       Dialect
 	// fields is the filter schema the plan compiled, its relation changes'
-	// targets compiled for dialect.
+	// targets included.
 	fields *filter.ResourceSchema
 	table  string
 	// tenant is Scope.Tenant in the tenant key's type; nil without one.
@@ -192,13 +190,10 @@ type UpdatePlan struct {
 	now time.Time
 }
 
-// Dialect is the dialect the plan's statements are written for.
-func (p *UpdatePlan) Dialect() Dialect { return p.dialect }
-
-// ConflictError is the failure of an update whose Conflict statement
+// conflictError is the failure of an update whose Conflict statement
 // returned op: that operation's E2077, as ApplyValidatedPatch reports an
 // operation that does not apply.
-func (p *UpdatePlan) ConflictError(op int64) error {
+func (p *UpdatePlan) conflictError(op int64) error {
 	for _, pre := range p.preconditions {
 		if int64(pre.Op) == op {
 			return pre.Err()
@@ -207,9 +202,8 @@ func (p *UpdatePlan) ConflictError(op int64) error {
 	return fmt.Errorf("parse: %s: the conflict statement returned operation %d, which it does not judge", p.table, op)
 }
 
-// HasRelations reports whether the patch changes relation memberships:
-// run Current, Conflict and Lock when set, Owner, RelationStatements, then
-// Reread when it returns a statement, in one transaction.
+// HasRelations reports whether the patch changes relation memberships,
+// which Update changes after Owner, in the same transaction.
 func (p *UpdatePlan) HasRelations() bool { return len(p.relations) > 0 }
 
 // BuildUpdate compiles a patch into the statement that applies it to target
@@ -224,22 +218,20 @@ func (p *UpdatePlan) HasRelations() bool { return len(p.relations) > 0 }
 // every tenant column it reaches must hold (ErrTenantInvalid); a patch or a
 // ByFilter filter the resource did not parse is ErrForeign; a zero Target
 // is ErrNoTarget, and a key the key columns cannot hold ErrKeyInvalid;
-// Governance or IncludeDeleted is ErrUpdateScope; a dialect
-// a computed column's expression (ReadExpr) refuses is an error.
-func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target, s Scope, opts ...UpdateOption) (*UpdatePlan, error) {
+// Governance or IncludeDeleted is ErrUpdateScope. Update runs the plan;
+// the SQL is the provider's dialect's.
+func (r *Resource[T]) BuildUpdate(p *patch.ParsedPatch, target Target, s Scope, opts ...UpdateOption) (*UpdatePlan, error) {
 	if err := r.ownsPatch(p, "patch"); err != nil {
 		return nil, err
 	}
 	if target.filter != nil && !target.filter.ParsedFor(r.filterSchema) {
 		return nil, fmt.Errorf("parse: %s: target filter: %w", r.table, ErrForeign)
 	}
-	exprs, err := r.computedSQL(d)
-	if err != nil {
-		return nil, err
-	}
+	d := r.dialect
 	if target.empty() {
 		return nil, fmt.Errorf("parse: %s: %w", r.table, ErrNoTarget)
 	}
+	var err error
 	if target.keys, err = r.targetKeys(target.keys); err != nil {
 		return nil, err
 	}
@@ -259,11 +251,11 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		return nil, err
 	}
 
-	where, args, err := r.updateWhere(d, target, scope, set.ParamCount)
+	where, args, err := r.updateWhere(target, scope, set.ParamCount)
 	if err != nil {
 		return nil, err
 	}
-	columns := strings.Join(r.columns(d, exprs), ", ")
+	columns := r.projection
 	// A statement that locks rows of a target that can hold several takes
 	// them in key order, as a batch's Current does, so two updates over
 	// overlapping rows lock in one order and neither holds a row the other
@@ -273,16 +265,7 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 	if locked != "" && len(target.keys) != 1 {
 		locked = " ORDER BY " + r.keyColumns().order(d, r.table) + locked
 	}
-	// The membership changes hold pairs to targets the request may see,
-	// compiled with the targets' schemas for d.
-	changed := make([]string, len(set.RelationOps))
-	for i, op := range set.RelationOps {
-		changed[i] = op.Field
-	}
-	if err := r.checkTargets(d, changed...); err != nil {
-		return nil, err
-	}
-	plan := &UpdatePlan{relations: set.RelationOps, dialect: d, fields: r.filterSchema, table: r.table, tenant: scope.tenant, related: scope.related, now: scope.now}
+	plan := &UpdatePlan{relations: set.RelationOps, fields: r.filterSchema, table: r.table, tenant: scope.tenant, related: scope.related, now: scope.now}
 	switch {
 	case set.SetClause != "":
 		// where's root is a group, which renders parenthesized, or one
@@ -299,7 +282,7 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		// its plan reads the rows, so Lock takes them in key order first.
 		ordersLocks := d.RowLock() != "" && len(target.keys) != 1
 		if guardedByCurrent || ordersLocks {
-			bare, bareArgs, err := r.updateWhere(d, target, scope, 0)
+			bare, bareArgs, err := r.updateWhere(target, scope, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -310,7 +293,7 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 			}
 		}
 		if set.Precondition != "" {
-			plan.Conflict, err = r.conflictStatement(d, target, scope, set.Preconditions)
+			plan.Conflict, err = r.conflictStatement(target, scope, set.Preconditions)
 			if err != nil {
 				return nil, err
 			}
@@ -334,8 +317,9 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 
 // conflictStatement selects, from one target row the patch's preconditions
 // do not all hold for, the index of the first operation that fails there.
-func (r *Resource[T]) conflictStatement(d Dialect, target Target, scope updateScope, pre []patch.Precondition) (*Statement, error) {
-	where, args, err := r.updateWhere(d, target, scope, 0)
+func (r *Resource[T]) conflictStatement(target Target, scope updateScope, pre []patch.Precondition) (*Statement, error) {
+	d := r.dialect
+	where, args, err := r.updateWhere(target, scope, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -351,10 +335,10 @@ func (r *Resource[T]) conflictStatement(d Dialect, target Target, scope updateSc
 	return stmt, nil
 }
 
-// UpdateResult is what an executor reports for an update it ran: the target
-// rows the scope admits, as the update left them, split by whether it wrote
-// their columns, and how many junction rows its membership changes touched.
-// No row in either means the target is not found.
+// UpdateResult is what Update and UpdateBatch report: the target rows the
+// scope admits, as the update left them, split by whether it wrote their
+// columns, and how many junction rows its membership changes touched. No
+// row in either means the target is not found.
 type UpdateResult[T any] struct {
 	// Changed are the rows whose columns the update wrote, stamped and
 	// counted: emit a per-row event for these.
@@ -368,31 +352,30 @@ type UpdateResult[T any] struct {
 	RelationRows int64
 }
 
-// UpdatedRows splits plan's target rows as UpdateResult reports them:
+// updatedRows splits plan's target rows as UpdateResult reports them:
 // owner are the rows Owner returned, current the rows Current returned (nil
-// when the plan has none). An executor calls it with both before the
-// relation statements run, whose owner keys are those of changed and then
+// when the plan has none). Update calls it with both before the relation
+// statements run, whose owner keys are those of changed and then
 // unchanged.
-func (r *Resource[T]) UpdatedRows(plan *UpdatePlan, owner, current []T) (changed, unchanged []T, err error) {
-	if err := r.ownsUpdatePlan(plan); err != nil {
-		return nil, nil, err
-	}
+func (r *Resource[T]) updatedRows(plan *UpdatePlan, owner, current []T) (changed, unchanged []T, err error) {
 	switch {
 	case !plan.assigns:
 		return nil, owner, nil
 	case plan.Current == nil:
 		return owner, nil, nil
 	}
-	if unchanged, err = r.Unchanged(owner, current); err != nil {
+	unchanged, err = r.unchangedRows(owner, current)
+	if err != nil {
 		return nil, nil, err
 	}
 	return owner, unchanged, nil
 }
 
-// Unchanged returns the rows of current (read with UpdatePlan.Current) whose
-// keys are not among those of changed (the rows Owner returned), in current's
-// order: the target rows a SkipUnchanged update matched and left as they were.
-func (r *Resource[T]) Unchanged(changed, current []T) ([]T, error) {
+// unchangedRows returns the rows of current (read with UpdatePlan.Current)
+// whose keys are not among those of changed (the rows Owner returned), in
+// current's order: the target rows a SkipUnchanged update matched and left
+// as they were.
+func (r *Resource[T]) unchangedRows(changed, current []T) ([]T, error) {
 	written := make(map[any]struct{}, len(changed))
 	for _, row := range changed {
 		k, err := r.rowKey(row)
@@ -493,7 +476,7 @@ func (r *Resource[T]) bindUpdateScope(s Scope) (updateScope, error) {
 // after the SET clause's offset ones, compiled for d: the floor a list in
 // the same scope reads (filter.ComposeConstraints: the tenant, live rows,
 // the policy), ANDed with the target.
-func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s updateScope, offset int) (string, []any, error) {
+func (r *Resource[T]) updateWhere(target Target, s updateScope, offset int) (string, []any, error) {
 	pc := filter.ComposeConstraints(filter.RepositoryScope{TenantColumn: r.tenant, TenantID: s.tenant, DeleteColumn: r.deleted}, nil, s.policy)
 	var key *filter.PolicyConstraint
 	switch {
@@ -515,7 +498,7 @@ func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s updateScope
 	if err != nil {
 		return "", nil, err
 	}
-	res, err := filter.NewSQLBuilder(r.filterSchema, d, filter.WithStartParam(offset),
+	res, err := filter.NewSQLBuilder(r.filterSchema, r.dialect, filter.WithStartParam(offset),
 		filter.WithRelationScope(filter.RelationScope{Tenant: s.tenant, Related: s.related, Now: s.now})).Build(ast)
 	if err != nil {
 		return "", nil, err
@@ -523,19 +506,16 @@ func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s updateScope
 	return res.Where, res.Args, nil
 }
 
-// RelationStatements renders the patch's relation changes for the rows
+// relationStatements renders the patch's relation changes for the rows
 // Owner returned, and Current when the plan has it — ownerKeys read from
-// them with Key, never the requested keys — tenant-scoped as the update was.
-// Run them after those statements, in their transaction; the executors
-// (parsepgx.Update, parsesql.Update) do. No owners need no statements.
+// them with Key, never the requested keys — tenant-scoped as the update
+// was. Update runs them after those statements, in their transaction. No
+// owners need no statements.
 //
 // A replace or an add writes one junction row per owner and value, so a
 // ByFilter update that matches many rows writes as many pairs as its rows
 // times the patch's values: bound the target as the batch it is.
-func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []Key) ([]patch.RenderedRelationStatement, error) {
-	if err := r.ownsUpdatePlan(plan); err != nil {
-		return nil, err
-	}
+func (r *Resource[T]) relationStatements(plan *UpdatePlan, ownerKeys []Key) ([]patch.RenderedRelationStatement, error) {
 	if len(plan.relations) == 0 || len(ownerKeys) == 0 {
 		return nil, nil
 	}
@@ -550,10 +530,10 @@ func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []Key) ([]p
 		if op.Schema.TargetTable != "" {
 			field := plan.fields.Fields[op.Field]
 			opts.TargetVisible = func(alias string, bind func(any) string) (string, error) {
-				return filter.VisibleRelated(field, plan.dialect, alias, filter.RelationScope{Tenant: plan.tenant, Related: plan.related, Now: plan.now}, bind)
+				return filter.VisibleRelated(field, r.dialect, alias, filter.RelationScope{Tenant: plan.tenant, Related: plan.related, Now: plan.now}, bind)
 			}
 		}
-		stmts, err := patch.RenderRelationOp(op, plan.dialect, owners, opts)
+		stmts, err := patch.RenderRelationOp(op, r.dialect, owners, opts)
 		if err != nil {
 			return nil, fmt.Errorf("parse: %s: relation %q: %w", r.table, op.Field, err)
 		}
@@ -562,47 +542,38 @@ func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []Key) ([]p
 	return out, nil
 }
 
-// Reread is the statement that reads the rows with ownerKeys — keys passed
-// to RelationStatements — as Columns again: run it after those statements,
-// in their transaction, and its rows replace the ones Owner and Current
-// returned, in no particular order. A computed column (ReadExpr) may read a
-// relation's pairs, which Owner and Current read before the statements
-// changed them. Nil when the plan changes no relation, the resource has no
-// computed column or there are no keys: the rows already read are current.
+// rereadStatement is the statement that reads the rows with ownerKeys —
+// keys passed to relationStatements — as Columns again: Update runs it
+// after those statements, in their transaction, and its rows replace the
+// ones Owner and Current returned, in no particular order. A computed
+// column (ReadExpr) may read a relation's pairs, which Owner and Current
+// read before the statements changed them. Nil when the plan changes no
+// relation, the resource has no computed column or there are no keys: the
+// rows already read are current.
 //
 // The rows are held to the update's tenant and nothing else: the keys are
 // the rows the update wrote, which RETURNING reports whatever their deleted
 // column or the policy now say.
-func (r *Resource[T]) Reread(plan *UpdatePlan, ownerKeys []Key) (*Statement, error) {
-	if err := r.ownsUpdatePlan(plan); err != nil {
-		return nil, err
-	}
+func (r *Resource[T]) rereadStatement(plan *UpdatePlan, ownerKeys []Key) (*Statement, error) {
 	if len(plan.relations) == 0 || r.readExprs == nil || len(ownerKeys) == 0 {
 		return nil, nil
-	}
-	exprs, err := r.computedSQL(plan.dialect)
-	if err != nil {
-		return nil, err
 	}
 	pc := filter.BuildBaseConstraints(r.tenant, plan.tenant, "", false)
 	pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Fields: r.pk, Operator: filter.OpIn, Value: ownerKeys})
 	ast, err := filter.ApplyPolicyConstraints(r.filterSchema, nil, pc)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse: %s: reread: %w", r.table, err)
 	}
-	where, err := filter.NewSQLBuilder(r.filterSchema, plan.dialect).Build(ast)
+	where, err := filter.NewSQLBuilder(r.filterSchema, r.dialect).Build(ast)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse: %s: reread: %w", r.table, err)
 	}
-	return &Statement{
-		SQL:  "SELECT " + strings.Join(r.columns(plan.dialect, exprs), ", ") + " FROM " + plan.dialect.QuoteIdent(r.table) + " WHERE " + where.Where,
+	stmt := &Statement{
+		SQL:  "SELECT " + r.projection + " FROM " + r.dialect.QuoteIdent(r.table) + " WHERE " + where.Where,
 		Args: where.Args,
-	}, nil
+	}
+	return stmt, nil
 }
-
-// ownsUpdatePlan refuses a plan r did not build: its relation changes name
-// another table's fields.
-func (r *Resource[T]) ownsUpdatePlan(plan *UpdatePlan) error { return r.owns(plan.header()) }
 
 func (r *Resource[T]) updateOptions(opts []UpdateOption) (updateConfig, []patch.PatchSQLOption, error) {
 	var cfg updateConfig

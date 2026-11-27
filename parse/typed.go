@@ -229,15 +229,15 @@ func (r *Resource[T]) ParseSort(sortParam string) (*filter.SortResult, error) {
 	return filter.ParseSort(r.sortSchema, sortParam)
 }
 
-// ListQuery returns a ListQuery builder pre-loaded with this type's filter,
-// sort, and search schemas and the parser's config, so ListFilter input is
-// held to the same limits, codec and clock as ParseFilter. When the type declares `parse:"...,search"` fields, a
-// ListSearch query composes a dialect-aware search predicate. A computed
-// column (ReadExpr) compiles as dialect's expression, and a dialect one
-// refuses fails Build. The error is filter.NewListQuery's, for a key the
-// list cannot end its keyset on.
-func (r *Resource[T]) ListQuery(dialect filter.Dialect) (*filter.ListQuery, error) {
-	return newListQuery(r.filterSchema, r.sortSchema, r.searchSchema, dialect, r.cfg)
+// ListQuery returns a ListQuery builder for the provider's dialect,
+// pre-loaded with this type's filter, sort, and search schemas and the
+// parser's config, so ListFilter input is held to the same limits, codec
+// and clock as ParseFilter. When the type declares `parse:"...,search"`
+// fields, a ListSearch query composes the dialect's search predicate. A
+// computed column (ReadExpr) compiles as its expression. The error is
+// filter.NewListQuery's, for a key the list cannot end its keyset on.
+func (r *Resource[T]) ListQuery() (*filter.ListQuery, error) {
+	return newListQuery(r.filterSchema, r.sortSchema, r.searchSchema, r.dialect, r.cfg)
 }
 
 func newListQuery(fs *filter.ResourceSchema, ss *filter.SortSchema, search *filter.SearchSchema, d filter.Dialect, cfg *core.ParserConfig) (*filter.ListQuery, error) {

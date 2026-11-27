@@ -3,7 +3,9 @@
 package parse_test
 
 import (
+	"database/sql"
 	"database/sql/driver"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -12,33 +14,32 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
 func TestSkipUnchanged_SQL(t *testing.T) {
-	r := notes(t)
 	at := core.FormatTimestamp(skipAt())
 	const columns = `"notes"."id", "notes"."tenant_id", "notes"."title", "notes"."rank", "notes"."version", "notes"."updated_at", "notes"."deleted_at"`
 	for _, tc := range []struct {
-		dialect        parse.Dialect
+		provider       *parse.Provider
 		owner, current string
 	}{
-		{filter.PostgresDialect{},
+		{onPostgres,
 			`UPDATE "notes" SET "rank" = $1, "title" = $2, "updated_at" = $3, "version" = "version" + 1 ` +
 				`WHERE (("notes"."tenant_id" = $4 AND "notes"."deleted_at" IS NULL) AND "notes"."id" = $5) ` +
 				`AND ("rank" IS DISTINCT FROM $1 OR "rank"::text COLLATE "C" IS DISTINCT FROM ($1)::text ` +
 				`OR "title" IS DISTINCT FROM $2 OR "title"::text COLLATE "C" IS DISTINCT FROM ($2)::text) ` +
 				`RETURNING ` + columns,
 			`SELECT ` + columns + ` FROM "notes" WHERE (("notes"."tenant_id" = $1 AND "notes"."deleted_at" IS NULL) AND "notes"."id" = $2) FOR UPDATE`},
-		{filter.SQLiteDialect{},
+		{onSQLite,
 			`UPDATE "notes" SET "rank" = ?1, "title" = ?2, "updated_at" = ?3, "version" = "version" + 1 ` +
 				`WHERE (("notes"."tenant_id" = ?4 AND "notes"."deleted_at" IS NULL) AND "notes"."id" = ?5) ` +
 				`AND ("rank" COLLATE BINARY IS NOT ?1 OR "title" COLLATE BINARY IS NOT ?2) ` +
 				`RETURNING ` + columns,
 			`SELECT ` + columns + ` FROM "notes" WHERE (("notes"."tenant_id" = ?1 AND "notes"."deleted_at" IS NULL) AND "notes"."id" = ?2)`},
 	} {
-		t.Run(tc.dialect.Name(), func(t *testing.T) {
-			plan := skipUpdate(t, r, tc.dialect, `{"title":"n","rank":2}`, parse.ByID("n1"))
+		t.Run(tc.provider.Name(), func(t *testing.T) {
+			plan := skipUpdate(t, notes(t, tc.provider), `{"title":"n","rank":2}`, parse.ByID("n1"))
 			assert.Equal(t, tc.owner, plan.Owner.SQL)
 			assert.Equal(t, []any{int64(2), "n", at, "t1", "n1"}, plan.Owner.Args, "the predicate binds nothing of its own")
 			require.NotNil(t, plan.Current)
@@ -56,19 +57,18 @@ func TestSkipUnchanged_SQL(t *testing.T) {
 // needs no order, and SQLite locks no rows. TestExecutorContract/postgres
 // runs the deadlock itself.
 func TestBuildUpdate_LocksSeveralRowsInKeyOrder(t *testing.T) {
-	r := notes(t)
-	byTitle, err := r.ParseFilterMap(map[string]any{"title": "one"})
+	pg := notes(t, onPostgres)
+	byTitle, err := pg.ParseFilterMap(map[string]any{"title": "one"})
 	require.NoError(t, err)
 	const ordered = ` ORDER BY "notes"."id" COLLATE pg_c_utf8 FOR UPDATE`
-	build := func(t *testing.T, d parse.Dialect, body string, target parse.Target, opts ...parse.UpdateOption) *parse.UpdatePlan {
+	build := func(t *testing.T, r *parse.Resource[note], body string, target parse.Target, opts ...parse.UpdateOption) *parse.UpdatePlan {
 		t.Helper()
 		p, err := r.ParseMergePatch([]byte(body))
 		require.NoError(t, err)
-		plan, err := r.BuildUpdate(d, p, target, parse.Scope{Tenant: "t1"}, opts...)
+		plan, err := r.BuildUpdate(p, target, parse.Scope{Tenant: "t1"}, opts...)
 		require.NoError(t, err)
 		return plan
 	}
-	pg := filter.PostgresDialect{}
 	for _, tc := range []struct {
 		name   string
 		target parse.Target
@@ -98,18 +98,19 @@ func TestBuildUpdate_LocksSeveralRowsInKeyOrder(t *testing.T) {
 		})
 	}
 	t.Run("sqlite", func(t *testing.T) {
-		current := build(t, filter.SQLiteDialect{}, `{"title":"x"}`, parse.ByIDs("n2", "n1"), parse.SkipUnchanged()).Current
+		lite := notes(t, onSQLite)
+		current := build(t, lite, `{"title":"x"}`, parse.ByIDs("n2", "n1"), parse.SkipUnchanged()).Current
 		require.NotNil(t, current)
 		assert.NotContains(t, current.SQL, "ORDER BY")
-		assert.Nil(t, build(t, filter.SQLiteDialect{}, `{"title":"x"}`, parse.ByIDs("n2", "n1")).Lock)
+		assert.Nil(t, build(t, lite, `{"title":"x"}`, parse.ByIDs("n2", "n1")).Lock)
 	})
 }
 
 func TestSkipUnchanged_LeavesTheDefaultAlone(t *testing.T) {
-	r := notes(t)
+	r := notes(t, onPostgres)
 	p, err := r.ParseMergePatch([]byte(`{"title":"n","rank":2}`))
 	require.NoError(t, err)
-	plan, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("n1"), parse.Scope{Tenant: "t1"}, parse.Increment("version"))
+	plan, err := r.BuildUpdate(p, parse.ByID("n1"), parse.Scope{Tenant: "t1"}, parse.Increment("version"))
 	require.NoError(t, err)
 	assert.Nil(t, plan.Current)
 	assert.NotContains(t, plan.Owner.SQL, "DISTINCT")
@@ -117,22 +118,50 @@ func TestSkipUnchanged_LeavesTheDefaultAlone(t *testing.T) {
 
 type pointerKeyed struct {
 	ID   *string `json:"id"   db:"id"   parse:"filter"`
-	Name string  `json:"name" db:"name" parse:"patch"`
+	Name string  `json:"name" db:"name" parse:"filter,patch"`
 }
 
-// Rows scanned apart hold distinct pointers to one key.
-func TestUnchanged_ComparesPointerKeysByValue(t *testing.T) {
-	r, err := parse.NewResource[pointerKeyed]("keyed")
-	require.NoError(t, err)
-	key := func(s string) *string { return &s }
-	changed := []pointerKeyed{{ID: key("a"), Name: "new"}}
-	current := []pointerKeyed{{ID: key("a")}, {ID: key("b")}}
-	unchanged, err := r.Unchanged(changed, current)
-	require.NoError(t, err)
-	require.Len(t, unchanged, 1)
-	assert.Equal(t, "b", *unchanged[0].ID)
+// keyedTable holds rows a and b, both named new, on a fresh SQLite
+// database; a key column that is no INTEGER PRIMARY KEY holds NULL there.
+func keyedTable(t *testing.T) (*parse.Provider, *sql.DB) {
+	t.Helper()
+	p, db := providertest.SQLite(t)
+	execStatements(t, db, `CREATE TABLE keyed (id TEXT PRIMARY KEY, name TEXT NOT NULL)`,
+		`INSERT INTO keyed VALUES ('a', 'old'), ('b', 'new')`)
+	return p, db
+}
 
-	_, err = r.Unchanged(nil, []pointerKeyed{{}})
+// renameSkipping applies {"name":"new"} to target under SkipUnchanged.
+func renameSkipping[T any](t *testing.T, r *parse.Resource[T], target func(*parse.Resource[T]) parse.Target) (parse.UpdateResult[T], error) {
+	t.Helper()
+	rename, err := r.ParseMergePatch([]byte(`{"name":"new"}`))
+	require.NoError(t, err)
+	return r.Update(t.Context(), rename, target(r), parse.Scope{}, parse.SkipUnchanged())
+}
+
+func byName[T any](t *testing.T) func(*parse.Resource[T]) parse.Target {
+	return func(r *parse.Resource[T]) parse.Target {
+		f, err := r.ParseFilterMap(map[string]any{"name": "new"})
+		require.NoError(t, err)
+		return parse.ByFilter(f)
+	}
+}
+
+// Rows scanned apart hold distinct pointers to one key: the update splits
+// the rows it read by their keys' values.
+func TestUnchanged_ComparesPointerKeysByValue(t *testing.T) {
+	p, db := keyedTable(t)
+	r, err := parse.NewResource[pointerKeyed](p, "keyed")
+	require.NoError(t, err)
+	res, err := renameSkipping(t, r, func(*parse.Resource[pointerKeyed]) parse.Target { return parse.ByIDs("a", "b") })
+	require.NoError(t, err)
+	require.Len(t, res.Changed, 1)
+	assert.Equal(t, "a", *res.Changed[0].ID)
+	require.Len(t, res.Unchanged, 1)
+	assert.Equal(t, "b", *res.Unchanged[0].ID)
+
+	execStatements(t, db, `INSERT INTO keyed VALUES (NULL, 'new')`)
+	_, err = renameSkipping(t, r, byName[pointerKeyed](t))
 	assert.ErrorContains(t, err, "has no key")
 }
 
@@ -146,20 +175,35 @@ func (c optionalCode) Value() (driver.Value, error) {
 	return string(c), nil
 }
 
+func (c *optionalCode) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		*c = ""
+	case string:
+		*c = optionalCode(v)
+	default:
+		return fmt.Errorf("optionalCode: %T", src)
+	}
+	return nil
+}
+
 type valuerKeyed struct {
 	ID   optionalCode `json:"id"   db:"id"   parse:"filter"`
-	Name string       `json:"name" db:"name" parse:"patch"`
+	Name string       `json:"name" db:"name" parse:"filter,patch"`
 }
 
 // A key column the database holds as NULL — a Valuer that writes nil, as
 // a nil pointer — is a row without a key.
 func TestUnchanged_RefusesARowWhoseKeyIsNull(t *testing.T) {
-	r, err := parse.NewResource[valuerKeyed]("keyed")
+	p, db := keyedTable(t)
+	r, err := parse.NewResource[valuerKeyed](p, "keyed")
 	require.NoError(t, err)
-	unchanged, err := r.Unchanged([]valuerKeyed{{ID: "a"}}, []valuerKeyed{{ID: "a"}, {ID: "b"}})
+	res, err := renameSkipping(t, r, func(*parse.Resource[valuerKeyed]) parse.Target { return parse.ByIDs("a", "b") })
 	require.NoError(t, err)
-	assert.Equal(t, []valuerKeyed{{ID: "b"}}, unchanged)
+	assert.Equal(t, []valuerKeyed{{ID: "a", Name: "new"}}, res.Changed)
+	assert.Equal(t, []valuerKeyed{{ID: "b", Name: "new"}}, res.Unchanged)
 
-	_, err = r.Unchanged(nil, []valuerKeyed{{}})
-	require.ErrorContains(t, err, "parse: keyed: a row has no key: key column id holds no value")
+	execStatements(t, db, `INSERT INTO keyed VALUES (NULL, 'new')`)
+	_, err = renameSkipping(t, r, byName[valuerKeyed](t))
+	require.ErrorContains(t, err, "keyed: a row has no key: key column id holds no value")
 }

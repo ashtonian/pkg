@@ -4,6 +4,7 @@ package parsesql
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -11,21 +12,19 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
 // A request cancelled inside the caller's transaction still undoes the
 // update's own writes, so the caller's transaction holds no partial update.
 func TestUpdate_CancelledInTheCallersTransactionUndoesItsWrites(t *testing.T) {
-	items := taggedItems()
-	db := taggedDB(t)
+	items, db := taggedItems(t)
 	p, err := items.ParseMergePatch([]byte(`{"name":"renamed","tags":["red"]}`))
-	require.NoError(t, err)
-	plan, err := items.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByID("a"), parse.Scope{})
 	require.NoError(t, err)
 
 	tx, err := db.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	scoped, err := items.In(Tx(tx))
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -35,7 +34,7 @@ func TestUpdate_CancelledInTheCallersTransactionUndoesItsWrites(t *testing.T) {
 			cancel()
 		}
 	})
-	_, err = Update(ctx, tx, items, plan)
+	_, err = scoped.Update(ctx, p, parse.ByID("a"), parse.Scope{})
 	require.ErrorIs(t, err, context.Canceled)
 
 	var name string
@@ -44,39 +43,11 @@ func TestUpdate_CancelledInTheCallersTransactionUndoesItsWrites(t *testing.T) {
 	require.NoError(t, tx.Commit(), "the caller's transaction is still usable")
 }
 
-func TestRefusesWhatItCannotRun(t *testing.T) {
-	items := taggedItems()
-	db := taggedDB(t)
-	_, err := QueryPage(t.Context(), db, items, nil)
-	assert.ErrorContains(t, err, "nil list plan")
-	_, err = Update(t.Context(), db, items, nil)
-	assert.ErrorContains(t, err, "nil update plan")
-	_, err = UpdateBatch(t.Context(), db, items, nil)
-	assert.ErrorContains(t, err, "nil update batch plan")
-	_, err = Update(t.Context(), db, items, renamePlan(t, items, `{"name":"x"}`), parse.WithSettleTimeout(0))
-	require.ErrorContains(t, err, "settle timeout 0s: must be positive")
-	assert.Equal(t, "one", storedName(t, db, items), "a refused option sends no statement")
-
-	empty, err := items.BuildUpdateBatch(filter.SQLiteDialect{}, nil, parse.Scope{}, parse.UpdateBatchLimits{})
-	require.NoError(t, err)
-	res, err := UpdateBatch(t.Context(), db, items, empty)
-	require.NoError(t, err)
-	assert.Zero(t, res, "an empty batch runs nothing")
-}
-
-// noTransaction runs statements but is no *sql.Tx and begins none: a
-// wrapper that hides the *sql.DB it holds.
-type noTransaction struct {
-	DB
-}
-
-// An update runs in a transaction it begins on a pool or a connection, and
-// under a savepoint in a caller's *sql.Tx; on any other DB it is refused
-// before a statement is sent, as its statements might each take another of
-// the pool's connections. Lists run on any.
-func TestUpdate_HoldsItsTransactionOnlyWhereItCan(t *testing.T) {
-	items := taggedItems()
-	db := taggedDB(t)
+// An update runs in a transaction of its own on the provider's database, or
+// under a savepoint of the transaction its resource is scoped to, which
+// keeps the update only when it commits.
+func TestUpdate_RunsInItsOwnOrTheScopedTransaction(t *testing.T) {
+	items, db := taggedItems(t)
 	renamed := func(t *testing.T, res parse.UpdateResult[tagged], err error) string {
 		t.Helper()
 		require.NoError(t, err)
@@ -84,30 +55,47 @@ func TestUpdate_HoldsItsTransactionOnlyWhereItCan(t *testing.T) {
 		return res.Changed[0].Name
 	}
 
-	res, err := Update(t.Context(), db, items, renamePlan(t, items, `{"name":"pool"}`))
-	assert.Equal(t, "pool", renamed(t, res, err))
-
-	conn, err := db.Conn(t.Context())
-	require.NoError(t, err)
-	res, err = Update(t.Context(), conn, items, renamePlan(t, items, `{"name":"connection"}`))
-	assert.Equal(t, "connection", renamed(t, res, err))
-	require.NoError(t, conn.Close())
+	res, err := items.Update(t.Context(), rename(t, items, "own"), parse.ByID("a"), parse.Scope{})
+	assert.Equal(t, "own", renamed(t, res, err))
 
 	tx, err := db.BeginTx(t.Context(), nil)
 	require.NoError(t, err)
-	res, err = Update(t.Context(), tx, items, renamePlan(t, items, `{"name":"transaction"}`))
-	assert.Equal(t, "transaction", renamed(t, res, err))
-	require.NoError(t, tx.Commit())
+	scoped, err := items.In(Tx(tx))
+	require.NoError(t, err)
+	res, err = scoped.Update(t.Context(), rename(t, scoped, "rolled back"), parse.ByID("a"), parse.Scope{})
+	assert.Equal(t, "rolled back", renamed(t, res, err))
+	assert.Equal(t, "rolled back", storedName(t, scoped), "the transaction reads its own write")
+	require.NoError(t, tx.Rollback())
+	assert.Equal(t, "own", storedName(t, items), "a rolled-back transaction keeps nothing")
 
-	hidden := noTransaction{DB: db}
-	_, err = Update(t.Context(), hidden, items, renamePlan(t, items, `{"name":"hidden"}`))
-	require.ErrorIs(t, err, ErrNoTransaction)
-	require.ErrorContains(t, err, "parsesql: tagged: parsesql.noTransaction: an update needs")
-	p, err := items.ParseMergePatch([]byte(`{"name":"hidden"}`))
+	begun, err := items.Provider().Begin(t.Context())
 	require.NoError(t, err)
-	batch, err := items.BuildUpdateBatch(filter.SQLiteDialect{}, []parse.RowUpdate{{Key: parse.Key{"a"}, Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
+	scoped, err = items.In(begun)
 	require.NoError(t, err)
-	_, err = UpdateBatch(t.Context(), hidden, items, batch)
-	require.ErrorIs(t, err, ErrNoTransaction)
-	assert.Equal(t, "transaction", storedName(t, hidden, items), "the refused updates wrote nothing, and a list runs on any DB")
+	res, err = scoped.Update(t.Context(), rename(t, scoped, "committed"), parse.ByID("a"), parse.Scope{})
+	assert.Equal(t, "committed", renamed(t, res, err))
+	require.NoError(t, begun.Commit(t.Context()))
+	require.NoError(t, begun.Rollback(t.Context()), "a rollback after the commit does nothing")
+	assert.Equal(t, "committed", storedName(t, items))
+}
+
+func TestUpdateBatch_EmptyRunsNothing(t *testing.T) {
+	items, _ := taggedItems(t)
+	ctx := dbtest.OnStatement(t.Context(), func(_ context.Context, query string) {
+		t.Errorf("an empty batch sent %s", query)
+	})
+	res, err := items.UpdateBatch(ctx, nil, parse.Scope{}, parse.UpdateBatchLimits{})
+	require.NoError(t, err)
+	assert.Zero(t, res)
+}
+
+// A statement the database refuses fails as the statement the resource
+// named, for a log attribute or a metric label.
+func TestQuery_NamesTheFailedStatement(t *testing.T) {
+	items, _ := taggedItems(t)
+	_, err := items.Query(t.Context(), parse.Statement{SQL: "SELECT id, name FROM missing"})
+	failed, ok := errors.AsType[*parse.StatementError](err)
+	require.True(t, ok, "%v", err)
+	assert.Equal(t, "query", failed.Statement)
+	require.ErrorContains(t, err, "parse: tagged: query: ")
 }

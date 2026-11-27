@@ -34,10 +34,6 @@ type memberCase struct {
 	merge string // the merge patch writing the same document; "" when none does
 	want  string // resulting document; "" when the patch does not apply
 	unmet int    // when it does not, the index of the first operation that fails
-	// quoted is the path of the first operation naming a member that holds
-	// a double quote or a backslash, which SQLite refuses (E2070) and its
-	// merge patch writes.
-	quoted string
 }
 
 const memberBase = `{"a":1,"b":{"c":2,"d":3},"e":[1,2]}`
@@ -74,7 +70,7 @@ func memberCases() []memberCase {
 		{name: "keys holding quotes, backslashes, dots and newlines", start: `{"q\"u\\o":{"k":1},"a.b":1,"é\n":{"z":2}}`,
 			ops:   `[{"op":"replace","path":"/doc/q\"u\\o/k","value":2},{"op":"remove","path":"/doc/a.b"},{"op":"add","path":"/doc/é\n/y","value":3}]`,
 			merge: `{"doc":{"q\"u\\o":{"k":2},"a.b":null,"é\n":{"y":3}}}`,
-			want:  `{"q\"u\\o":{"k":2},"é\n":{"z":2,"y":3}}`, quoted: `/doc/q"u\o/k`},
+			want:  `{"q\"u\\o":{"k":2},"é\n":{"z":2,"y":3}}`},
 		{name: "a later operation reads the member an earlier one wrote", start: memberBase,
 			ops:   `[{"op":"add","path":"/doc/x","value":{}},{"op":"add","path":"/doc/x/y","value":1},{"op":"replace","path":"/doc/x/y","value":2},{"op":"remove","path":"/doc/a"}]`,
 			merge: `{"doc":{"x":{"y":2},"a":null}}`,
@@ -158,17 +154,6 @@ func runMemberCases(t *testing.T, mdb mergeDB) {
 			parsed, err := parser.Parse([]byte(tc.ops))
 			require.NoError(t, err)
 			res, err := patch.BuildPatchSQL(parsed, mdb.dialect)
-			if mdb.refusesQuoted && tc.quoted != "" {
-				require.ErrorIs(t, err, core.CodeOpNotSQLCompilable)
-				pe, ok := errors.AsType[*core.ParseError](err)
-				require.True(t, ok, "%v is no ParseError", err)
-				assert.Equal(t, tc.quoted, pe.Path)
-				require.NoError(t, referenceErr)
-				if tc.merge != "" {
-					assert.Equal(t, reference, decodeDoc(t, merged()), "the merge patch writes what json-patch does")
-				}
-				return
-			}
 			if tc.want == "" && err != nil {
 				pe, ok := errors.AsType[*core.ParseError](err)
 				require.True(t, ok, "%v is no ParseError", err)

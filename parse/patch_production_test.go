@@ -21,7 +21,7 @@ type productionPatchRow struct {
 }
 
 func TestDocumentPatchPreservesHiddenState(t *testing.T) {
-	p, err := parse.NewResource[productionPatchRow]("production_patch_rows")
+	p, err := parse.NewResource[productionPatchRow](onSQLite, "production_patch_rows")
 	require.NoError(t, err)
 	original := productionPatchRow{Name: "old", Secret: true, private: "keep"}
 	got, err := p.ApplyPatch([]byte(`[{"op":"test","path":"/name","value":"old"},{"op":"replace","path":"/name","value":"new"}]`), original)
@@ -33,7 +33,7 @@ func TestDocumentPatchPreservesHiddenState(t *testing.T) {
 }
 
 func TestDocumentPatchOmittedFieldMatchesDirect(t *testing.T) {
-	p, err := parse.NewResource[productionPatchRow]("production_patch_rows")
+	p, err := parse.NewResource[productionPatchRow](onSQLite, "production_patch_rows")
 	require.NoError(t, err)
 	for _, operation := range []string{`{"op":"replace","path":"/optional","value":"new"}`, `{"op":"remove","path":"/optional"}`} {
 		direct, err := p.ApplyPatch([]byte("["+operation+"]"), productionPatchRow{Name: "old"})
@@ -45,7 +45,7 @@ func TestDocumentPatchOmittedFieldMatchesDirect(t *testing.T) {
 }
 
 func TestPatchRejectsNullDocument(t *testing.T) {
-	p, err := parse.NewResource[productionPatchRow]("production_patch_rows")
+	p, err := parse.NewResource[productionPatchRow](onSQLite, "production_patch_rows")
 	require.NoError(t, err)
 	_, err = p.ParsePatch([]byte(`null`))
 	require.Error(t, err)
@@ -55,7 +55,7 @@ func TestPatchRejectsNullDocument(t *testing.T) {
 
 func TestMergeNullRunsDestinationValidators(t *testing.T) {
 	rejected := errors.New("cannot clear")
-	p, err := parse.NewResource[productionPatchRow]("production_patch_rows", parse.CustomizeSchemas(func(s parse.Schemas) error {
+	p, err := parse.NewResource[productionPatchRow](onSQLite, "production_patch_rows", parse.CustomizeSchemas(func(s parse.Schemas) error {
 		return s.Patch.UpdatePath("/optional", func(ps *patch.PathSchema) {
 			ps.Validators = []patch.Validator{func(value any) error {
 				if value == nil {
@@ -78,7 +78,7 @@ func TestPatchNullableArrayElements(t *testing.T) {
 		Numbers  []int  `json:"numbers" parse:"patch" patch_ops:"replace,array_append"`
 		Optional []*int `json:"optional" parse:"patch" patch_ops:"replace,array_append"`
 	}
-	p, err := parse.NewResource[row]("rows")
+	p, err := parse.NewResource[row](onSQLite, "rows")
 	require.NoError(t, err)
 	_, err = p.ParsePatch([]byte(`[{"op":"array_append","path":"/numbers","value":null}]`))
 	require.Error(t, err)
@@ -92,11 +92,11 @@ func TestPatchNullableArrayElements(t *testing.T) {
 }
 
 func TestDocumentPatchNilTarget(t *testing.T) {
-	p, err := parse.NewResource[*productionPatchRow]("production_patch_rows")
+	p, err := parse.NewResource[*productionPatchRow](onSQLite, "production_patch_rows")
 	require.NoError(t, err)
 	_, err = p.ApplyPatch([]byte(`[{"op":"test","path":"/name","value":"old"}]`), nil)
 	require.Error(t, err)
-	maps, err := parse.NewResource[*emptyKeyRow]("empty_key_rows")
+	maps, err := parse.NewResource[*emptyKeyRow](onSQLite, "empty_key_rows")
 	require.NoError(t, err)
 	parsed, err := maps.ParseMergePatch([]byte(`{"meta":{"x":1}}`))
 	require.NoError(t, err)
@@ -115,7 +115,7 @@ func TestDocumentPatchPreservesUnrelatedNestedState(t *testing.T) {
 		Name    string  `json:"name" parse:"patch" patch_ops:"replace,test"`
 		Details details `json:"details"`
 	}
-	p, err := parse.NewResource[row]("rows")
+	p, err := parse.NewResource[row](onSQLite, "rows")
 	require.NoError(t, err)
 	target := row{Name: "old", Details: details{Visible: "visible", Hidden: "hidden", private: "private"}}
 	got, err := p.ApplyPatch([]byte(`[{"op":"test","path":"/name","value":"old"},{"op":"replace","path":"/name","value":"new"}]`), target)
@@ -129,7 +129,7 @@ func TestDocumentPatchRequiresMatchingFieldCodec(t *testing.T) {
 		ID   string `json:"id,omitempty" db:"id"`
 		Name string `bson:"name" json:"-" parse:"patch" patch_ops:"replace,test"`
 	}
-	p, err := parse.NewResource[row]("rows", parse.ParserOptions(core.WithGeneratorOptions(core.WithFieldNameTag("bson"))))
+	p, err := parse.NewResource[row](onSQLite, "rows", parse.ParserOptions(core.WithGeneratorOptions(core.WithFieldNameTag("bson"))))
 	require.NoError(t, err)
 	got, err := p.ApplyPatch([]byte(`[{"op":"replace","path":"/name","value":"new"}]`), row{Name: "old"})
 	require.NoError(t, err)

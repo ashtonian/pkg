@@ -171,6 +171,29 @@ func PostgresPoolConfig(t testing.TB) *pgxpool.Config {
 	return postgresServer.poolConfig(t)
 }
 
+// PostgresPool is a pgx pool on a fresh schema of the Postgres server,
+// closed at cleanup.
+func PostgresPool(t testing.TB) *pgxpool.Pool {
+	t.Helper()
+	return postgresServer.pool(t)
+}
+
+// PostGISPool is PostgresPool on the PostGIS server.
+func PostGISPool(t testing.TB) *pgxpool.Pool {
+	t.Helper()
+	return postgisServer.pool(t)
+}
+
+func (s *server) pool(t testing.TB) *pgxpool.Pool {
+	t.Helper()
+	pool, err := pgxpool.NewWithConfig(Context(t), s.poolConfig(t))
+	if err != nil {
+		t.Fatalf("dbtest: %s pool: %v", s.dsnEnv, err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
 func (s *server) open(t testing.TB) *sql.DB {
 	t.Helper()
 	db := stdlib.OpenDB(*s.poolConfig(t).ConnConfig)

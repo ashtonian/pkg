@@ -9,10 +9,10 @@ A relation lets a request filter rows by the rows they are related to. Declare i
 Relate both resources after constructing them, so they can name each other, and before they serve requests:
 
 ```go
-devices := parse.MustResource[Device]("devices", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
-commands := parse.MustResource[Command]("commands", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
-types := parse.MustResource[DeviceType]("device_types", parse.TenantColumn("tenant_id"))
-tags := parse.MustResource[Tag]("tags", parse.TenantColumn("tenant_id"))
+devices := parse.MustResource[Device](provider, "devices", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+commands := parse.MustResource[Command](provider, "commands", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+types := parse.MustResource[DeviceType](provider, "device_types", parse.TenantColumn("tenant_id"))
+tags := parse.MustResource[Tag](provider, "tags", parse.TenantColumn("tenant_id"))
 
 devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed()))     // commands.device_id = devices.id
 devices.MustRelate("type", parse.BelongsTo(types, "type_id", parse.PolicyScoped()))      // device_types.id = devices.type_id
@@ -93,7 +93,7 @@ parse: teams: relation "members": members does not read column "team_id"
 A resource keyed by several columns (`parse.PrimaryKey("warehouse_id", "sku")`, [keys](schema-configuration.md#keys)) relates as any other, the foreign key or each side of the pair table naming a column per key column, in key order:
 
 ```go
-stock := parse.MustResource[Stock]("stock", parse.PrimaryKey("warehouse_id", "sku"))
+stock := parse.MustResource[Stock](provider, "stock", parse.PrimaryKey("warehouse_id", "sku"))
 key := []string{"warehouse_id", "sku"}
 stock.MustRelate("moves", parse.HasMany(moves, key, parse.Indexed(), parse.Includable()))
 stock.MustRelate("tags", parse.ManyToMany(tags, parse.Through("stock_tags", key, "tag_id"), parse.Writable()))
@@ -156,12 +156,14 @@ Declare `Facetable()` on a has-many or many-to-many and `facets=tags` counts the
 
 ### Change membership
 
-Declare `Writable()` on a many-to-many and a patch changes its membership with target keys: a merge patch `{"tags": ["red", "blue"]}` replaces the set, `{"tags": []}` or `{"tags": null}` clears it, and a JSON Patch `add` / `remove` on `/tags` with a list of at least one key adds or removes keys. A key is never null (E2118); the parser decides each operation's value, so a membership change it accepts always renders. Keys travel as the target's key does: a target key tagged `json:",string"` takes them as JSON strings (`{"tags":["5"]}`), as responses write it and the relation's filter shorthands take it, and the schema document marks the path `"wire": "string"` ([quoted values](schema-configuration.md#quoted-values)). A target key of several columns is an array of a value per column, in key order (`{"stock":[[1,"a"],[2,"b"]]}`), each value taking its column's type and wire form; the schema document lists the columns in the path's `key`. `BuildUpdate` returns the owner statement and `RelationStatements` the membership statements for the keys it returned (`parsepgx.Update` runs both in one transaction). Pairs are made only with targets the request may relate — live, in the tenant, or admitted by the target's policy — by selecting the owner and target rows rather than binding raw keys, and a replace or remove reaches only pairs to such targets, so pairs the request cannot see stay. A JSON Patch `add` of `["red","blue"]` to `/tags` on device `d1`:
+Declare `Writable()` on a many-to-many and a patch changes its membership with target keys: a merge patch `{"tags": ["red", "blue"]}` replaces the set, `{"tags": []}` or `{"tags": null}` clears it, and a JSON Patch `add` / `remove` on `/tags` with a list of at least one key adds or removes keys. A key is never null (E2118); the parser decides each operation's value, so a membership change it accepts always renders. Keys travel as the target's key does: a target key tagged `json:",string"` takes them as JSON strings (`{"tags":["5"]}`), as responses write it and the relation's filter shorthands take it, and the schema document marks the path `"wire": "string"` ([quoted values](schema-configuration.md#quoted-values)). A target key of several columns is an array of a value per column, in key order (`{"stock":[[1,"a"],[2,"b"]]}`), each value taking its column's type and wire form; the schema document lists the columns in the path's `key`. `Update` runs the owner statement, then the membership statements for the keys it returned, in one transaction. Pairs are made only with targets the request may relate — live, in the tenant, or admitted by the target's policy — by selecting the owner and target rows rather than binding raw keys, and a replace or remove reaches only pairs to such targets, so pairs the request cannot see stay. A JSON Patch `add` of `["red","blue"]` to `/tags` on device `d1`:
 
-<!-- output of ExampleResource_RelationStatements -->
+`ExampleResource_Update_membership` adds the tags red, blue (deleted) and green (another tenant's) to a device of tenant t1; the statement pairs the device with red alone:
+
+<!-- output of ExampleResource_Update_membership -->
 ```text
-INSERT INTO "device_tags" ("device_id", "tag_id", "tenant_id") SELECT "owner__"."id", "target__"."id", "owner__"."tenant_id" FROM "devices" owner__, "tags" target__ WHERE "owner__"."id" = ANY($1) AND "owner__"."tenant_id" = $2 AND "target__"."id" = ANY($3) AND "target__"."tenant_id" = $4 AND "target__"."deleted_at" IS NULL ON CONFLICT DO NOTHING
-[[d1] t1 [red blue] t1]
+pairs written: 1
+d1 red t1
 ```
 
 The owner keys and the target keys each bind as one array parameter (`= ANY($n)` on PostgreSQL, `IN (SELECT value FROM json_each(?n))` on SQLite), and keys of several columns as one row-value set (`(a, b) IN (SELECT …)`, [keys](schema-configuration.md#keys)), so a statement's parameter count is the same for one key as for a thousand; one operation names at most `PatchSchema.MaxRelationValues` keys (1000 by default, E2119 beyond, repeats counted once). A has-many is never written through its parent (that would insert or delete child rows); a belongs-to is written through its foreign-key column like any other column. A writable pair table's tenant comes from the owner or the target.

@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"database/sql"
 	"net/url"
 	"testing"
 
@@ -12,7 +11,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
 )
 
 // The row shapes below are ones whose columns a by-name driver mapping (the
@@ -66,42 +64,40 @@ func rowContractFixture() []string {
 // resource compiled it from.
 func TestRowContract(t *testing.T) {
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
-		db := b.open(t)
+		p, db := b.open(t)
 		execStatements(t, db, rowContractFixture()...)
-		runRowContract(t, db, b.dialect)
+		runRowContract(t, p)
 	})
 }
 
-func runRowContract(t *testing.T, db *sql.DB, d filter.Dialect) {
+func runRowContract(t *testing.T, p *parse.Provider) {
 	t.Helper()
 	t.Run("embedded pointer", func(t *testing.T) {
-		items := contractPage(t, db, d, parse.MustResource[contractEmbedded]("embedded"))
+		items := contractPage(t, parse.MustResource[contractEmbedded](p, "embedded"))
 		require.NotNil(t, items[0].ContractStamps, "the embedded pointer is allocated")
 		assert.Equal(t, contractEmbedded{ID: "value-of-id", ContractStamps: &ContractStamps{CreatedBy: "value-of-created_by"}}, items[0])
 	})
 	t.Run("convention-named column", func(t *testing.T) {
-		items := contractPage(t, db, d, parse.MustResource[contractConvention]("convention"))
+		items := contractPage(t, parse.MustResource[contractConvention](p, "convention"))
 		assert.Equal(t, contractConvention{ID: "value-of-id", Title: "value-of-name"}, items[0])
 	})
 	t.Run("configured column tag", func(t *testing.T) {
-		items := contractPage(t, db, d, parse.MustResource[contractColumnTag]("column_tag", parse.PrimaryKey("doc_id"),
+		items := contractPage(t, parse.MustResource[contractColumnTag](p, "column_tag", parse.PrimaryKey("doc_id"),
 			parse.ParserOptions(core.WithGeneratorOptions(core.WithColumnTag("sql")))))
 		assert.Equal(t, contractColumnTag{ID: "value-of-doc_id", Name: "value-of-doc_name"}, items[0])
 	})
 	t.Run("crossed names", func(t *testing.T) {
-		items := contractPage(t, db, d, parse.MustResource[contractCrossed]("crossed"))
+		items := contractPage(t, parse.MustResource[contractCrossed](p, "crossed"))
 		assert.Equal(t, contractCrossed{ID: "value-of-id", Left: "value-of-right", Right: "value-of-left"}, items[0],
 			"each field holds the column its JSON name compiles to")
 	})
 }
 
-func contractPage[T any](t *testing.T, db *sql.DB, d filter.Dialect, r *parse.Resource[T]) []T {
+func contractPage[T any](t *testing.T, r *parse.Resource[T]) []T {
 	t.Helper()
 	req, err := r.ParseList(url.Values{})
 	require.NoError(t, err)
-	plan, err := r.BuildList(d, req, parse.Scope{})
-	require.NoError(t, err)
-	page := listPage(t, db, r, d, plan)
+	page := listPage(t, r, req, parse.Scope{})
 	require.Len(t, page.Items, 1)
 	return page.Items
 }

@@ -21,13 +21,13 @@ func Example() {
 		Name   string `json:"name"   db:"name"   parse:"filter,sort,patch"`
 		Status string `json:"status" db:"status" parse:"filter,patch" enum:"active,offline"`
 	}
-	tp, err := parse.NewResource[Device]("devices")
+	tp, err := parse.NewResource[Device](onPostgres, "devices")
 	if err != nil {
 		panic(err)
 	}
 
 	// A list request: filter, sort and page size compile to SQL fragments.
-	lq, err := tp.ListQuery(filter.PostgresDialect{})
+	lq, err := tp.ListQuery()
 	if err != nil {
 		panic(err)
 	}
@@ -67,7 +67,7 @@ func ExampleNewResource_filter() {
 		Status string `json:"status" parse:"filter,patch" filter_ops:"eq,ne" patch_ops:"replace" enum:"active,offline"`
 	}
 
-	tp, err := parse.NewResource[Device]("devices")
+	tp, err := parse.NewResource[Device](onPostgres, "devices")
 	if err != nil {
 		fmt.Println("error:", err)
 		return
@@ -93,7 +93,7 @@ func ExampleResource_ApplyPatch() {
 		Status string `json:"status" parse:"patch" patch_ops:"replace" enum:"active,inactive"`
 	}
 
-	tp, err := parse.NewResource[Item]("items")
+	tp, err := parse.NewResource[Item](onPostgres, "items")
 	if err != nil {
 		fmt.Println("error:", err)
 		return
@@ -153,7 +153,7 @@ func ExampleNewResource_facetedListPage() {
 		CreatedAt string  `json:"created_at" parse:"filter,sort"         filter_ops:"gt,lt,gte,lte" sort_default:"desc" indexed:"true"`
 	}
 
-	tp, err := parse.NewResource[Product]("products")
+	tp, err := parse.NewResource[Product](onPostgres, "products")
 	if err != nil {
 		fmt.Println("error:", err)
 		return
@@ -175,7 +175,7 @@ func ExampleNewResource_facetedListPage() {
 	fmt.Println("parsed:", ast.Root != nil)
 
 	// List query with count + facets.
-	lq, _ := tp.ListQuery(filter.PostgresDialect{})
+	lq, _ := tp.ListQuery()
 	result, _ := lq.Build(
 		filter.ListFilterAST(ast),
 		filter.ListSort("-created_at"),
@@ -226,7 +226,7 @@ func ExampleNewResource_conventions() {
 		Name string `bson:"name" parse:"filter,patch" filter_ops:"eq" patch_ops:"replace" sql:"device_name"`
 	}
 
-	tp, err := parse.NewResource[Device]("device", parse.PrimaryKey("device_id"), parse.ParserOptions(core.WithGeneratorOptions(
+	tp, err := parse.NewResource[Device](onPostgres, "device", parse.PrimaryKey("device_id"), parse.ParserOptions(core.WithGeneratorOptions(
 		core.WithFieldNameTag("bson"),
 		core.WithColumnTag("sql"),
 	)))
@@ -256,8 +256,8 @@ func ExampleResource_ListQuery_customComposition() {
 		Status string `json:"status" parse:"filter" filter_ops:"eq"`
 	}
 
-	tp := parse.MustResource[Item]("items")
-	lq, _ := tp.ListQuery(filter.PostgresDialect{})
+	tp := parse.MustResource[Item](onPostgres, "items")
+	lq, _ := tp.ListQuery()
 	result, _ := lq.Build(filter.ListFilter(`{"status":"active"}`))
 
 	// Compose with custom SQL using the returned parts.

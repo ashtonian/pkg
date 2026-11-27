@@ -14,6 +14,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/patch"
 )
 
 type ckStock struct {
@@ -23,9 +24,9 @@ type ckStock struct {
 	Name        string `json:"name"         db:"name"         parse:"filter,sort"`
 }
 
-func ckStockResource(t *testing.T) *parse.Resource[ckStock] {
+func ckStockResource(t *testing.T, p *parse.Provider) *parse.Resource[ckStock] {
 	t.Helper()
-	r, err := parse.NewResource[ckStock]("ck_stock", parse.PrimaryKey("warehouse_id", "sku"))
+	r, err := parse.NewResource[ckStock](p, "ck_stock", parse.PrimaryKey("warehouse_id", "sku"))
 	require.NoError(t, err)
 	return r
 }
@@ -55,10 +56,9 @@ func TestCompositeKeyPaging(t *testing.T) {
 // Every sort, ascending and descending, pages every row once at every page
 // size, forwards and back.
 func testCompositeKeyPaging(t *testing.T, b sqlBackend) {
-	db := b.open(t)
-	d := b.dialect
-	r := ckStockResource(t)
-	ckStockDB(t, db, d)
+	provider, db := b.open(t)
+	r := ckStockResource(t, provider)
+	ckStockDB(t, db, b.dialect)
 	const rows = 9
 	page := func(t *testing.T, sort string, size int, cursor string) *filter.Page[ckStock] {
 		t.Helper()
@@ -71,9 +71,7 @@ func testCompositeKeyPaging(t *testing.T, b sqlBackend) {
 		}
 		req, err := r.ParseList(q)
 		require.NoError(t, err)
-		plan, err := r.BuildList(d, req, parse.Scope{})
-		require.NoError(t, err)
-		return listPage(t, db, r, d, plan)
+		return listPage(t, r, req, parse.Scope{})
 	}
 	keyOf := func(s ckStock) string { return s.WarehouseID + "/" + s.SKU }
 	for _, field := range []string{"", "warehouse_id", "sku", "qty", "name"} {
@@ -126,9 +124,6 @@ func TestCompositeKeyUpdates(t *testing.T) {
 // An update by key, by keys and a batch each write exactly the rows their
 // keys name, though every row shares each key column with others.
 func testCompositeKeyUpdates(t *testing.T, b sqlBackend) {
-	open := b.open
-	d := b.dialect
-	r := ckStockResource(t)
 	quantities := func(t *testing.T, db *sql.DB) map[string]int64 {
 		t.Helper()
 		out := map[string]int64{}
@@ -147,8 +142,17 @@ func testCompositeKeyUpdates(t *testing.T, b sqlBackend) {
 		}
 		return keys
 	}
-	setQty, err := r.ParseMergePatch([]byte(`{"qty":70}`))
-	require.NoError(t, err)
+	// open is a provider on a fresh ck_stock, the resource on it, and the
+	// patch that sets a row's quantity to 70.
+	open := func(t *testing.T) (*sql.DB, *parse.Resource[ckStock], *patch.ParsedPatch) {
+		t.Helper()
+		provider, db := b.open(t)
+		ckStockDB(t, db, b.dialect)
+		r := ckStockResource(t, provider)
+		setQty, err := r.ParseMergePatch([]byte(`{"qty":70}`))
+		require.NoError(t, err)
+		return db, r, setQty
+	}
 
 	for _, tc := range []struct {
 		name   string
@@ -159,12 +163,9 @@ func testCompositeKeyUpdates(t *testing.T, b sqlBackend) {
 		{"by keys", parse.ByKeys(parse.Key{"w1", "c"}, parse.Key{"w3", "a"}, parse.Key{"w9", "a"}), []string{"w1/c", "w3/a"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := open(t)
-			ckStockDB(t, db, d)
+			db, r, setQty := open(t)
 			before := quantities(t, db)
-			plan, err := r.BuildUpdate(d, setQty, tc.target, parse.Scope{})
-			require.NoError(t, err)
-			res, err := applyUpdate(t, db, r, d, plan, false)
+			res, err := applyUpdate(t, r, false, setQty, tc.target, parse.Scope{})
 			require.NoError(t, err)
 			assert.Len(t, res.Changed, len(tc.want))
 			assert.ElementsMatch(t, tc.want, written(t, db, before))
@@ -172,17 +173,14 @@ func testCompositeKeyUpdates(t *testing.T, b sqlBackend) {
 	}
 
 	t.Run("batch", func(t *testing.T) {
-		db := open(t)
-		ckStockDB(t, db, d)
+		db, r, setQty := open(t)
 		before := quantities(t, db)
 		other, err := r.ParseMergePatch([]byte(`{"qty":80}`))
 		require.NoError(t, err)
-		plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{
+		res, err := r.UpdateBatch(t.Context(), []parse.RowUpdate{
 			{Key: parse.Key{"w3", "b"}, Patch: other},
 			{Key: parse.Key{"w1", "b"}, Patch: setQty},
 		}, parse.Scope{}, parse.UpdateBatchLimits{})
-		require.NoError(t, err)
-		res, err := applyUpdateBatch(t, db, r, d, plan)
 		require.NoError(t, err)
 		assert.Len(t, res.Changed, 2)
 		after := quantities(t, db)
