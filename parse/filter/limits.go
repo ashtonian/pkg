@@ -11,37 +11,21 @@ import (
 func (p *FilterParser) validateAST(root *FilterNode) error {
 	depth := measureDepth(root, 0)
 	if depth > p.config.MaxDepth {
-		return &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeDepthExceeded.String(),
-			Message: fmt.Sprintf("filter depth %d exceeds maximum %d", depth, p.config.MaxDepth),
-		}
+		return core.NewError(ECodeDepthExceeded, fmt.Sprintf("filter depth %d exceeds maximum %d", depth, p.config.MaxDepth))
 	}
 
 	if n := countRelations(root); n > MaxRelationPredicates {
-		return &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeMaxConditions.String(),
-			Message: fmt.Sprintf("relation predicate count %d exceeds maximum %d", n, MaxRelationPredicates),
-		}
+		return core.NewError(ECodeMaxConditions, fmt.Sprintf("relation predicate count %d exceeds maximum %d", n, MaxRelationPredicates))
 	}
 
 	conditions := countConditions(root)
 	if conditions > p.config.MaxConditions {
-		return &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeMaxConditions.String(),
-			Message: fmt.Sprintf("condition count %d exceeds maximum %d", conditions, p.config.MaxConditions),
-		}
+		return core.NewError(ECodeMaxConditions, fmt.Sprintf("condition count %d exceeds maximum %d", conditions, p.config.MaxConditions))
 	}
 
 	cost := estimateCost(root, &defaultCostFactors)
 	if cost > p.config.MaxCost {
-		return &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeQueryTooExpensive.String(),
-			Message: fmt.Sprintf("query cost %d exceeds maximum %d", cost, p.config.MaxCost),
-		}
+		return core.NewError(ECodeQueryTooExpensive, fmt.Sprintf("query cost %d exceeds maximum %d", cost, p.config.MaxCost))
 	}
 
 	return nil

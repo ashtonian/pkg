@@ -18,19 +18,13 @@ func ParseMergePatch(body []byte, schema *PatchSchema, config *core.ParserConfig
 	config = config.Effective()
 
 	if config.MaxInputSize > 0 && len(body) > config.MaxInputSize {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeInputTooLarge.String(),
-			Message: fmt.Sprintf("input size %d exceeds maximum %d bytes", len(body), config.MaxInputSize),
-		}
+		return nil, core.NewError(ECodeInputTooLarge, fmt.Sprintf("input size %d exceeds maximum %d bytes", len(body), config.MaxInputSize))
 	}
 
 	var raw map[string]any
 	codec := config.GetCodec()
 	if err := codec.Decode(body, &raw); err != nil {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeInvalidJSON.String(),
-			Message: "invalid JSON Merge Patch syntax", Cause: err,
-		}
+		return nil, core.NewError(ECodeInvalidJSON, "invalid JSON Merge Patch syntax", core.WithCause(err))
 	}
 	return ParseMergePatchMap(raw, schema, config)
 }
@@ -48,14 +42,12 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 	}
 	config = config.Effective()
 	if raw == nil {
-		return nil, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodeInvalidJSON.String(), Message: "resource merge patch must be an object"}
+		return nil, core.NewError(ECodeInvalidJSON, "resource merge patch must be an object")
 	}
 	raw, _, err := jsonNulls(raw, config.MaxDepth)
 	if err != nil {
-		tooDeep := &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePathTooDeep.String(),
-			Message: fmt.Sprintf("merge patch nests more than %d levels deep", config.MaxDepth), Cause: err,
-		}
+		tooDeep := core.NewError(ECodePathTooDeep, fmt.Sprintf("merge patch nests more than %d levels deep", config.MaxDepth),
+			core.WithCause(err))
 		return nil, tooDeep
 	}
 	codec := config.GetCodec()
@@ -68,16 +60,10 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 	// value however many there are.
 	ops, depth := mergeShape(raw, 1)
 	if depth > config.MaxDepth {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePathTooDeep.String(),
-			Message: fmt.Sprintf("merge patch nests %d levels deep; maximum is %d", depth, config.MaxDepth),
-		}
+		return nil, core.NewError(ECodePathTooDeep, fmt.Sprintf("merge patch nests %d levels deep; maximum is %d", depth, config.MaxDepth))
 	}
 	if schema.MaxOperations > 0 && ops > schema.MaxOperations {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeTooManyOps.String(),
-			Message: fmt.Sprintf("too many operations: %d exceeds maximum %d", ops, schema.MaxOperations),
-		}
+		return nil, core.NewError(ECodeTooManyOps, fmt.Sprintf("too many operations: %d exceeds maximum %d", ops, schema.MaxOperations))
 	}
 
 	result := &ParsedPatch{Operations: make([]*PatchOperation, 0, len(raw)), schema: schema}
@@ -110,11 +96,8 @@ func validateMergeMember(schema *PatchSchema, codec core.Codec, key string, valu
 		pathSchema, err = matchPath(schema, path)
 	}
 	if err != nil {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePatchFieldNotFound.String(),
-			Message: fmt.Sprintf("path '%s': %v", path, err),
-			Path:    path, Cause: err,
-		}
+		return nil, core.NewError(ECodePatchFieldNotFound, fmt.Sprintf("path '%s': %v", path, err),
+			core.WithPath(path), core.WithCause(err))
 	}
 	// RFC 7396: null removes the member, any other value replaces it, and
 	// only an object in the patch merges. A Go value normalizes to an object
@@ -129,18 +112,10 @@ func validateMergeMember(schema *PatchSchema, codec core.Codec, key string, valu
 		errs := make([]error, len(failures))
 		for i, f := range failures {
 			if f.code == ECodeOpNotAllowed {
-				errs[i] = &core.ParseError{
-					Kind: core.ParseErrorKindPatch, Code: f.code.String(),
-					Message: fmt.Sprintf("operation '%s' not allowed on path '%s'", op, path),
-					Path:    path,
-				}
+				errs[i] = core.NewError(f.code, fmt.Sprintf("operation '%s' not allowed on path '%s'", op, path), core.WithPath(path))
 				continue
 			}
-			errs[i] = &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: f.code.String(),
-				Message: fmt.Sprintf("invalid value for path '%s': %v", path, f.cause),
-				Path:    path, Cause: f.cause, Details: f.details,
-			}
+			errs[i] = core.NewError(f.code, fmt.Sprintf("invalid value for path '%s': %v", path, f.cause), f.options(core.WithPath(path))...)
 		}
 		return nil, errors.Join(errs...)
 	}

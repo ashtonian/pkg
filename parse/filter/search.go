@@ -165,13 +165,8 @@ func buildSearchCondition(schema *SearchSchema, dialect Dialect, query string, s
 	err := core.CheckText(query)
 	if err != nil {
 		param := cmp.Or(schema.Param, ParamSearch)
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeValueTypeMismatch.String(),
-			Message: fmt.Sprintf("search term: %v", err),
-			Details: map[string]any{core.DetailParameter: param},
-			Cause:   err,
-		}
+		return nil, core.NewError(ECodeValueTypeMismatch, fmt.Sprintf("search term: %v", err),
+			core.WithParameter(param), core.WithCause(err))
 	}
 
 	return dialect.search(schema, query, startParamIdx)

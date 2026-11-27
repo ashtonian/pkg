@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
@@ -202,13 +203,13 @@ func TestRelationRefusesNullableKeys(t *testing.T) {
 		PTags []*string `db:"-" json:"ptags" parse:"patch" relation:"widget_ptags,widget_id,tag_id"`
 	}
 	_, err := patch.GeneratePatchSchema[nullableKeys](core.NewSchemaGenerator())
-	assert.ErrorContains(t, err, "never null")
+	require.ErrorContains(t, err, "never null")
 	_, err = patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumns: []string{"s"}, TargetColumns: []string{"t"}}, patch.RelationKey{Type: reflect.TypeFor[*string]()})
-	assert.ErrorContains(t, err, "never null")
+	require.ErrorContains(t, err, "never null")
 	_, err = patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumns: []string{"s"}, TargetColumns: []string{"t"}}, patch.RelationKey{Type: reflect.TypeFor[sql.NullString]()})
-	assert.ErrorContains(t, err, "never null", "an sql.Null key holds NULL as a pointer does")
+	require.ErrorContains(t, err, "never null", "an sql.Null key holds NULL as a pointer does")
 	path, err := patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumns: []string{"s"}, TargetColumns: []string{"t"}}, patch.RelationKey{Type: reflect.TypeFor[string]()})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, path)
 }
 
@@ -331,7 +332,7 @@ func TestRelationValueLimit(t *testing.T) {
 		if assert.ErrorAs(t, err, &pe, body) {
 			assert.Equal(t, patch.ECodeRelationPatchTooLarge.String(), pe.Code)
 			assert.Equal(t, 422, pe.ErrorHTTPStatus())
-			assert.Equal(t, map[string]any{patch.DetailValueCount: 4, patch.DetailValueLimit: 3}, pe.Details)
+			assert.Equal(t, map[string]any{core.DetailField: "tags", patch.DetailValueCount: 4, patch.DetailValueLimit: 3}, pe.Details)
 		}
 	}
 

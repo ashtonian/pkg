@@ -414,11 +414,8 @@ func (lq *ListQuery) cursorKeys(sort *SortResult) ([]CursorKey, error) {
 	keys := Keyset(sort, lq.keys...)
 	for _, k := range keys {
 		if k.Column == "" {
-			return nil, &core.ParseError{
-				Kind:    core.ParseErrorKindSort,
-				Code:    ECodeSortFieldNotAllowed.String(),
-				Message: fmt.Sprintf("sort field '%s' is computed and cannot be used with cursor pagination", k.Name),
-			}
+			return nil, core.NewError(ECodeSortFieldNotAllowed, fmt.Sprintf("sort field '%s' is computed and cannot be used with cursor pagination", k.Name),
+				core.WithField(k.Name))
 		}
 	}
 	return keys, nil

@@ -142,12 +142,8 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 	for _, req := range facets {
 		f, ok := schema.Fields[req.Field]
 		if !ok || !f.Facetable {
-			return FacetQuery{}, &core.ParseError{
-				Kind:    core.ParseErrorKindFilter,
-				Code:    ECodeUnknownField.String(),
-				Message: fmt.Sprintf("field '%s' is not facetable", req.Field),
-				Path:    req.Field,
-			}
+			return FacetQuery{}, core.NewError(ECodeUnknownField, fmt.Sprintf("field '%s' is not facetable", req.Field),
+				core.WithField(req.Field))
 		}
 		f = columnExprs(exprs).field(f)
 		fcfg := f.facetConfig()

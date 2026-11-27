@@ -321,7 +321,8 @@ func policyValue(norm *FilterParser, field *FieldSchema, op FilterOperator, valu
 		if value != nil || op == OpExists {
 			want, ok := value.(bool)
 			if !ok {
-				return "", nil, newFilterError(ECodeValueTypeMismatch, fmt.Sprintf("$%s requires a boolean value, got %s", op, gowalker.TypeText(reflect.TypeOf(value))))
+				return "", nil, core.NewError(ECodeValueTypeMismatch, fmt.Sprintf("$%s requires a boolean value, got %s", op, gowalker.TypeText(reflect.TypeOf(value))),
+					core.WithField(field.ExternalName))
 			}
 			if !want {
 				isNull = !isNull
@@ -333,11 +334,12 @@ func policyValue(norm *FilterParser, field *FieldSchema, op FilterOperator, valu
 		return OpNotNull, nil, nil
 	}
 	if field.DataType != "" && !slices.Contains(OperatorsFor(field.DataType, field.Relation != nil), op) {
-		return "", nil, newFilterError(ECodeInvalidOperator, fmt.Sprintf("operator '%s' does not apply to %s field '%s'", op, field.DataType, field.ExternalName))
+		return "", nil, core.NewError(ECodeInvalidOperator, fmt.Sprintf("operator '%s' does not apply to %s field '%s'", op, field.DataType, field.ExternalName),
+			core.WithField(field.ExternalName))
 	}
 	switch value.(type) {
 	case *GeoDistance, *GeoBoundingBox, *GeoPolygon:
-		return op, value, validateGeoValue(value)
+		return op, value, validateGeoValue(field, value)
 	}
 	v, err := norm.normalizeValue(field, op, value)
 	return op, v, err

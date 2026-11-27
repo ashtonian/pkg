@@ -63,13 +63,10 @@ func (r *Resource[T]) ParsePatchRequest(contentType string, body io.Reader, opts
 		}
 	}
 	if grammar == nil {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: patch.ECodeInvalidJSON.String(),
-			Message: fmt.Sprintf("a patch body is %s, %s or %s", MediaTypeMergePatch, MediaTypeJSONPatch, httpjson.MediaType),
-			Details: map[string]any{core.DetailParameter: "content-type"},
-		}
+		return nil, core.NewError(patch.ECodeInvalidJSON, fmt.Sprintf("a patch body is %s, %s or %s", MediaTypeMergePatch, MediaTypeJSONPatch, httpjson.MediaType),
+			core.WithParameter("content-type"))
 	}
-	data, err := r.readBody(body, r.cfg.PatchBodyLimit(), "patch", core.ParseErrorKindPatch)
+	data, err := r.readBody(body, r.cfg.PatchBodyLimit(), "patch")
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +78,7 @@ func (r *Resource[T]) ParsePatchRequest(contentType string, body io.Reader, opts
 // body that is too large without reading the rest of it, so the limit is
 // held below MaxInt for that byte. A body over limit is E2063; a read that
 // fails is a *BodyReadError.
-func (r *Resource[T]) readBody(body io.Reader, limit int, request string, kind core.ParseErrorKind) ([]byte, error) {
+func (r *Resource[T]) readBody(body io.Reader, limit int, request string) ([]byte, error) {
 	if body == nil {
 		return nil, nil
 	}
@@ -90,10 +87,7 @@ func (r *Resource[T]) readBody(body io.Reader, limit int, request string, kind c
 		return nil, &BodyReadError{Table: r.table, Request: request, Err: err}
 	}
 	if len(data) > limit {
-		return nil, &core.ParseError{
-			Kind: kind, Code: filter.ECodeInputTooLarge.String(),
-			Message: fmt.Sprintf("%s body exceeds maximum %d bytes", request, limit),
-		}
+		return nil, core.NewError(filter.ECodeInputTooLarge, fmt.Sprintf("%s body exceeds maximum %d bytes", request, limit))
 	}
 	return data, nil
 }

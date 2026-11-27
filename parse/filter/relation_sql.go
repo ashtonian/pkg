@@ -236,8 +236,6 @@ func unresolvableRelation(f *FieldSchema, why string) error {
 // invalidRelation is the request's fault on relation f: an operator it
 // chose that the relation cannot take.
 func invalidRelation(f *FieldSchema, msg string) error {
-	return &core.ParseError{
-		Kind: core.ParseErrorKindFilter, Code: ECodeInvalidRelation.String(),
-		Message: fmt.Sprintf("relation '%s' %s", f.ExternalName, msg), Details: map[string]any{core.DetailField: f.ExternalName},
-	}
+	return core.NewError(ECodeInvalidRelation, fmt.Sprintf("relation '%s' %s", f.ExternalName, msg),
+		core.WithField(f.ExternalName))
 }

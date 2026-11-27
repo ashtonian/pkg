@@ -504,7 +504,8 @@ func (a *Applier[T]) applyDirect(parsed *ParsedPatch, target T) (T, error) {
 		value, cleared := wholeValue(op)
 		if op.Schema.SQLType.IsJSON() {
 			if err := assignStoredJSON(fv, value); err != nil {
-				return zero, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("setting JSON field %s: %v", fieldName, err), Path: op.Path, Cause: err}
+				return zero, core.NewError(ECodePatchValueInvalid, fmt.Sprintf("setting JSON field %s: %v", fieldName, err),
+					core.WithPath(op.Path), core.WithCause(err))
 			}
 			continue
 		}
@@ -519,11 +520,8 @@ func (a *Applier[T]) applyDirect(parsed *ParsedPatch, target T) (T, error) {
 		}
 		err = assignValue(fv, value, a.codec)
 		if err != nil {
-			invalid := &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-				Message: fmt.Sprintf("setting field %s: %v", fieldName, err),
-				Path:    op.Path, Cause: err,
-			}
+			invalid := core.NewError(ECodePatchValueInvalid, fmt.Sprintf("setting field %s: %v", fieldName, err),
+				core.WithPath(op.Path), core.WithCause(err))
 			return zero, invalid
 		}
 	}
@@ -540,11 +538,8 @@ func (a *Applier[T]) applyDirect(parsed *ParsedPatch, target T) (T, error) {
 func (a *Applier[T]) writable(w *workingCopy[T], name, path string) (reflect.Value, error) {
 	field, ok := a.fields[name]
 	if !ok {
-		return reflect.Value{}, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePatchFieldNotFound.String(),
-			Message: fmt.Sprintf("schema-validated path %q has no matching %q-tagged struct field on %s", path, a.fieldNameTag, gowalker.TypeText(w.root.Type())),
-			Path:    path,
-		}
+		return reflect.Value{}, core.NewError(ECodePatchFieldNotFound, fmt.Sprintf("schema-validated path %q has no matching %q-tagged struct field on %s", path, a.fieldNameTag, gowalker.TypeText(w.root.Type())),
+			core.WithPath(path))
 	}
 	fv, err := w.field(field)
 	if err != nil {
@@ -775,8 +770,8 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 		return zero, err
 	}
 
-	run := &jsonPatchRun{codec: a.codec, copyBudget: a.copyBudget}
 	ops := parsed.Operations
+	run := &jsonPatchRun{codec: a.codec, operations: ops, copyBudget: a.copyBudget}
 	for i := 0; i < len(ops); {
 		op := ops[i]
 		switch {
@@ -877,7 +872,8 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 			name := tokens[0]
 			field, ok := a.fields[name]
 			if !ok {
-				return zero, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchFieldNotFound.String(), Message: fmt.Sprintf("patch path %q has no writable struct field", path), Path: path}
+				return zero, core.NewError(ECodePatchFieldNotFound, fmt.Sprintf("patch path %q has no writable struct field", path),
+					core.WithPath(path))
 			}
 			if _, seen := changed[name]; !seen {
 				info, err := a.gen.FieldType(field)
@@ -908,7 +904,8 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 		}
 		err = a.codec.Decode(out, &result)
 		if err != nil {
-			unfit := &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("patched document does not fit %s: %v", gowalker.TypeText(reflect.TypeFor[T]()), err), Cause: err}
+			unfit := core.NewError(ECodePatchValueInvalid, fmt.Sprintf("patched document does not fit %s: %v", gowalker.TypeText(reflect.TypeFor[T]()), err),
+				core.WithCause(err))
 			return zero, unfit
 		}
 	}
@@ -921,7 +918,8 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 		}
 		if change.storage.IsJSON() {
 			if err := assignStoredJSON(d, doc[name]); err != nil {
-				return zero, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("setting JSON field %s: %v", name, err), Path: core.FormatPointer(name), Cause: err}
+				return zero, core.NewError(ECodePatchValueInvalid, fmt.Sprintf("setting JSON field %s: %v", name, err),
+					core.WithPath(core.FormatPointer(name)), core.WithCause(err))
 			}
 			continue
 		}
@@ -929,7 +927,8 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 		if wrapped {
 			err := a.assignWrapped(d, w, doc[name])
 			if err != nil {
-				return zero, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("setting field %s: %v", name, err), Path: core.FormatPointer(name), Cause: err}
+				return zero, core.NewError(ECodePatchValueInvalid, fmt.Sprintf("setting field %s: %v", name, err),
+					core.WithPath(core.FormatPointer(name)), core.WithCause(err))
 			}
 			continue
 		}
@@ -970,7 +969,8 @@ func validateTransferValue(op *PatchOperation, value any, codec core.Codec, inde
 		}
 	}
 	if err != nil {
-		return &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("invalid transfer to path %q at index %d: %v", op.Path, index, err), Path: op.Path, Index: new(index), Cause: err}
+		return core.NewError(ECodePatchValueInvalid, fmt.Sprintf("invalid transfer to path %q at index %d: %v", op.Path, index, err),
+			core.WithPath(op.Path), core.WithIndex(index), core.WithCause(err))
 	}
 	return nil
 }
@@ -978,11 +978,8 @@ func validateTransferValue(op *PatchOperation, value any, codec core.Codec, inde
 // testValue evaluates a test operation against doc.
 func testValue(doc map[string]any, op *PatchOperation, index int) error {
 	fail := func(msg string) error {
-		return &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-			Message: fmt.Sprintf("test operation %d: %s", index, msg),
-			Path:    op.Path, Index: new(index),
-		}
+		return core.NewError(ECodePatchValueInvalid, fmt.Sprintf("test operation %d: %s", index, msg),
+			core.WithPath(op.Path), core.WithIndex(index))
 	}
 	current, ok := pointerValue(doc, op.Path)
 	if !ok {
@@ -1048,14 +1045,16 @@ func wireOp(op *PatchOperation) (map[string]any, error) {
 func wireValue(op *PatchOperation) (any, error) {
 	v, err := core.ToWire(op.Schema.Wire, op.Value)
 	if err != nil {
-		return nil, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("value for path %s: %v", op.Path, err), Path: op.Path, Cause: err}
+		return nil, core.NewError(ECodePatchValueInvalid, fmt.Sprintf("value for path %s: %v", op.Path, err),
+			core.WithPath(op.Path), core.WithCause(err))
 	}
 	return v, nil
 }
 
 // addOp is the RFC 6902 operation adding value at path.
 func addOp(path string, value any) map[string]any {
-	return map[string]any{memberOp: string(PatchOpAdd), memberPath: path, memberValue: value}
+	op := map[string]any{memberOp: string(PatchOpAdd), memberPath: path, memberValue: value}
+	return op
 }
 
 // pointerValue reads the value at a JSON Pointer in a decoded document,

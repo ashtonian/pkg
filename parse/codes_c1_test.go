@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
+	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 )
 
@@ -52,8 +53,8 @@ func TestCodeCatalog_MatchesItsWireSnapshot(t *testing.T) {
 
 func TestParseError_AnswersItsCodesStatus(t *testing.T) {
 	for _, code := range parse.Codes() {
-		assert.Equal(t, code.ErrorHTTPStatus(), (&parse.ParseError{Code: code.String()}).ErrorHTTPStatus(), code)
+		assert.Equal(t, code.ErrorHTTPStatus(), core.NewError(code, "").ErrorHTTPStatus(), code)
 	}
-	assert.Equal(t, http.StatusUnprocessableEntity, (&parse.ParseError{Code: "E9999"}).ErrorHTTPStatus())
-	assert.Equal(t, http.StatusBadRequest, (&parse.ParseError{Code: filter.ECodeInvalidUUID.String()}).ErrorHTTPStatus())
+	assert.Equal(t, http.StatusUnprocessableEntity, core.NewError("E9999", "").ErrorHTTPStatus())
+	assert.Equal(t, http.StatusBadRequest, core.NewError(filter.ECodeInvalidUUID, "").ErrorHTTPStatus())
 }

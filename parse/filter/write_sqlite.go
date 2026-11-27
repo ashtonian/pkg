@@ -103,8 +103,7 @@ func sqliteMemberPath(member []string, bind func(any) string) (string, error) {
 		if !strings.ContainsAny(name, `"\`) {
 			continue
 		}
-		err := &core.ParseError{Kind: core.ParseErrorKindPatch, Code: core.CodeOpNotSQLCompilable.String(),
-			Message: fmt.Sprintf("SQLite JSON paths before %s read the member name %q otherwise, and the statement cannot tell which release runs it", dialect.SQLiteMinVersion, name)}
+		err := core.NewError(core.CodeOpNotSQLCompilable, fmt.Sprintf("SQLite JSON paths before %s read the member name %q otherwise, and the statement cannot tell which release runs it", dialect.SQLiteMinVersion, name))
 		return "", err
 	}
 	return bind(dialect.SQLiteJSONPath(member)), nil
