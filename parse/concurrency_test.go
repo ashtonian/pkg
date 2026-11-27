@@ -96,8 +96,8 @@ func TestReadExpr_ConcurrentBuilds(t *testing.T) {
 		tenants       *parse.Resource[parsetest.AccountTenant]
 		req, ownerReq *parse.ListRequest
 	}
-	sets := make([]computedSet, len(computedDialects))
-	for i, tt := range computedDialects {
+	sets := make([]computedSet, len(computedDialects()))
+	for i, tt := range computedDialects() {
 		_, accounts, tenants, _ := parsetest.NewComputedResources(providertest.Compile(tt.dialect))
 		req, err := accounts.ParseList(url.Values{
 			filter.ParamFilter: {`{"email":{"$ne":""}}`},
@@ -128,7 +128,7 @@ func TestReadExpr_ConcurrentBuilds(t *testing.T) {
 	wg.Wait()
 	for i, plan := range plans {
 		require.NoError(t, errs[i])
-		tt := computedDialects[i%2]
+		tt := computedDialects()[i%2]
 		assert.Contains(t, plan.Page.SQL, "("+tt.email+") <> ")
 		if i%4 < 2 {
 			assert.Contains(t, plan.Page.SQL, "("+tt.groupIDs+`) AS "group_ids"`)

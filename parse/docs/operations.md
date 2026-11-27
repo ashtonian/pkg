@@ -133,7 +133,7 @@ SQLite cases run locally. PostgreSQL and PostGIS tests run against the servers `
 | Source | What it exercises |
 |---|---|
 | [Main example](../example_test.go) | Public typed parser/list/patch flow |
-| [SQL examples](../examples_sql_test.go) | Request-to-SQL examples across dialects |
+| [SQL examples](../example_guides_test.go) | Request-to-SQL examples across dialects |
 | [pgx recipe](../parsepgx/recipe_test.go) | List and Merge Patch endpoints on `parsepgx`; `TestRecipe` serves them against PostgreSQL |
 | [parsepgx suite](../parsepgx/parsepgx_integration_test.go) | Page walks with totals, facets and includes; tenancy; every pgx exec mode; snapshots; update rollback; guarded updates |
 | [parsepgx cancellation](../parsepgx/cancel_integration_test.go) | Concurrent relation updates of one owner; lists and updates cancelled or past their deadline mid-statement |
