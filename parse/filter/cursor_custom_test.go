@@ -43,8 +43,8 @@ func TestCursorValuePointerMethods(t *testing.T) {
 
 func TestGeneratedPointerMethodSortCanCreateCursor(t *testing.T) {
 	type row struct {
-		ID   pointerCursorNumber `json:"id" db:"id" parse:"sort"`
-		Name *pointerCursorText  `json:"name" db:"name" parse:"sort"`
+		ID   pointerCursorNumber `json:"id" db:"id" parse:"sort" storage:"scalar:int"`
+		Name *pointerCursorText  `json:"name" db:"name" parse:"sort" storage:"scalar:string"`
 	}
 	schema, err := filter.GenerateSortSchema[row](core.NewSchemaGenerator())
 	require.NoError(t, err)

@@ -85,3 +85,18 @@ func TestNormalizeScalar_NamedStrings(t *testing.T) {
 	_, err := core.NormalizeScalar(core.FieldTypeDecimal, reflect.Invalid, namedText("cheap"))
 	require.Error(t, err, "a named string is read as its text, not accepted whatever it holds")
 }
+
+// pointerText marshals to text through its pointer only.
+type pointerText struct{ s string }
+
+func (p *pointerText) MarshalText() ([]byte, error) { return []byte(p.s), nil }
+
+// A value read from a row is a copy, which keeps no pointer method: a
+// string column's codec marshals to its text on the value or its pointer.
+func TestNormalizeScalar_PointerTextMarshaler(t *testing.T) {
+	for _, in := range []any{pointerText{"key"}, &pointerText{"key"}} {
+		got, err := core.NormalizeScalar(core.FieldTypeString, reflect.Invalid, in)
+		require.NoError(t, err, "%#v", in)
+		assert.Equal(t, "key", got, "%#v", in)
+	}
+}

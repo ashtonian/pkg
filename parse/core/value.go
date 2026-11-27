@@ -1,7 +1,6 @@
 package core
 
 import (
-	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,7 +80,7 @@ func checkElementsText(elements []any) error {
 //   - FieldTypeInt       → int64 (signed kinds) or uint64 (unsigned), range-checked against kind
 //   - FieldTypeFloat     → finite float64, range-checked against kind
 //   - FieldTypeDecimal   → canonical decimal text (DecimalText)
-//   - FieldTypeString    → string (encoding.TextMarshaler accepted)
+//   - FieldTypeString    → string (encoding.TextMarshaler accepted, on the value or its pointer)
 //   - FieldTypeUUID      → canonical lowercase UUID string
 //   - FieldTypeBool      → bool
 //   - FieldTypeTimestamp → RFC 3339 UTC string with nanosecond precision, of fixed width (TimestampLayout); a UTC year outside 0001 to 9999 is an error (time.Time accepted)
@@ -376,15 +375,18 @@ func rfc3339Text(s string) bool {
 }
 
 // text returns v as a string when it is one (including named string types),
-// or when it marshals to text (uuid.UUID, netip.Addr, …).
+// or when it marshals to text (uuid.UUID, netip.Addr, …), its pointer's
+// MarshalText included (textMarshalerOf): a value read from a row is a
+// copy, which keeps no pointer method.
 func text(v any) (string, bool) {
 	switch t := v.(type) {
 	case string:
 		return t, true
 	case json.Number: // a JSON number is not a string, whatever its Go kind
 		return "", false
-	case encoding.TextMarshaler:
-		b, err := t.MarshalText()
+	}
+	if tm, ok := textMarshalerOf(v); ok {
+		b, err := tm.MarshalText()
 		if err != nil {
 			return "", false
 		}
