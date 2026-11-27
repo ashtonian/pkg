@@ -133,8 +133,13 @@ func Cases() []Case {
 		{Name: "time relative token in set", Filter: `{"at":{"$in":["now-1s"]}}`, Want: ids("b")},
 		{Name: "time null", Filter: `{"at":{"$null":true}}`, Want: ids("dh")},
 
-		// --- uuid: canonical form ---
+		// --- uuid: canonical form, ordered by its bytes ---
 		{Name: "uuid eq uppercase input", Filter: `{"ref":"0198A3C2-7A1E-7C00-8000-000000000002"}`, Want: ids("b")},
+		{Name: "uuid gt", Filter: `{"ref":{"$gt":"0198a3c2-7a1e-7c00-8000-000000000003"}}`, Want: ids("efg")},
+		{Name: "uuid gte", Filter: `{"ref":{"$gte":"0198a3c2-7a1e-7c00-8000-000000000003"}}`, Want: ids("cefg")},
+		{Name: "uuid lt uppercase input", Filter: `{"ref":{"$lt":"0198A3C2-7A1E-7C00-8000-000000000003"}}`, Want: ids("ab")},
+		{Name: "uuid lte below every byte that differs", Filter: `{"ref":{"$lte":"0198a3c2-7a1e-7c00-7fff-ffffffffffff"}}`, Want: ids("")},
+		{Name: "uuid lt above every byte that differs", Filter: `{"ref":{"$lt":"0198a3c2-7a1e-7c00-8001-000000000000"}}`, Want: ids("abcefg")},
 		{Name: "uuid ne", Filter: `{"ref":{"$ne":"0198a3c2-7a1e-7c00-8000-000000000001"}}`, Want: ids("bcefg")},
 		{Name: "uuid in", Filter: `{"ref":{"$in":["0198a3c2-7a1e-7c00-8000-000000000001","0198a3c2-7a1e-7c00-8000-000000000007"]}}`, Want: ids("ag")},
 		{Name: "uuid nin", Filter: `{"ref":{"$nin":["0198a3c2-7a1e-7c00-8000-000000000001"]}}`, Want: ids("bcefg")},

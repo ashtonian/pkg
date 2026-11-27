@@ -3,6 +3,7 @@
 package patch_test
 
 import (
+	"database/sql"
 	"maps"
 	"reflect"
 	"strings"
@@ -204,6 +205,8 @@ func TestRelationRefusesNullableKeys(t *testing.T) {
 	assert.ErrorContains(t, err, "never null")
 	_, err = patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumns: []string{"s"}, TargetColumns: []string{"t"}}, patch.RelationKey{Type: reflect.TypeFor[*string]()})
 	assert.ErrorContains(t, err, "never null")
+	_, err = patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumns: []string{"s"}, TargetColumns: []string{"t"}}, patch.RelationKey{Type: reflect.TypeFor[sql.NullString]()})
+	assert.ErrorContains(t, err, "never null", "an sql.Null key holds NULL as a pointer does")
 	path, err := patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumns: []string{"s"}, TargetColumns: []string{"t"}}, patch.RelationKey{Type: reflect.TypeFor[string]()})
 	assert.NoError(t, err)
 	assert.NotNil(t, path)

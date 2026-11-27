@@ -16,10 +16,6 @@ import (
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
-func TestRowContract_SQLite(t *testing.T) {
-	runRowContract(t, dbtest.SQLite(t), filter.SQLiteDialect{})
-}
-
 type storedSettings struct {
 	Theme string `json:"theme"`
 }

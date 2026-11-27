@@ -147,7 +147,7 @@ func TestSearchParam_CollisionsAreRefusedAtConstruction(t *testing.T) {
 	parts, err := parse.NewResource[searchedPart]("pump_parts")
 	require.NoError(t, err)
 	err = res.Relate("q", parse.HasMany(parts, "pump_id"))
-	require.ErrorContains(t, err, `relation "q": search parameter "q" would be a flat filter on it`)
+	require.ErrorContains(t, err, `parse: pumps: relation "q": search parameter "q" is a flat filter on field "q"`)
 	require.NoError(t, res.Relate("parts", parse.HasMany(parts, "pump_id")), "another name relates")
 
 	dotted, err := searchedPumps(t, "labels.env")
@@ -180,8 +180,13 @@ func TestAcceptParams_CollisionsAreRefusedAtConstruction(t *testing.T) {
 	parts, err := parse.NewResource[searchedPart]("pump_parts")
 	require.NoError(t, err)
 	err = res.Relate("view", parse.HasMany(parts, "pump_id"))
-	require.ErrorContains(t, err, `relation "view": accepted parameter "view" (AcceptParams) would be a flat filter on it`)
+	require.ErrorContains(t, err, `parse: pumps: relation "view": accepted parameter "view" (AcceptParams) is a flat filter on field "view"`)
 	require.NoError(t, res.Relate("parts", parse.HasMany(parts, "pump_id")), "another name relates")
+
+	suffixed, err := searchedPumps(t, "", parse.AcceptParams("kits_in"))
+	require.NoError(t, err)
+	err = suffixed.Relate("kits", parse.HasMany(parts, "pump_id"))
+	require.ErrorContains(t, err, `parse: pumps: relation "kits": accepted parameter "kits_in" (AcceptParams) is a flat filter on field "kits"`)
 
 	dotted, err := searchedPumps(t, "", parse.AcceptParams("labels.env"))
 	require.NoError(t, err)
@@ -191,6 +196,31 @@ func TestAcceptParams_CollisionsAreRefusedAtConstruction(t *testing.T) {
 	req, err := res.ParseList(url.Values{"view": {"grid"}, "category": {"pump"}})
 	require.NoError(t, err)
 	assert.NotNil(t, req.Filter(), "a field beside an accepted parameter still filters")
+}
+
+// A name one call accepts is held to the rule AcceptParams is: a list
+// parameter, or a flat filter on a field, is refused rather than skipped,
+// which would list every row the filter narrows.
+func TestQueryParamAccept_CollisionsAreRefusedPerCall(t *testing.T) {
+	res, err := searchedPumps(t, "")
+	require.NoError(t, err)
+	q := url.Values{"category": {"pump"}, "name_like": {"P%"}, "id": {"p1"}}
+	for _, tt := range []struct {
+		name, param, want string
+	}{
+		{"a list parameter", "sort", `QueryParamAccept: "sort" is a list parameter`},
+		{"a field", "category", `QueryParamAccept: "category" is a flat filter on field "category"`},
+		{"a field's operator", "name_like", `QueryParamAccept: "name_like" is a flat filter on field "name"`},
+		{"the key", "id", `QueryParamAccept: "id" is a flat filter on field "id"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := res.ParseRequestFilter(q, filter.QueryParamAccept(tt.param))
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+	f, err := res.ParseRequestFilter(url.Values{"category": {"pump"}, "view": {"grid"}}, filter.QueryParamAccept("view"))
+	require.NoError(t, err)
+	assert.NotNil(t, f.AST().Root, "a field beside an accepted parameter still filters")
 }
 
 func requireParseError(t *testing.T, err error, code string) *core.ParseError {

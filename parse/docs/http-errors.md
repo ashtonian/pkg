@@ -51,7 +51,7 @@ A patch of one row is `PATCH {collection}/{value}/…`: a path segment per key c
 
 `ParseRequestFilter(q)` ANDs the JSON `filter` with flat field parameters and applies limits to the combined filter. It does not parse every list option or execute a query. Your handler validates page size/booleans, selects policy from authenticated context, passes sort/search/cursor options, and executes the plan. `Resource.ParseList` checks every `fields` name, but neither `fields` nor `include_deleted` takes effect by itself: the service drops the members the mask leaves out when it writes the rows ([field mask](queries.md#field-mask)), and grants deleted rows through `Scope.IncludeDeleted`. Neither is an authorization control.
 
-A flat parameter naming no filterable field is E2071 unless it is a list parameter (`Param*`) or one the handler reads itself: pass those names with `filter.QueryParamAccept(names...)` (to `ParseRequestFilter` or `filter.NewQueryParamParser`) or `parse.AcceptParams` (to `Resource.ParseList`). `filter.QueryParamLenient()` ignores unknown names instead; a misspelt filter then returns every row, so prefer the accepted list. JSON filter fields are schema-checked either way.
+A flat parameter naming no filterable field is E2071 unless it is a list parameter (`Param*`) or one the handler reads itself: pass those names with `filter.QueryParamAccept(names...)` (to `ParseRequestFilter` or `filter.NewQueryParamParser`) or `parse.AcceptParams` (to `Resource.ParseList`). Neither takes a name a list request already reads, a list parameter or a flat filter on a field: `NewResource` and `NewQueryParamParser` refuse it with a plain error, the server's mistake rather than the client's. `filter.QueryParamLenient()` ignores unknown names instead; a misspelt filter then returns every row, so prefer the accepted list. JSON filter fields are schema-checked either way.
 
 ## Schema routes
 
@@ -125,7 +125,7 @@ All known codes describe permanent failures and are listed below; retry and cata
 | E2066 | 422 | Too many patch operations |
 | E2067 | 422 | Malformed or unsupported list parameter, a list parameter given twice, or a query string that does not decode |
 | E2068 | 422 | `test` cannot compile to SQL |
-| E2070 | 422 | Patch operation cannot compile to SQL (move, copy, nested path, `array_append` on a document) |
+| E2070 | 422 | Patch operation cannot compile to SQL (move, copy, nested path, `array_append` on a document, or what the dialect refuses to write, test or compare) |
 | E2071 | 422 | Unknown filter field |
 | E2072 | 422 | Operator not allowed |
 | E2073 | 422 | Value does not fit the field |

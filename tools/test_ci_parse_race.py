@@ -5,7 +5,8 @@ call t.Parallel can fail under the race detector. Pull requests run parse's
 unit tests without race, then `make test-parse-race`: race over the files the
 concurrency build tag selects. The integration lane always runs under race.
 A unit-only file with concurrent tests and no concurrency tag would be raced
-only by the nightly run.
+only by the nightly run. The modules nested in parse (the client and the server
+example) are not part of that build: their own targets always run under race.
 """
 from pathlib import Path
 import re
@@ -48,9 +49,19 @@ def raced_on_pull_requests(source):
     return build is None or any(selected(build.group(1), tags) for tags in RACED_LANES)
 
 
-def parse_test_files():
-    out = subprocess.check_output(["git", "-C", str(ROOT), "ls-files", "-z", "--", "parse/*_test.go"], timeout=30)
+def tracked(pattern):
+    out = subprocess.check_output(["git", "-C", str(ROOT), "ls-files", "-z", "--", pattern], timeout=30)
     return [ROOT / name for name in out.decode().split("\0") if name]
+
+
+def nested_modules():
+    """The directories of the modules nested in parse's."""
+    return [path.parent for path in tracked("parse/*/go.mod")]
+
+
+def parse_test_files():
+    nested = nested_modules()
+    return [path for path in tracked("parse/*_test.go") if not any(path.is_relative_to(m) for m in nested)]
 
 
 class ParseRaceLane(unittest.TestCase):
@@ -60,6 +71,14 @@ class ParseRaceLane(unittest.TestCase):
         missing = [str(path.relative_to(ROOT)) for path in files
                    if runs_concurrently(path.read_text()) and not raced_on_pull_requests(path.read_text())]
         self.assertEqual(missing, [], f"add `|| {RACE_LANE_TAG}` to their //go:build lines")
+
+    def test_nested_modules_race_every_test(self):
+        targets = {"parse/client": "test-parse-client", "parse/examples/server": "parse-example-check"}
+        nested = sorted(str(path.relative_to(ROOT)) for path in nested_modules())
+        self.assertEqual(nested, sorted(targets), "name the target that tests each nested module")
+        for module, target in targets.items():
+            with self.subTest(module=module):
+                self.assertIn("-race", make_dry_run.dry_run(target, timeout=30, PACKAGES="all").split())
 
     def test_the_race_target_builds_the_tagged_files(self):
         recipe = make_dry_run.dry_run("test-parse-race", timeout=30, PACKAGES="all").split()

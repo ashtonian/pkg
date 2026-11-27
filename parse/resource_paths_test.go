@@ -108,11 +108,7 @@ func TestResource_WithPathsIsARequestView(t *testing.T) {
 	}
 	page, err := parsesql.QueryPage(t.Context(), db, view, plan)
 	require.NoError(t, err)
-	var ids []string
-	for _, it := range page.Items {
-		ids = append(ids, it.ID)
-	}
-	assert.Equal(t, []string{"b", "a"}, ids, "silver then gold; bronze filtered out, absent tiers never match $ne")
+	assert.Equal(t, []string{"b", "a"}, itemIDs(page.Items, func(it customItem) string { return it.ID }), "silver then gold; bronze filtered out, absent tiers never match $ne")
 
 	require.NotNil(t, plan.Facets)
 	require.Len(t, page.Facets, 1)

@@ -5,7 +5,9 @@
 // statement's rows. Rows scan through the resource's row contract
 // (parse.RowScanner), which decodes the JSON text SQLite stores documents
 // and arrays in and parses its timestamp text. The SQL functions SQLite
-// plans call are registered by parsesqlite. PostgreSQL runs through
+// plans call are registered by parsesqlite, which also refuses a
+// connection to a SQLite older than parsesqlite.MinSQLiteVersion, the
+// oldest the plans run on. PostgreSQL runs through
 // parsepgx, whose codecs scan PostgreSQL's native arrays by type.
 //
 // SQLite has no row lock: an update that reads before it writes (a

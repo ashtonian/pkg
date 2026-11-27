@@ -154,7 +154,10 @@ func isRelationPredicate(op FilterOperator) bool {
 // typeOperators is every operator a data type can be filtered with — the set
 // filter_ops and GeneratorOptions.DefaultFilterOps choose from. Each pair
 // executes with one meaning on every dialect and the memory backend, so a
-// schema cannot advertise a combination the builders cannot run. Geo
+// schema cannot advertise a combination the builders cannot run. A UUID
+// orders by its bytes, which is the order of the canonical lowercase text
+// SQLite and Evaluate compare and of PostgreSQL's uuid; an interval or a
+// network value has no order its text shares, so it takes no range. Geo
 // operators on native geography or geometry storage are the one exception:
 // only PostGIS evaluates them, SQLite and Evaluate refuse them with E2115.
 var typeOperators = map[core.FieldType][]FilterOperator{
@@ -169,7 +172,7 @@ var typeOperators = map[core.FieldType][]FilterOperator{
 	core.FieldTypeInet:      {OpEq, OpNe, OpIn, OpNin, OpNull, OpNotNull, OpExists},
 	core.FieldTypeCIDR:      {OpEq, OpNe, OpIn, OpNin, OpNull, OpNotNull, OpExists},
 	core.FieldTypeMACAddr:   {OpEq, OpNe, OpIn, OpNin, OpNull, OpNotNull, OpExists},
-	core.FieldTypeUUID:      {OpEq, OpNe, OpIn, OpNin, OpNull, OpNotNull, OpExists},
+	core.FieldTypeUUID:      {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte, OpIn, OpNin, OpNull, OpNotNull, OpExists},
 	core.FieldTypeBool:      {OpEq, OpNe, OpIn, OpNin, OpNull, OpNotNull, OpExists},
 	core.FieldTypeJSON:      {OpEq, OpNe, OpContains, OpHasKey, OpNull, OpNotNull, OpExists},
 	core.FieldTypeObject:    {OpEq, OpNe, OpContains, OpHasKey, OpNull, OpNotNull, OpExists},
@@ -189,8 +192,30 @@ func OperatorsFor(dt core.FieldType, relation bool) []FilterOperator {
 	return ops
 }
 
-// checkOperators rejects operators that do not apply to the field's type.
-func checkOperators(fs *FieldSchema) error {
+// keyOperators are the operators a key column offers a request filter, in
+// the order a key field lists them, of those its type takes (KeyOperators).
+var keyOperators = []FilterOperator{OpEq, OpGt, OpLt, OpGte, OpLte, OpIn}
+
+// KeyOperators returns the operators a key column of type dt takes in a
+// request filter: equality, the range operators and $in, those of them dt
+// takes (OperatorsFor). A type without an order, such as an inet or an
+// interval, takes no range on its key either.
+func KeyOperators(dt core.FieldType) []FilterOperator {
+	allowed := typeOperators[dt]
+	ops := make([]FilterOperator, 0, len(keyOperators))
+	for _, op := range keyOperators {
+		if slices.Contains(allowed, op) {
+			ops = append(ops, op)
+		}
+	}
+	return ops
+}
+
+// CheckOperators refuses an operator fs allows that does not apply to its
+// type (OperatorsFor), naming the operator and the type. Schema generation
+// checks every field it generates; a schema completed by hand checks its
+// own.
+func CheckOperators(fs *FieldSchema) error {
 	allowed := OperatorsFor(fs.DataType, fs.Relation != nil)
 	for _, op := range fs.AllowedOperators {
 		if !slices.Contains(allowed, op) {

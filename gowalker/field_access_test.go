@@ -180,3 +180,33 @@ func TestAccessFieldHandlesAliasesInlineRootsAndForeignFields(t *testing.T) {
 		}
 	}
 }
+
+// Goroutines resolving every root field at once each get the one accessor
+// kept for it.
+func TestAccessField_ConcurrentCallsShareOneAccessor(t *testing.T) {
+	s := schemaFor[accessRoot](t, engine(t))
+	fields := s.Root().Fields()
+	const workers = 16
+	got := make([]map[*gowalker.Field]*gowalker.Accessor, workers)
+	var wg sync.WaitGroup
+	for w := range workers {
+		wg.Go(func() {
+			got[w] = map[*gowalker.Field]*gowalker.Accessor{}
+			for i := range fields {
+				// Each worker starts at its own field, so first calls race.
+				f := fields[(i+w)%len(fields)]
+				a, err := s.AccessField(f)
+				assert.NoError(t, err)
+				got[w][f] = a
+			}
+		})
+	}
+	wg.Wait()
+	for _, f := range fields {
+		want, err := s.AccessField(f)
+		assert.NoError(t, err)
+		for w := range workers {
+			assert.Same(t, want, got[w][f], f.Name())
+		}
+	}
+}

@@ -176,7 +176,11 @@ func ExampleNewQueryParamParser() {
 		},
 	}
 
-	qp := filter.NewQueryParamParser(schema)
+	qp, err := filter.NewQueryParamParser(schema)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
 	ast, err := qp.Parse(url.Values{
 		"status":    {"active"},
 		"price_gte": {"50"},

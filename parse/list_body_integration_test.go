@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/parsehttp"
 )
 
@@ -32,19 +30,14 @@ var gizmoFixture = []string{
 	`INSERT INTO gizmos VALUES (1, 'b', 3), (2, 'a', 1), (3, 'b', 2), (4, 'c', 5), (5, 'a', 4), (6, 'b', 9), (7, 'z', 0)`,
 }
 
-func TestListBodyTransport_SQLite(t *testing.T) {
-	runListBodyTransport(t, dbtest.SQLite(t), filter.SQLiteDialect{})
+func TestListBodyTransport(t *testing.T) {
+	runSQLBackends(t, runListBodyTransport)
 }
 
-func TestListBodyTransport_Postgres(t *testing.T) {
-	runListBodyTransport(t, dbtest.Postgres(t), filter.PostgresDialect{})
-}
-
-func runListBodyTransport(t *testing.T, db *sql.DB, d filter.Dialect) {
-	for _, stmt := range gizmoFixture {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
+func runListBodyTransport(t *testing.T, b sqlBackend) {
+	db := b.open(t)
+	d := b.dialect
+	execStatements(t, db, gizmoFixture...)
 	gizmos := parse.MustResource[gizmo]("gizmos", parse.PageSize(2, 10))
 	const doc = `{"name":{"$in":["a","b","c"]}}`
 
@@ -55,7 +48,7 @@ func runListBodyTransport(t *testing.T, db *sql.DB, d filter.Dialect) {
 		plan, err := gizmos.BuildList(d, req, parse.Scope{})
 		require.NoError(t, err)
 		var items []gizmo
-		for _, row := range queryRows(t, db, plan.Page.SQL, plan.Page.Args) {
+		for _, row := range queryRows[[]any](t, db, plan.Page.SQL, plan.Page.Args...) {
 			items = append(items, gizmo{ID: int(listInt(t, row[0])), Name: fmt.Sprint(row[1]), Rank: int(listInt(t, row[2]))})
 		}
 		p, err := gizmos.Page(items, plan)
@@ -81,11 +74,7 @@ func runListBodyTransport(t *testing.T, db *sql.DB, d filter.Dialect) {
 		return r
 	}
 	ids := func(p *filter.Page[gizmo]) []int {
-		var out []int
-		for _, item := range p.Items {
-			out = append(out, item.ID)
-		}
-		return out
+		return itemIDs(p.Items, func(g gizmo) int { return g.ID })
 	}
 
 	first := page(get(""))

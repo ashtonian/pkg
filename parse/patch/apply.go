@@ -15,7 +15,6 @@ import (
 	"github.com/ashtonian/pkg/jsonvalue"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/jsonmerge"
-	"github.com/ashtonian/pkg/parse/internal/rfc6902"
 )
 
 // ErrUnparsed is returned for a ParsedPatch no parser produced: one assembled
@@ -252,6 +251,96 @@ func (a *Applier[T]) presentOmitted(doc map[string]any, target T, ops []*PatchOp
 	return nil
 }
 
+// presentWrapped writes each nullable wrapper column an operation names
+// (wrapperField) into doc as the column holds it, its value or null, where
+// the codec wrote the wrapper's own fields: test, copy and move read the
+// value replace writes, and the field is set back through assignWrapped.
+func (a *Applier[T]) presentWrapped(doc map[string]any, target T, ops []*PatchOperation) error {
+	root := reflect.ValueOf(&target).Elem()
+	for root.Kind() == reflect.Pointer {
+		if root.IsNil() {
+			return nil
+		}
+		root = root.Elem()
+	}
+	for _, op := range ops {
+		for _, path := range []string{op.Path, op.From} {
+			tokens, err := core.ParsePointer(path)
+			if err != nil || len(tokens) == 0 {
+				continue
+			}
+			name := tokens[0]
+			w, ok := wrapperField(a.fields[name])
+			if !ok {
+				continue
+			}
+			value, err := a.fields[name].Value(root)
+			if err != nil {
+				continue // behind a nil embedded pointer, the field is not there
+			}
+			doc[name], err = a.wrappedDocument(w, value)
+			if err != nil {
+				return fmt.Errorf("patch: encoding field %s: %w", name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// wrappedDocument is the document value of v, a wrapper or a pointer to
+// one: its value as the codec writes it, nil while it is NULL.
+func (a *Applier[T]) wrappedDocument(w core.NullWrapper, v reflect.Value) (any, error) {
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return nil, nil
+		}
+		v = v.Elem()
+	}
+	held, valid := w.Held(v)
+	if !valid {
+		return nil, nil
+	}
+	data, err := a.codec.Encode(held.Interface())
+	if err != nil {
+		return nil, err
+	}
+	var doc any
+	err = a.codec.Decode(data, &doc)
+	return doc, err
+}
+
+// assignWrapped sets dst, a wrapper field, from its document value: NULL
+// for nil, else the value decoded into the wrapper's value type.
+func (a *Applier[T]) assignWrapped(dst reflect.Value, w core.NullWrapper, doc any) error {
+	if doc == nil {
+		dst.SetZero()
+		return nil
+	}
+	data, err := a.codec.Encode(doc)
+	if err != nil {
+		return err
+	}
+	value := reflect.New(w.ValueType())
+	err = a.codec.Decode(data, value.Interface())
+	if err != nil {
+		return err
+	}
+	return assignValue(dst, value.Elem().Interface(), a.codec)
+}
+
+// wrapperField is the layout of f's type, pointers stripped, when it is a
+// nullable wrapper; false for a nil field.
+func wrapperField(f *core.Field) (core.NullWrapper, bool) {
+	if f == nil {
+		return core.NullWrapper{}, false
+	}
+	t := f.Type()
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return core.NullWrapperOf(t)
+}
+
 // CheckSchema refuses a schema with a path that would write a field of T
 // the applier cannot write: one promoted through an unexported embedded
 // pointer (core.Field.CheckWritable), reached by an exact key or a pattern.
@@ -483,7 +572,8 @@ func assignStoredJSON(dst reflect.Value, value any) error {
 // recursive conversion: integers and floats are range-checked against dst's
 // exact kind (no wrap, no truncation), strings reach encoding.TextUnmarshaler
 // destinations (time.Time, uuid.UUID), pointers are allocated and assigned
-// through, and composite kinds (slices, maps, structs) decode via the codec,
+// through, a nullable wrapper (core.NullWrapperOf) holds the value Valid,
+// and composite kinds (slices, maps, structs) decode via the codec,
 // whose decoder range-checks every leaf. dst never shares memory with v: a
 // value that can (a map, a slice, an interface holding a document) is
 // decoded afresh, so each result is its own, and changing it changes
@@ -505,6 +595,18 @@ func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 	rv := reflect.ValueOf(v)
 	if rv.Type() == t && !sharesMemory(t) {
 		dst.Set(rv)
+		return nil
+	}
+	w, wrapped := core.NullWrapperOf(t)
+	if wrapped {
+		// A wrapper's column holds its value (columnType), which the
+		// wrapper holds Valid.
+		held := reflect.New(t).Elem()
+		err := assignValue(w.Set(held), v, codec)
+		if err != nil {
+			return err
+		}
+		dst.Set(held)
 		return nil
 	}
 	if s, ok := v.(string); ok {
@@ -668,6 +770,10 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 	if err != nil {
 		return zero, err
 	}
+	err = a.presentWrapped(doc, target, parsed.Operations)
+	if err != nil {
+		return zero, err
+	}
 
 	run := &jsonPatchRun{codec: a.codec, copyBudget: a.copyBudget}
 	ops := parsed.Operations
@@ -787,7 +893,8 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 	// transform untouched state nor reject an otherwise valid update.
 	native := make(map[string]any)
 	for _, name := range names {
-		if !changed[name].storage.IsJSON() {
+		_, wrapped := wrapperField(changed[name].field)
+		if !changed[name].storage.IsJSON() && !wrapped {
 			if value, exists := doc[name]; exists {
 				native[name] = value
 			}
@@ -815,6 +922,14 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 		if change.storage.IsJSON() {
 			if err := assignStoredJSON(d, doc[name]); err != nil {
 				return zero, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("setting JSON field %s: %v", name, err), Path: core.FormatPointer(name), Cause: err}
+			}
+			continue
+		}
+		w, wrapped := wrapperField(change.field)
+		if wrapped {
+			err := a.assignWrapped(d, w, doc[name])
+			if err != nil {
+				return zero, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("setting field %s: %v", name, err), Path: core.FormatPointer(name), Cause: err}
 			}
 			continue
 		}
@@ -916,13 +1031,13 @@ func wireOp(op *PatchOperation) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	w := map[string]any{rfc6902.Op: string(op.Op), rfc6902.Path: op.Path}
+	w := map[string]any{memberOp: string(op.Op), memberPath: op.Path}
 	switch op.Op {
 	case PatchOpMove, PatchOpCopy:
-		w[rfc6902.From] = op.From
+		w[memberFrom] = op.From
 	case PatchOpRemove:
 	default:
-		w[rfc6902.Value] = value
+		w[memberValue] = value
 	}
 	return w, nil
 }
@@ -940,7 +1055,7 @@ func wireValue(op *PatchOperation) (any, error) {
 
 // addOp is the RFC 6902 operation adding value at path.
 func addOp(path string, value any) map[string]any {
-	return map[string]any{rfc6902.Op: string(PatchOpAdd), rfc6902.Path: path, rfc6902.Value: value}
+	return map[string]any{memberOp: string(PatchOpAdd), memberPath: path, memberValue: value}
 }
 
 // pointerValue reads the value at a JSON Pointer in a decoded document,

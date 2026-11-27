@@ -13,23 +13,20 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
-func TestUpdate_Members_SQLite(t *testing.T) {
-	runMemberUpdates(t, func(t *testing.T) *sql.DB { return dbtest.SQLite(t) }, filter.SQLiteDialect{}, "TEXT")
-}
-
-func TestUpdate_Members_Postgres(t *testing.T) {
-	runMemberUpdates(t, func(t *testing.T) *sql.DB { return dbtest.Postgres(t) }, filter.PostgresDialect{}, "JSONB")
+func TestUpdate_Members(t *testing.T) {
+	runSQLBackends(t, runMemberUpdates)
 }
 
 // runMemberUpdates updates gadgets' documents member by member through
 // BuildUpdate and the dialect's executor: the rows equal what
 // ApplyValidatedPatch makes of them, and a patch a target row's document
 // does not take fails as ApplyValidatedPatch fails it, writing no row.
-func runMemberUpdates(t *testing.T, open func(*testing.T) *sql.DB, d parse.Dialect, docType string) {
+func runMemberUpdates(t *testing.T, b sqlBackend) {
+	open := b.open
+	d := b.dialect
+	docType := b.columnType(core.TypeInfo{Type: core.FieldTypeJSON})
 	r := gadgetAttrsResource(t)
 	rows := []gadgetAttrs{
 		{ID: 1, Attrs: map[string]any{"color": "blue", "old": true, "n": map[string]any{"k": "v"}}},

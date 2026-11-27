@@ -291,11 +291,15 @@ type PathSchema struct {
 	SQLType core.SQLType
 	// GoType is the Go type the path's value decodes into (the struct
 	// field's type, pointer included). It drives parse-time validation so an
-	// accepted operation always applies: numeric range
-	// against the exact kind, nullability (only pointer, slice, map and
-	// interface fields accept null or remove), array element types, and the
-	// shape of struct / map values. nil — hand-built schemas — validates by
-	// DataType alone over the widest numeric domain and admits null.
+	// accepted operation always applies: numeric range against the exact
+	// kind, nullability (a field accepts null or remove when its type holds
+	// NULL, core.IsNullableType: a pointer, slice, map or interface, or a
+	// type such as sql.NullInt64 whose zero value writes NULL and scans NULL
+	// back; inside a document, where encoding/json writes null), array
+	// element types, and the shape of struct / map values. A nullable
+	// wrapper (core.NullWrapperOf) validates as its value's type. nil —
+	// hand-built schemas — validates by DataType alone over the widest
+	// numeric domain and admits null.
 	GoType reflect.Type
 	// Wire is the form operations give the path's value in: core.WireString
 	// for a bool, integer or float field tagged json:",string", whose value
@@ -337,8 +341,9 @@ func (p *PathSchema) Nullable() bool {
 }
 
 // clearedValue is what removing the path, or setting it to null, stores:
-// nil (SQL NULL) for pointers, interfaces and untyped paths, and the empty
-// value for a slice or map. Slice and map columns are usually NOT NULL with
+// nil (SQL NULL) for pointers, interfaces, types such as sql.NullInt64 whose
+// zero value is NULL, and untyped paths, and the empty value for a slice or
+// map. Slice and map columns are usually NOT NULL with
 // an empty default, where NULL fails the write, and empty is a valid cleared
 // value for a nullable one too — so clearing empties them on every backend.
 func (p *PathSchema) clearedValue() any {
@@ -375,7 +380,7 @@ func clearsToEmptySlice(t reflect.Type) bool {
 // acceptsNull reports whether a path of Go type t bounded by b accepts null:
 // t can hold null, and null does not clear it to an empty array b refuses.
 func acceptsNull(t reflect.Type, b core.Bounds) bool {
-	return isNullableType(t) && !mustHoldElement(t, b)
+	return core.IsNullableType(t) && !mustHoldElement(t, b)
 }
 
 // mustHoldElement reports a slice path, which a clear empties, whose least

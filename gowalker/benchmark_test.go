@@ -110,6 +110,30 @@ func BenchmarkWalk(b *testing.B) {
 	})
 }
 
+func BenchmarkShapeIsCanonicalJSONKey(b *testing.B) {
+	for _, probe := range []struct {
+		name string
+		typ  reflect.Type
+		key  string
+	}{
+		{"string", reflect.TypeFor[string](), "tenant-42"},
+		{"int64", reflect.TypeFor[int64](), "-9223372036854775808"},
+		{"uint8/noncanonical", reflect.TypeFor[uint8](), "007"},
+	} {
+		b.Run(probe.name, func(b *testing.B) {
+			schema, err := gowalker.CompileType(probe.typ)
+			if err != nil {
+				b.Fatal(err)
+			}
+			key, name := schema.Root(), []byte(probe.key)
+			b.ReportAllocs()
+			for b.Loop() {
+				key.IsCanonicalJSONKey(name)
+			}
+		})
+	}
+}
+
 func BenchmarkShapeMatch(b *testing.B) {
 	root := schemaFor[matchPromoted](b, engine(b, gowalker.WithJSONFields("json"), gowalker.DropTies())).Root()
 	for _, name := range []string{"ALPHA", "Alpha", "epsilon"} {

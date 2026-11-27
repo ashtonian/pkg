@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"database/sql"
 	"encoding/json"
 	"testing"
 
@@ -11,22 +10,20 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/core"
 )
 
-func TestMergePatch_MapKeys_SQLite(t *testing.T) {
-	runMapKeyMerges(t, func(t *testing.T) *sql.DB { return dbtest.SQLite(t) }, filter.SQLiteDialect{}, "TEXT")
-}
-
-func TestMergePatch_MapKeys_Postgres(t *testing.T) {
-	runMapKeyMerges(t, func(t *testing.T) *sql.DB { return dbtest.Postgres(t) }, filter.PostgresDialect{}, "JSONB")
+func TestMergePatch_MapKeys(t *testing.T) {
+	runSQLBackends(t, runMapKeyMerges)
 }
 
 // runMapKeyMerges updates a stored row with each merge patch and reads back
 // what encoding/json makes of the same members over the row, the in-memory
 // application's result too.
-func runMapKeyMerges(t *testing.T, open func(*testing.T) *sql.DB, d parse.Dialect, docType string) {
+func runMapKeyMerges(t *testing.T, b sqlBackend) {
+	open := b.open
+	d := b.dialect
+	docType := b.columnType(core.TypeInfo{Type: core.FieldTypeJSON})
 	r := parse.MustResource[keyedMaps]("keyed_maps")
 	for _, tc := range keyedMapMerges() {
 		t.Run(tc.name, func(t *testing.T) {

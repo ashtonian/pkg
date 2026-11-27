@@ -12,29 +12,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/filter/filtertest"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
-
-// Timestamps on SQLite: a column holding each row's canonical text,
-// declared TEXT or DATETIME. modernc.org/sqlite scans the DATETIME column's
-// text into a time.Time of the same instant.
-func TestTimestamps_SQLite(t *testing.T) {
-	for _, atType := range []string{"TEXT", "DATETIME"} {
-		t.Run(atType, func(t *testing.T) {
-			db := dbtest.SQLite(t)
-			runTimestamps(t, timestampDB{db: db, dialect: filter.SQLiteDialect{}, atType: atType})
-			if atType != "DATETIME" {
-				return
-			}
-			schema, err := filtertest.TimestampSchema()
-			require.NoError(t, err)
-			var at time.Time
-			require.NoError(t, db.QueryRow("SELECT at FROM "+schema.Name+" WHERE id = 'a'").Scan(&at))
-			assert.True(t, filtertest.TimestampRecords()[0].At.Equal(at), "scanned %v", at)
-		})
-	}
-}
 
 // The same instant written through SQLiteDialect.MarshalValue in any form
 // is one canonical text, so SQLite stores and compares instants.

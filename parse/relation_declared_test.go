@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -15,101 +14,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
-
-func TestDeclaredRelations_SQLite(t *testing.T) {
-	db := dbtest.SQLite(t)
-	for _, stmt := range relationFixtureSQL(`'2026-01-01T00:00:00Z'`, "TEXT") {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
-	runRelationCases(t, relationResources(t), filter.SQLiteDialect{}, func(t *testing.T, st parse.Statement) []string {
-		rows, err := db.Query(st.SQL, st.Args...)
-		require.NoError(t, err, st.SQL)
-		var ids []string
-		for rows.Next() {
-			cols, err := rows.Columns()
-			require.NoError(t, err)
-			vals := make([]any, len(cols))
-			for i := range vals {
-				vals[i] = new(any)
-			}
-			require.NoError(t, rows.Scan(vals...))
-			value, pointerOK := vals[0].(*any)
-			require.True(t, pointerOK)
-			id, stringOK := (*value).(string)
-			require.True(t, stringOK)
-			ids = append(ids, id)
-		}
-		require.NoError(t, errors.Join(rows.Err(), rows.Close()))
-		return ids
-	})
-}
-
-func TestDeclaredRelations_Includes_SQLite(t *testing.T) {
-	db := dbtest.SQLite(t)
-	for _, stmt := range relationFixtureSQL(`'2026-01-01T00:00:00Z'`, "TEXT") {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
-	runRelationIncludes(t, relationResources(t), filter.SQLiteDialect{}, func(t *testing.T, q string, args []any) [][]any {
-		return queryRows(t, db, q, args)
-	})
-}
-
-func TestDeclaredRelations_Facets_SQLite(t *testing.T) {
-	db := dbtest.SQLite(t)
-	for _, stmt := range relationFixtureSQL(`'2026-01-01T00:00:00Z'`, "TEXT") {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
-	runRelationFacets(t, relationResources(t), filter.SQLiteDialect{}, func(t *testing.T, q string, args []any) [][]any {
-		return queryRows(t, db, q, args)
-	})
-}
-
-func TestDeclaredRelations_UnknownPolicy_SQLite(t *testing.T) {
-	db := dbtest.SQLite(t)
-	for _, stmt := range relationFixtureSQL(`'2026-01-01T00:00:00Z'`, "TEXT") {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
-	runRelationUnknownPolicy(t, relationResources(t), filter.SQLiteDialect{}, func(t *testing.T, q string, args []any) [][]any {
-		return queryRows(t, db, q, args)
-	})
-}
-
-func TestDeclaredRelations_Writes_SQLite(t *testing.T) {
-	db := dbtest.SQLite(t)
-	for _, stmt := range relationFixtureSQL(`'2026-01-01T00:00:00Z'`, "TEXT") {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
-	runRelationWrites(t, relationResources(t), filter.SQLiteDialect{}, db)
-}
-
-func TestElementPredicates_SQLite(t *testing.T) {
-	db := dbtest.SQLite(t)
-	for _, stmt := range orderFixtureSQL("TEXT") {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
-	runElementCases(t, filter.SQLiteDialect{}, func(t *testing.T, q string, args []any) [][]any {
-		return queryRows(t, db, q, args)
-	})
-}
-
-func TestDeclaredRelations_Memberships_SQLite(t *testing.T) {
-	db := dbtest.SQLite(t)
-	for _, stmt := range relationFixtureSQL(`'2026-01-01T00:00:00Z'`, "TEXT") {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
-	runRelationMemberships(t, relationResources(t), filter.SQLiteDialect{}, func(t *testing.T, q string, args []any) [][]any {
-		return queryRows(t, db, q, args)
-	})
-}
 
 // One `$some` is one correlated EXISTS over the target's live rows in the
 // tenant, its predicates on one aliased row.

@@ -3,8 +3,8 @@ package patch
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -265,17 +265,17 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 	var changes []string
 	for _, col := range columns {
 		ops := columnOps[col]
-		expr, changeSchema, err := b.columnExpr(col, ops)
+		write, err := b.columnExpr(col, ops)
 		if err != nil {
 			return nil, err
 		}
-		b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: expr})
+		b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: write.expr})
 		if cfg.changePredicate {
-			change, err := changedSQL(dialect, dialect.QuoteIdent(col), expr, changeSchema)
+			changed, err := changedSQL(dialect, dialect.QuoteIdent(col), write)
 			if err != nil {
-				return nil, fmt.Errorf("change predicate for %s: %w", col, err)
+				return nil, dialectError("change predicate", fieldPath(ops[0]), err)
 			}
-			changes = append(changes, change)
+			changes = append(changes, changed)
 		}
 	}
 	var changePredicate string
@@ -323,43 +323,50 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 }
 
 // changedSQL is the null-safe condition, one or more terms to OR, that col
-// set to expr reads back other than it does: a false "changed" costs a
-// write, a false "unchanged" would drop one.
-func changedSQL(d dialect.Dialect, col, expr string, schema *PathSchema) (string, error) {
-	if expr == "NULL" {
+// written as w reads back other than it does: set to NULL, that col holds
+// a value.
+func changedSQL(d SQLDialect, col string, w columnWrite) (string, error) {
+	switch {
+	case w.members:
+		return d.ChangedDocumentCondition(col, w.expr)
+	case w.expr == "NULL":
 		return col + " IS NOT NULL", nil
 	}
-	switch k := dialect.KindOf(d); k {
-	case dialect.KindSQLite:
-		// IS NOT is SQLite's null-safe inequality on every version that runs
-		// the SQL (IS DISTINCT FROM is a 3.39 alias). BINARY overrides a
-		// NOCASE or RTRIM column and keeps its affinity, which converts the
-		// value for the comparison as it does on store.
-		return col + " COLLATE BINARY IS NOT " + expr, nil
-	case dialect.KindPostgres:
-		switch {
-		case schema != nil && schema.SQLType == core.SQLJSON:
-			// json has no equality operator, and jsonb's text is canonical:
-			// key order and whitespace do not count, a number's written form
-			// does. The cast to json types the placeholder as the column.
-			return col + `::jsonb::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::json::jsonb::text", nil
-		case schema != nil && schema.DataType == core.FieldTypeDecimal:
-			// A decimal's value has no scale (core.DecimalText binds 1.50 as
-			// 1.5), and a numeric(p,s) column pads every value to s: its text
-			// would differ from the bound value's on every write.
-			return col + " IS DISTINCT FROM " + expr, nil
-		}
-		// A type's equality can be coarser than the text a read returns — an
-		// interval's units, a float's zero sign, citext, a nondeterministic
-		// collation, a jsonb number's form — so the text decides. The
-		// equality goes first because PostgreSQL types a placeholder at its
-		// first use and the WHERE precedes the SET clause: it types the
-		// placeholder as the column (an enum, a domain), where a first use as
-		// text would not.
-		return col + " IS DISTINCT FROM " + expr + " OR " + col + `::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::text", nil
-	default:
-		return "", dialect.Unsupported(k, "a change predicate")
+	var t core.TypeInfo
+	if w.schema != nil {
+		t = core.TypeInfo{Type: w.schema.DataType, SQLType: w.schema.SQLType}
 	}
+	return d.ChangedCondition(col, w.expr, t)
+}
+
+// dialectError is err, which the dialect returned rendering what of the
+// operation at path: a refusal (SQLDialect) as that path's E2070, anything
+// else wrapped with what and path.
+func dialectError(what, path string, err error) error {
+	if !errors.Is(err, core.CodeOpNotSQLCompilable) {
+		return fmt.Errorf("%s for %s: %w", what, path, err)
+	}
+	why := err.Error()
+	var refusal *core.ParseError
+	if errors.As(err, &refusal) {
+		why = refusal.Message
+	}
+	pe := &core.ParseError{
+		Kind: core.ParseErrorKindPatch, Code: ECodeOpNotSQLCompilable.String(),
+		Message: what + " for " + path + ": " + why + " — apply via ApplyValidatedPatch",
+		Path:    path,
+		Cause:   err,
+	}
+	return pe
+}
+
+// fieldPath is the path of the field op writes, or a member of.
+func fieldPath(op *PatchOperation) string {
+	tokens, err := core.ParsePointer(op.Path)
+	if err != nil || len(tokens) == 0 {
+		return op.Path
+	}
+	return core.FormatPointer(tokens[0])
 }
 
 // serverColumns are the columns the server writes on every update: the
@@ -421,15 +428,78 @@ func checkSQLCompilable(op *PatchOperation) error {
 	return nil
 }
 
-// SQLDialect is the dialect surface BuildPatchSQL needs: placeholders and a
-// name for dialect-specific SQL, plus value binding for composite types (a
-// PostgreSQL TEXT[] column takes a Go slice, a SQLite array column takes JSON
-// text). Requiring MarshalValue in the signature makes the wrong binding
-// uncompilable instead of a runtime "malformed array literal". The
-// parse/filter dialects implement it.
+// SQLDialect is the dialect BuildPatchSQL and RenderPreconditions write a
+// patch's SQL for, and what a SQL provider implements for it: placeholders
+// and quoting, value binding for composite types, and one method per piece
+// of SQL whose form differs between databases. patch decides what a patch
+// writes; the dialect decides how its database spells it, so a new provider
+// is one type and patch names no database. The parse/filter dialects
+// implement it: PostgreSQL over jsonb and native arrays, SQLite over JSON
+// text.
+//
+// Every method that binds takes bind, which appends one argument and
+// returns its placeholder; a method binds in the order its SQL reads, so
+// SQL text and arguments are built together and cannot disagree. A member
+// is a JSON Pointer's tokens below the column, each an object member's
+// name, never an array index, and valid UTF-8 without U+0000, which
+// neither database holds in text: ParsePatch refuses a path holding it as
+// E2075 (core.CheckText). doc is the expression MemberDocument renders, or
+// one SetMember or RemoveMember returned for it.
+//
+// A method refuses what its database cannot write or test with a
+// *core.ParseError whose Code is core.CodeOpNotSQLCompilable and whose
+// Message says why: BuildPatchSQL reports it as the operation's E2070,
+// naming its path, so the patch can be applied with ApplyValidatedPatch
+// instead. Any other error is a failure to render the statement.
 type SQLDialect interface {
 	dialect.Dialect
+
+	// MarshalValue converts a value to the form the dialect binds for a
+	// column of type t: a PostgreSQL TEXT[] column takes a Go slice, a
+	// SQLite array column JSON text. Requiring it in the signature makes
+	// the wrong binding uncompilable instead of a runtime "malformed array
+	// literal".
 	MarshalValue(value any, t core.TypeInfo) (any, error)
+
+	// ChangedCondition is the null-safe condition, one or more terms to
+	// OR, that column, written whole, set to expr reads back other than it
+	// does; t is the column's type and declared storage as the patch's
+	// path declares them. expr is never the NULL literal. A false
+	// "changed" costs a write, a false "unchanged" drops one, so a type
+	// whose equality is coarser than what a read returns compares by that.
+	ChangedCondition(column, expr string, t core.TypeInfo) (string, error)
+	// ChangedDocumentCondition is ChangedCondition for a JSON document
+	// column whose members the patch writes over the stored document:
+	// doc is the document the member methods built from MemberDocument's,
+	// so it has the type MemberDocument reads the column as, whatever JSON
+	// type, or text, the column is declared.
+	ChangedDocumentCondition(column, doc string) (string, error)
+
+	// MergePatch merges the RFC 7396 patch object into the JSON document
+	// doc, stored as storage: patch members replace, nested objects merge,
+	// nulls delete, and a target that is not an object, NULL included,
+	// merges as {} (RFC 7396 §2).
+	MergePatch(doc string, storage core.SQLType, patch map[string]any, bind func(any) string) (string, error)
+
+	// ArrayAppend appends element to the native array expression array, a
+	// NULL array as an empty one, so the first append to a fresh column
+	// yields a one-element array.
+	ArrayAppend(array string, element any, bind func(any) string) (string, error)
+
+	// MemberDocument is the JSON document column expression expr holds,
+	// as the member methods read and write it.
+	MemberDocument(expr string) (string, error)
+	// SetMember sets member of doc to value, a JSON text, whether or not
+	// the member exists; its parent must be an object, which a
+	// precondition holds the row to (IsObject).
+	SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) (string, error)
+	// RemoveMember removes member from doc.
+	RemoveMember(doc string, member []string, bind func(any) string) (string, error)
+	// HasMember is true of a row whose doc holds member, and never NULL.
+	HasMember(doc string, member []string, bind func(any) string) (string, error)
+	// IsObject is true of a row whose doc's member, or doc itself when
+	// member is empty, is an object, and never NULL.
+	IsObject(doc string, member []string, bind func(any) string) (string, error)
 }
 
 // setBuilder accumulates SET clauses and their bound arguments. Placeholders
@@ -452,26 +522,38 @@ func (b *setBuilder) bind(v any) string {
 	return ph
 }
 
+// columnWrite is what one column's operations fold to: the expression the
+// SET clause assigns, and what the change predicate compares the column
+// with it as.
+type columnWrite struct {
+	expr string
+	// schema is the path schema of a column written whole, which it is
+	// compared as (SQLDialect.ChangedCondition). members marks a document
+	// whose members are written over the stored one, compared as such
+	// (SQLDialect.ChangedDocumentCondition).
+	schema  *PathSchema
+	members bool
+}
+
 // columnExpr folds one column's ordered operations into a single SQL
-// expression, and returns the path schema its change predicate compares the
-// column as. A merge patch writes a column with one operation, the only kind
+// expression. A merge patch writes a column with one operation, the only kind
 // that merges, so a merge compiles against the stored column. Operations on
 // members of a document fold in documentExpr. Other JSON Patch operations
 // fold: the last whole-value operation (replace/add/remove) sets the base
 // and earlier ones are overwritten and never bound, and appends after it
 // fold onto its value in Go, so one value is bound; appends with no base
 // compile against the stored column.
-func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, *PathSchema, error) {
+func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (columnWrite, error) {
 	last := ops[len(ops)-1].Schema
 	if slices.ContainsFunc(ops, func(op *PatchOperation) bool { return op.Merge }) {
 		if len(ops) != 1 {
-			return "", nil, fmt.Errorf("patch: column %s: a merge shares its column with another operation, which no parser produces", col)
+			return columnWrite{}, fmt.Errorf("patch: column %s: a merge shares its column with another operation, which no parser produces", col)
 		}
 		expr, err := mergeSQL(b.dialect, b.dialect.QuoteIdent(col), ops[0].Schema.SQLType, ops[0].Value, b.bind)
 		if err != nil {
-			return "", nil, fmt.Errorf("%s for %s: %w", ops[0].Op, ops[0].Path, err)
+			return columnWrite{}, dialectError(string(ops[0].Op), ops[0].Path, err)
 		}
-		return expr, last, nil
+		return columnWrite{expr: expr, schema: last}, nil
 	}
 	if slices.ContainsFunc(ops, func(op *PatchOperation) bool { return len(memberTokens(op)) > 0 }) {
 		return b.documentExpr(col, ops)
@@ -493,18 +575,18 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, *Pat
 				Message: fmt.Sprintf("array_append on %s (a %s field) compiles to SQL only for native array columns — apply via ApplyValidatedPatch", op.Path, op.Schema.DataType),
 				Path:    op.Path,
 			}
-			return "", nil, notNative
+			return columnWrite{}, notNative
 		}
 	}
 	if start < 0 {
 		expr := b.dialect.QuoteIdent(col)
 		for _, op := range later {
 			var err error
-			if expr, err = arrayAppendSQL(b.dialect, expr, op.Value, b.bind); err != nil {
-				return "", nil, fmt.Errorf("%s for %s: %w", op.Op, op.Path, err)
+			if expr, err = b.dialect.ArrayAppend(expr, op.Value, b.bind); err != nil {
+				return columnWrite{}, dialectError(string(op.Op), op.Path, err)
 			}
 		}
-		return expr, last, nil
+		return columnWrite{expr: expr, schema: last}, nil
 	}
 
 	base := ops[start]
@@ -514,120 +596,30 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, *Pat
 		if value != nil {
 			arr, ok := core.AnySlice(value)
 			if !ok {
-				return "", nil, fmt.Errorf("array append for %s: base value is %s, not an array", base.Path, gowalker.TypeText(reflect.TypeOf(value)))
+				return columnWrite{}, fmt.Errorf("array append for %s: base value is %s, not an array", base.Path, gowalker.TypeText(reflect.TypeOf(value)))
 			}
 			elems = slices.Clone(arr)
 		}
 		value = append(elems, op.Value)
 	}
 	if value == nil {
-		return "NULL", last, nil
+		return columnWrite{expr: "NULL", schema: last}, nil
 	}
 	val, err := marshalIfComplex(value, base.Schema, b.dialect)
 	if err != nil {
-		return "", nil, fmt.Errorf("marshaling value for %s: %w", base.Path, err)
+		return columnWrite{}, fmt.Errorf("marshaling value for %s: %w", base.Path, err)
 	}
-	return b.bind(val), last, nil
+	return columnWrite{expr: b.bind(val), schema: last}, nil
 }
 
-// mergeSQL returns the expression merging an RFC 7396 patch object into the
-// JSON document expr, stored as storage: patch members replace, nested
-// objects merge, nulls delete, and a target that is not an object merges as
-// {} (RFC 7396 §2). SQLite implements RFC 7396 as json_patch; PostgreSQL has
-// none, so the patch compiles level by level (pgMerge) over jsonb. A json
-// column (core.SQLJSON) is read as jsonb, since its cast to jsonb applies on
-// assignment but not to a function's argument, and the jsonb result assigns
-// back to it.
-func mergeSQL(d dialect.Dialect, expr string, storage core.SQLType, patch any, bind func(any) string) (string, error) {
+// mergeSQL merges an RFC 7396 patch object into the JSON document expr,
+// stored as storage (SQLDialect.MergePatch).
+func mergeSQL(d SQLDialect, expr string, storage core.SQLType, patch any, bind func(any) string) (string, error) {
 	obj, ok := patch.(map[string]any)
 	if !ok {
 		return "", fmt.Errorf("merge value is %s, not an object", gowalker.TypeText(reflect.TypeOf(patch)))
 	}
-	switch k := dialect.KindOf(d); k {
-	case dialect.KindSQLite:
-		doc, err := json.Marshal(obj)
-		if err != nil {
-			return "", err
-		}
-		return "json_patch(COALESCE(" + expr + ", '{}'), " + bind(string(doc)) + ")", nil
-	case dialect.KindPostgres:
-		if storage == core.SQLJSON {
-			expr += "::jsonb"
-		}
-		levels := 0
-		return pgMerge(expr, obj, bind, &levels)
-	default:
-		return "", dialect.Unsupported(k, "a merge patch")
-	}
-}
-
-// pgMerge compiles the merge of patch into the document target: the target
-// when it is an object (else {}), minus the deleted keys, joined with one
-// bound jsonb object holding the scalar and array members and one
-// two-argument jsonb_build_object per nested object. A level with nested
-// objects names its target once in a scalar subquery, and each nested level
-// reads its own target from that name, so target is evaluated once, the SQL
-// and its arguments grow linearly with the patch, and no call nears
-// PostgreSQL's 100-argument limit however wide a level is.
-func pgMerge(target string, patch map[string]any, bind func(any) string, levels *int) (string, error) {
-	self := "COALESCE(jsonb_path_query_first(" + target + `, 'strict $ ? (@.type() == "object")'), '{}'::jsonb)`
-	alias := ""
-	if hasNestedObject(patch) {
-		alias = fmt.Sprintf("_merge%d", *levels)
-		*levels++
-		self, target = alias+".doc", self
-	}
-	var deleted []string
-	members := map[string]any{}
-	var nested []string
-	for _, k := range slices.Sorted(maps.Keys(patch)) {
-		switch v := patch[k].(type) {
-		case nil:
-			deleted = append(deleted, k)
-		case map[string]any:
-			key := bind(k) + "::text"
-			sub, err := pgMerge("("+self+" -> "+key+")", v, bind, levels)
-			if err != nil {
-				return "", err
-			}
-			nested = append(nested, "jsonb_build_object("+key+", "+sub+")")
-		default:
-			members[k] = v
-		}
-	}
-	var expr strings.Builder
-	expr.WriteString(self)
-	if len(deleted) > 0 {
-		expr.WriteString(" - ")
-		expr.WriteString(bind(deleted))
-		expr.WriteString("::text[]")
-	}
-	if len(members) > 0 {
-		doc, err := json.Marshal(members)
-		if err != nil {
-			return "", fmt.Errorf("merge members: %w", err)
-		}
-		expr.WriteString(" || ")
-		expr.WriteString(bind(string(doc)))
-		expr.WriteString("::jsonb")
-	}
-	for _, n := range nested {
-		expr.WriteString(" || ")
-		expr.WriteString(n)
-	}
-	if alias == "" {
-		return "(" + expr.String() + ")", nil
-	}
-	return "(SELECT " + expr.String() + " FROM (SELECT " + target + " AS doc) AS " + alias + ")", nil
-}
-
-func hasNestedObject(patch map[string]any) bool {
-	for _, v := range patch {
-		if _, ok := v.(map[string]any); ok {
-			return true
-		}
-	}
-	return false
+	return d.MergePatch(expr, storage, obj, bind)
 }
 
 // buildRelationPatchOp turns a parsed relation op into a RelationPatchOp.
@@ -671,32 +663,6 @@ func columnName(op *PatchOperation) (string, error) {
 	}
 	// The request's path text is never a SQL identifier.
 	return "", fmt.Errorf("path %s: %w", op.Path, ErrSQLColumnMissing)
-}
-
-// arrayAppendSQL returns the dialect-specific expression appending element
-// to the array expression expr. NULL coalesces to the empty container so the
-// first append to a fresh NULL column yields a one-element array.
-func arrayAppendSQL(d dialect.Dialect, expr string, element any, bind func(any) string) (string, error) {
-	switch k := dialect.KindOf(d); k {
-	case dialect.KindPostgres:
-		// array_append preserves element order; the UPDATE's row lock
-		// serialises concurrent appenders without losing values.
-		// The untyped '{}' takes the column's array type, so BIGINT[] and
-		// UUID[] columns append as well as TEXT[].
-		return fmt.Sprintf("array_append(COALESCE(%s, '{}'), %s)", expr, bind(element)), nil
-	case dialect.KindSQLite:
-		// SQLite stores arrays as JSON TEXT; '$[#]' appends. The element is
-		// bound as its JSON encoding — the one a full replace writes — and
-		// read back through json(): a bound SQL value would be inserted as
-		// a SQL scalar, so a Go true would land as the integer 1.
-		data, err := json.Marshal(element)
-		if err != nil {
-			return "", fmt.Errorf("encode the appended element: %w", err)
-		}
-		return fmt.Sprintf("json_insert(COALESCE(%s, '[]'), '$[#]', json(%s))", expr, bind(string(data))), nil
-	default:
-		return "", dialect.Unsupported(k, "array_append")
-	}
 }
 
 func marshalIfComplex(value any, schema *PathSchema, dialect SQLDialect) (any, error) {

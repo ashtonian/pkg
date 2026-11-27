@@ -298,17 +298,36 @@ func keyDecimal(d Dialect, k CursorKey) DecimalOperand {
 	return DecimalColumn(k.sql(d))
 }
 
-// keyExpr is a key's ordering expression: text keys — strings, and a path's
-// timestamp and UUID members — order by code point, as filters and the
-// memory backend compare; decimals order through Dialect.DecimalOrder.
+// keyExpr is a key's ordering expression: text keys (codePointKey) order
+// by code point, as filters and the memory backend compare; decimals order
+// through Dialect.DecimalOrder.
 func keyExpr(d Dialect, k CursorKey) string {
 	switch {
-	case k.DataType == core.FieldTypeString || (k.Path != nil && (k.DataType == core.FieldTypeTimestamp || k.DataType == core.FieldTypeUUID)):
+	case codePointKey(k):
 		return d.CodePointOrder(keyValue(d, k))
 	case k.DataType == core.FieldTypeDecimal:
 		return d.DecimalOrder(keyDecimal(d, k))
 	}
 	return keyValue(d, k)
+}
+
+// bareColumn reports whether k's seek element is its column itself, as an
+// index on the column holds it: not a mapper's or a computed column's Expr,
+// not a path, and not the column read through a function, such as a
+// decimal's order key or a date's reading. A text column is bare: the
+// dialect puts its code-point collation where the planner still seeks the
+// column (codePointPair).
+func bareColumn(d Dialect, k CursorKey) bool {
+	if k.Expr != "" || k.Path != nil {
+		return false
+	}
+	return codePointKey(k) || keyExpr(d, k) == k.sql(d)
+}
+
+// codePointKey reports whether k orders as text by code point: a string,
+// or a path's timestamp or UUID member, which a document holds as text.
+func codePointKey(k CursorKey) bool {
+	return k.DataType == core.FieldTypeString || (k.Path != nil && (k.DataType == core.FieldTypeTimestamp || k.DataType == core.FieldTypeUUID))
 }
 
 // OrderByKeys renders the ORDER BY clause that walks keys forwards, or
@@ -358,19 +377,23 @@ func SeekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 	return seekPredicate(d, keys, token, bind), nil
 }
 
-// seekPredicate renders "rows strictly after the token" in the walk order:
-// the lexicographic expansion OR over depth i of (key_0 = v_0 AND … AND
+// seekPredicate renders "rows strictly after the token" in the walk order.
+// Keys that all walk one direction, none nullable and no value NULL, take a
+// row-value comparison, (key_0, …, key_n) > (v_0, …, v_n), which every
+// dialect has (SQLite from 3.15.0, below the release parse supports) and
+// which seeks an index on the keys to the cursor's row; led by a key that is
+// no bare column (bareColumn), it also bounds key_0 on its own. Others take
+// the lexicographic expansion, OR over depth i of (key_0 = v_0 AND … AND
 // key_i after v_i), NULL-aware. bind binds one value and returns its
 // placeholder; every non-null token value is bound once and its placeholder
-// reused across depths. A native row-value comparison is used when the
-// dialect supports it and no key or value involves NULL. A boundary the
-// database reads as NULL, a float's NaN or a decimal's NaN or infinity on
-// SQLite, is a NULL boundary (readsAsNull); a number path's decimal text
-// is read as the dialect compares the member (pathNumberBound).
+// reused across depths. A boundary the database reads as NULL, a float's
+// NaN or a decimal's NaN or infinity on SQLite, is a NULL boundary
+// (readsAsNull); a number path's decimal text is read as the dialect
+// compares the member (pathNumberBound).
 func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any) string) string {
 	values := make([]any, len(keys))
 	phs := make([]string, len(keys))
-	native := d.NativeRowCompare() && len(keys) > 1
+	native := len(keys) > 1
 	for i, k := range keys {
 		v := token.Fields[i].Value
 		if d.readsAsNull(k.DataType, v) {
@@ -393,13 +416,29 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 	if native {
 		exprs := make([]string, len(keys))
 		for i, k := range keys {
+			// Only a bare column is left for the dialect to place the
+			// collation: an expression may carry its own, which on SQLite
+			// outranks the operand's.
+			if codePointKey(k) && bareColumn(d, k) {
+				exprs[i], phs[i] = d.codePointPair(keyValue(d, k), phs[i])
+				continue
+			}
 			exprs[i] = keyExpr(d, k)
 		}
 		op := ">"
 		if effectiveDirection(keys[0], token.Reverse) == SortDesc {
 			op = "<"
 		}
-		return "(" + strings.Join(exprs, ", ") + ") " + op + " (" + strings.Join(phs, ", ") + ")"
+		seek := "(" + strings.Join(exprs, ", ") + ") " + op + " (" + strings.Join(phs, ", ") + ")"
+		if bareColumn(d, keys[0]) {
+			return seek
+		}
+		// SQLite seeks a row value's index only from a bare leading column;
+		// led by an expression, such as a decimal's parse_decimal_key, the
+		// comparison scans the index, and so does the OR expansion over
+		// three keys or more. The row value implies the bound, which an
+		// index on the expression seeks on every dialect.
+		return "(" + exprs[0] + " " + op + "= " + phs[0] + " AND " + seek + ")"
 	}
 
 	var branches []string

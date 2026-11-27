@@ -182,12 +182,27 @@ func BenchmarkAccessField(b *testing.B) {
 	if _, err := s.AccessField(field); err != nil {
 		b.Fatal(err)
 	}
-	b.ReportAllocs()
-	for b.Loop() {
-		if _, err := s.AccessField(field); err != nil {
-			b.Fatal(err)
+	b.Run("serial", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, err := s.AccessField(field)
+			if err != nil {
+				b.Fatal(err)
+			}
 		}
-	}
+	})
+	b.Run("parallel", func(b *testing.B) {
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				_, err := s.AccessField(field)
+				if err != nil {
+					b.Error(err)
+					return
+				}
+			}
+		})
+	})
 }
 
 func BenchmarkAccessName(b *testing.B) {
@@ -236,12 +251,46 @@ func BenchmarkTypeCacheHit(b *testing.B) {
 	if _, err := cache.For[accessRoot](); err != nil {
 		b.Fatal(err)
 	}
-	b.ReportAllocs()
-	for b.Loop() {
-		if _, err := cache.For[accessRoot](); err != nil {
-			b.Fatal(err)
+	b.Run("serial", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, err := cache.For[accessRoot]()
+			if err != nil {
+				b.Fatal(err)
+			}
 		}
+	})
+	// Concurrent row scans read one type's entry from every goroutine.
+	b.Run("parallel", func(b *testing.B) {
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				_, err := cache.For[accessRoot]()
+				if err != nil {
+					b.Error(err)
+					return
+				}
+			}
+		})
+	})
+}
+
+func BenchmarkCachedCompileParallel(b *testing.B) {
+	e := engine(b)
+	_, err := e.Compile[accessRoot]()
+	if err != nil {
+		b.Fatal(err)
 	}
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, err := e.Compile[accessRoot]()
+			if err != nil {
+				b.Error(err)
+				return
+			}
+		}
+	})
 }
 
 func BenchmarkLocate(b *testing.B) {

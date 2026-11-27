@@ -56,7 +56,7 @@ func (k keptRows) cell(key string, col int) string {
 
 func TestDocTables(t *testing.T) {
 	tables := []renderedTable{
-		{file: "docs/queries.md", name: "operators", header: []string{"Type", "Operators", "Default when `filter_ops` is omitted"}, rows: operatorRows},
+		{file: "docs/queries.md", name: "operators", header: []string{"Type", "Operators", "Default when `filter_ops` is omitted", "As the key"}, rows: operatorRows},
 		{file: "docs/patches.md", name: "patch-operations", header: []string{"Type", "Default operations"}, rows: patchOperationRows},
 		{file: "docs/schema-configuration.md", name: "parser-options", header: []string{"Option", "Type", "Default", "Description"}, rows: parserOptionRows},
 		{file: "docs/http-errors.md", name: "error-codes", header: []string{"Code", "HTTP", "Meaning"}, rows: errorCodeRows},
@@ -92,13 +92,18 @@ func TestDocTables(t *testing.T) {
 	}
 }
 
-// operatorRows is a row per field type: the operators it may declare and
-// those a bare parse:"filter" field gets.
+// operatorRows is a row per field type: the operators it may declare,
+// those a bare parse:"filter" field gets, and those a key column of the
+// type takes.
 func operatorRows(t *testing.T, kept keptRows) [][]string {
 	defaults := filter.DefaultFilterOps()
 	var rows [][]string
 	for _, ft := range fieldTypes(t) {
-		rows = append(rows, []string{string(ft), words(filter.OperatorsFor(ft, false)), words(defaults[ft])})
+		key := "not a key"
+		if core.IsKeyType(ft) {
+			key = words(filter.KeyOperators(ft))
+		}
+		rows = append(rows, []string{string(ft), words(filter.OperatorsFor(ft, false)), words(defaults[ft]), key})
 		// The relation row says a relation compares its target's key with
 		// the key type's operators but $contains.
 		withoutContains := slices.DeleteFunc(filter.OperatorsFor(ft, false), func(op filter.FilterOperator) bool { return op == filter.OpContains })
@@ -108,7 +113,7 @@ func operatorRows(t *testing.T, kept keptRows) [][]string {
 	require.NoError(t, err)
 	tags, ok := schema.RequestField("tags")
 	require.True(t, ok)
-	return append(rows, []string{"relation", kept.cell("relation", 1), words(tags.AllowedOperators)})
+	return append(rows, []string{"relation", kept.cell("relation", 1), words(tags.AllowedOperators), "not a key"})
 }
 
 // patchOperationRows is a row per field type: the operations a bare

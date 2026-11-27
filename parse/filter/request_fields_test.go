@@ -67,7 +67,7 @@ func TestRequestFields_JSONAndFlatAgree(t *testing.T) {
 		}
 	}
 	jsonParser := filter.NewFilterParser(schema, nil)
-	flatParser := filter.NewQueryParamParser(schema)
+	flatParser := queryParams(t, schema)
 	for name, ft := range typeOf {
 		for op, suffix := range suffixes {
 			t.Run(name+suffix+"/"+string(op), func(t *testing.T) {
@@ -114,7 +114,7 @@ func TestRequestFields_SystemFields(t *testing.T) {
 	for _, name := range []string{"tenant_id", "deleted_at"} {
 		_, err := filter.NewFilterParser(schema, nil).Parse(`{"` + name + `":{"$null":true}}`)
 		assert.Equal(t, filter.ECodeUnknownField.String(), errorCode(t, err), name)
-		_, err = filter.NewQueryParamParser(schema).Parse(url.Values{name + "_null": {"true"}})
+		_, err = queryParams(t, schema).Parse(url.Values{name + "_null": {"true"}})
 		assert.Equal(t, filter.ECodeUnknownField.String(), errorCode(t, err), name)
 	}
 	f, ok := schema.RequestField("id")
@@ -160,7 +160,7 @@ func TestRequestFields_CompositeKey(t *testing.T) {
 // Two parameters setting one operator are refused, naming both, instead of
 // one dropping the other's predicate; different operators are ANDed.
 func TestQueryParamParser_OneOperatorFromTwoParameters(t *testing.T) {
-	qp := filter.NewQueryParamParser(testSchema())
+	qp := queryParams(t, testSchema())
 	_, err := qp.Parse(url.Values{"status": {"active", "inactive"}, "status_in": {"suspended"}})
 	require.Error(t, err)
 	assert.Equal(t, filter.ECodeInvalidOperator.String(), errorCode(t, err))

@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"cmp"
 	"database/sql/driver"
 	"encoding"
 	"fmt"
@@ -66,13 +65,8 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			}
 		}
 		fieldName := field.External()
-		if tags.Parse.Filter && fieldName == "" && tags.Relation != "" {
-			// A virtual relation field conventionally carries `json:"-"`
-			// to hide it from response payloads, and still needs an
-			// addressable name. Generators can preserve their
-			// declared name with relation_name; otherwise use snake_case
-			// of the struct field name.
-			fieldName = cmp.Or(tags.RelationName, core.SnakeCase(field.GoName()))
+		if tags.Relation != "" {
+			fieldName = field.RelationName()
 		}
 		if !tags.Parse.Filter || fieldName == "" {
 			if c, ok := policyColumn(g, tableName, field); ok {
@@ -202,7 +196,7 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		if err := applyStorage(g, fs, field); err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
-		if err := checkOperators(fs); err != nil {
+		if err := CheckOperators(fs); err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 		// After storage, which can make a document field a scalar.
@@ -302,7 +296,7 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 			continue
 		}
 		ft := field.Type()
-		nullable := ft.Kind() == reflect.Pointer || ft.Kind() == reflect.Slice || ft.Kind() == reflect.Map || ft.Kind() == reflect.Interface
+		nullable := core.IsNullableType(ft)
 		fieldType := info.Type
 		if !sortable(ft, fieldType) {
 			// A cursor carries a scalar per key; a document, array or geo
@@ -318,7 +312,7 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
-		kind := core.NumericKind(ft)
+		kind := info.NumberKind
 		if core.IsDocument(fieldType) {
 			// A struct the database holds as a scalar orders as that scalar,
 			// as it filters (applyStorage).

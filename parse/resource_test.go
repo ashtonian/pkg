@@ -61,13 +61,7 @@ func widgetDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func ids(ws []widget) []string {
-	out := make([]string, len(ws))
-	for i, w := range ws {
-		out[i] = w.ID
-	}
-	return out
-}
+func widgetID(w widget) string { return w.ID }
 
 func list(t *testing.T, r *parse.Resource[widget], db *sql.DB, query string, s parse.Scope) (*filter.Page[widget], *parse.ListPlan) {
 	t.Helper()
@@ -243,7 +237,11 @@ func TestEveryEntryPoint_RefusesAMisspeltFilter(t *testing.T) {
 			return err
 		},
 		"filter.QueryParamParser": func(q url.Values) error {
-			_, err := filter.NewQueryParamParser(r.FilterSchema(), filter.QueryParamAccept("view")).Parse(q)
+			qp, err := filter.NewQueryParamParser(r.FilterSchema(), filter.QueryParamAccept("view"))
+			if err != nil {
+				return err
+			}
+			_, err = qp.Parse(q)
 			return err
 		},
 	}
@@ -281,7 +279,7 @@ func TestBuildList_HoldsRowsToTheScope(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			page, _ := list(t, r, db, tc.query, tc.scope)
-			assert.Equal(t, tc.want, ids(page.Items))
+			assert.Equal(t, tc.want, itemIDs(page.Items, widgetID))
 		})
 	}
 }
@@ -300,7 +298,7 @@ func TestBuildList_WalksTiedSortValuesExactly(t *testing.T) {
 		var total int64
 		require.NoError(t, db.QueryRow(plan.Count.SQL, plan.Count.Args...).Scan(&total))
 		assert.Equal(t, int64(4), total, "the total counts the population, not the page")
-		seen = append(seen, ids(page.Items)...)
+		seen = append(seen, itemIDs(page.Items, widgetID)...)
 		last = page
 		if !page.PageInfo.HasNextPage {
 			break
@@ -310,7 +308,7 @@ func TestBuildList_WalksTiedSortValuesExactly(t *testing.T) {
 	assert.Equal(t, []string{"w1", "w2", "w3", "w5"}, seen)
 
 	back, _ := list(t, r, db, "sort=rank&cursor="+url.QueryEscape(string(last.PageInfo.StartCursor)), scope)
-	assert.Equal(t, []string{"w1", "w2"}, ids(back.Items), "the page before the last, in presentation order")
+	assert.Equal(t, []string{"w1", "w2"}, itemIDs(back.Items, widgetID), "the page before the last, in presentation order")
 }
 
 func TestBuildList_UsesTheDeclaredKeyOnRequestViews(t *testing.T) {

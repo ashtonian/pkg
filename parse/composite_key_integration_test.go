@@ -14,7 +14,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
 type ckStock struct {
@@ -49,17 +48,15 @@ func ckStockDB(t *testing.T, db *sql.DB, d filter.Dialect) {
 	}
 }
 
-func TestCompositeKeyPaging_SQLite(t *testing.T) {
-	testCompositeKeyPaging(t, dbtest.SQLite(t), filter.SQLiteDialect{})
-}
-
-func TestCompositeKeyPaging_Postgres(t *testing.T) {
-	testCompositeKeyPaging(t, dbtest.Postgres(t), filter.PostgresDialect{})
+func TestCompositeKeyPaging(t *testing.T) {
+	runSQLBackends(t, testCompositeKeyPaging)
 }
 
 // Every sort, ascending and descending, pages every row once at every page
 // size, forwards and back.
-func testCompositeKeyPaging(t *testing.T, db *sql.DB, d filter.Dialect) {
+func testCompositeKeyPaging(t *testing.T, b sqlBackend) {
+	db := b.open(t)
+	d := b.dialect
 	r := ckStockResource(t)
 	ckStockDB(t, db, d)
 	const rows = 9
@@ -122,22 +119,20 @@ func testCompositeKeyPaging(t *testing.T, db *sql.DB, d filter.Dialect) {
 	}
 }
 
-func TestCompositeKeyUpdates_SQLite(t *testing.T) {
-	testCompositeKeyUpdates(t, func(t *testing.T) *sql.DB { return dbtest.SQLite(t) }, filter.SQLiteDialect{})
-}
-
-func TestCompositeKeyUpdates_Postgres(t *testing.T) {
-	testCompositeKeyUpdates(t, func(t *testing.T) *sql.DB { return dbtest.Postgres(t) }, filter.PostgresDialect{})
+func TestCompositeKeyUpdates(t *testing.T) {
+	runSQLBackends(t, testCompositeKeyUpdates)
 }
 
 // An update by key, by keys and a batch each write exactly the rows their
 // keys name, though every row shares each key column with others.
-func testCompositeKeyUpdates(t *testing.T, open func(*testing.T) *sql.DB, d filter.Dialect) {
+func testCompositeKeyUpdates(t *testing.T, b sqlBackend) {
+	open := b.open
+	d := b.dialect
 	r := ckStockResource(t)
 	quantities := func(t *testing.T, db *sql.DB) map[string]int64 {
 		t.Helper()
 		out := map[string]int64{}
-		for _, row := range queryRows(t, db, "SELECT warehouse_id, sku, qty FROM ck_stock", nil) {
+		for _, row := range queryRows[[]any](t, db, "SELECT warehouse_id, sku, qty FROM ck_stock") {
 			out[fmt.Sprint(row[0])+"/"+fmt.Sprint(row[1])] = asInt64(t, row[2])
 		}
 		return out

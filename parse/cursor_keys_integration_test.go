@@ -48,7 +48,7 @@ func TestKeysetWalk_LinguisticCollationWalksByCodePoint(t *testing.T) {
 				}
 				q, err := lq.Build(opts...)
 				require.NoError(t, err)
-				rows := queryNames(t, db, "SELECT id, name FROM probe "+q.Fragment, q.Args)
+				rows := queryNames(t, db, "SELECT id, name FROM probe "+q.Fragment, q.Args...)
 				page, err := filter.NewPage(rows, 1, q.Cursor, func(r namedRow, col string) (any, error) {
 					if col == "id" {
 						return r.id, nil
@@ -71,10 +71,7 @@ func TestKeysetWalk_LinguisticCollationWalksByCodePoint(t *testing.T) {
 
 			q, err := lq.Build(filter.ListFilter(`{"name":{"$gt":"b"}}`), filter.ListSort("name"))
 			require.NoError(t, err)
-			var above []string
-			for _, r := range queryNames(t, db, "SELECT id, name FROM probe "+q.Fragment, q.Args) {
-				above = append(above, r.name)
-			}
+			above := itemIDs(queryNames(t, db, "SELECT id, name FROM probe "+q.Fragment, q.Args...), func(r namedRow) string { return r.name })
 			assert.Equal(t, []string{"z", "é"}, above)
 		})
 	}
@@ -85,17 +82,15 @@ type namedRow struct {
 	name string
 }
 
-func queryNames(t *testing.T, db *sql.DB, q string, args []any) []namedRow {
+// queryNames reads rows of an integer id and a text name.
+func queryNames(t *testing.T, db *sql.DB, q string, args ...any) []namedRow {
 	t.Helper()
-	rows, err := db.Query(q, args...)
-	require.NoError(t, err)
-	defer rows.Close()
 	var out []namedRow
-	for rows.Next() {
-		var r namedRow
-		require.NoError(t, rows.Scan(&r.id, &r.name))
-		out = append(out, r)
+	for _, row := range queryRows[[]any](t, db, q, args...) {
+		id, idOK := row[0].(int64)
+		name, nameOK := row[1].(string)
+		require.True(t, idOK && nameOK, "row %v", row)
+		out = append(out, namedRow{id: id, name: name})
 	}
-	require.NoError(t, rows.Err())
 	return out
 }

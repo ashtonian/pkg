@@ -693,3 +693,33 @@ func ExampleShape_Match() {
 	// "\u212a": FoldedMatch Kelvin
 	// "unit": NoMatch
 }
+
+func ExampleShape_JSONKey() {
+	type Inventory struct {
+		Counts map[uint16]int `json:"counts"`
+		Flags  map[bool]int   `json:"flags"`
+	}
+	schema, err := gowalker.MustNew(gowalker.WithJSONFields("json", gowalker.NestedFields())).Compile[Inventory]()
+	if err != nil {
+		panic(err)
+	}
+	counts, _ := schema.Root().Lookup("counts")
+	key := counts.Shape().Key()
+	for _, member := range []string{"7", "007", "+7", "70000", "seven"} {
+		k, canonical, ok := key.JSONKey(member)
+		if !ok {
+			fmt.Printf("%q: no uint16 key\n", member)
+			continue
+		}
+		fmt.Printf("%q: key %v, written %q, canonical %t\n", member, k.Interface(), canonical, key.IsCanonicalJSONKey([]byte(member)))
+	}
+	flags, _ := schema.Root().Lookup("flags")
+	fmt.Println(flags.Shape().Key().CheckJSONKey())
+	// Output:
+	// "7": key 7, written "7", canonical true
+	// "007": key 7, written "7", canonical false
+	// "+7": no uint16 key
+	// "70000": no uint16 key
+	// "seven": no uint16 key
+	// gowalker: json key bool: unsupported map key: encoding/json reads no member name into it, or writes none for it
+}

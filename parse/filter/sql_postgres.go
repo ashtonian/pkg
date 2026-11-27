@@ -533,12 +533,12 @@ func pgGeography(d dialect.Dialect, field *FieldSchema) string {
 	return field.sql(d) + "::geography"
 }
 
-// pgJSONBPoint builds the point geometry of a JSONB {lat, lon} column. The
-// keys were validated as identifiers at schema generation.
+// pgJSONBPoint builds the point geometry of a JSONB {lat, lon} column, each
+// key a string literal (QuoteLiteral).
 func pgJSONBPoint(d dialect.Dialect, field *FieldSchema) string {
 	latKey, lonKey := geoKeys(field)
-	return fmt.Sprintf("ST_SetSRID(ST_MakePoint((%s->>'%s')::float8, (%s->>'%s')::float8), 4326)",
-		field.sql(d), lonKey, field.sql(d), latKey)
+	return fmt.Sprintf("ST_SetSRID(ST_MakePoint((%s->>%s)::float8, (%s->>%s)::float8), 4326)",
+		field.sql(d), d.QuoteLiteral(lonKey), field.sql(d), d.QuoteLiteral(latKey))
 }
 
 // MarshalValue serializes a value for PostgreSQL parameter binding.
@@ -588,6 +588,10 @@ func (d PostgresDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
 		return value, nil
 	}
 }
+
+// StoresAsText reports false: PostgreSQL stores every value in a type of
+// its own, which the driver scans.
+func (PostgresDialect) StoresAsText(core.FieldType) bool { return false }
 
 // CTEMaterializeHint returns " MATERIALIZED" so PG ≥ 12 doesn't inline a
 // multi-referenced CTE. Critical for BuildFacetQuery so the policy-merged
@@ -662,9 +666,11 @@ func (d PostgresDialect) DecimalValue(o DecimalOperand) string {
 // DecimalOrder is DecimalValue: numeric orders exactly.
 func (d PostgresDialect) DecimalOrder(o DecimalOperand) string { return d.DecimalValue(o) }
 
-// NativeRowCompare reports true: PostgreSQL evaluates row comparison
-// lexicographically with full composite-index support.
-func (PostgresDialect) NativeRowCompare() bool { return true }
+// codePointPair collates the column, which an index in the same collation
+// serves.
+func (d PostgresDialect) codePointPair(column, operand string) (string, string) {
+	return d.CodePointOrder(column), operand
+}
 
 // CodePointOrder applies the dialect's Collation. A column declared with the
 // same collation is indexed
@@ -687,7 +693,7 @@ func (d PostgresDialect) elementRows(f *FieldSchema, alias string) string {
 	var array string
 	switch {
 	case f.Path != nil:
-		array = pgMember(pgPathDocument(d, f.Path), f.Path.Segments)
+		array = pgMember(d, pgPathDocument(d, f.Path), f.Path.Segments)
 	case f.DataType == core.FieldTypeArray:
 		return "unnest(" + f.sql(d) + ") AS " + alias + "(v)"
 	default:
@@ -799,7 +805,7 @@ func (d PostgresDialect) PathExpr(p *JSONPath, t core.FieldType) string {
 		return pgTypedMember(t, "jsonb_typeof("+v+")", "("+v+" #>> '{}')")
 	}
 	doc := pgPathDocument(d, p)
-	return pgTypedMember(t, "jsonb_typeof("+pgMember(doc, p.Segments)+")", "("+pgMemberText(doc, p.Segments)+")")
+	return pgTypedMember(t, "jsonb_typeof("+pgMember(d, doc, p.Segments)+")", "("+pgMemberText(d, doc, p.Segments)+")")
 }
 
 func (PostgresDialect) textKey(expr string) string { return expr + "::text" }

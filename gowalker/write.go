@@ -139,7 +139,7 @@ func (a *Accessor) target(op string, root reflect.Value, options []WriteOption) 
 	for i, compiled := range a.steps {
 		var err error
 		if compiled.step.Kind() != path.DerefKind {
-			slot, shape, err = a.followWrite(slot, shape, settings)
+			slot, shape, err = a.followWrite(slot, shape, settings, false)
 			if err != nil {
 				return writeSlot{}, settings, failure(op, err, nil, a.path, i, nil)
 			}
@@ -156,7 +156,7 @@ func (a *Accessor) target(op string, root reflect.Value, options []WriteOption) 
 		switch compiled.step.Kind() {
 		case path.FieldKind:
 			for _, index := range compiled.field.index {
-				slot, shape, err = a.followWrite(slot, shape, settings)
+				slot, shape, err = a.followWrite(slot, shape, settings, true)
 				if err != nil {
 					return writeSlot{}, settings, failure(op, err, nil, a.path, i, nil)
 				}
@@ -188,7 +188,7 @@ func (a *Accessor) target(op string, root reflect.Value, options []WriteOption) 
 			}
 			shape = shape.elem
 		case path.DerefKind:
-			slot, shape, err = a.derefWrite(slot, shape, settings)
+			slot, shape, err = a.derefWrite(slot, shape, settings, false)
 			if err != nil {
 				return writeSlot{}, settings, failure(op, err, nil, a.path, i, nil)
 			}
@@ -300,7 +300,8 @@ func (s writeSlot) mapEntry(key reflect.Value, allocate, terminal bool) (writeSl
 	return writeSlot{value: v, owner: m, key: key, flush: flush}, nil
 }
 
-func (a *Accessor) followWrite(slot writeSlot, shape *Shape, settings writeSettings) (writeSlot, *Shape, error) {
+// followWrite is follow for a write, allocating as settings allow.
+func (a *Accessor) followWrite(slot writeSlot, shape *Shape, settings writeSettings, inlined bool) (writeSlot, *Shape, error) {
 	var initial [8]pointerID
 	seen := initial[:0]
 	for depth := 0; slot.value.Kind() == reflect.Pointer || slot.value.Kind() == reflect.Interface; depth++ {
@@ -315,7 +316,7 @@ func (a *Accessor) followWrite(slot writeSlot, shape *Shape, settings writeSetti
 			seen = append(seen, id)
 		}
 		var err error
-		slot, shape, err = a.derefWrite(slot, shape, settings)
+		slot, shape, err = a.derefWrite(slot, shape, settings, inlined)
 		if err != nil {
 			return writeSlot{}, nil, err
 		}
@@ -323,8 +324,8 @@ func (a *Accessor) followWrite(slot writeSlot, shape *Shape, settings writeSetti
 	return slot, shape, nil
 }
 
-func (a *Accessor) derefWrite(slot writeSlot, shape *Shape, settings writeSettings) (writeSlot, *Shape, error) {
-	if shape.atomic {
+func (a *Accessor) derefWrite(slot writeSlot, shape *Shape, settings writeSettings, inlined bool) (writeSlot, *Shape, error) {
+	if shape.atomic && !inlined {
 		return writeSlot{}, nil, ErrPath
 	}
 	v := slot.value

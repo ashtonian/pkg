@@ -169,7 +169,7 @@ func ExampleNewResource_facetedListPage() {
 	fmt.Println("category label:", schema.Filter.Fields["category"].Label)
 
 	// Query param parsing.
-	qp := filter.NewQueryParamParser(tp.FilterSchema())
+	qp, _ := filter.NewQueryParamParser(tp.FilterSchema())
 	ast, _ := qp.Parse(url.Values{"category": {"electronics"}, "price_gte": {"50"}})
 	fmt.Println("\n=== Query Params ===")
 	fmt.Println("parsed:", ast.Root != nil)

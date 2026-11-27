@@ -24,7 +24,7 @@ JSON filters (`{"status":"active","price":{"$gte":10}}`) and flat query paramete
 
 A field's object value is an operator object when one of its keys is an operator or every key starts with `$`; any other object is a JSON document compared for equality. A misspelt operator (`{"meta":{"$contain":{…}}}`) is therefore E2072, never a document no row equals, and a document whose keys all start with `$` is written as the operand of `$eq` (`{"meta":{"$eq":{"$ref":"x"}}}`).
 
-Both forms name the same fields (`ResourceSchema.RequestField`, enumerated by `RequestFields`, which the schema document lists): the request fields (`parse:"filter"`) and the resource's key, with the operators the key's system field takes (`eq`, `gt`, `gte`, `lt`, `lte`, `in`). The tenant and soft-delete columns are system fields only a [server policy](#policy-fields) names; a request reaches deleted rows through `include_deleted` alone, and a filter on either column is E2071 in both forms. Flat parameters ANDed together build one operator map per field, so two that set the same operator are E2072 naming both: `status=a&status=b` coalesces to `$in`, and `status_in=c` beside it would otherwise replace it. `status=a&status_in=c` keeps both predicates.
+Both forms name the same fields (`ResourceSchema.RequestField`, enumerated by `RequestFields`, which the schema document lists): the request fields (`parse:"filter"`) and the resource's key, with the operators its type takes of `eq`, `gt`, `gte`, `lt`, `lte` and `in` (the *As the key* column [below](#type-capabilities), `filter.KeyOperators`): a boolean, interval or network key takes `eq` and `in` alone, as a field of its type takes no range. The tenant and soft-delete columns are system fields only a [server policy](#policy-fields) names; a request reaches deleted rows through `include_deleted` alone, and a filter on either column is E2071 in both forms. Flat parameters ANDed together build one operator map per field, so two that set the same operator are E2072 naming both: `status=a&status=b` coalesces to `$in`, and `status_in=c` beside it would otherwise replace it. `status=a&status_in=c` keeps both predicates.
 
 Values normalize before any SQL is built: integers exactly (range-checked against the Go kind, floats beyond ±2^53 rejected), decimals to their canonical exact text ([decimals](schema-configuration.md#decimals)), UUIDs to canonical form, timestamps to RFC 3339 UTC with relative tokens (`now-7d`) resolved against the parser clock, JSON documents to a canonical form (their numbers within int64, or decimals a float64 holds exactly — E2073 otherwise, since SQLite would round them). See the sections below and [relations](relations.md).
 
@@ -34,27 +34,27 @@ Values normalize before any SQL is built: integers exactly (range-checked agains
 
 <!-- BEGIN rendered operators: edit the code, then go test -tags=unit -run TestDocTables -update -->
 
-| Type | Operators | Default when `filter_ops` is omitted |
-|---|---|---|
-| string | eq ne gt gte lt lte in nin like ilike contains null not_null exists | eq ne contains like ilike in nin |
-| int | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte in nin |
-| float | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte in nin |
-| decimal | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte in nin |
-| bool | eq ne in nin null not_null exists | eq ne |
-| timestamp | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte |
-| date | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte |
-| time | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte |
-| interval | eq ne in nin null not_null exists | eq ne in nin |
-| inet | eq ne in nin null not_null exists | eq ne in nin |
-| cidr | eq ne in nin null not_null exists | eq ne in nin |
-| macaddr | eq ne in nin null not_null exists | eq ne in nin |
-| uuid | eq ne in nin null not_null exists | eq ne in nin |
-| json | eq ne contains has_key null not_null exists | eq ne contains has_key exists null |
-| array | contains some none null not_null exists | contains some none null |
-| object | eq ne contains has_key null not_null exists | none |
-| any | null not_null exists | none |
-| geo | near within intersects null not_null exists | near within |
-| relation | the target ID type's operators, without contains | eq ne in nin null not_null |
+| Type | Operators | Default when `filter_ops` is omitted | As the key |
+|---|---|---|---|
+| string | eq ne gt gte lt lte in nin like ilike contains null not_null exists | eq ne contains like ilike in nin | eq gt lt gte lte in |
+| int | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte in nin | eq gt lt gte lte in |
+| float | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte in nin | eq gt lt gte lte in |
+| decimal | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte in nin | eq gt lt gte lte in |
+| bool | eq ne in nin null not_null exists | eq ne | eq in |
+| timestamp | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte | eq gt lt gte lte in |
+| date | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte | eq gt lt gte lte in |
+| time | eq ne gt gte lt lte in nin null not_null exists | eq ne gt gte lt lte | eq gt lt gte lte in |
+| interval | eq ne in nin null not_null exists | eq ne in nin | eq in |
+| inet | eq ne in nin null not_null exists | eq ne in nin | eq in |
+| cidr | eq ne in nin null not_null exists | eq ne in nin | eq in |
+| macaddr | eq ne in nin null not_null exists | eq ne in nin | eq in |
+| uuid | eq ne gt gte lt lte in nin null not_null exists | eq ne in nin | eq gt lt gte lte in |
+| json | eq ne contains has_key null not_null exists | eq ne contains has_key exists null | not a key |
+| array | contains some none null not_null exists | contains some none null | not a key |
+| object | eq ne contains has_key null not_null exists | none | not a key |
+| any | null not_null exists | none | not a key |
+| geo | near within intersects null not_null exists | near within | not a key |
+| relation | the target ID type's operators, without contains | eq ne in nin null not_null | not a key |
 
 <!-- END rendered operators -->
 
@@ -216,7 +216,7 @@ selected := truth == filter.True
 |---|---|
 | NULL | a comparison with a NULL value or an absent path member, or with a NULL operand (`nil`, a nil pointer, a NULL `driver.Valuer`), is `Unknown`; `$and`, `$or` and `$not` are three-valued, so `$ne`, `$nin` and `$not` never select it |
 | Empty sets | `$in: []` is `False` and `$nin: []` `True`, NULL or not |
-| Order | each type's one order, `core.CompareCanonical`, which keysets, key order and patch policies share: numbers and decimals by exact value, a stored float's or decimal's NaN greater than every number ([non-finite numbers](#non-finite-numbers)), a float32 field's values at float32 precision, as its column holds them, so a patch policy's `0.1` names the `0.1` a float32 path writes; strings by code point; UUIDs, timestamps and dates by canonical text, so a UUID's bytes, a timestamp's instant and a date's day in any spelling; booleans false before true |
+| Order | each type's one order, `core.CompareCanonical`, which keysets, key order and patch policies share: numbers and decimals by exact value, a stored float's or decimal's NaN greater than every number ([non-finite numbers](#non-finite-numbers)), a float32 field's values at float32 precision, as its column holds them, so a patch policy's `0.1` names the `0.1` a float32 path writes; strings by code point; UUIDs, timestamps and dates by canonical text, so a UUID's bytes (PostgreSQL's uuid order, and the lowercase text SQLite compares), a timestamp's instant and a date's day in any spelling; booleans false before true |
 | Documents and arrays | jsonb's `=` and `@>` (`core.JSONEqual`, `JSONContains`, `JSONHasKey`); an array column `$contains` every listed element; `$some` / `$none` over the elements, never Unknown |
 | Patterns | `$like` / `$ilike` as `MatchLike`; `$contains` on a string is a case-sensitive substring |
 | Geo | `$near` by the WGS 84 geodesic distance, `$within` / `$intersects` a box or polygon with its boundary, as PostGIS decides them on a JSONB point; a NULL point is `Unknown`; native `geography` / `geometry` storage is E2115 |
@@ -277,7 +277,7 @@ Underneath, `NewListQuery(filterSchema, sortSchema, dialect)` returns a `*ListQu
 | `Facets` | One `WITH base AS … UNION ALL` facet query (`ListFacets`); scan with `ScanFacetUnion` |
 | `Sort` | The parsed sort |
 
-`NewPage(rows, res.Limit, res.Cursor, value)` truncates the fetched rows, restores presentation order after a backward seek, sets `has_next_page` / `has_prev_page`, and mints `start_cursor` / `end_cursor` (only toward pages that exist): a flag is set exactly when its cursor is. An empty page, whether the query returned nil rows or none, has `items` `[]`, never `null`, and sets neither flag, even after a seek: a cursor replayed after the rows on its side were deleted, or under another filter, has no row to mint a cursor from, so the client starts again from the first page. A limit below 1 is an error, whatever the rows. `value(row, column)` resolves a key column; `CursorValueByTag(row, "db", column)` does it by struct tag. A key of a scalar type reads the value as its column's stored value (`core.StoredScalar`), whatever Go value the driver scanned: a DATE that pgx scans into a `time.Time` mints its date, a numeric's text its number, SQLite's 0 or 1 a boolean, so the next request accepts every cursor a page mints. Keys are the sort fields plus the primary key declared on the resource; NULL sorts greatest (`NULLS LAST` ascending, `NULLS FIRST` descending) and seeks are NULL-aware. Cursors carry a generation and are capped at 4 KiB; a token from another sort or generation fails with E2082.
+`NewPage(rows, res.Limit, res.Cursor, value)` truncates the fetched rows, restores presentation order after a backward seek, sets `has_next_page` / `has_prev_page`, and mints `start_cursor` / `end_cursor` (only toward pages that exist): a flag is set exactly when its cursor is. An empty page, whether the query returned nil rows or none, has `items` `[]`, never `null`, and sets neither flag, even after a seek: a cursor replayed after the rows on its side were deleted, or under another filter, has no row to mint a cursor from, so the client starts again from the first page. A limit below 1 is an error, whatever the rows. `value(row, column)` resolves a key column; `CursorValueByTag(row, "db", column)` does it by struct tag. A key of a scalar type reads the value as its column's stored value (`core.StoredScalar`), whatever Go value the driver scanned: a DATE that pgx scans into a `time.Time` mints its date, a numeric's text its number, SQLite's 0 or 1 a boolean, so the next request accepts every cursor a page mints. Keys are the sort fields plus the primary key declared on the resource; NULL sorts greatest (`NULLS LAST` ascending, `NULLS FIRST` descending) and seeks are NULL-aware. A sort key is nullable when its field's type holds NULL (`core.IsNullableType`): a pointer, slice, map or interface, or a type whose zero value scans NULL and writes it back, such as `sql.NullInt64`, `sql.NullTime`, `sql.Null[T]`, `uuid.NullUUID` or `decimal.NullDecimal`. A UUID or decimal type is not, though it is an `sql.Scanner`: it scans NULL as a value it writes (the nil UUID) or refuses it, so its keyset carries no NULL branches. Cursors carry a generation and are capped at 4 KiB; a token from another sort or generation fails with E2082.
 
 A release reads cursors of its own generation only. A token of another generation is E2082 with the message `unsupported cursor version`, whatever it holds; a malformed one, including a token of this generation with a member the format does not define, is E2082 `invalid cursor data`. Any change to a token's members comes with a new generation, so during a rolling deploy across two generations each replica answers the other release's cursors with `unsupported cursor version`, and the client starts again from the first page. A value of a member an older release refuses changes no member and keeps the generation: that release answers such a token with E2082, and the client starts again just as it would, while every other cursor still resumes. A NaN or infinite float key ([non-finite floats](#non-finite-numbers)), which a release that predates carrying them refuses to decode, is `invalid cursor data`; an int or float path key's decimal text ([JSON paths](#json-paths)), which a release that predates it refuses for the key, is `invalid cursor value for field`.
 
@@ -398,7 +398,7 @@ Facet, include, and flat-query options:
 | `WithIncludeRelationScope(s)` | `RelationScope` | none | How the include reads related rows; a `RowTenant` joins the owner's table, which `WithIncludeOwner` names. `ResolveInclude` refuses a `RowTenant` |
 | `WithIncludeOwner(owner)` | `*ResourceSchema` | none | The owner's schema, whose table a `RowTenant` reads |
 | `WithMaxIncludePerRelation(n)` | int | `100` | Targets per owner; distinct keys capped in SQL or non-SQL resolution. The cap must leave room for the truncation sentinel |
-| `QueryParamAccept(names...)` | `...string` | none | Parameters the endpoint reads itself; left alone like the list parameters |
+| `QueryParamAccept(names...)` | `...string` | none | Parameters the endpoint reads itself; left alone like the list parameters. `NewQueryParamParser` refuses a name that is a list parameter or a flat filter on a request field, suffix forms included (`filter.CheckAcceptedParam`): the parser would skip that filter |
 | `QueryParamLenient()` | — | off | Ignore a parameter naming no filterable field instead of refusing it (E2071) |
 | `QueryParamFieldsOnly()` | — | off | Read every parameter as a field filter, for values that hold nothing else: the list parameters (`Param*`) are not skipped, so a field named like one is filtered on, and any other name that is no filterable field is E2071 |
 | `QueryParamConfig(cfg)` | `*core.ParserConfig` | `core.DefaultConfig()` | Limits and value configuration for flat filters |
@@ -409,7 +409,7 @@ A relation that declares a `tenant_col` fails the build unless a tenant is bound
 
 A flat parameter that is neither a list parameter (`filter.Param*`), an accepted name nor a filterable field is E2071 on every entry point — `Resource.ParseList` (`AcceptParams`), `Resource.ParseRequestFilter` and `filter.NewQueryParamParser` (`QueryParamAccept`) — so a misspelt filter cannot return every row.
 
-The dialects are `filter.PostgresDialect` and `filter.SQLiteDialect`, and the set is closed: `filter.Dialect` has unexported methods, so no type outside the module implements it, and every dialect-specific choice is made on which of the two a dialect is. `filter.DialectFromDSN` picks one from a connection string. Application code can still type-switch on the two types, as the computed-column example below does.
+The dialects are `filter.PostgresDialect` and `filter.SQLiteDialect`, and the set is sealed: `filter.Dialect` has unexported methods, so no type outside the module implements it of its own. A type that embeds one of the two to override a method is not a dialect parse supports, whatever it compiles to: the built-in methods call their own receiver's, so a statement quotes identifiers and binds values as the embedded dialect does whatever the outer type declares, and `Resource.CheckPlan` matches a plan to its executor by `Name` alone. Every dialect-specific choice is a method of the dialect, never a test of which dialect it is: `filter.Dialect`'s for filters, lists, facets and includes, the methods `patch.SQLDialect` and `patch.RelationDialect` name for the SQL a patch writes, and `StoresAsText` for what a row scan decodes. A new SQL provider is one type in `filter` implementing `filter.Dialect`, over a type of `internal/dialect` that gives its name, placeholders, identifier quoting and parameter limit; `filter.DialectFromDSN`, which picks a dialect from a connection string, is the one place that maps a provider's kind to its type. Application code can still type-switch on the two types, as the computed-column example below does.
 
 PostgreSQL dialect:
 
@@ -472,7 +472,7 @@ sqlite   WHERE ("products"."category" = ?1 AND "products"."price" >= ?2 AND "pro
 first: WHERE 1=1 ORDER BY "products"."price" DESC, "products"."id" DESC LIMIT 3 []
 items: 2 has_next_page: true
 postgres WHERE (1=1 AND ("products"."price", "products"."id") < ($1, $2)) ORDER BY "products"."price" DESC, "products"."id" DESC [80 0190f3c2-…-000000000012]
-sqlite   WHERE (1=1 AND (("products"."price" < ?1) OR ("products"."price" = ?1 AND "products"."id" < ?2))) ORDER BY "products"."price" DESC, "products"."id" DESC [80 0190f3c2-…-000000000012]
+sqlite   WHERE (1=1 AND ("products"."price", "products"."id") < (?1, ?2)) ORDER BY "products"."price" DESC, "products"."id" DESC [80 0190f3c2-…-000000000012]
 ```
 
 **Count, facets and search** share the request's filter; the count and facets ignore the cursor. For the filter `{"price":{"$lt":200}}`, the search `cordless drill`, `include_total` and the facet `category`:

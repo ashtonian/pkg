@@ -417,6 +417,12 @@ func (d SQLiteDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
 	}
 }
 
+// StoresAsText reports the values MarshalValue writes as text: a
+// timestamp's canonical text, a document's or an array's JSON.
+func (SQLiteDialect) StoresAsText(t core.FieldType) bool {
+	return t == core.FieldTypeTimestamp || core.IsDocument(t) || t == core.FieldTypeArray
+}
+
 // timestampTexts is a list of timestamps, or a pointer to one, with each
 // element its canonical text: json.Marshal writes a time.Time in its own
 // offset, and an element reads as a timestamp only in UTC (PathExpr). A
@@ -496,10 +502,13 @@ func (d SQLiteDialect) DecimalOrder(o DecimalOperand) string {
 	return decimals.SQLiteKeyFunc + "(" + operand + ")"
 }
 
-// NativeRowCompare reports false: row-value comparison is unevenly
-// supported across the SQLite build matrix, and the expansion stays
-// planner-friendly on single-column indexes.
-func (SQLiteDialect) NativeRowCompare() bool { return false }
+// codePointPair collates the operand: SQLite seeks an index only on a row
+// value's bare columns, and BINARY on the operand still overrides a column
+// declared NOCASE or RTRIM, an explicit collation outranking a column's.
+// The index must be BINARY-collated to serve the seek.
+func (d SQLiteDialect) codePointPair(column, operand string) (string, string) {
+	return column, d.CodePointOrder(operand)
+}
 
 // CodePointOrder applies BINARY collation, overriding a column declared
 // NOCASE or RTRIM.
@@ -522,7 +531,7 @@ func sqliteHasKey(expr, key string, bind func(any) string) string {
 // read an object's members, or a scalar as one row.
 func (d SQLiteDialect) elementRows(f *FieldSchema, alias string) string {
 	if p := f.Path; p != nil {
-		path := sqlitePathLiteral(p.Segments)
+		path := sqlitePathLiteral(d, p.Segments)
 		doc := p.document(d)
 		return "json_each(CASE WHEN json_type(" + doc + ", " + path + ") = 'array' THEN " + doc + " END, " + path + ") AS " + alias
 	}

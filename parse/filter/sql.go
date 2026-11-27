@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -19,7 +20,13 @@ import (
 // renumber of `$1` never substring-corrupts a multi-digit `$10` / `$11`.
 var rawPlaceholderRe = regexp.MustCompile(`\$(\d+)`)
 
-// Dialect generates database-specific SQL.
+// Dialect generates database-specific SQL: every piece of SQL parse writes
+// whose form differs between databases is one of its methods, for filters,
+// lists, facets and includes here, for patches (the methods
+// patch.SQLDialect and patch.RelationDialect name), and for a row scan
+// (StoresAsText). Nothing chooses SQL by which dialect it has, so a SQL
+// provider is one type implementing Dialect; PostgresDialect and
+// SQLiteDialect are the two there are.
 type Dialect interface {
 	dialect.Dialect
 
@@ -41,12 +48,6 @@ type Dialect interface {
 	// Used by BuildFacetQuery when composing the single CTE + UNION ALL
 	// facet plan; the filter scan must happen exactly once.
 	CTEMaterializeHint() string
-
-	// NativeRowCompare reports whether keyset seeks may use a native
-	// row-value comparison `(a, b) > ($1, $2)` (used only when no key is
-	// nullable and every key walks the same direction). Dialects without it
-	// get the lexicographic OR-expansion.
-	NativeRowCompare() bool
 
 	// CodePointOrder returns expr under code-point (bytewise) collation, the
 	// order string comparisons, keyset walks and the memory backend share; a
@@ -114,6 +115,13 @@ type Dialect interface {
 	// one of a set, by containment, which an index on the document serves;
 	// ok is false where the dialect reads the element table instead.
 	containsElement(f *FieldSchema, cond *FilterNode, bind func(any) string) (sql string, ok bool, err error)
+	// codePointPair is column and operand, an element pair of a row-value
+	// comparison, compared by code point (CodePointOrder). column is a bare
+	// column, which declares at most an implicit collation, so either side
+	// may carry the explicit one; the dialect puts it where its planner
+	// still seeks an index on the column. A key read through an expression
+	// is collated on the expression instead (keyExpr).
+	codePointPair(column, operand string) (string, string)
 	// setRows binds a set's members as one parameter and reads them back
 	// as rows of one column, v, of the type FieldExpr reads field as.
 	setRows(field *FieldSchema, members []any, bind func(any) string) (string, error)
@@ -174,6 +182,32 @@ type Dialect interface {
 	// search renders a free-text search of schema's fields for query, its
 	// parameters numbered after startIdx.
 	search(schema *SearchSchema, query string, startIdx int) (*searchCondition, error)
+
+	// The SQL a patch writes, documented method by method where patch
+	// consumes it (patch.SQLDialect, patch.RelationDialect): a changed
+	// column's condition, written whole or by its members, an RFC 7396
+	// merge, a native array append, a JSON document member's read, set,
+	// removal and preconditions, and the rows a pair table's insert reads
+	// when no target table holds its values.
+	ChangedCondition(column, expr string, t core.TypeInfo) (string, error)
+	ChangedDocumentCondition(column, doc string) (string, error)
+	MergePatch(doc string, storage core.SQLType, patch map[string]any, bind func(any) string) (string, error)
+	ArrayAppend(array string, element any, bind func(any) string) (string, error)
+	MemberDocument(expr string) (string, error)
+	SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) (string, error)
+	RemoveMember(doc string, member []string, bind func(any) string) (string, error)
+	HasMember(doc string, member []string, bind func(any) string) (string, error)
+	IsObject(doc string, member []string, bind func(any) string) (string, error)
+	RelationRows(rel *core.RelationSchema, owners, values []core.Key, tenant *core.PairTenant, bind func(any) string) (core.PairRows, error)
+
+	// StoresAsText reports whether the database stores a value of type t,
+	// in a column declared no JSON type, as text a row scan decodes rather
+	// than the driver's own value. A scan decodes two such texts: a
+	// timestamp's canonical text (core.FormatTimestamp) and a document's or
+	// an array's JSON, as SQLite stores them and MarshalValue writes them.
+	// parse.RowScanner refuses a dialect reporting true for any other type
+	// a field the driver cannot scan itself holds.
+	StoresAsText(t core.FieldType) bool
 }
 
 // ErrUnknownDSN is returned by DialectFromDSN for a DSN that names no
@@ -356,7 +390,7 @@ func textValue(op FilterOperator, value any) (string, error) {
 }
 
 // unsupportedOperator is the error for an operator the field type does not
-// define; parsed filters never reach it (checkOperators), programmatic
+// define; parsed filters never reach it (CheckOperators), programmatic
 // ASTs can.
 func unsupportedOperator(field *FieldSchema, op FilterOperator) error {
 	return fmt.Errorf("operator %q is not defined for %s field %q", op, field.DataType, field.ExternalName)

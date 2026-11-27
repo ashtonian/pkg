@@ -164,7 +164,7 @@ func TestFilter_SelectsExactIntegerRow(t *testing.T) {
 			return f.AST(), nil
 		},
 		"query params": func() (*filter.FilterAST, error) {
-			return filter.NewQueryParamParser(p.FilterSchema()).Parse(map[string][]string{"big": {"9007199254740993"}})
+			return queryParams(t, p.FilterSchema()).Parse(map[string][]string{"big": {"9007199254740993"}})
 		},
 	}
 	for name, parseFn := range cases {
@@ -207,7 +207,7 @@ func TestFilter_RejectsOutOfDomainNumbers(t *testing.T) {
 			requireCode(t, err, filter.ECodeValueTypeMismatch.String())
 		})
 	}
-	_, err := filter.NewQueryParamParser(p.FilterSchema()).Parse(map[string][]string{"small": {"128"}})
+	_, err := queryParams(t, p.FilterSchema()).Parse(map[string][]string{"small": {"128"}})
 	requireCode(t, err, filter.ECodeValueTypeMismatch.String())
 }
 

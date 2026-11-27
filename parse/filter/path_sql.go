@@ -48,40 +48,31 @@ var (
 // Both operators take a text key, which reads an object's member and is
 // NULL on an array or a scalar: no segment is read as an array subscript or
 // a NULL element, as a text[] path given to #> reads `0` or `null`, so
-// PostgreSQL reads the member the reference rule (memberAt) reads. Segments
-// are identifiers (pathSegment), so no literal needs escaping.
-func pgMember(doc string, segs []string) string {
-	return doc + pgKeys(segs, " -> ")
+// PostgreSQL reads the member the reference rule (memberAt) reads. Each key
+// is a string literal (QuoteLiteral), whatever its segment holds.
+func pgMember(d dialect.Dialect, doc string, segs []string) string {
+	return doc + pgKeys(d, segs, " -> ")
 }
 
-func pgMemberText(doc string, segs []string) string {
+func pgMemberText(d dialect.Dialect, doc string, segs []string) string {
 	last := len(segs) - 1
-	return doc + pgKeys(segs[:last], " -> ") + pgKeys(segs[last:], " ->> ")
+	return doc + pgKeys(d, segs[:last], " -> ") + pgKeys(d, segs[last:], " ->> ")
 }
 
-func pgKeys(segs []string, op string) string {
+func pgKeys(d dialect.Dialect, segs []string, op string) string {
 	var b strings.Builder
 	for _, s := range segs {
 		b.WriteString(op)
-		b.WriteString("'")
-		b.WriteString(s)
-		b.WriteString("'")
+		b.WriteString(d.QuoteLiteral(s))
 	}
 	return b.String()
 }
 
-// sqlitePathLiteral is the JSON path of a path's segments, every label
-// quoted so a hyphen is a name character.
-func sqlitePathLiteral(segs []string) string {
-	var b strings.Builder
-	b.WriteString("'$")
-	for _, s := range segs {
-		b.WriteString(`."`)
-		b.WriteString(s)
-		b.WriteString(`"`)
-	}
-	b.WriteString("'")
-	return b.String()
+// sqlitePathLiteral is the JSON path of a path's segments
+// (dialect.SQLiteJSONPath) as a string literal: every label quoted, so a
+// hyphen is a name character, and escaped.
+func sqlitePathLiteral(d dialect.Dialect, segs []string) string {
+	return d.QuoteLiteral(dialect.SQLiteJSONPath(segs))
 }
 
 // orderedAsText reports whether ordering comparisons on f compare text and so
@@ -176,7 +167,7 @@ func sqlitePathMember(d dialect.Dialect, p *JSONPath) (kind, val, literal string
 	if p.element {
 		return doc + ".type", doc + ".value", doc + ".json -> " + doc + ".fullkey"
 	}
-	path := sqlitePathLiteral(p.Segments)
+	path := sqlitePathLiteral(d, p.Segments)
 	return "json_type(" + doc + ", " + path + ")", "json_extract(" + doc + ", " + path + ")", doc + " -> " + path
 }
 
