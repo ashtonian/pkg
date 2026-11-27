@@ -243,9 +243,12 @@ func incomparable(t FieldType, x, y any) error {
 // number's canonical decimal text, a float32 column's at float32
 // precision, so -0 is 0; true or false. It is the text statements read
 // the column as (a key's text, a terms facet's key), so it is equal for
-// two values exactly when the database holds them equal; keys, facets and
-// typed lookups name a value by it. NULL, NaN, the infinities and a type
-// of no scalar (IsKeyType) have none.
+// two values a database holds exactly when it holds them equal; keys,
+// facets and typed lookups name a value by it. A value written to
+// PostgreSQL can be held at less precision than its text: a timestamp
+// column rounds to the microsecond (filter's Dialect.StoredKeyValue), so
+// two texts a fraction of a microsecond apart are one value there. NULL,
+// NaN, the infinities and a type of no scalar (IsKeyType) have none.
 func CanonicalText(t TypeInfo, v any) (string, error) {
 	n, err := normalizeKeyValue(t, v)
 	if err != nil {

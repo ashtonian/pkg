@@ -20,8 +20,9 @@ import (
 // (columnType) and holds the database to the case's order: a key column's ORDER BY
 // (filter.KeyOrder), a sort key's (filter.OrderByKeys), NULL last, its
 // seeks (filter.SeekPredicate, runSeeks), and a terms facet's keys, which
-// are the values' canonical texts, ties in the type's order, as Go counts
-// them (filter.FacetKeys, filter.FacetBuckets).
+// are the canonical texts of the values as the database holds them
+// (Dialect.StoredKeyValue), ties in the type's order, as Go counts them
+// (filter.FacetKeys, filter.FacetBuckets).
 func runCanonicalOrderSQL(t *testing.T, db *sql.DB, d filter.Dialect, cases []ordertest.Case, columnType func(ordertest.Case) string) {
 	for _, c := range cases {
 		t.Run(c.Name, func(t *testing.T) {
@@ -34,12 +35,15 @@ func runCanonicalOrderSQL(t *testing.T, db *sql.DB, d filter.Dialect, cases []or
 			_, err = db.ExecContext(ctx, insert, len(c.Values), nil)
 			require.NoError(t, err)
 			ascending := make([]int, len(c.Values))
+			held := make([]any, len(c.Values))
 			for i := len(c.Values) - 1; i >= 0; i-- {
 				stored, err := c.Stored(c.Values[i])
 				require.NoError(t, err)
 				_, err = db.ExecContext(ctx, insert, i, stored)
 				require.NoError(t, err, "storing %#v", stored)
 				ascending[i] = i
+				held[i], err = d.StoredKeyValue(c.Type, stored)
+				require.NoError(t, err)
 			}
 
 			column := d.QuoteIdent(table) + "." + d.QuoteIdent("v")
@@ -48,11 +52,11 @@ func runCanonicalOrderSQL(t *testing.T, db *sql.DB, d filter.Dialect, cases []or
 
 			// Each row's value as the driver scans the column the way a
 			// resource reads it mints a cursor the next request accepts,
-			// holding the row's value.
+			// holding the value the database holds.
 			key := filter.CursorKey{Name: "v", Table: table, Column: "v", DataType: c.Type.Type, NumberKind: c.Type.NumberKind, Nullable: true, Direction: filter.SortAsc}
 			for id, raw := range scannedValues(t, db, "SELECT id, "+d.ReadColumn(column, readType(c.Type))+" FROM "+table+" WHERE v IS NOT NULL") {
 				resumed := resumeKeyValue(t, key, raw)
-				got, err := filter.CompareKeyValues(key, resumed, c.Values[id].Spellings[0])
+				got, err := filter.CompareKeyValues(key, resumed, held[id])
 				require.NoError(t, err, "%#v resumed as %#v", raw, resumed)
 				assert.Zero(t, got, "%#v resumed as %#v", raw, resumed)
 			}
@@ -77,11 +81,11 @@ func runCanonicalOrderSQL(t *testing.T, db *sql.DB, d filter.Dialect, cases []or
 
 				counts := map[string]int64{}
 				want := make([]filter.FacetBucket, len(c.Values))
-				for i, v := range c.Values {
-					want[i] = filter.FacetBucket{Key: v.Text, Count: 1}
-					stored, err := c.Stored(v)
+				for i, v := range held {
+					text, err := core.CanonicalText(c.Type, v)
 					require.NoError(t, err)
-					keys, err := filter.FacetKeys(stored, field)
+					want[i] = filter.FacetBucket{Key: text, Count: 1}
+					keys, err := filter.FacetKeys(v, field)
 					require.NoError(t, err)
 					for _, k := range keys {
 						counts[k]++
