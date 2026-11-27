@@ -37,7 +37,7 @@ func TestSchemaRegistry_RefusesATakenName(t *testing.T) {
 	r := parse.NewSchemaRegistry(core.WithSQLTableName("items"))
 	parse.MustRegister[registrySnapshotEntity](r)
 	require.ErrorIs(t, parse.Register[plain](r), parse.ErrRegistered)
-	items, err := parse.NewResource[plain]("items")
+	items, err := parse.NewResource[plain](onSQLite, "items")
 	require.NoError(t, err)
 	err = parse.RegisterResource(r, items)
 	require.ErrorIs(t, err, parse.ErrRegistered)
@@ -67,8 +67,8 @@ func TestRegisterResource_TwoResourcesOverOneTable(t *testing.T) {
 		Secret string `json:"secret" db:"secret" parse:"filter"`
 	}
 	r := parse.NewSchemaRegistry()
-	parse.MustRegisterResource(r, parse.MustResource[narrow]("users"))
-	require.ErrorIs(t, parse.RegisterResource(r, parse.MustResource[wide]("users")), parse.ErrRegistered)
+	parse.MustRegisterResource(r, parse.MustResource[narrow](onSQLite, "users"))
+	require.ErrorIs(t, parse.RegisterResource(r, parse.MustResource[wide](onSQLite, "users")), parse.ErrRegistered)
 	assert.NotContains(t, r.SchemaFor("users").Filter.Fields, "secret")
 }
 
@@ -76,7 +76,7 @@ func TestRegisterResource_TwoResourcesOverOneTable(t *testing.T) {
 // three; a view is not registered.
 func TestSchemaRegistry_SearchSchemaAndViews(t *testing.T) {
 	r := parse.NewSchemaRegistry()
-	items := parse.MustResource[registrySnapshotEntity]("items")
+	items := parse.MustResource[registrySnapshotEntity](onSQLite, "items")
 	parse.MustRegisterResource(r, items)
 	search, ok := r.SearchSchema("items")
 	require.True(t, ok)
@@ -89,5 +89,5 @@ func TestSchemaRegistry_SearchSchemaAndViews(t *testing.T) {
 
 	view, err := items.WithPaths()
 	require.NoError(t, err)
-	assert.ErrorContains(t, parse.RegisterResource(parse.NewSchemaRegistry(), view), "parse: items: a WithPaths view is a value for one request and is not registered")
+	assert.ErrorContains(t, parse.RegisterResource(parse.NewSchemaRegistry(), view), "parse: items: a view (WithPaths, In) is a value for one request and is not registered")
 }

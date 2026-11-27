@@ -22,7 +22,7 @@ func TestArrayMatrix(t *testing.T) {
 
 // runArrayMatrix runs the array cases and facets on b.
 func runArrayMatrix(t *testing.T, b sqlBackend) {
-	db := b.open(t)
+	_, db := b.open(t)
 	schema, err := filtertest.ArraySchema()
 	require.NoError(t, err)
 	table := schemaTable(schema)

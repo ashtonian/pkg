@@ -52,7 +52,7 @@ func (e *BodyReadError) Unwrap() error { return e.Err }
 // PatchBodyLimit): MaxInputSize, the size the patch parsers hold a body to,
 // or 1 MiB when MaxInputSize is unlimited, and a longer one is E2063. A
 // read that fails is a *BodyReadError.
-func (r *Resource[T]) ParsePatchRequest(contentType string, body io.Reader, opts ...PatchOption) (*patch.ParsedPatch, error) {
+func (r *resourceCore) ParsePatchRequest(contentType string, body io.Reader, opts ...PatchOption) (*patch.ParsedPatch, error) {
 	var grammar func([]byte, ...PatchOption) (*patch.ParsedPatch, error)
 	if media, _, err := mime.ParseMediaType(contentType); err == nil {
 		switch media {
@@ -78,7 +78,7 @@ func (r *Resource[T]) ParsePatchRequest(contentType string, body io.Reader, opts
 // body that is too large without reading the rest of it, so the limit is
 // held below MaxInt for that byte. A body over limit is E2063; a read that
 // fails is a *BodyReadError.
-func (r *Resource[T]) readBody(body io.Reader, limit int, request string) ([]byte, error) {
+func (r *resourceCore) readBody(body io.Reader, limit int, request string) ([]byte, error) {
 	if body == nil {
 		return nil, nil
 	}

@@ -28,14 +28,14 @@ type searchedPart struct {
 	PumpID string `json:"pump_id" db:"pump_id" parse:"filter"`
 }
 
-// searchedPumps is the pumps resource advertising search as param, the
-// default when param is empty.
-func searchedPumps(t *testing.T, param string, opts ...parse.ResourceOption) (*parse.Resource[searchedPump], error) {
+// searchedPumps is the pumps resource on p advertising search as param,
+// the default when param is empty.
+func searchedPumps(t *testing.T, p *parse.Provider, param string, opts ...parse.ResourceOption) (*parse.Resource[searchedPump], error) {
 	t.Helper()
 	if param != "" {
 		opts = append(opts, parse.ParserOptions(core.WithGeneratorOptions(core.WithSearchParam(param))))
 	}
-	return parse.NewResource[searchedPump]("pumps", append(opts, atOneInstant())...)
+	return parse.NewResource[searchedPump](p, "pumps", append(opts, atOneInstant())...)
 }
 
 // The schema document states where a client puts the search, and the same
@@ -50,7 +50,7 @@ func TestSearchParam_DiscoveryParsingAndSQLAgree(t *testing.T) {
 		{"custom", "q", "q"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			res, err := searchedPumps(t, tt.configured)
+			res, err := searchedPumps(t, onSQLite, tt.configured)
 			require.NoError(t, err)
 			reg := parse.NewSchemaRegistry()
 			require.NoError(t, parse.RegisterResource(reg, res))
@@ -63,10 +63,17 @@ func TestSearchParam_DiscoveryParsingAndSQLAgree(t *testing.T) {
 			get, err := res.ParseList(url.Values{doc.Search.Param: {"pump"}, filter.ParamSort: {"name"}})
 			require.NoError(t, err)
 			assert.Equal(t, "pump", get.Search())
-			for dialect, arg := range map[filter.Dialect]string{filter.SQLiteDialect{}: "%pump%", filter.PostgresDialect{}: "pump"} {
-				plan, err := res.BuildList(dialect, get, parse.Scope{})
+			for _, on := range []struct {
+				provider *parse.Provider
+				arg      string
+			}{{onSQLite, "%pump%"}, {onPostgres, "pump"}} {
+				built, err := searchedPumps(t, on.provider, tt.configured)
 				require.NoError(t, err)
-				assert.Contains(t, plan.Page.Args, arg, "%s searches the advertised parameter's value", dialect.Name())
+				req, err := built.ParseList(url.Values{doc.Search.Param: {"pump"}, filter.ParamSort: {"name"}})
+				require.NoError(t, err)
+				plan, err := built.BuildList(req, parse.Scope{})
+				require.NoError(t, err)
+				assert.Contains(t, plan.Page.Args, on.arg, "%s searches the advertised parameter's value", on.provider.Name())
 			}
 
 			post, err := res.ParseListBody(strings.NewReader(`{"` + doc.Search.Member + `":"pump","sort":"name"}`))
@@ -89,7 +96,7 @@ func TestSearchParam_DiscoveryParsingAndSQLAgree(t *testing.T) {
 
 // One request gives the search once, under either name.
 func TestSearchParam_GivenOnce(t *testing.T) {
-	res, err := searchedPumps(t, "q")
+	res, err := searchedPumps(t, onSQLite, "q")
 	require.NoError(t, err)
 	for _, tt := range []struct {
 		name  string
@@ -137,20 +144,20 @@ func TestSearchParam_CollisionsAreRefusedAtConstruction(t *testing.T) {
 		{"an accepted parameter", "q", []parse.ResourceOption{parse.AcceptParams("q")}, `search parameter "q" is a parameter the endpoint reads itself (AcceptParams "q")`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := searchedPumps(t, tt.param, tt.opts...)
+			_, err := searchedPumps(t, onSQLite, tt.param, tt.opts...)
 			require.ErrorContains(t, err, tt.want)
 		})
 	}
 
-	res, err := searchedPumps(t, "q")
+	res, err := searchedPumps(t, onSQLite, "q")
 	require.NoError(t, err)
-	parts, err := parse.NewResource[searchedPart]("pump_parts")
+	parts, err := parse.NewResource[searchedPart](onSQLite, "pump_parts")
 	require.NoError(t, err)
 	err = res.Relate("q", parse.HasMany(parts, "pump_id"))
 	require.ErrorContains(t, err, `parse: pumps: relation "q": search parameter "q" is a flat filter on field "q"`)
 	require.NoError(t, res.Relate("parts", parse.HasMany(parts, "pump_id")), "another name relates")
 
-	dotted, err := searchedPumps(t, "labels.env")
+	dotted, err := searchedPumps(t, onSQLite, "labels.env")
 	require.NoError(t, err)
 	_, err = dotted.WithPaths(filter.PathDecl{Path: "labels.env", Type: core.FieldTypeString})
 	require.ErrorContains(t, err, `search parameter "labels.env" is a flat filter on field "labels.env"`)
@@ -170,25 +177,25 @@ func TestAcceptParams_CollisionsAreRefusedAtConstruction(t *testing.T) {
 		{"the key", "id", `accepted parameter "id" (AcceptParams) is a flat filter on field "id"`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := searchedPumps(t, "", parse.AcceptParams(tt.param))
+			_, err := searchedPumps(t, onSQLite, "", parse.AcceptParams(tt.param))
 			require.ErrorContains(t, err, tt.want)
 		})
 	}
 
-	res, err := searchedPumps(t, "", parse.AcceptParams("view"))
+	res, err := searchedPumps(t, onSQLite, "", parse.AcceptParams("view"))
 	require.NoError(t, err)
-	parts, err := parse.NewResource[searchedPart]("pump_parts")
+	parts, err := parse.NewResource[searchedPart](onSQLite, "pump_parts")
 	require.NoError(t, err)
 	err = res.Relate("view", parse.HasMany(parts, "pump_id"))
 	require.ErrorContains(t, err, `parse: pumps: relation "view": accepted parameter "view" (AcceptParams) is a flat filter on field "view"`)
 	require.NoError(t, res.Relate("parts", parse.HasMany(parts, "pump_id")), "another name relates")
 
-	suffixed, err := searchedPumps(t, "", parse.AcceptParams("kits_in"))
+	suffixed, err := searchedPumps(t, onSQLite, "", parse.AcceptParams("kits_in"))
 	require.NoError(t, err)
 	err = suffixed.Relate("kits", parse.HasMany(parts, "pump_id"))
 	require.ErrorContains(t, err, `parse: pumps: relation "kits": accepted parameter "kits_in" (AcceptParams) is a flat filter on field "kits"`)
 
-	dotted, err := searchedPumps(t, "", parse.AcceptParams("labels.env"))
+	dotted, err := searchedPumps(t, onSQLite, "", parse.AcceptParams("labels.env"))
 	require.NoError(t, err)
 	_, err = dotted.WithPaths(filter.PathDecl{Path: "labels.env", Type: core.FieldTypeString})
 	require.ErrorContains(t, err, `accepted parameter "labels.env" (AcceptParams) is a flat filter on field "labels.env"`)
@@ -202,7 +209,7 @@ func TestAcceptParams_CollisionsAreRefusedAtConstruction(t *testing.T) {
 // parameter, or a flat filter on a field, is refused rather than skipped,
 // which would list every row the filter narrows.
 func TestQueryParamAccept_CollisionsAreRefusedPerCall(t *testing.T) {
-	res, err := searchedPumps(t, "")
+	res, err := searchedPumps(t, onSQLite, "")
 	require.NoError(t, err)
 	q := url.Values{"category": {"pump"}, "name_like": {"P%"}, "id": {"p1"}}
 	for _, tt := range []struct {

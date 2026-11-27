@@ -9,10 +9,9 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
-	"github.com/ashtonian/pkg/parse/parsepgx"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,27 +24,23 @@ type datedRow struct {
 func TestCivilDateNativeRowsAndCursor(t *testing.T) {
 	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
 	ctx := testContext(t)
-	setup := c.open(t, pgx.QueryExecModeCacheStatement)
+	setup := c.open(t, ctx, pgx.QueryExecModeCacheStatement)
 	_, err := setup.Exec(ctx, `CREATE TABLE dated_rows (id TEXT PRIMARY KEY, day DATE); INSERT INTO dated_rows VALUES ('a','2026-10-26'),('b','2028-02-29'),('c',NULL)`)
 	require.NoError(t, err)
-	resource := parse.MustResource[datedRow]("dated_rows")
 	for name, mode := range map[string]pgx.QueryExecMode{"extended": pgx.QueryExecModeCacheStatement, "simple": pgx.QueryExecModeSimpleProtocol} {
 		t.Run(name, func(t *testing.T) {
-			pool := c.open(t, mode)
-			conn, err := pool.Acquire(ctx)
-			require.NoError(t, err)
-			defer conn.Release()
 			for _, zone := range []string{"Pacific/Kiritimati", "Etc/GMT+12"} {
-				_, err = conn.Exec(ctx, "SET TIME ZONE '"+zone+"'")
-				require.NoError(t, err)
+				pool := c.open(t, ctx, mode, func(cfg *pgxpool.Config) { cfg.ConnConfig.RuntimeParams["TimeZone"] = zone })
+				var session string
+				require.NoError(t, pool.QueryRow(ctx, "SHOW TimeZone").Scan(&session))
+				require.Equal(t, zone, session, "the pool's sessions run in the zone")
+				resource := parse.MustResource[datedRow](provider(t, ctx, pool), "dated_rows")
 				cursor := ""
 				var rows []datedRow
 				for range 3 {
 					request, err := resource.ParseList(url.Values{"sort": {"day,id"}, "page_size": {"1"}, "cursor": {cursor}})
 					require.NoError(t, err)
-					plan, err := resource.BuildList(filter.PostgresDialect{}, request, parse.Scope{})
-					require.NoError(t, err)
-					page, err := parsepgx.QueryPage(ctx, conn, resource, plan)
+					page, err := resource.List(ctx, request, parse.Scope{})
 					require.NoError(t, err)
 					rows = append(rows, page.Items...)
 					if !page.PageInfo.HasNextPage {

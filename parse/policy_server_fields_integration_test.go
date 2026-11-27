@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"fmt"
 	"net/url"
 	"testing"
 
@@ -25,31 +24,19 @@ func TestPolicyServerFields(t *testing.T) {
 }
 
 func runPolicyServerFields(t *testing.T, b sqlBackend) {
-	db := b.open(t)
-	d := b.dialect
+	p, db := b.open(t)
 	execStatements(t, db, serverFieldFixture...)
-	docs := serverFieldDocuments(t)
+	docs := serverFieldDocuments(t, p)
 	req, err := docs.ParseList(url.Values{filter.ParamIncludeTotal: {"true"}, filter.ParamFacets: {"title"}})
 	require.NoError(t, err)
-	plan, err := docs.BuildList(d, req, ownerEUPolicy())
-	require.NoError(t, err)
+	page := listPage(t, docs, req, ownerEUPolicy())
 
-	var ids []string
-	for _, row := range queryRows[[]any](t, db, plan.Page.SQL, plan.Page.Args...) {
-		ids = append(ids, fmt.Sprint(row[0]))
-	}
-	assert.Equal(t, []string{"1", "4"}, ids)
-	assert.Equal(t, "2", fmt.Sprint(queryRows[[]any](t, db, plan.Count.SQL, plan.Count.Args...)[0][0]))
-
-	rows, err := db.Query(plan.Facets.SQL, plan.Facets.Args...)
-	require.NoError(t, err)
-	facets, err := filter.ScanFacetUnion(rows)
-	require.NoError(t, err)
+	assert.Equal(t, []int{1, 4}, itemIDs(page.Items, func(d serverFieldDocument) int { return d.ID }))
+	require.NotNil(t, page.PageInfo.TotalCount)
+	assert.Equal(t, int64(2), *page.PageInfo.TotalCount)
 	counts := map[string]int64{}
-	for _, f := range facets {
-		for _, b := range f.Buckets {
-			counts[fmt.Sprint(b.Key)] = b.Count
-		}
+	for _, bucket := range page.Facets["title"] {
+		counts[bucket.Key] = bucket.Count
 	}
 	assert.Equal(t, map[string]int64{"alpha": 1, "gamma": 1}, counts, "the facet counts the policy's population")
 }

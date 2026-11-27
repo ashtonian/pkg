@@ -21,9 +21,9 @@ func TestUpdateBatchDatabase(t *testing.T) {
 
 func testUpdateBatchDatabase(t *testing.T, b sqlBackend) {
 	t.Helper()
-	db := b.open(t)
+	provider, db := b.open(t)
 	d := b.dialect
-	r := updateBatchResource(t)
+	r := updateBatchResource(t, provider)
 	jsonType := b.columnType(core.TypeInfo{Type: core.FieldTypeJSON})
 	_, err := db.ExecContext(t.Context(), `CREATE TABLE batch_rows (id BIGINT PRIMARY KEY,tenant_id TEXT NOT NULL,reference TEXT CHECK(reference <> 'refused'),version BIGINT NOT NULL,meta `+jsonType+` NOT NULL,updated_at TEXT NOT NULL,deleted_at TEXT)`)
 	require.NoError(t, err)
@@ -54,11 +54,13 @@ func testUpdateBatchDatabase(t *testing.T, b sqlBackend) {
 		}
 		requests = append(requests, parse.RowUpdate{Key: parse.Key{id}, Patch: updateBatchPatch(t, r, raw), Policy: updateBatchVersion(3)})
 	}
-	plan, err := r.BuildUpdateBatch(d, requests, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxParameters: 40}, parse.SkipUnchanged(), parse.Stamp("updated_at", stamp), parse.Increment("version"))
+	opts := []parse.UpdateOption{parse.SkipUnchanged(), parse.Stamp("updated_at", stamp), parse.Increment("version")}
+	limits := parse.UpdateBatchLimits{MaxParameters: 40}
+	plan, err := r.BuildUpdateBatch(requests, parse.Scope{Tenant: "t1"}, limits, opts...)
 	require.NoError(t, err)
 	require.Greater(t, len(plan.Chunks), 1)
 	require.Less(t, len(plan.Chunks), len(requests))
-	res, err := applyUpdateBatch(t, db, r, d, plan)
+	res, err := r.UpdateBatch(t.Context(), requests, parse.Scope{Tenant: "t1"}, limits, opts...)
 	require.NoError(t, err)
 	require.Len(t, res.Changed, 38)
 	for _, row := range res.Changed {
@@ -97,9 +99,7 @@ func testUpdateBatchDatabase(t *testing.T, b sqlBackend) {
 		{"server-stamp-owns-value", `{"reference":"stamp-conflict","meta":{"value":"stamp-control"}}`, "server-stamp", 4, 3, parse.StampSQL("reference", "'server-stamp'")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{{Key: parse.Key{test.key}, Patch: updateBatchPatch(t, r, test.raw)}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, test.opt)
-			require.NoError(t, err)
-			res, err := applyUpdateBatch(t, db, r, d, plan)
+			res, err := r.UpdateBatch(t.Context(), []parse.RowUpdate{{Key: parse.Key{test.key}, Patch: updateBatchPatch(t, r, test.raw)}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, test.opt)
 			require.NoError(t, err)
 			require.Len(t, res.Changed, 1)
 			assert.Empty(t, res.Unchanged)
@@ -116,24 +116,20 @@ func testUpdateBatchDatabase(t *testing.T, b sqlBackend) {
 		{"stale", 2, 3}, {"missing", 99, 4}, {"foreign", 41, 3}, {"deleted", 42, 3},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{
+			res, err := r.UpdateBatch(t.Context(), []parse.RowUpdate{
 				{Key: parse.Key{int64(1)}, Patch: updateBatchPatch(t, r, `{"reference":"must-not-write"}`), Policy: updateBatchVersion(4)},
 				{Key: parse.Key{test.key}, Patch: updateBatchPatch(t, r, `{"reference":"also-refused"}`), Policy: updateBatchVersion(test.rev)},
 			}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxParameters: 4}, parse.SkipUnchanged())
-			require.NoError(t, err)
-			res, err := applyUpdateBatch(t, db, r, d, plan)
 			require.ErrorIs(t, err, parse.ErrUpdateBatchTargets)
 			assert.Zero(t, res)
 			assert.Equal(t, "new-1", storedReference(t, db, d, 1), "no chunk wrote")
 		})
 	}
 	t.Run("late-constraint-rolls-back-earlier-chunk", func(t *testing.T) {
-		plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{
+		res, err := r.UpdateBatch(t.Context(), []parse.RowUpdate{
 			{Key: parse.Key{int64(1)}, Patch: updateBatchPatch(t, r, `{"reference":"must-not-write"}`), Policy: updateBatchVersion(4)},
 			{Key: parse.Key{int64(2)}, Patch: updateBatchPatch(t, r, `{"reference":"refused"}`), Policy: updateBatchVersion(4)},
 		}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxParameters: 4}, parse.SkipUnchanged())
-		require.NoError(t, err)
-		res, err := applyUpdateBatch(t, db, r, d, plan)
 		require.Error(t, err)
 		assert.NotErrorIs(t, err, parse.ErrUpdateBatchTargets, "every target was found; the second owner failed")
 		assert.Zero(t, res)
@@ -141,7 +137,7 @@ func testUpdateBatchDatabase(t *testing.T, b sqlBackend) {
 	})
 }
 
-func storedReference(t *testing.T, db *sql.DB, d parse.Dialect, id int64) string {
+func storedReference(t *testing.T, db *sql.DB, d filter.Dialect, id int64) string {
 	t.Helper()
 	var reference string
 	require.NoError(t, db.QueryRowContext(t.Context(), "SELECT reference FROM batch_rows WHERE id="+d.Placeholder(1), id).Scan(&reference))

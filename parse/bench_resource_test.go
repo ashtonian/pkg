@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
 )
 
 type benchWidget struct {
@@ -23,7 +22,7 @@ type benchWidget struct {
 
 func benchWidgetResource(b *testing.B) *parse.Resource[benchWidget] {
 	b.Helper()
-	r, err := parse.NewResource[benchWidget]("widgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+	r, err := parse.NewResource[benchWidget](onPostgres, "widgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -34,7 +33,8 @@ func benchWidgetResource(b *testing.B) *parse.Resource[benchWidget] {
 // columns and the parser for its type.
 func BenchmarkNewResource(b *testing.B) {
 	for b.Loop() {
-		if _, err := parse.NewResource[benchWidget]("widgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at")); err != nil {
+		_, err := parse.NewResource[benchWidget](onPostgres, "widgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+		if err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -48,7 +48,7 @@ func BenchmarkResourcePage(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	plan, err := r.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: "t1"})
+	plan, err := r.BuildList(req, parse.Scope{Tenant: "t1"})
 	if err != nil {
 		b.Fatal(err)
 	}

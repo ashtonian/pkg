@@ -14,6 +14,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -38,8 +39,8 @@ func TestClock_OneInstantPerListRequest(t *testing.T) {
 		at = at.Add(time.Hour)
 		return at
 	}
-	types := parse.MustResource[clockType]("clock_types")
-	devices, err := parse.NewResource[clockDevice]("clock_devices", parse.ParserOptions(core.WithClock(stepping), core.WithMaxCost(1<<10)))
+	types := parse.MustResource[clockType](onPostgres, "clock_types")
+	devices, err := parse.NewResource[clockDevice](onPostgres, "clock_devices", parse.ParserOptions(core.WithClock(stepping), core.WithMaxCost(1<<10)))
 	require.NoError(t, err)
 	devices.MustRelate("type", parse.BelongsTo(types, "type_id", parse.PolicyScoped()))
 	devices.MustRelate("shared_types", parse.ManyToMany(types, parse.Through("clock_device_types", "device_id", "type_id"), parse.PolicyScoped(), parse.Includable()))
@@ -62,7 +63,7 @@ func TestClock_OneInstantPerListRequest(t *testing.T) {
 		}
 		req, err := devices.ParseList(related)
 		require.NoError(t, err)
-		plan, err := devices.BuildList(filter.PostgresDialect{}, req, scope)
+		plan, err := devices.BuildList(req, scope)
 		require.NoError(t, err)
 		instants := timestamps(t, plan.Page.Args)
 		require.Len(t, instants, 5)
@@ -125,8 +126,8 @@ func TestClock_OneInstantPerUpdatePlan(t *testing.T) {
 		at = at.Add(time.Hour)
 		return at
 	}
-	types := parse.MustResource[clockType]("clock_types")
-	items, err := parse.NewResource[clockItem]("clock_items", parse.ParserOptions(core.WithClock(stepping)))
+	types := parse.MustResource[clockType](onPostgres, "clock_types")
+	items, err := parse.NewResource[clockItem](onPostgres, "clock_items", parse.ParserOptions(core.WithClock(stepping)))
 	require.NoError(t, err)
 	items.MustRelate("shared_types", parse.ManyToMany(types, parse.Through("clock_item_types", "item_id", "type_id"), parse.PolicyScoped(), parse.Writable()))
 	scope := parse.Scope{
@@ -135,28 +136,46 @@ func TestClock_OneInstantPerUpdatePlan(t *testing.T) {
 			"clock_types": {Constraints: []*filter.PolicyConstraint{{Field: "created_at", Operator: filter.OpLt, Value: "now+2h"}}},
 		},
 	}
-	d := filter.PostgresDialect{}
 
 	t.Run("update", func(t *testing.T) {
 		p, err := items.ParseMergePatch([]byte(`{"name":"x","shared_types":["k1"]}`))
 		require.NoError(t, err)
-		plan, err := items.BuildUpdate(d, p, parse.ByID("i1"), scope, parse.SkipUnchanged())
+		plan, err := items.BuildUpdate(p, parse.ByID("i1"), scope, parse.SkipUnchanged())
 		require.NoError(t, err)
 		read := at
 		require.NotNil(t, plan.Current)
 		assert.Equal(t, []time.Time{read.Add(time.Hour)}, timestamps(t, plan.Owner.Args), "the policy's now is the clock's one reading")
 		assert.Equal(t, []time.Time{read.Add(time.Hour)}, timestamps(t, plan.Current.Args), "Current admits the rows Owner does")
-
-		stmts, err := items.RelationStatements(plan, []parse.Key{{"i1"}})
+	})
+	t.Run("membership change", func(t *testing.T) {
+		p, db := providertest.SQLite(t)
+		types := parse.MustResource[clockType](p, "clock_types")
+		items, err := parse.NewResource[clockItem](p, "clock_items", parse.ParserOptions(core.WithClock(stepping)))
 		require.NoError(t, err)
-		var related []time.Time
-		for _, s := range stmts {
-			related = append(related, timestamps(t, s.Args)...)
-		}
-		require.NotEmpty(t, related)
-		for _, ts := range related {
-			assert.Equal(t, read.Add(2*time.Hour), ts, "a membership change admits the related rows at the plan's instant")
-		}
+		items.MustRelate("shared_types", parse.ManyToMany(types, parse.Through("clock_item_types", "item_id", "type_id"), parse.PolicyScoped(), parse.Writable()))
+		parsed, err := items.ParseMergePatch([]byte(`{"name":"x","shared_types":["k0","k1"]}`))
+		require.NoError(t, err)
+		// The update's plan takes the clock's next reading. k0 is visible at
+		// that instant (created before now+2h); k1 only at a later reading.
+		instant := at.Add(time.Hour)
+		execStatements(t, db,
+			`CREATE TABLE clock_items (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL)`,
+			`CREATE TABLE clock_types (id TEXT PRIMARY KEY, created_at TEXT NOT NULL)`,
+			`CREATE TABLE clock_item_types (item_id TEXT NOT NULL, type_id TEXT NOT NULL, PRIMARY KEY (item_id, type_id))`,
+		)
+		_, err = db.ExecContext(t.Context(), `INSERT INTO clock_items (id, name, created_at) VALUES ('i1', 'old', ?1)`,
+			core.FormatTimestamp(instant.Add(-time.Hour)))
+		require.NoError(t, err)
+		_, err = db.ExecContext(t.Context(), `INSERT INTO clock_types (id, created_at) VALUES ('k0', ?1), ('k1', ?2)`,
+			core.FormatTimestamp(instant.Add(time.Hour)), core.FormatTimestamp(instant.Add(150*time.Minute)))
+		require.NoError(t, err)
+
+		res, err := items.Update(t.Context(), parsed, parse.ByID("i1"), scope)
+		require.NoError(t, err)
+		assert.Equal(t, instant, at, "the update read the clock once")
+		assert.Equal(t, int64(1), res.RelationRows)
+		assert.Equal(t, []string{"i1:k0"}, queryRows[string](t, db, `SELECT item_id || ':' || type_id FROM clock_item_types ORDER BY 1`),
+			"a membership change admits the related rows at the plan's instant")
 	})
 	t.Run("batch", func(t *testing.T) {
 		rename := func(name string) *patch.ParsedPatch {
@@ -165,7 +184,7 @@ func TestClock_OneInstantPerUpdatePlan(t *testing.T) {
 			return p
 		}
 		rows := []parse.RowUpdate{{Key: parse.Key{"i1"}, Patch: rename("x")}, {Key: parse.Key{"i2"}, Patch: rename("y")}}
-		plan, err := items.BuildUpdateBatch(d, rows, scope, parse.UpdateBatchLimits{}, parse.SkipUnchanged())
+		plan, err := items.BuildUpdateBatch(rows, scope, parse.UpdateBatchLimits{}, parse.SkipUnchanged())
 		require.NoError(t, err)
 		read := at
 		require.Len(t, plan.Chunks, 1)

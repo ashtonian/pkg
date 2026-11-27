@@ -114,10 +114,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 	if n := highestPlaceholder(dialect, filterWhere); n > len(filterArgs) {
 		return FacetQuery{}, fmt.Errorf("BuildFacetQuery: filterWhere names placeholder %d with %d arguments; number its placeholders from 1", n, len(filterArgs))
 	}
-	exprs, err := schema.ComputedSQL(dialect)
-	if err != nil {
-		return FacetQuery{}, err
-	}
+	exprs := schema.ComputedSQL()
 
 	type meta struct {
 		req       FacetRequest

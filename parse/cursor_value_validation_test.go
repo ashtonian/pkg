@@ -91,7 +91,7 @@ func TestGeneratedSortSchemaValidatesCursorRangeAndNullableValues(t *testing.T) 
 		UUID    uuid.UUID `json:"uuid" db:"uuid" parse:"sort"`
 		Rank    *int16    `json:"rank" db:"rank" parse:"sort"`
 	}
-	p, err := parse.NewResource[row]("rows")
+	p, err := parse.NewResource[row](onSQLite, "rows")
 	require.NoError(t, err)
 	require.Equal(t, reflect.Uint8, p.SortSchema().Fields["id"].NumberKind)
 	require.Equal(t, reflect.Int16, p.SortSchema().Fields["rank"].NumberKind)

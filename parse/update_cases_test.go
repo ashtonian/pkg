@@ -22,9 +22,9 @@ type gadget struct {
 	Tags      []string   `json:"tags"       db:"-"          parse:"filter,patch" relation:"gadget_tags,gadget_id,tag_id,id,tenant_id" indexed:"true"`
 }
 
-func gadgets(t *testing.T) *parse.Resource[gadget] {
+func gadgets(t *testing.T, p *parse.Provider) *parse.Resource[gadget] {
 	t.Helper()
-	r, err := parse.NewResource[gadget]("gadgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+	r, err := parse.NewResource[gadget](p, "gadgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
 	require.NoError(t, err)
 	return r
 }

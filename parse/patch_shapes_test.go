@@ -26,7 +26,7 @@ type shapeEntity struct {
 
 func shapeParser(t *testing.T) *parse.Resource[shapeEntity] {
 	t.Helper()
-	p, err := parse.NewResource[shapeEntity]("shape_entities")
+	p, err := parse.NewResource[shapeEntity](onSQLite, "shape_entities")
 	require.NoError(t, err)
 	return p
 }
@@ -67,7 +67,7 @@ func TestPatchShapes_FixedArray(t *testing.T) {
 		ID   string `json:"id,omitempty" db:"id"`
 		Pair [2]int `json:"pair" db:"pair" parse:"patch" patch_ops:"replace,array_append"`
 	}
-	_, err = parse.NewResource[declared]("declareds")
+	_, err = parse.NewResource[declared](onSQLite, "declareds")
 	require.ErrorContains(t, err, "fixed-size array")
 }
 

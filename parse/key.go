@@ -19,7 +19,7 @@ type Key = core.Key
 // ownerKeys are keys of r's rows as read back (Key), normalized
 // (keyColumns.normalize) before statements over the rows' relations bind
 // them, so they bind as the rows' targets did.
-func (r *Resource[T]) ownerKeys(keys []Key) ([]core.Key, error) {
+func (r *resourceCore) ownerKeys(keys []Key) ([]core.Key, error) {
 	kc := r.keyColumns()
 	out := make([]core.Key, len(keys))
 	for i, k := range keys {
@@ -39,7 +39,7 @@ type keyColumns struct {
 	types []core.TypeInfo
 }
 
-func (r *Resource[T]) keyColumns() keyColumns {
+func (r *resourceCore) keyColumns() keyColumns {
 	kc := keyColumns{names: r.pk, types: make([]core.TypeInfo, len(r.pk))}
 	for i, column := range r.pk {
 		kc.types[i] = r.columnTypeInfo(column)
@@ -49,7 +49,7 @@ func (r *Resource[T]) keyColumns() keyColumns {
 
 // columnTypeInfo is column's type with the storage it declares (SQLType),
 // which reads a network value's canonical text.
-func (r *Resource[T]) columnTypeInfo(column string) core.TypeInfo {
+func (r *resourceCore) columnTypeInfo(column string) core.TypeInfo {
 	info := core.TypeOf(r.tableColumns[column])
 	t, ok := r.sqlTypes[column]
 	if ok {
@@ -114,8 +114,8 @@ func (kc keyColumns) requested(key Key) (Key, error) {
 }
 
 // stored is a normalized key as d's database holds it
-// (Dialect.StoredKeyValue): a timestamp at the database's precision.
-func (kc keyColumns) stored(d Dialect, key Key) (Key, error) {
+// (filter.Dialect.StoredKeyValue): a timestamp at the database's precision.
+func (kc keyColumns) stored(d filter.Dialect, key Key) (Key, error) {
 	out := make(Key, len(key))
 	for i, info := range kc.types {
 		v, err := d.StoredKeyValue(info, key[i])
@@ -163,7 +163,7 @@ func (kc keyColumns) compare(a, b Key) (int, error) {
 
 // order is the ORDER BY list that reads the key columns of table in
 // compare's order (filter.KeyOrder).
-func (kc keyColumns) order(d Dialect, table string) string {
+func (kc keyColumns) order(d filter.Dialect, table string) string {
 	order := make([]string, len(kc.names))
 	for i, column := range kc.names {
 		order[i] = filter.KeyOrder(d, d.QuoteIdent(table)+"."+d.QuoteIdent(column), kc.types[i])

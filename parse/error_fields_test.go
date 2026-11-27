@@ -47,9 +47,10 @@ type fieldRuleItem struct {
 // refuses a value of, a relation, and document members patch may write.
 func fieldRuleItems(t *testing.T) *Resource[fieldRuleItem] {
 	t.Helper()
-	tags, err := NewResource[fieldRuleTag]("tags")
+	p := compiling(filter.SQLiteDialect{})
+	tags, err := NewResource[fieldRuleTag](p, "tags")
 	require.NoError(t, err)
-	items, err := NewResource[fieldRuleItem]("items", CustomizeSchemas(func(s Schemas) error {
+	items, err := NewResource[fieldRuleItem](p, "items", CustomizeSchemas(func(s Schemas) error {
 		return s.Patch.AddPath("/attrs/**", &patch.PathSchema{
 			AllowedOps: []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpReplace, patch.PatchOpRemove},
 			DataType:   core.FieldTypeAny, SQLColumn: "attrs",
@@ -134,7 +135,7 @@ func fieldRules(t *testing.T, items *Resource[fieldRuleItem]) map[core.Code]fiel
 		return func(t *testing.T) error {
 			req, err := items.ParseListInput(ListInput{Filter: f})
 			require.NoError(t, err)
-			_, err = items.BuildList(filter.SQLiteDialect{}, req, Scope{})
+			_, err = items.BuildList(req, Scope{})
 			return err
 		}
 	}
@@ -158,7 +159,7 @@ func fieldRules(t *testing.T, items *Resource[fieldRuleItem]) map[core.Code]fiel
 	}
 	update := func(body string) func(*testing.T) error {
 		return func(t *testing.T) error {
-			_, err := items.BuildUpdate(filter.SQLiteDialect{}, parsed(t, body), ByID(int64(1)), Scope{})
+			_, err := items.BuildUpdate(parsed(t, body), ByID(int64(1)), Scope{})
 			return err
 		}
 	}
@@ -202,7 +203,7 @@ func fieldRules(t *testing.T, items *Resource[fieldRuleItem]) map[core.Code]fiel
 			{"compiled move", update(`[{"op":"move","from":"/note","path":"/name"}]`), "name"},
 			{"batch member", func(t *testing.T) error {
 				rows := []RowUpdate{{Key: Key{int64(1)}, Patch: parsed(t, `[{"op":"remove","path":"/attrs/old"}]`)}}
-				_, err := items.BuildUpdateBatch(filter.SQLiteDialect{}, rows, Scope{}, UpdateBatchLimits{})
+				_, err := items.BuildUpdateBatch(rows, Scope{}, UpdateBatchLimits{})
 				return err
 			}, "attrs"},
 		}},
@@ -253,9 +254,9 @@ func fieldRules(t *testing.T, items *Resource[fieldRuleItem]) map[core.Code]fiel
 			{"applied test", apply(`[{"op":"test","path":"/name","value":"b"}]`), "name"},
 			{"applied member", apply(`[{"op":"remove","path":"/attrs/missing"}]`), "attrs"},
 			{"stored member", func(t *testing.T) error {
-				plan, err := items.BuildUpdate(filter.SQLiteDialect{}, parsed(t, `[{"op":"replace","path":"/attrs/color","value":"red"}]`), ByID(int64(1)), Scope{})
+				plan, err := items.BuildUpdate(parsed(t, `[{"op":"replace","path":"/attrs/color","value":"red"}]`), ByID(int64(1)), Scope{})
 				require.NoError(t, err)
-				return plan.ConflictError(0)
+				return plan.conflictError(0)
 			}, "attrs"},
 		}},
 		core.CodeSchemaNotFound: {noField: "a resource lookup"},

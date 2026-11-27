@@ -19,9 +19,9 @@ type gadgetAttrs struct {
 	Attrs map[string]any `json:"attrs" db:"attrs" parse:"patch"`
 }
 
-func gadgetAttrsResource(t *testing.T) *parse.Resource[gadgetAttrs] {
+func gadgetAttrsResource(t *testing.T, p *parse.Provider) *parse.Resource[gadgetAttrs] {
 	t.Helper()
-	r, err := parse.NewResource[gadgetAttrs]("gadget_attrs", parse.CustomizeSchemas(func(s parse.Schemas) error {
+	r, err := parse.NewResource[gadgetAttrs](p, "gadget_attrs", parse.CustomizeSchemas(func(s parse.Schemas) error {
 		return s.Patch.AddPath("/attrs/**", &patch.PathSchema{
 			AllowedOps: []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpReplace, patch.PatchOpRemove},
 			DataType:   core.FieldTypeAny, SQLColumn: "attrs",

@@ -68,14 +68,14 @@ func TestUUIDKeyRanges(t *testing.T) {
 // same keys in SQL and in filter.Evaluate over the rows.
 func runUUIDKeyRanges(t *testing.T, b sqlBackend) {
 	t.Helper()
-	db, d := b.open(t), b.dialect
+	provider, db := b.open(t)
 	keys := uuidKeys()
 	rows := make([][]any, len(keys))
 	for i, id := range keys {
 		rows[i] = []any{id, string(rune('a' + i))}
 	}
 	b.load(t, db, sqlTable{name: "uuid_keyed", key: []string{"id"}, columns: []sqlColumn{column[uuid.UUID]("id"), column[string]("name").required()}}, rows)
-	r, err := parse.NewResource[uuidKeyed]("uuid_keyed")
+	r, err := parse.NewResource[uuidKeyed](provider, "uuid_keyed")
 	require.NoError(t, err)
 
 	for _, tc := range uuidKeyRanges() {
@@ -101,10 +101,10 @@ func runUUIDKeyRanges(t *testing.T, b sqlBackend) {
 			}
 			assert.Equal(t, want, evaluated, "filter.Evaluate")
 
-			plan, err := r.BuildList(d, req, parse.Scope{})
+			plan, err := r.BuildList(req, parse.Scope{})
 			require.NoError(t, err)
-			selected := itemIDs(resourceRows(t, db, r, d, plan.Page), func(k uuidKeyed) uuid.UUID { return k.ID })
-			assert.Equal(t, want, selected, d.Name())
+			selected := itemIDs(resourceRows(t, r, plan.Page), func(k uuidKeyed) uuid.UUID { return k.ID })
+			assert.Equal(t, want, selected, provider.Name())
 			assert.True(t, slices.IsSortedFunc(selected, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) }), "sorted by id")
 		})
 	}

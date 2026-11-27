@@ -124,25 +124,25 @@ func trackTable() sqlTable {
 
 func runTrackWalks(t *testing.T, b sqlBackend) {
 	t.Helper()
-	db := b.open(t)
+	prov, db := b.open(t)
 	seeds := trackSeeds()
 	rows := make([][]any, len(seeds))
 	for i, s := range seeds {
 		rows[i] = []any{trackID(s.id), s.rank, s.rank, s.name, trackTime(s), trackSeen(s), s.price}
 	}
 	b.load(t, db, trackTable(), rows)
-	p, err := parse.NewResource[trackItem]("track_items")
+	p, err := parse.NewResource[trackItem](prov, "track_items")
 	require.NoError(t, err)
 
 	for sortParam, want := range trackOrders() {
 		t.Run("sort="+sortParam, func(t *testing.T) {
-			forward, lastStart := walkTrack(t, db, b.dialect, p, sortParam, "", false)
+			forward, lastStart := walkTrack(t, b.dialect, p, sortParam, "", false)
 			assert.Equal(t, want, forward, "forward walk")
 
 			// Walk back from the last page's start cursor; the rows seen,
 			// followed by the last page, must reproduce the forward order.
 			lastPage := forward[len(forward)-lastPageLen(len(forward)):]
-			backward, _ := walkTrack(t, db, b.dialect, p, sortParam, lastStart, true)
+			backward, _ := walkTrack(t, b.dialect, p, sortParam, lastStart, true)
 			assert.Equal(t, want, backward+lastPage, "backward walk")
 		})
 	}
@@ -161,9 +161,9 @@ func lastPageLen(n int) int {
 // walkTrack pages through the list from cursor, following end cursors
 // forwards or start cursors backwards, and returns the ids seen in
 // presentation order (plus, going forwards, the last page's start cursor).
-func walkTrack(t *testing.T, db *sql.DB, d filter.Dialect, p *parse.Resource[trackItem], sortParam, cursor string, backward bool) (string, string) {
+func walkTrack(t *testing.T, d filter.Dialect, p *parse.Resource[trackItem], sortParam, cursor string, backward bool) (string, string) {
 	t.Helper()
-	lq, err := p.ListQuery(d)
+	lq, err := p.ListQuery()
 	require.NoError(t, err)
 	var pages []string
 	var lastStart string
@@ -175,7 +175,7 @@ func walkTrack(t *testing.T, db *sql.DB, d filter.Dialect, p *parse.Resource[tra
 		}
 		res, err := lq.Build(opts...)
 		require.NoError(t, err)
-		items := queryTrack(t, db, d, p, res)
+		items := queryTrack(t, d, p, res)
 		page, err := filter.NewPage(items, res.Limit, res.Cursor, func(it trackItem, col string) (any, error) {
 			return filter.CursorValueByTag(it, "db", col)
 		})
@@ -215,12 +215,11 @@ func trackSuffix(id uuid.UUID) string {
 	return string(rune('a' + id[15] - 1))
 }
 
-func queryTrack(t *testing.T, db *sql.DB, d filter.Dialect, p *parse.Resource[trackItem], res *filter.ListResult) []trackItem {
+// queryTrack reads res's page of track_items on p's provider.
+func queryTrack(t *testing.T, d filter.Dialect, p *parse.Resource[trackItem], res *filter.ListResult) []trackItem {
 	t.Helper()
-	columns, err := p.Columns(d)
-	require.NoError(t, err)
-	st := parse.Statement{SQL: "SELECT " + joinColumns(columns) + " FROM " + d.QuoteIdent("track_items") + " " + res.Fragment, Args: res.Args}
-	return resourceRows(t, db, p, d, st)
+	st := parse.Statement{SQL: "SELECT " + joinColumns(p.Columns()) + " FROM " + d.QuoteIdent("track_items") + " " + res.Fragment, Args: res.Args}
+	return resourceRows(t, p, st)
 }
 
 func trackTime(s trackSeed) time.Time {

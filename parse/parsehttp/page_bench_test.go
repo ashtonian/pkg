@@ -37,7 +37,7 @@ func (d *discard) WriteHeader(int)             {}
 // BenchmarkWriteList writes a 100-item page as a list answers it: whole,
 // and narrowed to two of its eight members.
 func BenchmarkWriteList(b *testing.B) {
-	res, err := parse.NewResource[benchDevice]("devices")
+	res, err := parse.NewResource[benchDevice](onSQLite, "devices")
 	if err != nil {
 		b.Fatal(err)
 	}

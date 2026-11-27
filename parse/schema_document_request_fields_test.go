@@ -48,9 +48,9 @@ type docPart struct {
 // not, and the tenant and soft-delete columns, untagged fields and hidden
 // fields left out.
 func TestSchemaDocument_ListsWhatTheParserAccepts(t *testing.T) {
-	owners := parse.MustResource[docOwner]("doc_owners", parse.PrimaryKey("key"))
-	parts := parse.MustResource[docPart]("doc_parts")
-	things := parse.MustResource[docThing]("doc_things", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+	owners := parse.MustResource[docOwner](onSQLite, "doc_owners", parse.PrimaryKey("key"))
+	parts := parse.MustResource[docPart](onSQLite, "doc_parts")
+	things := parse.MustResource[docThing](onSQLite, "doc_things", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
 	things.MustRelate("owner", parse.BelongsTo(owners, "owner_id", parse.Indexed()))
 	things.MustRelate("parts", parse.HasMany(parts, "thing_id", parse.Indexed()))
 	reg := parse.NewSchemaRegistry()

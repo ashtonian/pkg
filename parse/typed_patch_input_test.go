@@ -104,7 +104,7 @@ func TestApplyPatch_LeavesTheRowAndItsEmbeddedParents(t *testing.T) {
 			assert.Equal(t, tc.row().patchPrivate, got.patchPrivate)
 		}
 		t.Run(tc.name+", value row", func(t *testing.T) {
-			r, err := parse.NewResource[promotedPatchRow]("promoted_rows", parse.ColumnType("attrs", core.SQLJSONB), promotedReadColumns())
+			r, err := parse.NewResource[promotedPatchRow](onSQLite, "promoted_rows", parse.ColumnType("attrs", core.SQLJSONB), promotedReadColumns())
 			require.NoError(t, err)
 			in := tc.row()
 			kept := retainParents(in)
@@ -113,7 +113,7 @@ func TestApplyPatch_LeavesTheRowAndItsEmbeddedParents(t *testing.T) {
 			kept.assertUnchanged(t, tc.row(), in)
 		})
 		t.Run(tc.name+", pointer row", func(t *testing.T) {
-			r, err := parse.NewResource[*promotedPatchRow]("promoted_rows", parse.ColumnType("attrs", core.SQLJSONB), promotedReadColumns())
+			r, err := parse.NewResource[*promotedPatchRow](onSQLite, "promoted_rows", parse.ColumnType("attrs", core.SQLJSONB), promotedReadColumns())
 			require.NoError(t, err)
 			in := new(promotedPatchRow)
 			*in = tc.row()
@@ -185,7 +185,7 @@ func TestPatchSchema_RefusesAFieldBehindAnUnexportedEmbeddedPointer(t *testing.T
 		{
 			name: "resource, value row",
 			build: func() error {
-				_, err := parse.NewResource[privatePatchedRow]("rows")
+				_, err := parse.NewResource[privatePatchedRow](onSQLite, "rows")
 				return err
 			},
 			field: "Extra", embedded: "*parse_test.privatePatched",
@@ -193,7 +193,7 @@ func TestPatchSchema_RefusesAFieldBehindAnUnexportedEmbeddedPointer(t *testing.T
 		{
 			name: "resource, pointer row",
 			build: func() error {
-				_, err := parse.NewResource[*privatePatchedRow]("rows")
+				_, err := parse.NewResource[*privatePatchedRow](onSQLite, "rows")
 				return err
 			},
 			field: "Extra", embedded: "*parse_test.privatePatched",
@@ -216,7 +216,7 @@ func TestPatchSchema_RefusesAFieldBehindAnUnexportedEmbeddedPointer(t *testing.T
 		{
 			name: "server field, resource",
 			build: func() error {
-				_, err := parse.NewResource[privateServerRow]("rows")
+				_, err := parse.NewResource[privateServerRow](onSQLite, "rows")
 				return err
 			},
 			field: "Fingerprint", embedded: "*parse_test.privateServer",
@@ -232,7 +232,7 @@ func TestPatchSchema_RefusesAFieldBehindAnUnexportedEmbeddedPointer(t *testing.T
 		{
 			name: "document column",
 			build: func() error {
-				_, err := parse.NewResource[privateDocumentRow]("rows", parse.ColumnType("attrs", core.SQLJSONB))
+				_, err := parse.NewResource[privateDocumentRow](onSQLite, "rows", parse.ColumnType("attrs", core.SQLJSONB))
 				return err
 			},
 			field: "Attrs", embedded: "*parse_test.privateDocument",
@@ -240,7 +240,7 @@ func TestPatchSchema_RefusesAFieldBehindAnUnexportedEmbeddedPointer(t *testing.T
 		{
 			name: "behind an exported embedded pointer",
 			build: func() error {
-				_, err := parse.NewResource[deepPrivateRow]("rows")
+				_, err := parse.NewResource[deepPrivateRow](onSQLite, "rows")
 				return err
 			},
 			field: "Extra", embedded: "*parse_test.privatePatched",
@@ -257,7 +257,7 @@ func TestPatchSchema_RefusesAFieldBehindAnUnexportedEmbeddedPointer(t *testing.T
 }
 
 func TestPatchSchema_AdmitsAFieldOfAnUnexportedStructEmbeddedByValue(t *testing.T) {
-	r, err := parse.NewResource[privateByValueRow]("rows")
+	r, err := parse.NewResource[privateByValueRow](onSQLite, "rows")
 	require.NoError(t, err)
 	in := privateByValueRow{ID: "1", privatePatched: privatePatched{Extra: "before"}}
 	got, err := r.ApplyPatch([]byte(`[{"op":"replace","path":"/extra","value":"after"}]`), in)
@@ -308,7 +308,7 @@ func TestNewResource_RefusesACustomizedPathBehindAnUnexportedEmbeddedPointer(t *
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := parse.NewResource[promotedPatchRow]("promoted_rows", parse.ColumnType("attrs", core.SQLJSONB), parse.CustomizeSchemas(tt.customize), promotedReadColumns())
+			_, err := parse.NewResource[promotedPatchRow](onSQLite, "promoted_rows", parse.ColumnType("attrs", core.SQLJSONB), parse.CustomizeSchemas(tt.customize), promotedReadColumns())
 			if tt.wantPath == "" {
 				require.NoError(t, err)
 				return

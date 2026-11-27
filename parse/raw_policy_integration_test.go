@@ -12,6 +12,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/patch"
 )
 
 // A raw policy fragment whose top level is an OR, under every statement
@@ -33,24 +34,25 @@ type rawPolicyLabel struct {
 	Open  bool   `json:"open"  db:"open"  parse:"filter"`
 }
 
-func rawPolicyNotes(t *testing.T) *parse.Resource[rawPolicyNote] {
+func rawPolicyNotes(t *testing.T, p *parse.Provider) *parse.Resource[rawPolicyNote] {
 	t.Helper()
-	notes, err := parse.NewResource[rawPolicyNote]("notes", parse.TenantColumn("tenant_id"))
+	notes, err := parse.NewResource[rawPolicyNote](p, "notes", parse.TenantColumn("tenant_id"))
 	require.NoError(t, err)
-	labels, err := parse.NewResource[rawPolicyLabel]("labels")
+	labels, err := parse.NewResource[rawPolicyLabel](p, "labels")
 	require.NoError(t, err)
 	require.NoError(t, notes.Relate("labels", parse.ManyToMany(labels, parse.Through("note_labels", "note_id", "label_id"), parse.PolicyScoped(), parse.Indexed())))
 	return notes
 }
 
 // loadRawPolicy seeds a fresh database of b with t1's notes n1 to n5 and
-// t2's n6 and n7. Under the
-// owner-or-public policy for alice, t1 admits n1, n2 and n5; the search
-// "alpha" drops n4 and the user filter drops n5. Labels visible under the
-// label policy are high-closed (its level) and low-open (open).
-func loadRawPolicy(t *testing.T, b sqlBackend) *sql.DB {
+// t2's n6 and n7, and returns the notes resource on it and the test's own
+// handle on it. Under the owner-or-public policy for alice, t1 admits n1,
+// n2 and n5; the search "alpha" drops n4 and the user filter drops n5.
+// Labels visible under the label policy are high-closed (its level) and
+// low-open (open).
+func loadRawPolicy(t *testing.T, b sqlBackend) (*parse.Resource[rawPolicyNote], *sql.DB) {
 	t.Helper()
-	db := b.open(t)
+	p, db := b.open(t)
 	text := func(name string) sqlColumn { return column[string](name).required() }
 	b.load(t, db, sqlTable{name: "notes", key: []string{"id"}, columns: []sqlColumn{text("id"), text("tenant_id"), text("owner_id"), column[bool]("public").required(), text("title")}}, [][]any{
 		{"n1", "t1", "alice", false, "alpha one"}, {"n2", "t1", "bob", true, "alpha two"}, {"n3", "t1", "bob", false, "alpha three"},
@@ -63,7 +65,7 @@ func loadRawPolicy(t *testing.T, b sqlBackend) *sql.DB {
 	b.load(t, db, sqlTable{name: "note_labels", key: []string{"note_id", "label_id"}, columns: []sqlColumn{text("note_id"), text("label_id")}}, [][]any{
 		{"n1", "low-closed"}, {"n2", "high-closed"}, {"n3", "low-open"}, {"n6", "low-open"},
 	})
-	return db
+	return rawPolicyNotes(t, p), db
 }
 
 // rawOwnerOrPublic admits alice's notes and public ones.
@@ -90,12 +92,20 @@ func TestRawPolicy(t *testing.T) {
 // loadRawPolicy's rows.
 func runRawPolicy(t *testing.T, b sqlBackend) {
 	t.Helper()
-	r := rawPolicyNotes(t)
-	d := b.dialect
-	seeded := func(t *testing.T) *sql.DB { return loadRawPolicy(t, b) }
+	noteID := func(n rawPolicyNote) string { return n.ID }
+	rename := func(t *testing.T, r *parse.Resource[rawPolicyNote]) *patch.ParsedPatch {
+		t.Helper()
+		parsed, err := r.ParseMergePatch([]byte(`{"title":"changed"}`))
+		require.NoError(t, err)
+		return parsed
+	}
+	renamed := func(t *testing.T, db *sql.DB) []string {
+		t.Helper()
+		return queryRows[string](t, db, "SELECT id FROM notes WHERE title = 'changed' ORDER BY id")
+	}
 
 	t.Run("list walks the tenant's admitted rows after each cursor", func(t *testing.T) {
-		db := seeded(t)
+		r, _ := loadRawPolicy(t, b)
 		q := url.Values{
 			filter.ParamFilter:       {`{"title":{"$ne":"alpha five"}}`},
 			filter.ParamSearch:       {"alpha"},
@@ -107,19 +117,10 @@ func runRawPolicy(t *testing.T, b sqlBackend) {
 			require.Less(t, n, 10, "walk did not terminate")
 			req, err := r.ParseList(q)
 			require.NoError(t, err)
-			plan, err := r.BuildList(d, req, rawPolicyScope())
-			require.NoError(t, err)
-			ids := queryRows[string](t, db, "SELECT id FROM notes "+plan.Fragment, plan.Page.Args...)
-			assert.Equal(t, []int64{2}, queryRows[int64](t, db, plan.Count.SQL, plan.Count.Args...), plan.Count.SQL)
-			items := make([]rawPolicyNote, len(ids))
-			for i, id := range ids {
-				items[i] = rawPolicyNote{ID: id}
-			}
-			page, err := r.Page(items, plan)
-			require.NoError(t, err)
-			for _, it := range page.Items {
-				seen = append(seen, it.ID)
-			}
+			page := listPage(t, r, req, rawPolicyScope())
+			require.NotNil(t, page.PageInfo.TotalCount)
+			assert.Equal(t, int64(2), *page.PageInfo.TotalCount)
+			seen = append(seen, itemIDs(page.Items, noteID)...)
 			if !page.PageInfo.HasNextPage {
 				break
 			}
@@ -129,8 +130,6 @@ func runRawPolicy(t *testing.T, b sqlBackend) {
 	})
 
 	t.Run("update changes only the addressed row of the tenant", func(t *testing.T) {
-		p, err := r.ParseMergePatch([]byte(`{"title":"changed"}`))
-		require.NoError(t, err)
 		for _, tc := range []struct {
 			key  string
 			want []string
@@ -140,57 +139,56 @@ func runRawPolicy(t *testing.T, b sqlBackend) {
 			{key: "n6", want: nil}, // public, but t2's
 		} {
 			t.Run(tc.key, func(t *testing.T) {
-				db := seeded(t)
-				plan, err := r.BuildUpdate(d, p, parse.ByID(tc.key), rawPolicyScope())
+				r, db := loadRawPolicy(t, b)
+				res, err := r.Update(t.Context(), rename(t, r), parse.ByID(tc.key), rawPolicyScope())
 				require.NoError(t, err)
-				queryRows[[]any](t, db, plan.Owner.SQL, plan.Owner.Args...)
-				assert.Equal(t, tc.want, queryRows[string](t, db, "SELECT id FROM notes WHERE title = 'changed' ORDER BY id"), plan.Owner.SQL)
+				assert.Equal(t, tc.want, itemIDs(res.Changed, noteID))
+				assert.Equal(t, tc.want, renamed(t, db))
 			})
 		}
 	})
 
 	t.Run("update batch changes only the addressed row of the tenant", func(t *testing.T) {
-		p, err := r.ParseMergePatch([]byte(`{"title":"changed"}`))
-		require.NoError(t, err)
 		for _, tc := range []struct {
-			key  string
-			want []string
+			key     string
+			want    []string
+			wantErr error
 		}{
 			{key: "n2", want: []string{"n2"}},
-			{key: "n6", want: nil},
+			{key: "n6", want: nil, wantErr: parse.ErrUpdateBatchTargets},
 		} {
 			t.Run(tc.key, func(t *testing.T) {
-				db := seeded(t)
-				plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{{Key: parse.Key{tc.key}, Patch: p}}, rawPolicyScope(), parse.UpdateBatchLimits{})
+				r, db := loadRawPolicy(t, b)
+				_, err := r.UpdateBatch(t.Context(), []parse.RowUpdate{{Key: parse.Key{tc.key}, Patch: rename(t, r)}}, rawPolicyScope(), parse.UpdateBatchLimits{})
+				if tc.wantErr != nil {
+					require.ErrorIs(t, err, tc.wantErr)
+				} else {
+					require.NoError(t, err)
+				}
+				assert.Equal(t, tc.want, renamed(t, db))
+
+				// The batch refuses a target its Current does not read before
+				// it writes; its Owner statement holds the scope by itself
+				// too, run alone on a fresh database.
+				r, db = loadRawPolicy(t, b)
+				plan, err := r.BuildUpdateBatch([]parse.RowUpdate{{Key: parse.Key{tc.key}, Patch: rename(t, r)}}, rawPolicyScope(), parse.UpdateBatchLimits{})
 				require.NoError(t, err)
 				require.Len(t, plan.Chunks, 1)
-				chunk := plan.Chunks[0]
-				current := itemIDs(queryRows[[]any](t, db, chunk.Current.SQL, chunk.Current.Args...), func(row []any) parse.Key {
-					key := parse.Key{row[0]}
-					return key
-				})
-				if tc.want == nil {
-					require.ErrorIs(t, chunk.CheckCurrent(current), parse.ErrUpdateBatchTargets)
-				} else {
-					require.NoError(t, chunk.CheckCurrent(current))
-				}
-				// The statement holds the scope itself, whatever its caller
-				// made of Current.
-				require.NotNil(t, chunk.Owner)
-				queryRows[[]any](t, db, chunk.Owner.SQL, chunk.Owner.Args...)
-				assert.Equal(t, tc.want, queryRows[string](t, db, "SELECT id FROM notes WHERE title = 'changed' ORDER BY id"), chunk.Owner.SQL)
+				owner := plan.Chunks[0].Owner
+				require.NotNil(t, owner)
+				queryRows[[]any](t, db, owner.SQL, owner.Args...)
+				assert.Equal(t, tc.want, renamed(t, db), owner.SQL)
 			})
 		}
 	})
 
 	t.Run("relation filter under a raw related policy needs a visible related row", func(t *testing.T) {
-		db := seeded(t)
+		r, _ := loadRawPolicy(t, b)
 		req, err := r.ParseList(url.Values{filter.ParamFilter: {`{"labels":{"$some":{}}}`}, filter.ParamPageSize: {"50"}})
 		require.NoError(t, err)
-		plan, err := r.BuildList(d, req, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
+		page := listPage(t, r, req, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
 			"labels": {Constraints: []*filter.PolicyConstraint{{RawSQL: "labels.level = $1 OR labels.open = $2", RawArgs: []any{"high", true}}}},
 		}})
-		require.NoError(t, err)
-		assert.Equal(t, []string{"n2", "n3"}, queryRows[string](t, db, "SELECT id FROM notes "+plan.Fragment, plan.Page.Args...), plan.Fragment)
+		assert.Equal(t, []string{"n2", "n3"}, itemIDs(page.Items, noteID))
 	})
 }

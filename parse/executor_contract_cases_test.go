@@ -17,6 +17,9 @@ type execItem struct {
 	Tags      []string   `json:"tags"       db:"-"          parse:"filter,include,patch" relation:"exec_tags,item_id,tag_id,id,tenant_id" indexed:"true"`
 }
 
-var execItems = parse.MustResource[execItem]("exec_items", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+// execItems is the contract's resource on p.
+func execItems(p *parse.Provider) *parse.Resource[execItem] {
+	return parse.MustResource[execItem](p, "exec_items", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+}
 
 var execScope = parse.Scope{Tenant: "t1"}

@@ -27,9 +27,9 @@ type updateBatchRow struct {
 	Tags      []string            `json:"tags" db:"-" parse:"patch" relation:"batch_tags,row_id,tag_id,id,tenant_id" indexed:"true"`
 }
 
-func updateBatchResource(t *testing.T) *parse.Resource[updateBatchRow] {
+func updateBatchResource(t *testing.T, p *parse.Provider) *parse.Resource[updateBatchRow] {
 	t.Helper()
-	r, err := parse.NewResource[updateBatchRow]("batch_rows", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"), parse.ColumnType("meta", core.SQLJSONB))
+	r, err := parse.NewResource[updateBatchRow](p, "batch_rows", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"), parse.ColumnType("meta", core.SQLJSONB))
 	require.NoError(t, err)
 	return r
 }

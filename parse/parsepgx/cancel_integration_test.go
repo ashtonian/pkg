@@ -20,7 +20,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/parsepgx"
 )
 
 // These tests hold a statement where the test decides, in a lock or a
@@ -29,20 +28,23 @@ import (
 
 // observed is a pool whose connections carry their own application name, so
 // the test sees its backends in pg_stat_activity apart from every other
-// test's on the shared server.
+// test's on the shared server, and the products resource on a provider over
+// it.
 type observed struct {
-	pool *pgxpool.Pool
-	app  string
+	pool     *pgxpool.Pool
+	app      string
+	products *parse.Resource[product]
 }
 
 func (c *catalog) observed(t *testing.T, maxConns int32) observed {
 	t.Helper()
 	app := "parsepgx_" + strings.ToLower(rand.Text())
-	pool := c.open(t, pgx.QueryExecModeCacheStatement, func(cfg *pgxpool.Config) {
+	ctx := testContext(t)
+	pool := c.open(t, ctx, pgx.QueryExecModeCacheStatement, func(cfg *pgxpool.Config) {
 		cfg.MaxConns = maxConns
 		cfg.ConnConfig.RuntimeParams["application_name"] = app
 	})
-	o := observed{pool: pool, app: app}
+	o := observed{pool: pool, app: app, products: newProducts(provider(t, ctx, pool))}
 	return o
 }
 
@@ -153,9 +155,9 @@ func TestUpdate_ConcurrentRelationReplacesOfOneOwner(t *testing.T) {
 	for i, set := range sets {
 		body, err := json.Marshal(map[string][]string{"labels": set})
 		require.NoError(t, err)
-		plan := update(t, string(body), parse.ByID(c.ids["a"]), c.scopeA)
+		p := mergePatch(t, o.products, string(body))
 		wg.Go(func() {
-			_, errs[i] = parsepgx.Update(ctx, o.pool, products, plan)
+			_, errs[i] = o.products.Update(ctx, p, parse.ByID(c.ids["a"]), c.scopeA)
 		})
 	}
 	o.await(t, ctx, c, "wait_event_type = 'Lock'", len(sets))
@@ -173,18 +175,18 @@ func TestUpdate_ConcurrentRelationReplacesOfOneOwner(t *testing.T) {
 // A list cancelled while its page statement waits returns context.Canceled,
 // its statement ends on the server, and the pool's one connection slot
 // serves the next list.
-func TestQueryPage_Cancelled(t *testing.T) {
+func TestList_Cancelled(t *testing.T) {
 	c := newCatalog(t)
 	ctx := testContext(t)
 	o := c.observed(t, 1)
 	release := c.hold(t, ctx, `LOCK TABLE products IN ACCESS EXCLUSIVE MODE`)
 
-	plan := listPlan(t, walkQuery, c.scopeA)
+	req := listRequest(t, o.products, walkQuery)
 	listCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := parsepgx.QueryPage(listCtx, o.pool, products, plan)
+		_, err := o.products.List(listCtx, req, c.scopeA)
 		done <- err
 	}()
 	o.await(t, ctx, c, "wait_event_type = 'Lock'", 1)
@@ -193,7 +195,7 @@ func TestQueryPage_Cancelled(t *testing.T) {
 	o.ended(t, ctx, c)
 	release()
 
-	page, err := parsepgx.QueryPage(ctx, o.pool, products, listPlan(t, walkQuery, c.scopeA))
+	page, err := listProducts(t, ctx, o.products, walkQuery, c.scopeA)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"a", "b"}, c.names(pageIDs(page)...))
 }
@@ -208,12 +210,12 @@ func TestUpdate_CancelledBetweenStatements(t *testing.T) {
 	o := c.observed(t, 1)
 	release := c.hold(t, ctx, `LOCK TABLE product_labels IN SHARE MODE`)
 
-	plan := update(t, `{"name":"renamed","labels":["new"]}`, parse.ByID(c.ids["a"]), c.scopeA)
+	p := mergePatch(t, o.products, `{"name":"renamed","labels":["new"]}`)
 	updateCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := parsepgx.Update(updateCtx, o.pool, products, plan)
+		_, err := o.products.Update(updateCtx, p, parse.ByID(c.ids["a"]), c.scopeA)
 		done <- err
 	}()
 	pid := o.await(t, ctx, c, "wait_event_type = 'Lock'", 1)[0]
@@ -231,7 +233,7 @@ func TestUpdate_CancelledBetweenStatements(t *testing.T) {
 	assert.Equal(t, "a", c.name(t, ctx, "a"))
 	assert.Equal(t, []string{"blue", "red"}, labels(t, c, "a", c.tenantA))
 
-	_, err := parsepgx.Update(ctx, o.pool, products, update(t, `{"labels":["after"]}`, parse.ByID(c.ids["a"]), c.scopeA))
+	_, err := o.products.Update(ctx, mergePatch(t, o.products, `{"labels":["after"]}`), parse.ByID(c.ids["a"]), c.scopeA)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"after"}, labels(t, c, "a", c.tenantA))
 }
@@ -247,11 +249,11 @@ func TestUpdate_DeadlineInAPolicySubquery(t *testing.T) {
 	slow := c.scopeA
 	slow.Policy = &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{RawSQL: `EXISTS (SELECT 1 FROM pg_sleep(3600))`}}}
 
-	plan := update(t, `{"name":"renamed","labels":["new"]}`, parse.ByID(c.ids["a"]), slow)
+	p := mergePatch(t, o.products, `{"name":"renamed","labels":["new"]}`)
 	updateCtx, expire := withExpiry(t, ctx)
 	done := make(chan error, 1)
 	go func() {
-		_, err := parsepgx.Update(updateCtx, o.pool, products, plan)
+		_, err := o.products.Update(updateCtx, p, parse.ByID(c.ids["a"]), slow)
 		done <- err
 	}()
 	o.await(t, ctx, c, "wait_event = 'PgSleep'", 1)
@@ -261,7 +263,7 @@ func TestUpdate_DeadlineInAPolicySubquery(t *testing.T) {
 	assert.Equal(t, "a", c.name(t, ctx, "a"))
 	assert.Equal(t, []string{"blue", "red"}, labels(t, c, "a", c.tenantA))
 
-	_, err := parsepgx.Update(ctx, o.pool, products, update(t, `{"labels":["after"]}`, parse.ByID(c.ids["a"]), c.scopeA))
+	_, err := o.products.Update(ctx, mergePatch(t, o.products, `{"labels":["after"]}`), parse.ByID(c.ids["a"]), c.scopeA)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"after"}, labels(t, c, "a", c.tenantA))
 }

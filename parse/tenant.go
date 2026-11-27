@@ -226,7 +226,7 @@ func (n *tenantNode) reached() []*tenantColumn {
 // binds it: checked and normalized once, here, against every tenant column
 // the resource reaches. Nil when the scope has none; ErrTenantRequired when
 // the resource has a tenant column.
-func (r *Resource[T]) bindTenant(text string) (any, error) {
+func (r *resourceCore) bindTenant(text string) (any, error) {
 	if text == "" {
 		if r.tenant != "" {
 			return nil, fmt.Errorf("parse: %s: %w", r.table, ErrTenantRequired)
@@ -240,4 +240,4 @@ func (r *Resource[T]) bindTenant(text string) (any, error) {
 	return v, nil
 }
 
-func (r *Resource[T]) tenantGraph() *tenantNode { return r.tenantNode }
+func (r *resourceCore) tenantGraph() *tenantNode { return r.tenantNode }

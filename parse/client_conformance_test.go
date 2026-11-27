@@ -106,7 +106,7 @@ func TestClient_FiltersMeanWhatTheCorpusMeans(t *testing.T) {
 }
 
 func TestClient_JSONPatchOperationsParse(t *testing.T) {
-	res, err := parse.NewResource[schemaDocEntity]("doc_entities", parse.TenantColumn("tenant_id"))
+	res, err := parse.NewResource[schemaDocEntity](onPostgres, "doc_entities", parse.TenantColumn("tenant_id"))
 	require.NoError(t, err)
 	body := readClientRequests(t).JSONPatch
 	parsed, err := res.ParsePatch(body)
@@ -135,9 +135,9 @@ type opEntity struct {
 // Every Operation constructor writes a document the server parses, and
 // BuildUpdate compiles it or answers the code its docs give.
 func TestClient_EveryOperationConstructorParses(t *testing.T) {
-	docs, err := parse.NewResource[schemaDocEntity]("doc_entities", parse.TenantColumn("tenant_id"))
+	docs, err := parse.NewResource[schemaDocEntity](onPostgres, "doc_entities", parse.TenantColumn("tenant_id"))
 	require.NoError(t, err)
-	ops, err := parse.NewResource[opEntity]("op_entities")
+	ops, err := parse.NewResource[opEntity](onPostgres, "op_entities")
 	require.NoError(t, err)
 	tests := map[string]struct {
 		docs bool // on schemaDocEntity, whose array and relation take it; else opEntity
@@ -172,9 +172,9 @@ func TestClient_EveryOperationConstructorParses(t *testing.T) {
 			assert.Equal(t, tt.want, parsed.Operations[0].Op)
 
 			if tt.docs {
-				_, err = docs.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID("e1"), parse.Scope{Tenant: "t1"})
+				_, err = docs.BuildUpdate(parsed, parse.ByID("e1"), parse.Scope{Tenant: "t1"})
 			} else {
-				_, err = ops.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID("e1"), parse.Scope{})
+				_, err = ops.BuildUpdate(parsed, parse.ByID("e1"), parse.Scope{})
 			}
 			if tt.code == "" {
 				assert.NoError(t, err, "%s", body)
@@ -224,7 +224,7 @@ func TestClient_GeoFiltersParse(t *testing.T) {
 		ID       string         `json:"id"       db:"id"`
 		Location map[string]any `json:"location" parse:"filter" filter_ops:"near,within,intersects" geo:"jsonb" geo_srid:"4326"`
 	}
-	res, err := parse.NewResource[place]("places")
+	res, err := parse.NewResource[place](onPostgres, "places")
 	require.NoError(t, err)
 	built := readClientRequests(t).GeoFilters
 	require.NotEmpty(t, built)

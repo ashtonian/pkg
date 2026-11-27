@@ -67,14 +67,15 @@ type relResources struct {
 	assets  *parse.Resource[relAsset]
 }
 
-func relationResources(t *testing.T) relResources {
+// relationResources builds the fixture's resources on p.
+func relationResources(t *testing.T, p *parse.Provider) relResources {
 	t.Helper()
-	devices := parse.MustResource[relDevice]("devices", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
-	commands := parse.MustResource[relCommand]("commands", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
-	receipts := parse.MustResource[relReceipt]("receipts", parse.TenantColumn("tenant_id"))
-	types := parse.MustResource[relType]("device_types", parse.TenantColumn("tenant_id"))
-	tags := parse.MustResource[relTag]("tags", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
-	assets := parse.MustResource[relAsset]("assets", parse.TenantColumn("tenant_id"))
+	devices := parse.MustResource[relDevice](p, "devices", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+	commands := parse.MustResource[relCommand](p, "commands", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+	receipts := parse.MustResource[relReceipt](p, "receipts", parse.TenantColumn("tenant_id"))
+	types := parse.MustResource[relType](p, "device_types", parse.TenantColumn("tenant_id"))
+	tags := parse.MustResource[relTag](p, "tags", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+	assets := parse.MustResource[relAsset](p, "assets", parse.TenantColumn("tenant_id"))
 
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed(), parse.Includable(), parse.Facetable()))
 	devices.MustRelate("type", parse.BelongsTo(types, "type_id", parse.PolicyScoped()))

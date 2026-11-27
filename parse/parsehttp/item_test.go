@@ -42,8 +42,8 @@ func TestItemPattern(t *testing.T) {
 		want    string
 		wantErr string
 	}{
-		{name: "one-column key", res: parse.MustResource[stockRow]("stock", parse.PrimaryKey("sku")), want: "{sku}"},
-		{name: "key of several columns", res: parse.MustResource[stockRow]("stock", parse.PrimaryKey("warehouse_id", "sku")), want: "{warehouse_id}/{sku}"},
+		{name: "one-column key", res: parse.MustResource[stockRow](onSQLite, "stock", parse.PrimaryKey("sku")), want: "{sku}"},
+		{name: "key of several columns", res: parse.MustResource[stockRow](onSQLite, "stock", parse.PrimaryKey("warehouse_id", "sku")), want: "{warehouse_id}/{sku}"},
 		{name: "column that is no wildcard name", res: keyColumns{"warehouse_id", "order-id"}, wantErr: `key column "order-id" is no ServeMux wildcard name`},
 		{name: "no key column", res: keyColumns{}, wantErr: "the resource has no key column"},
 	}
@@ -64,9 +64,9 @@ func TestItemPattern(t *testing.T) {
 // matched: a segment per key column, each unescaped on its own, read as its
 // column's text.
 func TestItemKey(t *testing.T) {
-	stock := parse.MustResource[stockRow]("stock", parse.PrimaryKey("warehouse_id", "sku"))
-	bins := parse.MustResource[stockRow]("bins", parse.PrimaryKey("warehouse_id", "bin"))
-	skus := parse.MustResource[stockRow]("skus", parse.PrimaryKey("sku"))
+	stock := parse.MustResource[stockRow](onSQLite, "stock", parse.PrimaryKey("warehouse_id", "sku"))
+	bins := parse.MustResource[stockRow](onSQLite, "bins", parse.PrimaryKey("warehouse_id", "bin"))
+	skus := parse.MustResource[stockRow](onSQLite, "skus", parse.PrimaryKey("sku"))
 
 	type result struct {
 		key parse.Key

@@ -14,20 +14,19 @@ import (
 	"github.com/ashtonian/pkg/parse"
 )
 
-// An update on a pool takes its connection under the caller's context: a
+// An update takes its connection under the caller's context: a
 // request that ends while every connection is busy fails then, instead of
 // waiting for one to come free.
 func TestUpdate_WaitsForItsConnectionUnderTheCallersContext(t *testing.T) {
-	items := taggedItems()
-	db := taggedDB(t) // one connection
+	items, db := taggedItems(t) // one connection
 	held, err := db.Conn(t.Context())
 	require.NoError(t, err)
-	plan := renamePlan(t, items, `{"name":"x"}`)
+	p := rename(t, items, "x")
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := Update(ctx, db, items, plan)
+		_, err := items.Update(ctx, p, parse.ByID("a"), parse.Scope{})
 		done <- err
 	}()
 	select {
@@ -43,5 +42,5 @@ func TestUpdate_WaitsForItsConnectionUnderTheCallersContext(t *testing.T) {
 	require.True(t, ok, "%v", err)
 	assert.Equal(t, "begin", failed.Statement)
 	require.NoError(t, held.Close())
-	assert.Equal(t, "one", storedName(t, db, items))
+	assert.Equal(t, "one", storedName(t, items))
 }

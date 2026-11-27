@@ -18,7 +18,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
 type widget struct {
@@ -36,62 +36,82 @@ func atOneInstant() parse.ResourceOption {
 	return parse.ParserOptions(core.WithClock(func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }))
 }
 
+// widgets is the widget resource, compiling for SQLite without a database.
 func widgets(t *testing.T) *parse.Resource[widget] {
 	t.Helper()
-	r, err := parse.NewResource[widget]("widgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"), parse.PageSize(2, 3), atOneInstant())
+	return widgetsOn(t, onSQLite)
+}
+
+func widgetsOn(t *testing.T, p *parse.Provider) *parse.Resource[widget] {
+	t.Helper()
+	r, err := parse.NewResource[widget](p, "widgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"), parse.PageSize(2, 3), atOneInstant())
 	require.NoError(t, err)
 	return r
 }
 
-// widgetDB: tenant t1 holds w1–w5 (w4 deleted; w1–w3 share rank 1), t2 holds
-// x1; tags are pairs in each row's tenant.
-func widgetDB(t *testing.T) *sql.DB {
+// widgetStore is the widget resource on a fresh SQLite database: tenant t1
+// holds w1–w5 (w4 deleted; w1–w3 share rank 1), t2 holds x1; tags are pairs
+// in each row's tenant.
+func widgetStore(t *testing.T) (*parse.Resource[widget], *sql.DB) {
 	t.Helper()
-	db := dbtest.SQLite(t)
-	for _, stmt := range []string{
+	p, db := providertest.SQLite(t)
+	execStatements(t, db,
 		`CREATE TABLE widgets (id TEXT PRIMARY KEY, tenant_id TEXT, name TEXT, rank INTEGER, deleted_at TEXT)`,
 		`CREATE TABLE widget_tags (widget_id TEXT, tag_id TEXT, tenant_id TEXT)`,
 		`INSERT INTO widgets VALUES ('w1','t1','alpha',1,NULL), ('w2','t1','beta',1,NULL), ('w3','t1','gamma',1,NULL),
 			('w4','t1','delta',2,'2026-01-01T00:00:00Z'), ('w5','t1','beta',2,NULL), ('x1','t2','alpha',1,NULL)`,
-		`INSERT INTO widget_tags VALUES ('w1','red','t1'), ('w1','blue','t1'), ('w2','red','t1'), ('x1','red','t2'), ('w1','green','t2')`,
-	} {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
-	return db
+		`INSERT INTO widget_tags VALUES ('w1','red','t1'), ('w1','blue','t1'), ('w2','red','t1'), ('x1','red','t2'), ('w1','green','t2')`)
+	return widgetsOn(t, p), db
 }
 
 func widgetID(w widget) string { return w.ID }
 
-func list(t *testing.T, r *parse.Resource[widget], db *sql.DB, query string, s parse.Scope) (*filter.Page[widget], *parse.ListPlan) {
+// list builds query under s and reads the plan's page by hand on r's
+// database, for a test that reads the plan's other statements itself.
+func list(t *testing.T, r *parse.Resource[widget], query string, s parse.Scope) (*filter.Page[widget], *parse.ListPlan) {
 	t.Helper()
 	q, err := url.ParseQuery(query)
 	require.NoError(t, err)
 	req, err := r.ParseList(q)
 	require.NoError(t, err)
-	plan, err := r.BuildList(filter.SQLiteDialect{}, req, s)
+	plan, err := r.BuildList(req, s)
 	require.NoError(t, err)
-	page, err := r.Page(resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Page), plan)
+	page, err := r.Page(resourceRows(t, r, plan.Page), plan)
 	require.NoError(t, err)
 	return page, plan
 }
 
 func TestNewResource_RefusesBadDeclarations(t *testing.T) {
 	for name, build := range map[string]func() error{
-		"table":         func() error { _, err := parse.NewResource[widget]("widgets; DROP"); return err },
-		"key column":    func() error { _, err := parse.NewResource[widget]("widgets", parse.PrimaryKey("uuid")); return err },
-		"tenant column": func() error { _, err := parse.NewResource[widget]("widgets", parse.TenantColumn("org_id")); return err },
-		"deleted column": func() error {
-			_, err := parse.NewResource[widget]("widgets", parse.DeletedColumn("removed_at"))
+		"table": func() error { _, err := parse.NewResource[widget](onSQLite, "widgets; DROP"); return err },
+		"key column": func() error {
+			_, err := parse.NewResource[widget](onSQLite, "widgets", parse.PrimaryKey("uuid"))
 			return err
 		},
-		"zero page":       func() error { _, err := parse.NewResource[widget]("widgets", parse.PageSize(0, 10)); return err },
-		"max below def":   func() error { _, err := parse.NewResource[widget]("widgets", parse.PageSize(20, 10)); return err },
-		"relation column": func() error { _, err := parse.NewResource[widget]("widgets", parse.PrimaryKey("tags")); return err },
+		"tenant column": func() error {
+			_, err := parse.NewResource[widget](onSQLite, "widgets", parse.TenantColumn("org_id"))
+			return err
+		},
+		"deleted column": func() error {
+			_, err := parse.NewResource[widget](onSQLite, "widgets", parse.DeletedColumn("removed_at"))
+			return err
+		},
+		"zero page": func() error {
+			_, err := parse.NewResource[widget](onSQLite, "widgets", parse.PageSize(0, 10))
+			return err
+		},
+		"max below def": func() error {
+			_, err := parse.NewResource[widget](onSQLite, "widgets", parse.PageSize(20, 10))
+			return err
+		},
+		"relation column": func() error {
+			_, err := parse.NewResource[widget](onSQLite, "widgets", parse.PrimaryKey("tags"))
+			return err
+		},
 	} {
 		t.Run(name, func(t *testing.T) { assert.Error(t, build()) })
 	}
-	assert.Panics(t, func() { parse.MustResource[widget]("widgets", parse.PrimaryKey("nope")) })
+	assert.Panics(t, func() { parse.MustResource[widget](onSQLite, "widgets", parse.PrimaryKey("nope")) })
 }
 
 type hiddenStampA struct {
@@ -115,9 +135,9 @@ func TestNewResource_RefusesHiddenFieldsSharingAColumn(t *testing.T) {
 		ID    string `json:"id" db:"id"`
 		Stamp string `json:"-"`
 	}
-	_, err := parse.NewResource[oneDepth]("stamps")
+	_, err := parse.NewResource[oneDepth](onSQLite, "stamps")
 	require.ErrorContains(t, err, `fields Stamp and Stamp are both column "stamp"`)
-	_, err = parse.NewResource[twoDepths]("stamps")
+	_, err = parse.NewResource[twoDepths](onSQLite, "stamps")
 	require.ErrorContains(t, err, `fields Stamp and Stamp are both column "stamp"`)
 }
 
@@ -126,9 +146,9 @@ func TestNewResource_RefusesMisspeltTagKeys(t *testing.T) {
 		ID   string `json:"id" db:"id"`
 		Name string `json:"name" db:"name" parse:"filter" filter_op:"eq"`
 	}
-	_, err := parse.NewResource[row]("rows")
+	_, err := parse.NewResource[row](onSQLite, "rows")
 	require.ErrorContains(t, err, `field Name of parse_test.row has tag key "filter_op"; did you mean "filter_ops"?`)
-	_, err = parse.NewResource[row]("rows", parse.ParserOptions(core.WithGeneratorOptions(core.WithForeignTagKeys("filter_op"))))
+	_, err = parse.NewResource[row](onSQLite, "rows", parse.ParserOptions(core.WithGeneratorOptions(core.WithForeignTagKeys("filter_op"))))
 	require.NoError(t, err)
 }
 
@@ -138,9 +158,7 @@ func TestResource_DeclaresItsIdentity(t *testing.T) {
 	assert.Equal(t, []string{"id"}, r.PrimaryKeyColumns())
 	assert.Equal(t, "tenant_id", r.TenantColumnName())
 	assert.Equal(t, "deleted_at", r.DeletedColumnName())
-	columns, err := r.Columns(filter.PostgresDialect{})
-	require.NoError(t, err)
-	assert.Equal(t, []string{`"widgets"."id"`, `"widgets"."tenant_id"`, `"widgets"."name"`, `"widgets"."rank"`, `"widgets"."deleted_at"`}, columns)
+	assert.Equal(t, []string{`"widgets"."id"`, `"widgets"."tenant_id"`, `"widgets"."name"`, `"widgets"."rank"`, `"widgets"."deleted_at"`}, r.Columns())
 	for _, item := range []any{widget{ID: "w9"}, &widget{ID: "w9"}} {
 		key, err := r.Key(item)
 		require.NoError(t, err)
@@ -179,7 +197,7 @@ func TestParseList_ReadsEveryListParameter(t *testing.T) {
 
 func TestParseList_RefusesWhatItCannotHonor(t *testing.T) {
 	r := widgets(t)
-	bare, err := parse.NewResource[widget]("widgets")
+	bare, err := parse.NewResource[widget](onSQLite, "widgets")
 	require.NoError(t, err)
 	for name, tc := range map[string]struct {
 		r     *parse.Resource[widget]
@@ -211,14 +229,14 @@ func TestParseList_RefusesWhatItCannotHonor(t *testing.T) {
 		ID   string `db:"id" parse:"filter,sort"`
 		Name string `db:"name" parse:"filter"`
 	}
-	unsearchable, err := parse.NewResource[plain]("plains")
+	unsearchable, err := parse.NewResource[plain](onSQLite, "plains")
 	require.NoError(t, err)
 	_, err = unsearchable.ParseList(url.Values{"search": {"x"}})
 	var pe *core.ParseError
 	require.ErrorAs(t, err, &pe)
 	assert.Equal(t, filter.ECodeInvalidListParam.String(), pe.Code)
 
-	accepting, err := parse.NewResource[widget]("widgets", parse.AcceptParams("_", "view"))
+	accepting, err := parse.NewResource[widget](onSQLite, "widgets", parse.AcceptParams("_", "view"))
 	require.NoError(t, err)
 	req, err := accepting.ParseList(url.Values{"_": {"123"}, "view": {"grid"}})
 	require.NoError(t, err, "accepted parameters are the endpoint's")
@@ -228,7 +246,7 @@ func TestParseList_RefusesWhatItCannotHonor(t *testing.T) {
 // A misspelt flat filter cannot widen a list through any entry point; list
 // parameters and the names an endpoint accepts still pass.
 func TestEveryEntryPoint_RefusesAMisspeltFilter(t *testing.T) {
-	r, err := parse.NewResource[widget]("widgets", parse.AcceptParams("view"))
+	r, err := parse.NewResource[widget](onSQLite, "widgets", parse.AcceptParams("view"))
 	require.NoError(t, err)
 	entryPoints := map[string]func(url.Values) error{
 		"Resource.ParseList": func(q url.Values) error { _, err := r.ParseList(q); return err },
@@ -256,8 +274,8 @@ func TestEveryEntryPoint_RefusesAMisspeltFilter(t *testing.T) {
 }
 
 func TestBuildList_HoldsRowsToTheScope(t *testing.T) {
-	r, db := widgets(t), widgetDB(t)
-	_, err := r.BuildList(filter.SQLiteDialect{}, nil, parse.Scope{})
+	r, _ := widgetStore(t)
+	_, err := r.BuildList(nil, parse.Scope{})
 	assert.True(t, errors.Is(err, parse.ErrTenantRequired), "a tenant-scoped list needs its tenant")
 
 	for name, tc := range map[string]struct {
@@ -278,7 +296,7 @@ func TestBuildList_HoldsRowsToTheScope(t *testing.T) {
 		"search": {"search=gam", parse.Scope{Tenant: "t1"}, []string{"w3"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			page, _ := list(t, r, db, tc.query, tc.scope)
+			page, _ := list(t, r, tc.query, tc.scope)
 			assert.Equal(t, tc.want, itemIDs(page.Items, widgetID))
 		})
 	}
@@ -287,13 +305,13 @@ func TestBuildList_HoldsRowsToTheScope(t *testing.T) {
 // The key is the final keyset column: rows tied on the sort are neither
 // skipped nor repeated across pages, walking forward or back.
 func TestBuildList_WalksTiedSortValuesExactly(t *testing.T) {
-	r, db := widgets(t), widgetDB(t)
+	r, db := widgetStore(t)
 	scope := parse.Scope{Tenant: "t1"}
 	var seen []string
 	query := "sort=rank&include_total=true"
 	var last *filter.Page[widget]
 	for range 5 {
-		page, plan := list(t, r, db, query, scope)
+		page, plan := list(t, r, query, scope)
 		require.NotNil(t, plan.Count)
 		var total int64
 		require.NoError(t, db.QueryRow(plan.Count.SQL, plan.Count.Args...).Scan(&total))
@@ -307,7 +325,7 @@ func TestBuildList_WalksTiedSortValuesExactly(t *testing.T) {
 	}
 	assert.Equal(t, []string{"w1", "w2", "w3", "w5"}, seen)
 
-	back, _ := list(t, r, db, "sort=rank&cursor="+url.QueryEscape(string(last.PageInfo.StartCursor)), scope)
+	back, _ := list(t, r, "sort=rank&cursor="+url.QueryEscape(string(last.PageInfo.StartCursor)), scope)
 	assert.Equal(t, []string{"w1", "w2"}, itemIDs(back.Items, widgetID), "the page before the last, in presentation order")
 }
 
@@ -316,11 +334,11 @@ func TestBuildList_UsesTheDeclaredKeyOnRequestViews(t *testing.T) {
 		Code string         `json:"code" db:"code"`
 		Data map[string]any `json:"data" db:"data" parse:"filter"`
 	}
-	r := parse.MustResource[entry]("entries", parse.PrimaryKey("code"))
+	r := parse.MustResource[entry](onSQLite, "entries", parse.PrimaryKey("code"))
 	view, err := r.WithPaths(filter.PathDecl{Path: "data.rank", Type: core.FieldTypeInt, Sort: true})
 	require.NoError(t, err)
 	for _, resource := range []*parse.Resource[entry]{r, view} {
-		plan, buildErr := resource.BuildList(filter.SQLiteDialect{}, nil, parse.Scope{})
+		plan, buildErr := resource.BuildList(nil, parse.Scope{})
 		require.NoError(t, buildErr)
 		require.Len(t, plan.Keyset.Keys, 1)
 		assert.Equal(t, "code", plan.Keyset.Keys[0].Name)
@@ -328,7 +346,7 @@ func TestBuildList_UsesTheDeclaredKeyOnRequestViews(t *testing.T) {
 	}
 	req, err := view.ParseList(url.Values{filter.ParamSort: {"data.rank"}})
 	require.NoError(t, err)
-	plan, err := view.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+	plan, err := view.BuildList(req, parse.Scope{})
 	require.NoError(t, err)
 	require.Len(t, plan.Keyset.Keys, 2)
 	assert.Equal(t, "data.rank", plan.Keyset.Keys[0].Name)
@@ -336,8 +354,8 @@ func TestBuildList_UsesTheDeclaredKeyOnRequestViews(t *testing.T) {
 }
 
 func TestBuildList_FacetsCountThePopulation(t *testing.T) {
-	r, db := widgets(t), widgetDB(t)
-	_, plan := list(t, r, db, "facets=name&rank=1", parse.Scope{Tenant: "t1"})
+	r, db := widgetStore(t)
+	_, plan := list(t, r, "facets=name&rank=1", parse.Scope{Tenant: "t1"})
 	require.NotNil(t, plan.Facets)
 	rows, err := db.Query(plan.Facets.SQL, plan.Facets.Args...)
 	require.NoError(t, err)
@@ -352,8 +370,8 @@ func TestBuildList_FacetsCountThePopulation(t *testing.T) {
 }
 
 func TestIncludeQueries_ReadThePagesRelationsInItsTenant(t *testing.T) {
-	r, db := widgets(t), widgetDB(t)
-	page, plan := list(t, r, db, "include=tags&page_size=3", parse.Scope{Tenant: "t1"})
+	r, db := widgetStore(t)
+	page, plan := list(t, r, "include=tags&page_size=3", parse.Scope{Tenant: "t1"})
 	keys := make([]parse.Key, len(page.Items))
 	for i, w := range page.Items {
 		var err error
@@ -379,14 +397,14 @@ func TestIncludeQueries_ReadThePagesRelationsInItsTenant(t *testing.T) {
 }
 
 func TestPagePointers(t *testing.T) {
-	r, db := widgets(t), widgetDB(t)
+	r, _ := widgetStore(t)
 	q := url.Values{"page_size": {"2"}}
 	req, err := r.ParseList(q)
 	require.NoError(t, err)
-	plan, err := r.BuildList(filter.SQLiteDialect{}, req, parse.Scope{Tenant: "t1"})
+	plan, err := r.BuildList(req, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
 	var ptrs []*widget
-	for _, w := range resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Page) {
+	for _, w := range resourceRows(t, r, plan.Page) {
 		ptrs = append(ptrs, &w)
 	}
 	page, err := r.PagePointers(ptrs, plan)
@@ -399,12 +417,12 @@ func TestPagePointers(t *testing.T) {
 // A list that matches nothing reads no rows, nil as a scan loop leaves
 // them; its page encodes "items":[] whichever form the rows take.
 func TestPage_OfNoRowsEncodesItemsAsAnArray(t *testing.T) {
-	r, db := widgets(t), widgetDB(t)
+	r, _ := widgetStore(t)
 	req, err := r.ParseList(url.Values{"name": {"no such widget"}})
 	require.NoError(t, err)
-	plan, err := r.BuildList(filter.SQLiteDialect{}, req, parse.Scope{Tenant: "t1"})
+	plan, err := r.BuildList(req, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
-	scanned := resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Page)
+	scanned := resourceRows(t, r, plan.Page)
 	require.Empty(t, scanned)
 
 	rows := func(items []widget) func() (any, error) {
@@ -437,11 +455,10 @@ func TestPage_OfNoRowsEncodesItemsAsAnArray(t *testing.T) {
 // includes name columns this one does not have.
 func TestResource_RefusesAnotherResourcesPlan(t *testing.T) {
 	r := widgets(t)
-	other, err := parse.NewResource[widget]("other_widgets", parse.TenantColumn("tenant_id"))
+	other, err := parse.NewResource[widget](onSQLite, "other_widgets", parse.TenantColumn("tenant_id"))
 	require.NoError(t, err)
-	plan, err := other.BuildList(filter.SQLiteDialect{}, nil, parse.Scope{Tenant: "t1"})
+	plan, err := other.BuildList(nil, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
-	assert.Equal(t, filter.SQLiteDialect{}, plan.Dialect())
 
 	_, err = r.Page(nil, plan)
 	assert.ErrorContains(t, err, `list plan built for "other_widgets"`)
@@ -465,20 +482,18 @@ type account struct {
 // and updates read only the declared columns, while stamps and validation
 // still know every column of T.
 func TestReadColumns_LimitWhatTheResourceReads(t *testing.T) {
-	r, err := parse.NewResource[account]("accounts", parse.TenantColumn("tenant_id"),
+	r, err := parse.NewResource[account](onSQLite, "accounts", parse.TenantColumn("tenant_id"),
 		parse.ReadColumns("updated_at", "email", "id", "tenant_id"))
 	require.NoError(t, err)
-	columns, err := r.Columns(filter.PostgresDialect{})
-	require.NoError(t, err)
-	assert.Equal(t, []string{`"accounts"."id"`, `"accounts"."tenant_id"`, `"accounts"."email"`, `"accounts"."updated_at"`}, columns, "in T's field order")
+	assert.Equal(t, []string{`"accounts"."id"`, `"accounts"."tenant_id"`, `"accounts"."email"`, `"accounts"."updated_at"`}, r.Columns(), "in T's field order")
 
-	plan, err := r.BuildList(filter.PostgresDialect{}, nil, parse.Scope{Tenant: "t1"})
+	plan, err := r.BuildList(nil, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(plan.Page.SQL, `SELECT "accounts"."id", "accounts"."tenant_id", "accounts"."email", "accounts"."updated_at" FROM "accounts" `), plan.Page.SQL)
 
 	p, err := r.ParseMergePatch([]byte(`{"email":"a@example.com"}`))
 	require.NoError(t, err)
-	upd, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("a1"), parse.Scope{Tenant: "t1"}, parse.StampSQL("updated_at", "NOW()"))
+	upd, err := r.BuildUpdate(p, parse.ByID("a1"), parse.Scope{Tenant: "t1"}, parse.StampSQL("updated_at", "NOW()"))
 	require.NoError(t, err)
 	assert.True(t, strings.HasSuffix(upd.Owner.SQL, ` RETURNING "accounts"."id", "accounts"."tenant_id", "accounts"."email", "accounts"."updated_at"`), upd.Owner.SQL)
 	assert.NotContains(t, upd.Owner.SQL+plan.Page.SQL, "secret_hash")
@@ -496,7 +511,7 @@ func TestReadColumns_RefusesWhatPagesCannotRead(t *testing.T) {
 		{"without a sort key", []string{"id", "tenant_id"}, `sort key "email": accounts does not read column "email"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parse.NewResource[account]("accounts", parse.ReadColumns(tc.read...))
+			_, err := parse.NewResource[account](onSQLite, "accounts", parse.ReadColumns(tc.read...))
 			assert.ErrorContains(t, err, tc.want)
 		})
 	}
@@ -511,7 +526,7 @@ type profile struct {
 // view can neither sort nor facet by a document the resource does not read,
 // even one it may filter by.
 func TestReadColumns_RefusesAPathSortOrFacetOnAnUnreadDocument(t *testing.T) {
-	r, err := parse.NewResource[profile]("profiles", parse.ReadColumns("id"), parse.QueryOnlyColumns("attrs"))
+	r, err := parse.NewResource[profile](onSQLite, "profiles", parse.ReadColumns("id"), parse.QueryOnlyColumns("attrs"))
 	require.NoError(t, err)
 	_, err = r.WithPaths(filter.PathDecl{Path: "attrs.rank", Type: core.FieldTypeInt, Sort: true})
 	assert.ErrorContains(t, err, `sort key "attrs.rank": profiles does not read column "attrs"`)
@@ -553,12 +568,12 @@ func TestReadColumns_RefusesAFacetOnAnUnreadColumn(t *testing.T) {
 		{"a mapped document path's facet", []parse.ResourceOption{mappedColumns, parse.ReadColumns("id", "status", "token"), parse.QueryOnlyColumns("attrs")}, `facet "attrs.env": api_keys does not read column "attrs"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parse.NewResource[apiKey]("api_keys", tc.opts...)
+			_, err := parse.NewResource[apiKey](onSQLite, "api_keys", tc.opts...)
 			assert.ErrorContains(t, err, tc.want)
 		})
 	}
 
-	r, err := parse.NewResource[apiKey]("api_keys", mappedColumns, parse.ReadColumns("id", "status", "token", "attrs"))
+	r, err := parse.NewResource[apiKey](onSQLite, "api_keys", mappedColumns, parse.ReadColumns("id", "status", "token", "attrs"))
 	require.NoError(t, err)
 	_, err = r.ParseList(url.Values{filter.ParamFacets: {"status,token,attrs.env"}})
 	assert.NoError(t, err, "facets on read columns")
@@ -585,7 +600,7 @@ func TestReadColumns_RefusesAPredicateOnAnUnreadColumn(t *testing.T) {
 		{"a mapped search field", []parse.ResourceOption{mappedColumns, parse.ReadColumns("id", "title", "status")}, `search field "body": tickets does not read column "body"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parse.NewResource[ticket]("tickets", tc.opts...)
+			_, err := parse.NewResource[ticket](onSQLite, "tickets", tc.opts...)
 			assert.ErrorContains(t, err, tc.want)
 		})
 	}
@@ -605,16 +620,16 @@ type member struct {
 // by the relation discloses that column as filtering by the column would, and
 // an include returns the pairs outright, so each side's read set holds.
 func TestReadColumns_RefusesARelationOverAnUnreadColumn(t *testing.T) {
-	teams := parse.MustResource[team]("teams")
-	withheld := parse.MustResource[member]("members", parse.ReadColumns("id"))
-	queryOnly := parse.MustResource[member]("members", parse.ReadColumns("id"), parse.QueryOnlyColumns("team_id"))
+	teams := parse.MustResource[team](onSQLite, "teams")
+	withheld := parse.MustResource[member](onSQLite, "members", parse.ReadColumns("id"))
+	queryOnly := parse.MustResource[member](onSQLite, "members", parse.ReadColumns("id"), parse.QueryOnlyColumns("team_id"))
 
 	err := withheld.Relate("team", parse.BelongsTo(teams, "team_id"))
 	assert.ErrorContains(t, err, `relation "team": members does not read column "team_id"; QueryOnlyColumns admits`, "the owner's foreign key")
 	assert.NotContains(t, withheld.FilterSchema().Fields, "team", "a refused relation is not declared")
 	assert.NoError(t, queryOnly.Relate("team", parse.BelongsTo(teams, "team_id")))
 
-	owners := parse.MustResource[team]("teams")
+	owners := parse.MustResource[team](onSQLite, "teams")
 	err = owners.Relate("members", parse.HasMany(withheld, "team_id"))
 	assert.ErrorContains(t, err, `parse: teams: relation "members": members does not read column "team_id"; QueryOnlyColumns admits`, "the target's foreign key")
 	err = owners.Relate("members", parse.HasMany(queryOnly, "team_id", parse.Includable()))
@@ -629,7 +644,7 @@ func TestReadColumns_RefusesAFieldOverAnUndeclaredColumn(t *testing.T) {
 		ID   string `json:"id"   db:"id"   parse:"filter,sort"`
 		Hash string `json:"hash" db:"-"    parse:"filter"`
 	}
-	_, err := parse.NewResource[user]("users", parse.ReadColumns("id"))
+	_, err := parse.NewResource[user](onSQLite, "users", parse.ReadColumns("id"))
 	assert.ErrorContains(t, err, `filter field "hash": "hash" is not a column of users`)
 }
 
@@ -640,19 +655,19 @@ func TestRelate_CorrelatesThroughTheOwnersMappedField(t *testing.T) {
 		ID     string `json:"id"      db:"id"      parse:"filter,sort"`
 		TeamID string `json:"team_id" db:"team_id" parse:"filter"`
 	}
-	members := parse.MustResource[mappedMember]("members", mappedColumns)
-	members.MustRelate("team", parse.BelongsTo(parse.MustResource[team]("teams"), "team_id"))
+	members := parse.MustResource[mappedMember](onSQLite, "members", mappedColumns)
+	members.MustRelate("team", parse.BelongsTo(parse.MustResource[team](onSQLite, "teams"), "team_id"))
 	assert.Equal(t, "(members.team_id)", members.FilterSchema().Fields["team"].RelatedBy[0].Expr)
 }
 
 // QueryOnlyColumns lets requests filter and search by columns the resource
 // does not read; the page still selects only the read columns.
 func TestQueryOnlyColumns_FilterAndSearchUnreadColumns(t *testing.T) {
-	r, err := parse.NewResource[ticket]("tickets", parse.ReadColumns("id", "title"), parse.QueryOnlyColumns("status", "body"))
+	r, err := parse.NewResource[ticket](onSQLite, "tickets", parse.ReadColumns("id", "title"), parse.QueryOnlyColumns("status", "body"))
 	require.NoError(t, err)
 	req, err := r.ParseList(url.Values{filter.ParamFilter: {`{"status":{"$eq":"open"}}`}, filter.ParamSearch: {"pump"}})
 	require.NoError(t, err)
-	plan, err := r.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+	plan, err := r.BuildList(req, parse.Scope{})
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(plan.Page.SQL, `SELECT "tickets"."id", "tickets"."title" FROM "tickets" `), plan.Page.SQL)
 	assert.Contains(t, plan.Fragment, `"tickets"."status"`)
@@ -672,7 +687,7 @@ func TestQueryOnlyColumns_NameUnreadColumnsForPredicatesOnly(t *testing.T) {
 		{"a sort key", []parse.ResourceOption{parse.ReadColumns("id", "status"), parse.QueryOnlyColumns("title", "body")}, `sort key "title": tickets does not read column "title"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parse.NewResource[ticket]("tickets", tc.opts...)
+			_, err := parse.NewResource[ticket](onSQLite, "tickets", tc.opts...)
 			assert.ErrorContains(t, err, tc.want)
 		})
 	}

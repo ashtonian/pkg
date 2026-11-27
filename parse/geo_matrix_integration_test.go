@@ -15,7 +15,7 @@ import (
 // PostGIS.
 func TestGeoMatrix(t *testing.T) {
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
-		db := b.open(t)
+		_, db := b.open(t)
 		schema, err := filtertest.GeoSchema()
 		require.NoError(t, err)
 		table := schemaTable(schema)

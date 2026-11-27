@@ -25,8 +25,8 @@ func TestResource_PointerRowsKeepTheirKeys(t *testing.T) {
 		checkResourceRowPages(t, []*pointerResourceRow{&first, &second})
 	})
 	for _, resource := range []interface{ Key(any) (parse.Key, error) }{
-		parse.MustResource[pointerResourceRow]("rows"),
-		parse.MustResource[*pointerResourceRow]("rows"),
+		parse.MustResource[pointerResourceRow](onSQLite, "rows"),
+		parse.MustResource[*pointerResourceRow](onSQLite, "rows"),
 	} {
 		for _, item := range []any{first, &first, new(&first)} {
 			key, err := resource.Key(item)
@@ -39,8 +39,8 @@ func TestResource_PointerRowsKeepTheirKeys(t *testing.T) {
 			require.ErrorContains(t, err, "rows")
 		}
 	}
-	r := parse.MustResource[*pointerResourceRow]("rows", parse.PageSize(1, 10))
-	plan, err := r.BuildList(filter.SQLiteDialect{}, nil, parse.Scope{})
+	r := parse.MustResource[*pointerResourceRow](onSQLite, "rows", parse.PageSize(1, 10))
+	plan, err := r.BuildList(nil, parse.Scope{})
 	require.NoError(t, err)
 	_, err = r.Page([]*pointerResourceRow{nil, &second}, plan)
 	require.ErrorContains(t, err, "nil row")
@@ -48,8 +48,8 @@ func TestResource_PointerRowsKeepTheirKeys(t *testing.T) {
 
 func checkResourceRowPages[T any](t *testing.T, items []T) {
 	t.Helper()
-	r := parse.MustResource[T]("rows", parse.PageSize(1, 10))
-	plan, err := r.BuildList(filter.SQLiteDialect{}, nil, parse.Scope{})
+	r := parse.MustResource[T](onSQLite, "rows", parse.PageSize(1, 10))
+	plan, err := r.BuildList(nil, parse.Scope{})
 	require.NoError(t, err)
 	page, err := r.Page(items, plan)
 	require.NoError(t, err)

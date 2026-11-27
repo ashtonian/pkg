@@ -22,7 +22,9 @@ A cursor is a position, not a permission. Always reapply authorization, soft-del
 
 Errors the root package returns read `parse: <table>: <operation or field>: <cause>`, naming the package and the table once; a sentinel (`ErrTenantRequired`, `ErrTenantInvalid`, `ErrKeyInvalid`, `ErrNoTarget`, `ErrUpdateScope`, `ErrForeign`, `ErrRegistered`, `ErrUpdateBatchTargets`) carries no prefix of its own, so branch on it with `errors.Is`. These are the server's mistakes, never the request's: none is a `core.ParseError`, and none should reach a client as a 4xx. `ErrNoSuchKey` is the exception, the request's: `ParseKey` (`parsehttp.ItemKey`) read an item route's segment that no key column can hold (`parse: devices: no key of the key columns has this text: key column id: "abc" is not a decimal integer`), so no row has that key; answer it 404.
 
-- `ErrCommitUnknown`, `parsepgx: devices: commit outcome unknown: commit: …`: an executor sent an update's `COMMIT` and the connection failed, or the settle timeout (`WithSettleTimeout`) ran out, before the database answered. The update may have been applied: read the rows back before retrying a write that is not idempotent. Every other update error means nothing was written.
+- `ErrCommitUnknown`, `parse: devices: commit: commit outcome unknown: …`: the PostgreSQL provider sent an update's `COMMIT` and the connection failed, or the settle timeout (`parsepgx.SettleTimeout`, `parseprovider`'s `settle_timeout`) ran out, before the database answered. The update may have been applied: read the rows back before retrying a write that is not idempotent. Every other update error means nothing was written. SQLite's commit never leaves its outcome unknown.
+- `*StatementError`, for example `parse: devices: page: context deadline exceeded` or `parse: devices: owner: column name: …`: a statement the database failed, or whose rows did not scan. `Table` and `Statement` name it for a log attribute or a metric label, and the cause is the driver's error: check the request's deadline, the pool, and that the table's columns are the ones the resource reads.
+- `ErrProviderMismatch`, `parse: devices: sqlite transaction for a resource on postgres: …`: `In` was given a transaction of another provider, or `Relate` a target built on another. Build every resource of one database on its one provider.
 - `ErrTenantRequired`, `parse: devices: a tenant-scoped resource needs Scope.Tenant`: a list (without `Scope.Governance` either) or an update of a resource with a tenant column was built without the server's tenant. Check the middleware that sets `Scope.Tenant`.
 - `ErrKeyInvalid`, for example `parse: devices: target key: not a value of the key column's type: expected string, got int`, or `update batch row 2 key: …` from `BuildUpdateBatch`: the key `ByID`, `ByIDs`, `ByKey`, `ByKeys` or a batch row named is not of the key column's Go type, or not a UUID for a UUID key, or a `parse.Key` has another number of values than the resource has key columns (`… 1 values for the 2 key columns (warehouse_id, sku)`). Convert the route parameter to the key's type before building; nothing was sent to the database.
 
@@ -50,43 +52,40 @@ For read/modify/write patches (`test`, `copy`, `move`, nested pointers), protect
 
 ### Varied native update batches
 
-`Resource.BuildUpdateBatch(dialect, []RowUpdate, scope, UpdateBatchLimits, options...)`
-compiles distinct column patches for unique primary keys. Each `RowUpdate` has
+`Resource.UpdateBatch(ctx, []RowUpdate, scope, UpdateBatchLimits, options...)`
+applies distinct column patches to unique primary keys. Each `RowUpdate` has
 `Key`, `Patch` and an optional narrowing `Policy` for its exact revision and
 authorization predicate. The common scope's tenant, live-row and policy floors
 apply to every item. The scope is checked before any item: a missing tenant
 (`ErrTenantRequired`) or one the resource's tenant columns cannot hold
 (`ErrTenantInvalid`) refuses the batch, empty or not, and the tenant is
-normalized once for every item. This is a server-side compiler; it grants no
-authority.
+normalized once for every item. It grants no authority; `BuildUpdateBatch`
+returns the statements without running them.
 
-Apply the plan with `parsepgx.UpdateBatch(ctx, pool, r, plan)` on PostgreSQL
-or `parsesql.UpdateBatch(ctx, db, r, plan)` on SQLite. Either runs it in one
-transaction (a savepoint inside the caller's): every chunk's `Current` first,
-each required to hold exactly its chunk's keys (`UpdateBatchChunk.CheckCurrent`),
-then every `Owner` in chunk order. A target that is missing, stale,
-inaccessible or invalid returns `ErrUpdateBatchTargets` and writes nothing.
-PostgreSQL locks the targets in key order; on SQLite the connection begins
-write transactions (`_txlock=immediate`, see
-[database/sql](integrations.md#databasesql-and-sqlite)). The returned
-`UpdateResult` holds the owners' changed postimages in `Changed` and, with
-`SkipUnchanged`, the targets they left — which keep their stamps and counters —
-in `Unchanged`.
+The batch runs in one transaction (a savepoint inside the resource's, under
+`In`): every chunk's `Current` first, each required to hold exactly its
+chunk's keys, then every `Owner` in chunk order. A target that is missing,
+stale, inaccessible or invalid returns `ErrUpdateBatchTargets` and writes
+nothing. PostgreSQL locks the targets in key order; on SQLite the connection
+begins write transactions (`_txlock=immediate`, see
+[SQLite](integrations.md#sqlite)). The returned `UpdateResult` holds the
+owners' changed postimages in `Changed` and, with `SkipUnchanged`, the targets
+they left — which keep their stamps and counters — in `Unchanged`.
 
 `UpdateBatchPlan.Chunks` holds each chunk's canonical `Keys`, its `Current`
-statement and an optional `Owner` statement, for an executor of your own: it
-runs the statements in that order in one write transaction and rolls back on
-the first error.
+statement and an optional `Owner` statement: what `UpdateBatch` runs, in that
+order, for a log or a review of a batch before it runs.
 
-`UpdateBatchLimits` defaults to 500 total rows and a dialect parameter budget
+`UpdateBatchLimits` defaults to 500 total rows and a parameter budget
 of 999 for SQLite or 65535 for PostgreSQL. Positive overrides configure these
 bounds; negative values refuse. Chunks contain batched statements, not one
 UPDATE per item. A single item exceeding the parameter budget refuses the whole
 plan. Empty input has no statements. Keys normalize by the one key rule
 (`core.NormalizeKey`), each value as its column's type; duplicate normalized
 keys refuse.
-Database collation aliases must also be rejected by the caller's exact Current
-key check. All validation finishes before returning an executable plan.
+`UpdateBatch`'s exact check of the keys `Current` returns also rejects rows a
+database collation matched under another spelling. All validation finishes
+before any statement runs.
 
 A batch takes the column patches the ordinary SQL compiler takes. It refuses
 relation mutations and primary-key/tenant-column assignments. Typed JSON, arrays, nulls, change predicates, timestamps and increments
@@ -104,7 +103,7 @@ Set limits deliberately for your endpoint. [Configuration](schema-configuration.
 
 - Match indexes to frequently filtered columns and the stable sort plus unique tie-breaker used by keyset pagination. A keyset whose keys all walk one direction and none is nullable seeks with a row value on both dialects, `("price", "id") < (?1, ?2)`, which an index on the sort columns and then the key serves as a search from the cursor (on SQLite, `EXPLAIN QUERY PLAN` shows `SEARCH … USING INDEX`). SQLite seeks a row value only from a bare leading column, so a seek led by an expression — a decimal key's `parse_decimal_key("amount")` on SQLite, a `ColumnMapper`'s or computed column's expression, a path — also bounds that key on its own on both dialects, `parse_decimal_key("amount") >= parse_decimal_key(?1) AND (…) > (…)`, which an index on the expression and then the remaining keys serves (`CREATE INDEX … (parse_decimal_key(amount), id)`); PostgreSQL's index condition takes both. Mixed directions or a nullable key take an OR chain of the keys instead, which SQLite answers by scanning the index from its start. Text keys walk by code point: SQLite collates the cursor's value BINARY, so a text sort column's index serves the seek only when it is BINARY-collated (the default; a column declared `COLLATE NOCASE` needs `CREATE INDEX … ("name" COLLATE BINARY, "id")`). A key read through an expression (`ColumnMapper`, a computed `CursorKey.Expr`) is collated BINARY on the expression instead, which an index on that expression serves.
 - Index junction owner/target columns and the tenant scope used by the emitted correlated queries.
-- PostgreSQL JSON containment can use GIN indexes; choose an index/operator class for the predicates actually issued. Path `$eq` and `$in` sets of at most `PostgresDialect.ContainmentMaxValues` members on `jsonb` columns compile to containment outside `$not`, so `GIN (doc jsonb_path_ops)` serves them.
+- PostgreSQL JSON containment can use GIN indexes; choose an index/operator class for the predicates actually issued. Path `$eq` and `$in` sets of at most `parsepgx.ContainmentMaxValues` members (256 by default) on `jsonb` columns compile to containment outside `$not`, so `GIN (doc jsonb_path_ops)` serves them.
 - A `$in` / `$nin` set, and a lookup's `WhereIn` list, binds as one parameter. On PostgreSQL a column's set compares with `= ANY($1)`: index columns that large sets filter, since under a generic plan an unindexed column probes the array member by member for each row. A path's set joins its members unnested, which a hash serves in any plan.
 - SQLite JSON comparisons traverse document structure; measure representative document sizes and filter complexity.
 - SQLite compares and orders decimals through `parse_decimal_key` ([`parsesqlite`](../parsesqlite/README.md)), one Go call per row and expression: equality, `$ne`, `$in` and `$nin` compare the column's key with each operand's, as ranges, sorts and keyset seeks do. One expression index, the key and then the keyset's tiebreaker, serves them all: `CREATE INDEX prices_amount_key ON prices (parse_decimal_key(amount), id)`, if every connection that writes the table has the functions registered, since the index's maintenance calls them. Two keys are equal exactly where the canonical texts `parse_decimal` returns are, for every value a column holds (`TestDecimalKey_EqualExactlyWhereTextIsEqual`). A decimal path's key is `parse_decimal_key(doc -> '$.price')`. Facet terms key decimal and float values through `parse_decimal` (a `float32` field's through `parse_decimal_float32`), one call per row. An int or float path's member is a number only within 1000 digits in plain notation: a literal of at most 1000 characters with no exponent is, without a call, and `parse_decimal` reads any other, one call per such member.

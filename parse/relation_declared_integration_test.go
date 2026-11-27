@@ -24,44 +24,51 @@ import (
 // Declared relations over one fixture on each backend.
 func TestDeclaredRelations(t *testing.T) {
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
-		runRelationCases(t, relationResources(t), b.dialect, loadRelations(t, b))
+		p, db := loadRelations(t, b)
+		runRelationCases(t, relationResources(t, p), db)
 	})
 }
 
 func TestDeclaredRelations_Memberships(t *testing.T) {
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
-		runRelationMemberships(t, relationResources(t), b.dialect, loadRelations(t, b))
+		p, db := loadRelations(t, b)
+		runRelationMemberships(t, relationResources(t, p), b.dialect, db)
 	})
 }
 
 func TestDeclaredRelations_Includes(t *testing.T) {
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
-		runRelationIncludes(t, relationResources(t), b.dialect, loadRelations(t, b))
+		p, db := loadRelations(t, b)
+		runRelationIncludes(t, relationResources(t, p), db)
 	})
 }
 
 func TestDeclaredRelations_Facets(t *testing.T) {
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
-		runRelationFacets(t, relationResources(t), b.dialect, loadRelations(t, b))
+		p, db := loadRelations(t, b)
+		runRelationFacets(t, relationResources(t, p), db)
 	})
 }
 
 func TestDeclaredRelations_UnknownPolicy(t *testing.T) {
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
-		runRelationUnknownPolicy(t, relationResources(t), b.dialect, loadRelations(t, b))
+		p, db := loadRelations(t, b)
+		runRelationUnknownPolicy(t, relationResources(t, p), db)
 	})
 }
 
 func TestDeclaredRelations_Writes(t *testing.T) {
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
-		runRelationWrites(t, relationResources(t), b.dialect, loadRelations(t, b))
+		p, db := loadRelations(t, b)
+		runRelationWrites(t, relationResources(t, p), db)
 	})
 }
 
-// loadRelations seeds a fresh database of b with the fixture.
-func loadRelations(t *testing.T, b sqlBackend) *sql.DB {
+// loadRelations seeds a fresh database of b with the fixture, and returns
+// its provider and the database.
+func loadRelations(t *testing.T, b sqlBackend) (*parse.Provider, *sql.DB) {
 	t.Helper()
-	db := b.open(t)
+	p, db := b.open(t)
 	timestampType := b.columnType(core.TypeInfo{Type: core.FieldTypeTimestamp})
 	const deletedAt = `'2026-01-01T00:00:00Z'`
 	execStatements(t, db,
@@ -89,7 +96,7 @@ func loadRelations(t *testing.T, b sqlBackend) *sql.DB {
 		`INSERT INTO device_tags VALUES ('d1','red','t1'), ('d2','old','t1'), ('d3','t2red','t1'), ('d4','red','t2')`,
 		`INSERT INTO assets VALUES ('a1','t1','root',NULL), ('a2','t1','leaf','a1'), ('a3','t1','orphan',NULL)`,
 	)
-	return db
+	return p, db
 }
 
 type relationCase struct {
@@ -127,7 +134,7 @@ func relationCases() []relationCase {
 }
 
 // runRelationCases lists each case through BuildList on db.
-func runRelationCases(t *testing.T, r relResources, d filter.Dialect, db *sql.DB) {
+func runRelationCases(t *testing.T, r relResources, db *sql.DB) {
 	t.Helper()
 	for _, tc := range relationCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -136,12 +143,12 @@ func runRelationCases(t *testing.T, r relResources, d filter.Dialect, db *sql.DB
 			if tc.assets {
 				req, err := r.assets.ParseList(q)
 				require.NoError(t, err)
-				plan, err = r.assets.BuildList(d, req, parse.Scope{Tenant: "t1"})
+				plan, err = r.assets.BuildList(req, parse.Scope{Tenant: "t1"})
 				require.NoError(t, err)
 			} else {
 				req, err := r.devices.ParseList(q)
 				require.NoError(t, err)
-				plan, err = r.devices.BuildList(d, req, relationScopeT1())
+				plan, err = r.devices.BuildList(req, relationScopeT1())
 				require.NoError(t, err)
 			}
 			got := rowIDs(t, queryRows[[]any](t, db, plan.Page.SQL, plan.Page.Args...))
@@ -173,7 +180,7 @@ func runRelationMemberships(t *testing.T, r relResources, d filter.Dialect, db *
 				require.NoError(t, err)
 				req, err = req.WithFilter(resolved)
 				require.NoError(t, err)
-				plan, err = r.assets.BuildList(d, req, scope)
+				plan, err = r.assets.BuildList(req, scope)
 				require.NoError(t, err)
 			} else {
 				req, err := r.devices.ParseList(q)
@@ -183,7 +190,7 @@ func runRelationMemberships(t *testing.T, r relResources, d filter.Dialect, db *
 				require.NoError(t, err)
 				req, err = req.WithFilter(resolved)
 				require.NoError(t, err)
-				plan, err = r.devices.BuildList(d, req, scope)
+				plan, err = r.devices.BuildList(req, scope)
 				require.NoError(t, err)
 			}
 			assert.NotContains(t, plan.Page.SQL, "EXISTS", "every relation predicate is resolved")
@@ -315,11 +322,11 @@ func (k keysOnlyLookup) LookupValues(ctx context.Context, lk *filter.Lookup) ([]
 // runRelationIncludes lists t1's devices including their commands, tags and
 // shared types: only related rows the request may see, and none for an
 // owner without them.
-func runRelationIncludes(t *testing.T, r relResources, d filter.Dialect, db *sql.DB) {
+func runRelationIncludes(t *testing.T, r relResources, db *sql.DB) {
 	t.Helper()
 	req, err := r.devices.ParseList(url.Values{filter.ParamInclude: {"commands,tags,shared_types"}, filter.ParamPageSize: {"50"}})
 	require.NoError(t, err)
-	plan, err := r.devices.BuildList(d, req, relationScopeT1())
+	plan, err := r.devices.BuildList(req, relationScopeT1())
 	require.NoError(t, err)
 	queries, err := r.devices.IncludeQueries(plan, []parse.Key{{"d1"}, {"d2"}, {"d3"}, {"d4"}})
 	require.NoError(t, err)
@@ -344,18 +351,18 @@ func runRelationIncludes(t *testing.T, r relResources, d filter.Dialect, db *sql
 
 	_, err = r.devices.ParseList(url.Values{filter.ParamInclude: {"type"}})
 	require.Error(t, err, "a belongs-to is not includable")
-	plan, err = r.devices.BuildList(d, req, parse.Scope{Tenant: "t1"})
+	plan, err = r.devices.BuildList(req, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
 	_, err = r.devices.IncludeQueries(plan, []parse.Key{{"d1"}})
 	assert.ErrorIs(t, err, filter.ErrRelatedPolicyRequired, "a policy-scoped include needs the target's policy")
 }
 
 // runRelationFacets counts t1's devices per visible related key.
-func runRelationFacets(t *testing.T, r relResources, d filter.Dialect, db *sql.DB) {
+func runRelationFacets(t *testing.T, r relResources, db *sql.DB) {
 	t.Helper()
 	req, err := r.devices.ParseList(url.Values{filter.ParamFacets: {"commands,tags,shared_types"}})
 	require.NoError(t, err)
-	plan, err := r.devices.BuildList(d, req, relationScopeT1())
+	plan, err := r.devices.BuildList(req, relationScopeT1())
 	require.NoError(t, err)
 	require.NotNil(t, plan.Facets)
 	got := map[string]map[string]int64{}
@@ -387,7 +394,7 @@ func runRelationFacets(t *testing.T, r relResources, d filter.Dialect, db *sql.D
 // include or facet holds no related row. That holds where the target is
 // aliased too: in an include and a facet, and in a relation back to the
 // owner's own table. Raw policy SQL is still refused under an alias.
-func runRelationUnknownPolicy(t *testing.T, r relResources, d filter.Dialect, db *sql.DB) {
+func runRelationUnknownPolicy(t *testing.T, r relResources, db *sql.DB) {
 	t.Helper()
 	unknown := func(table string) parse.Scope {
 		scope := parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
@@ -397,12 +404,12 @@ func runRelationUnknownPolicy(t *testing.T, r relResources, d filter.Dialect, db
 	}
 	list := func(t *testing.T, owner interface {
 		ParseList(url.Values) (*parse.ListRequest, error)
-		BuildList(filter.Dialect, *parse.ListRequest, parse.Scope) (*parse.ListPlan, error)
+		BuildList(*parse.ListRequest, parse.Scope) (*parse.ListPlan, error)
 	}, q url.Values, s parse.Scope) *parse.ListPlan {
 		t.Helper()
 		req, err := owner.ParseList(q)
 		require.NoError(t, err)
-		plan, err := owner.BuildList(d, req, s)
+		plan, err := owner.BuildList(req, s)
 		require.NoError(t, err)
 		return plan
 	}
@@ -429,7 +436,7 @@ func runRelationUnknownPolicy(t *testing.T, r relResources, d filter.Dialect, db
 
 	// A second resource over the assets table relates each asset to its
 	// parent through the policy, so the target is the owner's own table.
-	assets := parse.MustResource[relAsset]("assets", parse.TenantColumn("tenant_id"))
+	assets := parse.MustResource[relAsset](r.assets.Provider(), "assets", parse.TenantColumn("tenant_id"))
 	assets.MustRelate("parent", parse.BelongsTo(assets, "parent_id", parse.PolicyScoped()))
 	t.Run("aliased relation filter", func(t *testing.T) {
 		all := list(t, assets, url.Values{filter.ParamFilter: {`{"parent":{"$is":{}}}`}}, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{"assets": {}}})
@@ -440,7 +447,7 @@ func runRelationUnknownPolicy(t *testing.T, r relResources, d filter.Dialect, db
 	t.Run("raw SQL under an alias", func(t *testing.T) {
 		req, err := assets.ParseList(url.Values{filter.ParamFilter: {`{"parent":{"$is":{}}}`}})
 		require.NoError(t, err)
-		_, err = assets.BuildList(d, req, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
+		_, err = assets.BuildList(req, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
 			"assets": {Constraints: []*filter.PolicyConstraint{{RawSQL: "assets.name = $1", RawArgs: []any{"root"}}}},
 		}})
 		assert.ErrorContains(t, err, "raw SQL cannot be applied to the aliased relation table")
@@ -451,7 +458,7 @@ func runRelationUnknownPolicy(t *testing.T, r relResources, d filter.Dialect, db
 // with targets the request may relate (live, in the tenant, or admitted by
 // the target's policy), and a replace or remove reaches only pairs to such
 // targets, so pairs the request cannot see stay.
-func runRelationWrites(t *testing.T, r relResources, d parse.Dialect, db *sql.DB) {
+func runRelationWrites(t *testing.T, r relResources, db *sql.DB) {
 	t.Helper()
 	apply := func(id, body string, merge bool) {
 		t.Helper()
@@ -463,9 +470,7 @@ func runRelationWrites(t *testing.T, r relResources, d parse.Dialect, db *sql.DB
 			p, err = r.devices.ParsePatch([]byte(body))
 		}
 		require.NoError(t, err, body)
-		plan, err := r.devices.BuildUpdate(d, p, parse.ByID(id), relationScopeT1())
-		require.NoError(t, err)
-		_, err = applyUpdate(t, db, r.devices, d, plan, false)
+		_, err = r.devices.Update(t.Context(), p, parse.ByID(id), relationScopeT1())
 		require.NoError(t, err, body)
 	}
 	pairs := func(table, column, device string) []string {

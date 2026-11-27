@@ -20,15 +20,16 @@ import (
 // SQLite, jsonb on PostgreSQL.
 func TestElementPredicates(t *testing.T) {
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
-		runElementCases(t, b.dialect, loadOrders(t, b))
+		p, db := loadOrders(t, b)
+		runElementCases(t, orderResource(t, p), db)
 	})
 }
 
 // loadOrders writes orderRows into orders on a fresh database of b: its id
 // and parent_id text, its other columns documents.
-func loadOrders(t *testing.T, b sqlBackend) *sql.DB {
+func loadOrders(t *testing.T, b sqlBackend) (*parse.Provider, *sql.DB) {
 	t.Helper()
-	db := b.open(t)
+	p, db := b.open(t)
 	table := sqlTable{name: "orders", key: []string{"id"}}
 	for _, name := range orderColumns {
 		c := column[json.RawMessage](name)
@@ -42,17 +43,17 @@ func loadOrders(t *testing.T, b sqlBackend) *sql.DB {
 		rows[i] = r[:]
 	}
 	b.load(t, db, table, rows)
-	return db
+	return p, db
 }
 
-func runElementCases(t *testing.T, d filter.Dialect, db *sql.DB) {
+// runElementCases runs each case's list SQL, compiled by orders, on db.
+func runElementCases(t *testing.T, orders *parse.Resource[order], db *sql.DB) {
 	t.Helper()
-	orders := orderResource(t)
 	for _, tc := range slices.Concat(elementCases, elementRelationCases) {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := orders.ParseList(url.Values{filter.ParamFilter: {tc.filter}})
 			require.NoError(t, err)
-			plan, err := orders.BuildList(d, req, parse.Scope{})
+			plan, err := orders.BuildList(req, parse.Scope{})
 			require.NoError(t, err)
 			got := rowIDs(t, queryRows[[]any](t, db, plan.Page.SQL, plan.Page.Args...))
 			slices.Sort(got)

@@ -24,7 +24,7 @@ type widget struct {
 
 func widgetRegistry(t *testing.T) *parse.SchemaRegistry {
 	t.Helper()
-	widgets, err := parse.NewResource[widget]("widgets")
+	widgets, err := parse.NewResource[widget](onSQLite, "widgets")
 	require.NoError(t, err)
 	reg := parse.NewSchemaRegistry()
 	require.NoError(t, parse.RegisterResource(reg, widgets))

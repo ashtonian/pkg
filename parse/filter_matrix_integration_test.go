@@ -60,7 +60,7 @@ func TestPolicyMatrix(t *testing.T) {
 // it; the decimal matrix holds them exactly, as TEXT.
 func loadRecords(t *testing.T, b sqlBackend) (*sql.DB, *filter.ResourceSchema) {
 	t.Helper()
-	db := b.open(t)
+	_, db := b.open(t)
 	schema, err := filtertest.Schema()
 	require.NoError(t, err)
 	table := schemaTable(schema).holding("amount", sqliteEngine, "NUMERIC")
@@ -95,7 +95,7 @@ func runMembershipMatrix(t *testing.T, b sqlBackend) {
 // PostgreSQL's 65,535 bind parameters.
 func runLookupSets(t *testing.T, b sqlBackend) {
 	t.Helper()
-	db := b.open(t)
+	_, db := b.open(t)
 	ua, ub := uuid.MustParse("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"), uuid.MustParse("b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a12")
 	owners := sqlTable{name: "set_owners", columns: []sqlColumn{column[string]("id")}, key: []string{"id"}}
 	links := sqlTable{name: "set_links", columns: []sqlColumn{column[string]("owner_id").required(), column[int64]("n"), column[uuid.UUID]("u"), column[string]("s")}}

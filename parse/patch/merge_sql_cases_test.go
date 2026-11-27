@@ -85,9 +85,6 @@ type mergeDB struct {
 	storage core.SQLType
 	insert  string // INSERT with one placeholder for the document text
 	read    string // SELECT yielding the document as JSON text
-	// refusesQuoted marks a dialect that refuses a member named with a
-	// double quote or a backslash (memberCase.quoted): SQLite.
-	refusesQuoted bool
 }
 
 // RFC 7396 merges compile to SQL on every dialect:

@@ -7,7 +7,6 @@ import (
 	"net/url"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
 )
 
 type Device struct {
@@ -21,7 +20,7 @@ type Device struct {
 // PostgreSQL under the server's tenant: the key is the final keyset column,
 // and the page reads one row more than it returns to know there is a next.
 func ExampleResource_BuildList() {
-	devices := parse.MustResource[Device]("devices", parse.TenantColumn("tenant_id"), parse.PageSize(25, 100))
+	devices := parse.MustResource[Device](onPostgres, "devices", parse.TenantColumn("tenant_id"), parse.PageSize(25, 100))
 
 	q, _ := url.ParseQuery(`status=active&filter={"name":{"$ne":"spare"}}&sort=name&page_size=10`)
 	req, err := devices.ParseList(q)
@@ -29,7 +28,7 @@ func ExampleResource_BuildList() {
 		fmt.Println(err)
 		return
 	}
-	plan, err := devices.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: "t1"})
+	plan, err := devices.BuildList(req, parse.Scope{Tenant: "t1"})
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -45,14 +44,14 @@ func ExampleResource_BuildList() {
 // server's tenant: the SET placeholders come first, then the tenant floor and
 // the target, and the statement returns the row as the update left it.
 func ExampleResource_BuildUpdate() {
-	devices := parse.MustResource[Device]("devices", parse.TenantColumn("tenant_id"))
+	devices := parse.MustResource[Device](onPostgres, "devices", parse.TenantColumn("tenant_id"))
 
 	parsed, err := devices.ParseMergePatch([]byte(`{"status":"offline"}`))
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	plan, err := devices.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID("d1"), parse.Scope{Tenant: "t1"})
+	plan, err := devices.BuildUpdate(parsed, parse.ByID("d1"), parse.Scope{Tenant: "t1"})
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -70,14 +69,14 @@ func ExampleResource_BuildUpdate() {
 // as it stands, so a device it returns and the update does not is found and
 // unchanged; neither returning it means it is not found.
 func ExampleSkipUnchanged() {
-	devices := parse.MustResource[Device]("devices", parse.TenantColumn("tenant_id"))
+	devices := parse.MustResource[Device](onPostgres, "devices", parse.TenantColumn("tenant_id"))
 
 	parsed, err := devices.ParseMergePatch([]byte(`{"status":"offline"}`))
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	plan, err := devices.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID("d1"), parse.Scope{Tenant: "t1"}, parse.SkipUnchanged())
+	plan, err := devices.BuildUpdate(parsed, parse.ByID("d1"), parse.Scope{Tenant: "t1"}, parse.SkipUnchanged())
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -106,9 +105,9 @@ type Command struct {
 // on one command, held to the tenant; a many-to-many's target filter joins
 // the target to the pair table inside the subquery.
 func ExampleResource_Relate() {
-	devices := parse.MustResource[Device]("devices", parse.TenantColumn("tenant_id"))
-	commands := parse.MustResource[Command]("commands", parse.TenantColumn("tenant_id"))
-	tags := parse.MustResource[Tag]("tags", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+	devices := parse.MustResource[Device](onPostgres, "devices", parse.TenantColumn("tenant_id"))
+	commands := parse.MustResource[Command](onPostgres, "commands", parse.TenantColumn("tenant_id"))
+	tags := parse.MustResource[Tag](onPostgres, "tags", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed()))
 	devices.MustRelate("tags", parse.ManyToMany(tags, parse.Junction{Table: "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"}, parse.Indexed()))
 	commands.MustRelate("device", parse.BelongsTo(devices, "device_id"))
@@ -123,7 +122,7 @@ func ExampleResource_Relate() {
 			fmt.Println(err)
 			return
 		}
-		plan, err := devices.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: "t1"})
+		plan, err := devices.BuildList(req, parse.Scope{Tenant: "t1"})
 		if err != nil {
 			fmt.Println(err)
 			return

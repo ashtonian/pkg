@@ -27,7 +27,7 @@ func TestDecimalMatrix(t *testing.T) {
 // b, and checks that each row's price reads in SQL as filter.PathValue reads
 // it.
 func runDecimalMatrix(t *testing.T, b sqlBackend) {
-	db := b.open(t)
+	provider, db := b.open(t)
 	schema, err := filtertest.DecimalSchema()
 	require.NoError(t, err)
 	table := schemaTable(schema)
@@ -36,9 +36,9 @@ func runDecimalMatrix(t *testing.T, b sqlBackend) {
 		filtertest.RunDecimals(t, schema, b.filterIDs(db, schema))
 	})
 	t.Run("walks", func(t *testing.T) {
-		r, err := parse.NewResource[filtertest.DecimalRecord](schema.Name, parse.PageSize(walkPage, 10))
+		r, err := parse.NewResource[filtertest.DecimalRecord](provider, schema.Name, parse.PageSize(walkPage, 10))
 		require.NoError(t, err)
-		walkOrders(t, walker[filtertest.DecimalRecord]{db: db, dialect: b.dialect, resource: r,
+		walkOrders(t, walker[filtertest.DecimalRecord]{resource: r,
 			id: func(r filtertest.DecimalRecord) string { return r.ID }}, filtertest.DecimalOrders)
 	})
 	t.Run("facets", func(t *testing.T) {

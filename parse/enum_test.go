@@ -28,7 +28,7 @@ type enumAccount struct {
 // round-trips through the tag, request validation and the schema document;
 // a struct member's enum holds on its path as a column's does.
 func TestEnum_ValuesRoundTrip(t *testing.T) {
-	accounts := parse.MustResource[enumAccount]("enum_accounts")
+	accounts := parse.MustResource[enumAccount](onSQLite, "enum_accounts")
 	for _, ok := range []string{`{"terms":"net 30, eom"}`, `{"terms":" padded"}`, `{"terms":"due"}`, `{"settings.mode":"a"}`, `{"settings.kinds":{"$contains":["y"]}}`} {
 		_, err := accounts.ParseFilter(ok)
 		assert.NoError(t, err, ok)
@@ -74,10 +74,10 @@ func TestEnum_OnlyStringsAndArraysOfStrings(t *testing.T) {
 		build func() error
 		want  string
 	}{
-		"an int field":         {func() error { _, err := parse.NewResource[intEnum]("t"); return err }, "field Rank: enum on a int field"},
-		"an unfiltered int":    {func() error { _, err := parse.NewResource[unfilteredIntEnum]("t"); return err }, "field Rank: enum on a int field"},
-		"an int member":        {func() error { _, err := parse.NewResource[memberEnum]("t"); return err }, "field Settings: path level: enum on a int field"},
-		"an unterminated tick": {func() error { _, err := parse.NewResource[badQuote]("t"); return err }, `field Mode: enum:"'a": value 1: unterminated quote`},
+		"an int field":         {func() error { _, err := parse.NewResource[intEnum](onSQLite, "t"); return err }, "field Rank: enum on a int field"},
+		"an unfiltered int":    {func() error { _, err := parse.NewResource[unfilteredIntEnum](onSQLite, "t"); return err }, "field Rank: enum on a int field"},
+		"an int member":        {func() error { _, err := parse.NewResource[memberEnum](onSQLite, "t"); return err }, "field Settings: path level: enum on a int field"},
+		"an unterminated tick": {func() error { _, err := parse.NewResource[badQuote](onSQLite, "t"); return err }, `field Mode: enum:"'a": value 1: unterminated quote`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			assert.ErrorContains(t, tc.build(), tc.want)

@@ -17,7 +17,7 @@ type cfgEntity struct {
 // TestMergePatchPreservesSiblings: RFC 7396 §2 merges object values
 // recursively, so applying {"config":{"theme":"dark"}} keeps config.lang.
 func TestMergePatchPreservesSiblings(t *testing.T) {
-	tp, err := parse.NewResource[cfgEntity]("cfg_entities")
+	tp, err := parse.NewResource[cfgEntity](onSQLite, "cfg_entities")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestMergePatchPreservesSiblings(t *testing.T) {
 // TestMergePatchNestedNullDeletes: within an object merge, null at a key
 // removes that key (RFC 7396); it is not stored as a JSON null.
 func TestMergePatchNestedNullDeletes(t *testing.T) {
-	tp, err := parse.NewResource[cfgEntity]("cfg_entities")
+	tp, err := parse.NewResource[cfgEntity](onSQLite, "cfg_entities")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestMergePatchNestedNullDeletes(t *testing.T) {
 // TestTopLevelNullStillRemoves: a top-level null clears the whole field.
 // A map field clears to its empty value, never NULL.
 func TestTopLevelNullStillRemoves(t *testing.T) {
-	tp, err := parse.NewResource[cfgEntity]("cfg_entities")
+	tp, err := parse.NewResource[cfgEntity](onSQLite, "cfg_entities")
 	if err != nil {
 		t.Fatal(err)
 	}

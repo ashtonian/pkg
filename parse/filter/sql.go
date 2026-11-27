@@ -210,37 +210,6 @@ type Dialect interface {
 	StoresAsText(t core.FieldType) bool
 }
 
-// ErrUnknownDSN is returned by DialectFromDSN for a DSN that names no
-// database parse compiles SQL for, CockroachDB included.
-var ErrUnknownDSN = dialect.ErrUnknownDSN
-
-// DialectFromDSN returns the Dialect of a database DSN, decided by its form
-// alone: PostgresDialect for a postgres:// or postgresql:// URL;
-// SQLiteDialect for a sqlite:// or sqlite3:// URL, a file: URI, :memory:,
-// or an absolute, ./ or ../ path to a .db, .sqlite or .sqlite3 file. It
-// refuses forms other drivers' DSNs take: CockroachDB's cockroach:// and
-// crdb://, where PostgresDialect's SQL has never been verified; a bare name
-// such as app.db, which keyword/value, MySQL and Oracle DSNs also end as;
-// //host/… and a one-segment /name.db. A form is evidence, not proof:
-// another driver's DSN that takes an accepted one, such as a postgres://
-// URL to a CockroachDB cluster or a MySQL user named file, selects that
-// form's dialect. Construct the dialect for a refused DSN. The error names
-// the scheme, never the DSN.
-func DialectFromDSN(dsn string) (Dialect, error) {
-	base, err := dialect.FromDSN(dsn)
-	if err != nil {
-		return nil, err
-	}
-	switch k := dialect.KindOf(base); k {
-	case dialect.KindPostgres:
-		return PostgresDialect{}, nil
-	case dialect.KindSQLite:
-		return SQLiteDialect{}, nil
-	default:
-		return nil, dialect.Unsupported(k, "DialectFromDSN")
-	}
-}
-
 // DecimalOperand is what a decimal value is read from: a column, a document
 // member or a bound parameter. A dialect renders it as the exact decimal
 // value (Dialect.DecimalValue) or as what compares and orders it
@@ -661,15 +630,10 @@ func NewSQLBuilder(schema *ResourceSchema, dialect Dialect, opts ...SQLBuilderOp
 // a programmatic AST, the dialect — is a plain error wrapping its cause,
 // such as ErrRelatedPolicyRequired or ErrPolicyInvalid.
 func (b *SQLBuilder) Build(ast *FilterAST) (*SQLResult, error) {
-	exprs, err := b.schema.ComputedSQL(b.dialect)
-	if err != nil {
-		return nil, err
-	}
-	return b.build(ast, exprs)
+	return b.build(ast, b.schema.ComputedSQL())
 }
 
-// build is Build with the schema's computed columns resolved for the
-// builder's dialect.
+// build is Build with the schema's computed columns read (ComputedSQL).
 func (b *SQLBuilder) build(ast *FilterAST, exprs columnExprs) (*SQLResult, error) {
 	if err := checkStartParam(b.startParam); err != nil {
 		return nil, err
@@ -690,9 +654,6 @@ func (b *SQLBuilder) build(ast *FilterAST, exprs columnExprs) (*SQLResult, error
 	if err != nil {
 		if pe, ok := errors.AsType[*core.ParseError](err); ok {
 			return nil, pe
-		}
-		if ce, ok := errors.AsType[*computedError](err); ok {
-			return nil, ce.err
 		}
 		return nil, fmt.Errorf("filter: building SQL: %w", err)
 	}

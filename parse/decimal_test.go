@@ -25,29 +25,32 @@ type ledgerLine struct {
 }
 
 func TestDecimalRequestContract(t *testing.T) {
-	resource := parse.MustResource[ledgerLine]("ledger_lines")
-	query, err := resource.ParseList(url.Values{
-		"filter":  {`{"amount":{"$gt":"9.50"}}`},
-		"fee_lte": {"1.0"},
-		"sort":    {"-amount,id"},
-	})
-	require.NoError(t, err)
 	for _, tt := range []struct {
-		dialect filter.Dialect
-		amount  string
-		fee     string
-		order   string
+		provider *parse.Provider
+		amount   string
+		fee      string
+		order    string
 	}{
-		{filter.PostgresDialect{}, `"ledger_lines"."amount" > $`, `"ledger_lines"."fee" <= $`, `"ledger_lines"."amount" DESC`},
-		{filter.SQLiteDialect{}, `parse_decimal_key("ledger_lines"."amount") > parse_decimal_key(?`, `parse_decimal_key("ledger_lines"."fee") <= parse_decimal_key(?`, `parse_decimal_key("ledger_lines"."amount") DESC`},
+		{onPostgres, `"ledger_lines"."amount" > $`, `"ledger_lines"."fee" <= $`, `"ledger_lines"."amount" DESC`},
+		{onSQLite, `parse_decimal_key("ledger_lines"."amount") > parse_decimal_key(?`, `parse_decimal_key("ledger_lines"."fee") <= parse_decimal_key(?`, `parse_decimal_key("ledger_lines"."amount") DESC`},
 	} {
-		plan, err := resource.BuildList(tt.dialect, query, parse.Scope{})
+		resource := parse.MustResource[ledgerLine](tt.provider, "ledger_lines")
+		query, err := resource.ParseList(url.Values{
+			"filter":  {`{"amount":{"$gt":"9.50"}}`},
+			"fee_lte": {"1.0"},
+			"sort":    {"-amount,id"},
+		})
 		require.NoError(t, err)
-		assert.Contains(t, plan.Page.SQL, tt.amount, tt.dialect.Name())
-		assert.Contains(t, plan.Page.SQL, tt.fee, tt.dialect.Name())
-		assert.Contains(t, plan.Page.SQL, tt.order, tt.dialect.Name())
-		assert.Subset(t, plan.Page.Args, []any{"9.5", "1"}, tt.dialect.Name())
+		plan, err := resource.BuildList(query, parse.Scope{})
+		require.NoError(t, err)
+		name := tt.provider.Name()
+		assert.Contains(t, plan.Page.SQL, tt.amount, name)
+		assert.Contains(t, plan.Page.SQL, tt.fee, name)
+		assert.Contains(t, plan.Page.SQL, tt.order, name)
+		assert.Subset(t, plan.Page.Args, []any{"9.5", "1"}, name)
 	}
+
+	resource := parse.MustResource[ledgerLine](onSQLite, "ledger_lines")
 
 	for _, bad := range []url.Values{
 		{"filter": {`{"amount":"ten"}`}},
@@ -61,7 +64,7 @@ func TestDecimalRequestContract(t *testing.T) {
 }
 
 func TestDecimalMergePatch(t *testing.T) {
-	resource := parse.MustResource[ledgerLine]("ledger_lines")
+	resource := parse.MustResource[ledgerLine](onSQLite, "ledger_lines")
 	tests := []struct {
 		body       string
 		wantAmount string
@@ -86,7 +89,7 @@ func TestDecimalMergePatch(t *testing.T) {
 				assert.Equal(t, *tt.wantFee, target.Fee.String())
 			}
 
-			update, err := resource.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("one"), parse.Scope{})
+			update, err := resource.BuildUpdate(p, parse.ByID("one"), parse.Scope{})
 			require.NoError(t, err)
 			assert.Contains(t, update.Owner.Args, tt.wantAmount, "SET binds the canonical text")
 		})
@@ -103,7 +106,7 @@ func TestDecimalMergePatch(t *testing.T) {
 // The wire form a decimal marshals to is the form a patch and a filter
 // accept back.
 func TestDecimalWireRoundTrip(t *testing.T) {
-	resource := parse.MustResource[ledgerLine]("ledger_lines")
+	resource := parse.MustResource[ledgerLine](onSQLite, "ledger_lines")
 	wire, err := json.Marshal(map[string]any{"amount": decimal.RequireFromString("10.25")})
 	require.NoError(t, err)
 	require.JSONEq(t, `{"amount":"10.25"}`, string(wire))

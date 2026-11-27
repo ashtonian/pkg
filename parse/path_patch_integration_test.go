@@ -31,23 +31,23 @@ func TestPathPatches(t *testing.T) {
 
 func runPathPatches(t *testing.T, b sqlBackend) {
 	t.Helper()
-	db := b.open(t)
+	provider, db := b.open(t)
 	b.load(t, db, sqlTable{name: "tuned_items", columns: []sqlColumn{column[string]("id"), column[tuning]("settings")}, key: []string{"id"}},
 		[][]any{{"a", `{"mode":"auto","level":2}`}, {"b", `{"mode":"manual","level":5}`}})
-	r, err := parse.NewResource[tunedItem]("tuned_items")
+	r, err := parse.NewResource[tunedItem](provider, "tuned_items")
 	require.NoError(t, err)
 
 	ids := func(f string) []string {
 		req, err := r.ParseList(url.Values{"filter": {f}})
 		require.NoError(t, err)
-		plan, err := r.BuildList(b.dialect, req, parse.Scope{})
+		plan, err := r.BuildList(req, parse.Scope{})
 		require.NoError(t, err)
-		return itemIDs(resourceRows(t, db, r, b.dialect, plan.Page), func(it tunedItem) string { return it.ID })
+		return itemIDs(resourceRows(t, r, plan.Page), func(it tunedItem) string { return it.ID })
 	}
 
 	p, err := r.ParseMergePatch([]byte(`{"settings":{"level":9}}`))
 	require.NoError(t, err)
-	plan, err := r.BuildUpdate(b.dialect, p, parse.ByID("a"), parse.Scope{})
+	plan, err := r.BuildUpdate(p, parse.ByID("a"), parse.Scope{})
 	require.NoError(t, err)
 	_, err = db.ExecContext(t.Context(), plan.Owner.SQL, plan.Owner.Args...)
 	require.NoError(t, err, plan.Owner.SQL)

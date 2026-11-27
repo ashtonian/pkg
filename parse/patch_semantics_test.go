@@ -48,7 +48,7 @@ func docParser(t *testing.T, opts ...core.Option) *parse.Resource[docEntity] {
 // docResource declares /meta/* with metaOps.
 func docResource(t *testing.T, metaOps []patch.PatchOp, opts ...core.Option) *parse.Resource[docEntity] {
 	t.Helper()
-	p, err := parse.NewResource[docEntity]("doc_entities", parse.ParserOptions(opts...), parse.CustomizeSchemas(func(s parse.Schemas) error {
+	p, err := parse.NewResource[docEntity](onSQLite, "doc_entities", parse.ParserOptions(opts...), parse.CustomizeSchemas(func(s parse.Schemas) error {
 		// Nested members are reachable only through explicit wildcard paths.
 		return errors.Join(
 			s.Patch.AddPath("/meta/*", &patch.PathSchema{AllowedOps: slices.Clone(metaOps), DataType: core.FieldTypeAny}),
@@ -197,12 +197,12 @@ func TestSchemaIsolation_DefaultOperatorSlices(t *testing.T) {
 		Name  string            `json:"name" parse:"filter,patch"`
 		Attrs map[string]string `json:"attrs" parse:"patch"`
 	}
-	a, err := parse.NewResource[entity]("entities", parse.CustomizeSchemas(func(s parse.Schemas) error {
+	a, err := parse.NewResource[entity](onSQLite, "entities", parse.CustomizeSchemas(func(s parse.Schemas) error {
 		s.Filter.Fields["name"].AllowedOperators[0] = filter.OpGt
 		return s.Patch.UpdatePath("/attrs", func(ps *patch.PathSchema) { ps.AllowedOps[0] = patch.PatchOpTest })
 	}))
 	require.NoError(t, err)
-	b, err := parse.NewResource[entity]("entities")
+	b, err := parse.NewResource[entity](onSQLite, "entities")
 	require.NoError(t, err)
 
 	assert.Equal(t, patch.PatchOpTest, pathOf(a.PatchSchema(), "/attrs").AllowedOps[0])
@@ -215,7 +215,7 @@ func TestSchemaIsolation_DefaultOperatorSlices(t *testing.T) {
 	assert.Equal(t, patch.PatchOpReplace, pathOf(b.PatchSchema(), "/attrs").AllowedOps[0], "the accessor hands out a copy")
 	assert.Equal(t, filter.OpEq, b.FilterSchema().Fields["name"].AllowedOperators[0], "the accessor hands out a copy")
 
-	c, err := parse.NewResource[entity]("entities")
+	c, err := parse.NewResource[entity](onSQLite, "entities")
 	require.NoError(t, err)
 	assert.Equal(t, patch.PatchOpReplace, pathOf(c.PatchSchema(), "/attrs").AllowedOps[0])
 	assert.Equal(t, filter.OpEq, c.FilterSchema().Fields["name"].AllowedOperators[0])
@@ -233,7 +233,7 @@ func TestGeneratePatchSchema_RemoveFollowsNullability(t *testing.T) {
 		Alias  *string         `json:"alias"  parse:"patch"`
 		Hidden *bool           `json:"hidden" parse:"patch"`
 	}
-	p, err := parse.NewResource[defaults]("defaults")
+	p, err := parse.NewResource[defaults](onSQLite, "defaults")
 	require.NoError(t, err)
 	paths := maps.Collect(p.PatchSchema().Paths())
 	assert.NotContains(t, paths["/config"].AllowedOps, patch.PatchOpRemove)
@@ -251,7 +251,7 @@ func TestGeneratePatchSchema_RemoveFollowsNullability(t *testing.T) {
 	assert.Nil(t, got.Hidden)
 
 	// Configured defaults are taken as given.
-	q, err := parse.NewResource[defaults]("defaults", parse.ParserOptions(core.WithGeneratorOptions(func(o *core.GeneratorOptions) {
+	q, err := parse.NewResource[defaults](onSQLite, "defaults", parse.ParserOptions(core.WithGeneratorOptions(func(o *core.GeneratorOptions) {
 		o.DefaultPatchOps = map[core.FieldType][]string{core.FieldTypeString: {"replace"}}
 	})))
 	require.NoError(t, err)
@@ -261,7 +261,7 @@ func TestGeneratePatchSchema_RemoveFollowsNullability(t *testing.T) {
 		ID   string `json:"id,omitempty" db:"id"`
 		Name string `json:"name" parse:"patch" patch_ops:"replace,remove"`
 	}
-	_, err = parse.NewResource[tagged]("taggeds")
+	_, err = parse.NewResource[tagged](onSQLite, "taggeds")
 	assert.ErrorIs(t, err, patch.ErrRemoveNeedsNull)
 }
 
@@ -270,13 +270,13 @@ func TestGeneratorOptions_DefaultPatchOpsHonoured(t *testing.T) {
 		ID   string `json:"id,omitempty" db:"id"`
 		Name string `json:"name" parse:"patch"`
 	}
-	p, err := parse.NewResource[entity]("entities", parse.ParserOptions(core.WithGeneratorOptions(func(o *core.GeneratorOptions) {
+	p, err := parse.NewResource[entity](onSQLite, "entities", parse.ParserOptions(core.WithGeneratorOptions(func(o *core.GeneratorOptions) {
 		o.DefaultPatchOps = map[core.FieldType][]string{core.FieldTypeString: {"replace", "test"}}
 	})))
 	require.NoError(t, err)
 	assert.Equal(t, []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpTest}, pathOf(p.PatchSchema(), "/name").AllowedOps)
 
-	_, err = parse.NewResource[entity]("entities", parse.ParserOptions(core.WithGeneratorOptions(func(o *core.GeneratorOptions) {
+	_, err = parse.NewResource[entity](onSQLite, "entities", parse.ParserOptions(core.WithGeneratorOptions(func(o *core.GeneratorOptions) {
 		o.DefaultPatchOps = map[core.FieldType][]string{core.FieldTypeString: {"bogus"}}
 	})))
 	assert.Error(t, err)

@@ -40,9 +40,9 @@ type codeItem struct {
 
 func codeItems(t *testing.T) *parse.Resource[codeItem] {
 	t.Helper()
-	tags, err := parse.NewResource[codeTag]("tags")
+	tags, err := parse.NewResource[codeTag](onSQLite, "tags")
 	require.NoError(t, err)
-	items, err := parse.NewResource[codeItem]("items")
+	items, err := parse.NewResource[codeItem](onSQLite, "items")
 	require.NoError(t, err)
 	require.NoError(t, items.Relate("tags", parse.ManyToMany(tags, parse.Through("item_tags", "item_id", "tag_id"), parse.Writable())))
 	return items
@@ -98,12 +98,12 @@ func TestEveryCodeIsAnsweredWithItsStatus(t *testing.T) {
 		_, err := items.ParseListInput(in)
 		return err
 	}
-	build := func(d filter.Dialect, f string) error {
+	build := func(f string) error {
 		req, err := items.ParseListInput(parse.ListInput{Filter: f})
 		if err != nil {
 			return err
 		}
-		_, err = items.BuildList(d, req, parse.Scope{})
+		_, err = items.BuildList(req, parse.Scope{})
 		return err
 	}
 	jsonPatch := func(body string, opts ...parse.PatchOption) error {
@@ -115,7 +115,7 @@ func TestEveryCodeIsAnsweredWithItsStatus(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		_, err = items.BuildUpdate(filter.SQLiteDialect{}, parsed, parse.ByID(int64(1)), parse.Scope{})
+		_, err = items.BuildUpdate(parsed, parse.ByID(int64(1)), parse.Scope{})
 		return err
 	}
 	policy := func(opt patch.PolicyOption) parse.PatchOption {
@@ -139,7 +139,7 @@ func TestEveryCodeIsAnsweredWithItsStatus(t *testing.T) {
 		filter.ECodeCursorTooLarge: func() *httptest.ResponseRecorder {
 			req, err := items.ParseListInput(parse.ListInput{Sort: "name", PageSize: 1})
 			require.NoError(t, err)
-			plan, err := items.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+			plan, err := items.BuildList(req, parse.Scope{})
 			require.NoError(t, err)
 			long := strings.Repeat("n", 8192)
 			_, err = items.Page([]codeItem{{ID: 1, Name: long}, {ID: 2, Name: long + "z"}}, plan)
@@ -192,7 +192,7 @@ func TestEveryCodeIsAnsweredWithItsStatus(t *testing.T) {
 			// The cursor is opaque until the list is built under its keyset.
 			req, err := items.ParseListInput(parse.ListInput{Sort: "name", Cursor: "not-a-cursor"})
 			require.NoError(t, err)
-			_, err = items.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+			_, err = items.BuildList(req, parse.Scope{})
 			return answer(err)
 		},
 		filter.ECodeInvalidRelation: func() *httptest.ResponseRecorder { return answer(list(parse.ListInput{Include: []string{"name"}})) },
@@ -221,7 +221,8 @@ func TestEveryCodeIsAnsweredWithItsStatus(t *testing.T) {
 			return answer(filterErr(`{"location":{"$within":{"points":[{"lat":40.77,"lon":-73.98},{"lat":40.73,"lon":-74.02}]}}}`))
 		},
 		filter.ECodeGeoNotSupported: func() *httptest.ResponseRecorder {
-			return answer(build(filter.SQLiteDialect{}, `{"spot":{"$near":{"lat":40.71,"lon":-74.00,"distance":"5km"}}}`))
+			// The items compile for SQLite, which has no geography.
+			return answer(build(`{"spot":{"$near":{"lat":40.71,"lon":-74.00,"distance":"5km"}}}`))
 		},
 		filter.ECodeInvalidUUID: func() *httptest.ResponseRecorder { return answer(filterErr(`{"owner":"not-a-uuid"}`)) },
 		patch.ECodeRelationVerbNotAllowed: func() *httptest.ResponseRecorder {

@@ -16,8 +16,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
-	"github.com/ashtonian/pkg/parse/parsesql"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -29,13 +28,13 @@ type customItem struct {
 // A path sort key's cursor reads its document's row column, which a column
 // mapper's computed SQL does not name; the document field's Column does.
 func TestResource_WithPathsSortsAMappedDocument(t *testing.T) {
-	r, err := parse.NewResource[customItem]("custom_items", mappedColumns)
+	r, err := parse.NewResource[customItem](onSQLite, "custom_items", mappedColumns)
 	require.NoError(t, err)
 	view, err := r.WithPaths(filter.PathDecl{Path: "custom.tier", Type: core.FieldTypeString, Sort: true})
 	require.NoError(t, err)
 	req, err := view.ParseList(url.Values{filter.ParamSort: {"custom.tier"}})
 	require.NoError(t, err)
-	plan, err := view.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+	plan, err := view.BuildList(req, parse.Scope{})
 	require.NoError(t, err)
 	require.NotEmpty(t, plan.Keyset.Keys)
 	assert.Equal(t, "custom.tier", plan.Keyset.Keys[0].Name)
@@ -49,8 +48,8 @@ func TestResource_WithPathsViewRelatesNothing(t *testing.T) {
 	type tag struct {
 		ID string `json:"id" db:"id" parse:"filter"`
 	}
-	tags := parse.MustResource[tag]("tags")
-	items := parse.MustResource[customItem]("custom_items")
+	tags := parse.MustResource[tag](onSQLite, "tags")
+	items := parse.MustResource[customItem](onSQLite, "custom_items")
 	itemView, err := items.WithPaths(filter.PathDecl{Path: "custom.tier", Type: core.FieldTypeString, Sort: true})
 	require.NoError(t, err)
 	tagView, err := tags.WithPaths()
@@ -64,9 +63,9 @@ func TestResource_WithPathsViewRelatesNothing(t *testing.T) {
 	filters, sorts, patches := shape()
 
 	err = itemView.Relate("tags", parse.ManyToMany(tags, through, parse.Writable()))
-	require.ErrorContains(t, err, `parse: custom_items: relation "tags": a WithPaths view declares no relations`)
+	require.ErrorContains(t, err, `parse: custom_items: relation "tags": a view (WithPaths, In) declares no relations`)
 	err = items.Relate("tags", parse.ManyToMany(tagView, through, parse.Writable()))
-	require.ErrorContains(t, err, `parse: custom_items: relation "tags": the target is a WithPaths view`)
+	require.ErrorContains(t, err, `parse: custom_items: relation "tags": the target is a view (WithPaths, In)`)
 
 	gotFilters, gotSorts, gotPatches := shape()
 	assert.Equal(t, filters, gotFilters)
@@ -83,7 +82,8 @@ func TestResource_WithPathsViewRelatesNothing(t *testing.T) {
 // A request declares its tenant's custom fields as paths on a view of the
 // resource; the shared resource never learns them.
 func TestResource_WithPathsIsARequestView(t *testing.T) {
-	r, err := parse.NewResource[customItem]("custom_items", parse.PageSize(10, 10))
+	p, db := providertest.SQLite(t)
+	r, err := parse.NewResource[customItem](p, "custom_items", parse.PageSize(10, 10))
 	require.NoError(t, err)
 	view, err := r.WithPaths(filter.PathDecl{Path: "custom.tier", Type: core.FieldTypeString, Sort: true, Facet: &filter.FacetSchema{Type: filter.FacetTerms}})
 	require.NoError(t, err)
@@ -96,17 +96,16 @@ func TestResource_WithPathsIsARequestView(t *testing.T) {
 
 	req, err := view.ParseList(q)
 	require.NoError(t, err)
-	plan, err := view.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+	plan, err := view.BuildList(req, parse.Scope{})
 	require.NoError(t, err)
 
-	db := dbtest.SQLite(t)
 	_, err = db.Exec(`CREATE TABLE custom_items (id TEXT PRIMARY KEY, custom TEXT)`)
 	require.NoError(t, err)
 	for id, doc := range map[string]any{"a": `{"tier":"gold"}`, "b": `{"tier":"silver"}`, "c": `{"tier":"bronze"}`, "d": `{}`, "e": nil} {
 		_, insertErr := db.Exec(`INSERT INTO custom_items VALUES (?1, ?2)`, id, doc)
 		require.NoError(t, insertErr)
 	}
-	page, err := parsesql.QueryPage(t.Context(), db, view, plan)
+	page, err := view.List(t.Context(), req, parse.Scope{})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"b", "a"}, itemIDs(page.Items, func(it customItem) string { return it.ID }), "silver then gold; bronze filtered out, absent tiers never match $ne")
 

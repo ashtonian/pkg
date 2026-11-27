@@ -12,7 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
+	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/jsonkeys"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
 // Document types encoding/json reads and writes, that parse's row walk
@@ -43,7 +45,7 @@ type (
 // A document type is named the same wherever it is stored: as a map value
 // it builds, validates as a scan validates it, and takes a merge patch.
 func TestDocumentTypes_AsMapValuesScanValidateAndMergePatch(t *testing.T) {
-	resource, err := parse.NewResource[documentHolder]("holders")
+	resource, err := parse.NewResource[documentHolder](providertest.Compile(filter.SQLiteDialect{}), "holders")
 	require.NoError(t, err)
 
 	for _, typ := range []reflect.Type{

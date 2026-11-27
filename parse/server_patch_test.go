@@ -25,7 +25,7 @@ type credentialRow struct {
 // A request body cannot reach a server field; the server's own patch can,
 // hidden ones included, and the repositories apply it like any other.
 func TestResource_ServerMergePatch(t *testing.T) {
-	p, err := parse.NewResource[credentialRow]("credential_rows")
+	p, err := parse.NewResource[credentialRow](onPostgres, "credential_rows")
 	require.NoError(t, err)
 
 	for _, body := range []string{`{"fingerprint":"abc"}`, `{"has_secret":true}`} {

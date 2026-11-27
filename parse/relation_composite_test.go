@@ -16,11 +16,11 @@ import (
 
 func crResources(t *testing.T) (*parse.Resource[crStock], *parse.Resource[crMove], *parse.Resource[crTag]) {
 	t.Helper()
-	stock, err := parse.NewResource[crStock]("cr_stock", parse.PrimaryKey("warehouse_id", "sku"))
+	stock, err := parse.NewResource[crStock](onSQLite, "cr_stock", parse.PrimaryKey("warehouse_id", "sku"))
 	require.NoError(t, err)
-	moves, err := parse.NewResource[crMove]("cr_moves")
+	moves, err := parse.NewResource[crMove](onSQLite, "cr_moves")
 	require.NoError(t, err)
-	tags, err := parse.NewResource[crTag]("cr_tags")
+	tags, err := parse.NewResource[crTag](onSQLite, "cr_tags")
 	require.NoError(t, err)
 	return stock, moves, tags
 }
@@ -211,7 +211,7 @@ type crStockRef struct {
 // relation's; the schema document describes each column, its wire form
 // included.
 func TestRelationTag_CompositeTarget(t *testing.T) {
-	tags, err := parse.NewResource[crPairTag]("cr_tags")
+	tags, err := parse.NewResource[crPairTag](onSQLite, "cr_tags")
 	require.NoError(t, err)
 
 	for _, doc := range []string{`{"stock":{"$null":true}}`, `{"stock":{"$null":false}}`, `{"stock":{"$exists":true}}`} {
@@ -259,17 +259,17 @@ func TestRelationTag_CompositeTargetRefusals(t *testing.T) {
 		ID    string       `json:"id"    db:"id"`
 		Stock []crStockRef `json:"stock" db:"-" relation:"cr_stock_tags,tag_id,warehouse_id+sku" parse:"filter" filter_ops:"eq,null"`
 	}
-	_, err := parse.NewResource[flat]("cr_tags")
+	_, err := parse.NewResource[flat](onSQLite, "cr_tags")
 	require.ErrorContains(t, err, "target key warehouse_id+sku has 2 columns; the field holds string, not a struct holding a field per column")
-	_, err = parse.NewResource[missing]("cr_tags")
+	_, err = parse.NewResource[missing](onSQLite, "cr_tags")
 	require.ErrorContains(t, err, "relation tag target column bin is no column of parse_test.crStockRef")
-	_, err = parse.NewResource[compared]("cr_tags")
+	_, err = parse.NewResource[compared](onSQLite, "cr_tags")
 	require.ErrorContains(t, err, "relation target key warehouse_id+sku has 2 columns, which $eq cannot name")
 
 	type nullTests struct {
 		ID    string       `json:"id"    db:"id"`
 		Stock []crStockRef `json:"stock" db:"-" relation:"cr_stock_tags,tag_id,warehouse_id+sku" parse:"filter" filter_ops:"null,exists" indexed:"true"`
 	}
-	_, err = parse.NewResource[nullTests]("cr_tags")
+	_, err = parse.NewResource[nullTests](onSQLite, "cr_tags")
 	assert.NoError(t, err, "every NULL test asks whether the owner has pairs")
 }

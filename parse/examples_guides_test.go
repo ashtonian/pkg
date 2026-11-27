@@ -3,6 +3,8 @@
 package parse_test
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -10,6 +12,8 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/parsesql"
+	"github.com/ashtonian/pkg/parse/parsesqlite"
 )
 
 // The guides' remaining SQL: each example's output is quoted by a block in
@@ -27,11 +31,26 @@ type Order struct {
 	Doc    json.RawMessage `json:"doc"    db:"doc"    parse:"filter" paths:"tags:[]string"`
 }
 
-// showList compiles one list request for both dialects and prints its
-// WHERE, ORDER BY and bound arguments.
-func showList[T any](r *parse.Resource[T], opts ...filter.ListOption) {
-	for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
-		lq, err := r.ListQuery(d)
+// guideProvider is a provider a guide example compiles for, with the name
+// its lines start with.
+type guideProvider struct {
+	name     string
+	provider *parse.Provider
+}
+
+// guideProviders are the providers a guide example compiles for, in the
+// order it prints them.
+func guideProviders() []guideProvider {
+	providers := []guideProvider{{"postgres", onPostgres}, {"sqlite  ", onSQLite}}
+	return providers
+}
+
+// showList compiles one list request on each guide provider, the resource
+// built on it by resource, and prints its WHERE, ORDER BY and bound
+// arguments.
+func showList[T any](resource func(*parse.Provider) *parse.Resource[T], opts ...filter.ListOption) {
+	for _, g := range guideProviders() {
+		lq, err := resource(g.provider).ListQuery()
 		if err != nil {
 			fmt.Println("error:", err)
 			return
@@ -41,26 +60,26 @@ func showList[T any](r *parse.Resource[T], opts ...filter.ListOption) {
 			fmt.Println("error:", err)
 			return
 		}
-		name := "postgres"
-		if _, ok := d.(filter.SQLiteDialect); ok {
-			name = "sqlite  "
-		}
-		fmt.Printf("%s WHERE %s %s %v\n", name, res.Where, res.OrderBy, res.Args)
+		fmt.Printf("%s WHERE %s %s %v\n", g.name, res.Where, res.OrderBy, res.Args)
 	}
 }
 
-// showFilter prints a JSON filter, then what it compiles to on each dialect.
-func showFilter[T any](r *parse.Resource[T], f string) {
+// showFilter prints a JSON filter, then what it compiles to on each guide
+// provider.
+func showFilter[T any](resource func(*parse.Provider) *parse.Resource[T], f string) {
 	fmt.Println(f)
-	showList(r, filter.ListFilter(f))
+	showList(resource, filter.ListFilter(f))
+}
+
+func guideOrders(p *parse.Provider) *parse.Resource[Order] {
+	return parse.MustResource[Order](p, "orders")
 }
 
 // Example_arraysOfScalars: a condition on one element of an array column
 // unnests it; on an array path it reads the member's array elements.
 func Example_arraysOfScalars() {
-	orders := parse.MustResource[Order]("orders")
-	showFilter(orders, `{"scores":{"$some":{"$gte":5,"$lt":10}}}`)
-	showFilter(orders, `{"doc.tags":{"$some":{"$like":"a%"}}}`)
+	showFilter(guideOrders, `{"scores":{"$some":{"$gte":5,"$lt":10}}}`)
+	showFilter(guideOrders, `{"doc.tags":{"$some":{"$like":"a%"}}}`)
 	// Output:
 	// {"scores":{"$some":{"$gte":5,"$lt":10}}}
 	// postgres WHERE EXISTS (SELECT 1 FROM unnest("orders"."scores") AS elem1__(v) WHERE elem1__.v IS NOT NULL AND (elem1__.v >= $1 AND elem1__.v < $2)) ORDER BY "orders"."id" COLLATE pg_c_utf8 ASC [5 10]
@@ -73,8 +92,7 @@ func Example_arraysOfScalars() {
 // Example_arraysOfObjects: every predicate inside one $some holds for one
 // element of a JSON array of objects.
 func Example_arraysOfObjects() {
-	orders := parse.MustResource[Order]("orders")
-	showFilter(orders, `{"items":{"$some":{"sku":"a","qty":{"$gt":2}}}}`)
+	showFilter(guideOrders, `{"items":{"$some":{"sku":"a","qty":{"$gt":2}}}}`)
 	// Output:
 	// {"items":{"$some":{"sku":"a","qty":{"$gt":2}}}}
 	// postgres WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof("orders"."items") = 'array' THEN "orders"."items" END) AS elem1__(v) WHERE ((CASE WHEN (jsonb_typeof(elem1__.v -> 'qty') = 'number' AND length(split_part(ltrim((elem1__.v ->> 'qty'), '-'), '.', 1)) + length(rtrim(split_part((elem1__.v ->> 'qty'), '.', 2), '0')) <= 1000) THEN (elem1__.v ->> 'qty')::numeric END) > $1 AND elem1__.v @> $2::jsonb)) ORDER BY "orders"."id" COLLATE pg_c_utf8 ASC [2 {"sku":"a"}]
@@ -99,16 +117,16 @@ type Note struct {
 	DeletedAt  *time.Time `json:"-"           db:"deleted_at"`
 }
 
-func noteResource() *parse.Resource[Note] {
-	return parse.MustResource[Note]("notes", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+func noteResource(p *parse.Provider) *parse.Resource[Note] {
+	return parse.MustResource[Note](p, "notes", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
 }
 
 // A governed list reads the rows a governance tree admits, of any tenant:
 // here tenant A's documents and B's b1. A related row is compared with the
 // tenant of the listed row it hangs from, not bound to one tenant.
 func ExampleResource_BuildList_governed() {
-	documents := parse.MustResource[Document]("documents", parse.TenantColumn("tenant_id"))
-	documents.MustRelate("notes", parse.HasMany(noteResource(), "document_id", parse.Indexed()))
+	documents := parse.MustResource[Document](onPostgres, "documents", parse.TenantColumn("tenant_id"))
+	documents.MustRelate("notes", parse.HasMany(noteResource(onPostgres), "document_id", parse.Indexed()))
 	eq := func(field string, v any) *filter.PolicyConstraints {
 		return &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: field, Operator: filter.OpEq, Value: v}}}
 	}
@@ -119,7 +137,7 @@ func ExampleResource_BuildList_governed() {
 		fmt.Println(err)
 		return
 	}
-	plan, err := documents.BuildList(filter.PostgresDialect{}, req, parse.Scope{Governance: governance})
+	plan, err := documents.BuildList(req, parse.Scope{Governance: governance})
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -135,13 +153,13 @@ func ExampleResource_BuildList_governed() {
 // only the columns the patch assigns, so a note whose title and rank are
 // already these is neither stamped nor counted.
 func ExampleSkipUnchanged_stamped() {
-	notes := noteResource()
+	notes := noteResource(onPostgres)
 	parsed, err := notes.ParseMergePatch([]byte(`{"title":"Agenda","rank":2}`))
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	plan, err := notes.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID("n1"), parse.Scope{Tenant: "t1"},
+	plan, err := notes.BuildUpdate(parsed, parse.ByID("n1"), parse.Scope{Tenant: "t1"},
 		parse.StampSQL("updated_at", "NOW()"), parse.Increment("version"), parse.SkipUnchanged())
 	if err != nil {
 		fmt.Println(err)
@@ -166,36 +184,68 @@ type Tag struct {
 }
 
 // A membership change pairs only owners and targets the request may relate:
-// the INSERT selects both rows, live and in the tenant, rather than binding
-// raw keys, and each side's keys bind as one array parameter.
-func ExampleResource_RelationStatements() {
-	devices := parse.MustResource[Device]("devices", parse.TenantColumn("tenant_id"))
-	tags := parse.MustResource[Tag]("tags", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+// its INSERT selects both rows, live and in the tenant, rather than binding
+// raw keys, so of red (live, in t1), blue (deleted) and green (in t2) the
+// update pairs d1 with red alone. It runs here on an in-memory SQLite
+// database.
+func ExampleResource_Update_membership() {
+	ctx := context.Background()
+	err := parsesqlite.Register()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	db, err := sql.Open("sqlite", ":memory:?_txlock=immediate")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer func() { _ = db.Close() }()
+	// Every connection to :memory: is a database of its own.
+	db.SetMaxOpenConns(1)
+	for _, stmt := range []string{
+		`CREATE TABLE devices (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL)`,
+		`CREATE TABLE tags (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, label TEXT NOT NULL, deleted_at TEXT)`,
+		`CREATE TABLE device_tags (device_id TEXT NOT NULL, tag_id TEXT NOT NULL, tenant_id TEXT NOT NULL, PRIMARY KEY (device_id, tag_id))`,
+		`INSERT INTO devices VALUES ('d1', 't1', 'sensor', 'active')`,
+		`INSERT INTO tags VALUES ('red', 't1', 'Red', NULL), ('blue', 't1', 'Blue', '2026-01-01T00:00:00.000000000Z'), ('green', 't2', 'Green', NULL)`,
+	} {
+		_, err := db.ExecContext(ctx, stmt)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+	}
+	provider, err := parsesql.New(ctx, db)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	devices := parse.MustResource[Device](provider, "devices", parse.TenantColumn("tenant_id"))
+	tags := parse.MustResource[Tag](provider, "tags", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
 	devices.MustRelate("tags", parse.ManyToMany(tags, parse.Junction{Table: "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"}, parse.Writable()))
 
-	parsed, err := devices.ParsePatch([]byte(`[{"op":"add","path":"/tags","value":["red","blue"]}]`))
+	parsed, err := devices.ParsePatch([]byte(`[{"op":"add","path":"/tags","value":["red","blue","green"]}]`))
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	plan, err := devices.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID("d1"), parse.Scope{Tenant: "t1"})
+	res, err := devices.Update(ctx, parsed, parse.ByID("d1"), parse.Scope{Tenant: "t1"})
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	// The keys Owner returned; the executors read them from its rows.
-	stmts, err := devices.RelationStatements(plan, []parse.Key{{"d1"}})
+	fmt.Println("pairs written:", res.RelationRows)
+	var device, tag, tenant string
+	err = db.QueryRowContext(ctx, `SELECT device_id, tag_id, tenant_id FROM device_tags`).Scan(&device, &tag, &tenant)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	for _, s := range stmts {
-		fmt.Println(s.SQL)
-		fmt.Println(s.Args)
-	}
+	fmt.Println(device, tag, tenant)
 	// Output:
-	// INSERT INTO "device_tags" ("device_id", "tag_id", "tenant_id") SELECT "owner__"."id", "target__"."id", "owner__"."tenant_id" FROM "devices" owner__, "tags" target__ WHERE "owner__"."id" = ANY($1) AND "owner__"."tenant_id" = $2 AND "target__"."id" = ANY($3) AND "target__"."tenant_id" = $4 AND "target__"."deleted_at" IS NULL ON CONFLICT DO NOTHING
-	// [[d1] t1 [red blue] t1]
+	// pairs written: 1
+	// d1 red t1
 }
 
 type Team struct {
@@ -210,8 +260,8 @@ type Member struct {
 // An include returns the related pairs outright, so an includable relation
 // needs its correlation column read; QueryOnlyColumns admits a filter only.
 func ExampleResource_Relate_readColumns() {
-	teams := parse.MustResource[Team]("teams")
-	members := parse.MustResource[Member]("members", parse.ReadColumns("id"), parse.QueryOnlyColumns("team_id"))
+	teams := parse.MustResource[Team](onPostgres, "teams")
+	members := parse.MustResource[Member](onPostgres, "members", parse.ReadColumns("id"), parse.QueryOnlyColumns("team_id"))
 	fmt.Println(teams.Relate("members", parse.HasMany(members, "team_id", parse.Includable())))
 	// Output:
 	// parse: teams: relation "members": members does not read column "team_id"
@@ -223,25 +273,20 @@ type Account struct {
 	GroupIDs []int64 `json:"group_ids" db:"group_ids"`
 }
 
-// A computed column whose expression serves PostgreSQL only fails every
-// build for SQLite, naming the table, the column and the dialect.
+// A computed column whose expression serves PostgreSQL only selects as
+// (sql) AS column on PostgreSQL, and a resource on SQLite is refused when it
+// is built, naming the table, the column and the dialect.
 func ExampleReadExpr() {
-	accounts := parse.MustResource[Account]("accounts",
-		parse.TenantColumn("tenant_id"),
-		parse.ReadExpr("group_ids", func(d filter.Dialect) (string, error) {
-			if _, ok := d.(filter.PostgresDialect); ok {
-				return "array(SELECT g.group_id FROM account_groups g WHERE g.account_id = accounts.id ORDER BY g.group_id)", nil
-			}
+	groups := parse.ReadExpr("group_ids", func(d filter.Dialect) (string, error) {
+		_, postgres := d.(filter.PostgresDialect)
+		if !postgres {
 			return "", filter.ErrUnsupportedDialect
-		}),
-	)
-	columns, err := accounts.Columns(filter.PostgresDialect{})
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	fmt.Println(strings.Join(columns, ", "))
-	_, err = accounts.Columns(filter.SQLiteDialect{})
+		}
+		return "array(SELECT g.group_id FROM account_groups g WHERE g.account_id = accounts.id ORDER BY g.group_id)", nil
+	})
+	accounts := parse.MustResource[Account](onPostgres, "accounts", parse.TenantColumn("tenant_id"), groups)
+	fmt.Println(strings.Join(accounts.Columns(), ", "))
+	_, err := parse.NewResource[Account](onSQLite, "accounts", parse.TenantColumn("tenant_id"), groups)
 	fmt.Println(err)
 	// Output:
 	// "accounts"."id", "accounts"."tenant_id", (array(SELECT g.group_id FROM account_groups g WHERE g.account_id = accounts.id ORDER BY g.group_id)) AS "group_ids"

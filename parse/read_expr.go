@@ -10,12 +10,13 @@ import (
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
-// ColumnExpr is a computed column's SQL expression for one dialect: trusted
-// application SQL, never request text, naming the resource's own columns
-// qualified by its table. It returns an error, such as
-// filter.ErrUnsupportedDialect, for a dialect it cannot serve. Every build
-// calls it, so it must be cheap and return the same SQL for the same
-// dialect.
+// ColumnExpr is a computed column's SQL expression for the dialect of the
+// provider the resource is built on: trusted application SQL, never request
+// text, naming the resource's own columns qualified by its table.
+// NewResource calls it once, with its provider's dialect, so one
+// declaration serves whichever provider an application's configuration
+// opens; it returns an error, such as filter.ErrUnsupportedDialect, for a
+// dialect it cannot serve, and NewResource fails.
 type ColumnExpr func(filter.Dialect) (string, error)
 
 // SQL is a ColumnExpr that every dialect reads alike.
@@ -26,25 +27,22 @@ func SQL(sql string) ColumnExpr {
 // ReadExpr reads column through expr instead of the table's column: a value
 // the table holds in no column, such as a count of related rows, a
 // many-to-many's keys as an array, or a nullable column read through
-// coalesce. A statement built for dialect d selects expr(d) as
-// `(sql) AS column`, so a list's page, an update's RETURNING and parsepgx
-// scan it into the column's field, and a field tagged filter, sort, facet or
-// search compiles those against the same expression, as does a server policy
-// naming the column (filter.ResourceSchema.PolicyField), hidden or not
-// filterable. A resource declared once serves every dialect its expressions
-// serve; a dialect an expression refuses fails every statement the resource
-// builds for it — Columns, BuildList, BuildUpdate and BuildUpdateBatch —
-// naming the column and the dialect.
+// coalesce. Every statement selects the expression as `(sql) AS column`, so
+// a list's page and an update's RETURNING scan it into the column's field,
+// and a field tagged filter, sort, facet or search compiles those against
+// the same expression, as does a server policy naming the column
+// (filter.ResourceSchema.PolicyField), hidden or not filterable.
+// NewResource resolves the expression once, for its provider's dialect; a
+// dialect the expression refuses fails NewResource, naming the table, the
+// column and the dialect.
 //
 // A computed column must be read, and cannot be the key, the tenant or the
 // deleted column, be patched, stamped or incremented, hold document paths
 // or element members, or correlate a relation. A relation to the resource
-// filters by it through the expression of the dialect its owner's build is
-// for, and a dialect the expression refuses fails that build too. The
-// resource's schemas (FilterSchema, SortSchema, SearchSchema) and its
-// schema document stay dialect-neutral and name the column; the filter
-// schema carries the expressions (filter.ResourceSchema.Computed), which
-// every statement resolves for its own dialect, ListQuery's included.
+// filters by it through the same expression. The resource's schemas
+// (FilterSchema, SortSchema, SearchSchema) and its schema document name the
+// column; the filter schema carries the resolved expressions
+// (filter.ResourceSchema.Computed), ListQuery's statements included.
 func ReadExpr(column string, expr ColumnExpr) ResourceOption {
 	return func(c *resourceConfig) { c.readExprs = append(c.readExprs, columnExpr{column, expr}) }
 }
@@ -87,7 +85,7 @@ func newComputedColumns(table string, cfg resourceConfig, columns map[string]ref
 }
 
 func (c *computedColumns) errorf(column, format string, args ...any) error {
-	return fmt.Errorf("parse: %s: computed column %q: %s", c.table, column, fmt.Sprintf(format, args...))
+	return fmt.Errorf("parse: %s: computed column %q: %w", c.table, column, fmt.Errorf(format, args...))
 }
 
 // writeError refuses an update that writes a computed column: there is no
@@ -144,65 +142,31 @@ func (c *computedColumns) checkDocuments(fs *filter.ResourceSchema, ss *filter.S
 	return nil
 }
 
-// schemaColumns are the declarations as the filter schema carries them
-// (filter.ResourceSchema.Computed): each expression resolved for a dialect
-// as every statement reads it, its refusal naming the table, the column
-// and the dialect. Nil declares none.
-func (c *computedColumns) schemaColumns() []filter.ComputedColumn {
+// resolve is the declarations as the filter schema carries them
+// (filter.ResourceSchema.Computed): each expression resolved once for d,
+// the dialect of the provider the resource is built on, its refusal naming
+// the table, the column and the dialect. Nil declares none.
+func (c *computedColumns) resolve(d filter.Dialect) ([]filter.ComputedColumn, error) {
 	if c == nil {
-		return nil
+		return nil, nil
 	}
 	out := make([]filter.ComputedColumn, len(c.columns))
 	for i, col := range c.columns {
-		out[i] = filter.ComputedColumn{Column: col.column, Expr: c.resolver(col)}
-	}
-	return out
-}
-
-func (c *computedColumns) resolver(col columnExpr) filter.ComputedExpr {
-	table := c.table
-	return func(d filter.Dialect) (string, error) {
 		sql, err := col.expr(d)
 		if err != nil {
-			return "", fmt.Errorf("parse: %s: computed column %q for dialect %s: %w", table, col.column, d.Name(), err)
+			return nil, fmt.Errorf("parse: %s: computed column %q for dialect %s: %w", c.table, col.column, d.Name(), err)
 		}
 		if strings.TrimSpace(sql) == "" {
-			return "", fmt.Errorf("parse: %s: computed column %q for dialect %s: no expression", table, col.column, d.Name())
+			return nil, fmt.Errorf("parse: %s: computed column %q for dialect %s: no expression", c.table, col.column, d.Name())
 		}
-		return sql, nil
+		out[i] = filter.ComputedColumn{Column: col.column, SQL: sql}
 	}
-}
-
-// computedSQL is each computed column's parenthesized SQL for d, by column,
-// as a statement over the resource projects it.
-func (r *Resource[T]) computedSQL(d filter.Dialect) (map[string]string, error) {
-	if d == nil {
-		return nil, fmt.Errorf("parse: %s: no dialect", r.table)
-	}
-	return r.filterSchema.ComputedSQL(d)
-}
-
-// checkTargets fails for a dialect the computed columns of a named
-// relation's target refuse. The statements that read those targets —
-// includes and membership changes — are built after the rows they belong
-// to are read, so the build that plans them refuses the dialect instead.
-// Names of other fields are ignored.
-func (r *Resource[T]) checkTargets(d filter.Dialect, names ...string) error {
-	for _, name := range names {
-		f := r.filterSchema.Fields[name]
-		if f == nil || f.Relation == nil {
-			continue
-		}
-		if _, err := f.Related.ComputedSQL(d); err != nil {
-			return err
-		}
-	}
-	return nil
+	return out, nil
 }
 
 // checkComputedPatches refuses a patch path, in either patch schema, that
 // writes a computed column.
-func (r *Resource[T]) checkComputedPatches() error {
+func (r *resourceCore) checkComputedPatches() error {
 	if r.readExprs == nil {
 		return nil
 	}
@@ -220,4 +184,4 @@ func (r *Resource[T]) checkComputedPatches() error {
 }
 
 // computed reports whether column is read through an expression.
-func (r *Resource[T]) computed(column string) bool { return r.readExprs.has(column) }
+func (r *resourceCore) computed(column string) bool { return r.readExprs.has(column) }

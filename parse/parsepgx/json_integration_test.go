@@ -3,6 +3,7 @@
 package parsepgx_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -15,7 +16,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/parsepgx"
 )
@@ -64,8 +64,8 @@ type jsonRecord struct {
 	Labels  []string        `json:"labels" db:"-" parse:"patch" relation:"document_labels,document_id,label_id,id"`
 }
 
-func jsonResource(opts ...parse.ResourceOption) *parse.Resource[jsonRecord] {
-	return parse.MustResource[jsonRecord]("documents", append([]parse.ResourceOption{
+func jsonResource(p *parse.Provider, opts ...parse.ResourceOption) *parse.Resource[jsonRecord] {
+	return parse.MustResource[jsonRecord](p, "documents", append([]parse.ResourceOption{
 		parse.ColumnType("document_text", core.SQLJSONB),
 		parse.ColumnType("document_bytes", core.SQLJSON),
 		parse.ColumnType("number", core.SQLJSONB),
@@ -76,8 +76,8 @@ func jsonResource(opts ...parse.ResourceOption) *parse.Resource[jsonRecord] {
 
 func TestJSONStorage_QueryAndUpdateEveryExecMode(t *testing.T) {
 	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
-	setup := c.open(t, pgx.QueryExecModeCacheStatement)
 	ctx := testContext(t)
+	setup := c.open(t, ctx, pgx.QueryExecModeCacheStatement)
 	_, err := setup.Exec(ctx, `CREATE TABLE documents (
 		id text PRIMARY KEY, document_text jsonb, document_bytes json, number jsonb, flag jsonb,
 		object jsonb, keys json, dynamic jsonb, raw jsonb, pointer jsonb, decoded jsonb,
@@ -87,7 +87,6 @@ func TestJSONStorage_QueryAndUpdateEveryExecMode(t *testing.T) {
 		'{"value":1}', 'null', '"pointed"', '"custom"', '{native}', '\x61', 'private');
 		INSERT INTO documents(id, secret) VALUES ('null', '')`)
 	require.NoError(t, err)
-	r := jsonResource()
 	want := jsonRecord{
 		JSONFields: JSONFields{Text: "hello", Bytes: []byte("a")}, ID: "full", Number: 7, Flag: true,
 		Object: jsonObject{Name: "original"}, Keys: map[int]string{1: "one"}, Dynamic: map[string]any{"value": float64(1)},
@@ -96,34 +95,29 @@ func TestJSONStorage_QueryAndUpdateEveryExecMode(t *testing.T) {
 	}
 	for name, mode := range jsonExecModes() {
 		t.Run(name, func(t *testing.T) {
-			pool := c.open(t, mode)
-			plan, err := r.BuildList(filter.PostgresDialect{}, nil, parse.Scope{})
-			require.NoError(t, err)
-			page, err := parsepgx.QueryPage(ctx, pool, r, plan)
+			pool := c.open(t, ctx, mode)
+			p := provider(t, ctx, pool)
+			r := jsonResource(p)
+			page, err := r.List(ctx, nil, parse.Scope{})
 			require.NoError(t, err)
 			require.Len(t, page.Items, 2)
 			assert.Equal(t, want, page.Items[0])
 			assert.Equal(t, jsonRecord{ID: "null"}, page.Items[1], "SQL NULL resets the typed field")
 
 			for _, body := range []string{`{"text":"hello","bytes":"YQ=="}`, `{"text":"hello","labels":["label"]}`, `{}`} {
-				p, err := r.ParseMergePatch([]byte(body))
-				require.NoError(t, err)
-				update, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("full"), parse.Scope{})
-				require.NoError(t, err)
-				res, err := parsepgx.Update(ctx, pool, r, update)
+				patch := mergePatch(t, r, body)
+				res, err := r.Update(ctx, patch, parse.ByID("full"), parse.Scope{})
 				require.NoError(t, err)
 				rows := slices.Concat(res.Changed, res.Unchanged)
 				require.Len(t, rows, 1)
 				assert.Equal(t, want, rows[0])
-				applied, err := r.ApplyValidatedPatch(p, want)
+				applied, err := r.ApplyValidatedPatch(patch, want)
 				require.NoError(t, err)
 				assert.Equal(t, applied.JSONFields, rows[0].JSONFields)
 			}
 
-			projected := jsonResource(parse.ReadColumns("id", "document_text", "document_bytes"))
-			list, err := projected.BuildList(filter.PostgresDialect{}, nil, parse.Scope{})
-			require.NoError(t, err)
-			page, err = parsepgx.QueryPage(ctx, pool, projected, list)
+			projected := jsonResource(p, parse.ReadColumns("id", "document_text", "document_bytes"))
+			page, err = projected.List(ctx, nil, parse.Scope{})
 			require.NoError(t, err)
 			require.Len(t, page.Items, 2)
 			assert.Equal(t, jsonRecord{ID: "full", JSONFields: want.JSONFields}, page.Items[0])
@@ -131,11 +125,9 @@ func TestJSONStorage_QueryAndUpdateEveryExecMode(t *testing.T) {
 			tx, err := pool.Begin(ctx)
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, tx.Rollback(testContext(t))) })
-			p, err := r.ParseMergePatch([]byte(`{"text":"inside","labels":["transaction"]}`))
+			scoped, err := r.In(parsepgx.Tx(tx))
 			require.NoError(t, err)
-			update, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("full"), parse.Scope{})
-			require.NoError(t, err)
-			res, err := parsepgx.Update(ctx, tx, r, update)
+			res, err := scoped.Update(ctx, mergePatch(t, scoped, `{"text":"inside","labels":["transaction"]}`), parse.ByID("full"), parse.Scope{})
 			require.NoError(t, err)
 			require.Len(t, res.Changed, 1)
 			assert.Equal(t, "inside", res.Changed[0].Text)
@@ -152,45 +144,42 @@ type jsonValueRow[T any] struct {
 
 func TestJSONStorage_RejectsLossyRowsEveryExecMode(t *testing.T) {
 	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
-	setup := c.open(t, pgx.QueryExecModeCacheStatement)
-	_, err := setup.Exec(testContext(t), `CREATE TABLE stored_values (id text PRIMARY KEY, value json, name text);
+	ctx := testContext(t)
+	setup := c.open(t, ctx, pgx.QueryExecModeCacheStatement)
+	_, err := setup.Exec(ctx, `CREATE TABLE stored_values (id text PRIMARY KEY, value json, name text);
 		CREATE TABLE value_labels (value_id text, label_id text, PRIMARY KEY(value_id,label_id))`)
 	require.NoError(t, err)
 	for name, mode := range jsonExecModes() {
 		t.Run(name, func(t *testing.T) {
-			pool := c.open(t, mode)
-			t.Run("map spelling", func(t *testing.T) { rejectJSONRow[map[int]int](t, pool, `{"01":1}`, nil) })
-			t.Run("map collision", func(t *testing.T) { rejectJSONRow[map[int]int](t, pool, `{"1":1,"01":2}`, nil) })
-			t.Run("struct spelling", func(t *testing.T) { rejectJSONRow[jsonObject](t, pool, `{"NAME":"value"}`, nil) })
-			t.Run("null interface", func(t *testing.T) { rejectJSONRow[any](t, pool, `null`, nil) })
-			t.Run("null map", func(t *testing.T) { rejectJSONRow[map[string]int](t, pool, `null`, nil) })
-			t.Run("null pointer", func(t *testing.T) { rejectJSONRow[*string](t, pool, `null`, nil) })
-			t.Run("custom error", func(t *testing.T) { rejectJSONRow[jsonDecoded](t, pool, `"reject"`, errStoredJSON) })
+			pool := c.open(t, ctx, mode)
+			p := provider(t, ctx, pool)
+			t.Run("map spelling", func(t *testing.T) { rejectJSONRow[map[int]int](t, ctx, pool, p, `{"01":1}`, nil) })
+			t.Run("map collision", func(t *testing.T) { rejectJSONRow[map[int]int](t, ctx, pool, p, `{"1":1,"01":2}`, nil) })
+			t.Run("struct spelling", func(t *testing.T) { rejectJSONRow[jsonObject](t, ctx, pool, p, `{"NAME":"value"}`, nil) })
+			t.Run("null interface", func(t *testing.T) { rejectJSONRow[any](t, ctx, pool, p, `null`, nil) })
+			t.Run("null map", func(t *testing.T) { rejectJSONRow[map[string]int](t, ctx, pool, p, `null`, nil) })
+			t.Run("null pointer", func(t *testing.T) { rejectJSONRow[*string](t, ctx, pool, p, `null`, nil) })
+			t.Run("custom error", func(t *testing.T) { rejectJSONRow[jsonDecoded](t, ctx, pool, p, `"reject"`, errStoredJSON) })
 		})
 	}
 }
 
-func rejectJSONRow[T any](t *testing.T, pool *pgxpool.Pool, raw string, cause error) {
+// rejectJSONRow stores raw in the value column, which T cannot hold
+// losslessly, and checks that neither a list nor an update on p reads it.
+func rejectJSONRow[T any](t *testing.T, ctx context.Context, pool *pgxpool.Pool, p *parse.Provider, raw string, cause error) {
 	t.Helper()
-	ctx := testContext(t)
 	_, err := pool.Exec(ctx, `INSERT INTO stored_values VALUES ('one', $1::json, 'original')
 		ON CONFLICT(id) DO UPDATE SET value=EXCLUDED.value, name=EXCLUDED.name`, raw)
 	require.NoError(t, err)
-	r := parse.MustResource[jsonValueRow[T]]("stored_values", parse.ColumnType("value", core.SQLJSON))
-	list, err := r.BuildList(filter.PostgresDialect{}, nil, parse.Scope{})
-	require.NoError(t, err)
-	page, err := parsepgx.QueryPage(ctx, pool, r, list)
+	r := parse.MustResource[jsonValueRow[T]](p, "stored_values", parse.ColumnType("value", core.SQLJSON))
+	page, err := r.List(ctx, nil, parse.Scope{})
 	require.Error(t, err)
 	assert.Nil(t, page)
 	if cause != nil {
 		require.ErrorIs(t, err, cause)
 	}
 	for _, body := range []string{`{"name":"original"}`, `{"name":"changed","labels":["never"]}`} {
-		p, err := r.ParseMergePatch([]byte(body))
-		require.NoError(t, err)
-		update, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("one"), parse.Scope{})
-		require.NoError(t, err)
-		res, err := parsepgx.Update(ctx, pool, r, update)
+		res, err := r.Update(ctx, mergePatch(t, r, body), parse.ByID("one"), parse.Scope{})
 		require.Error(t, err)
 		assert.Zero(t, res, "a failed update reports no rows")
 		if cause != nil {

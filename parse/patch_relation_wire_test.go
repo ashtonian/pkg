@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -27,14 +27,14 @@ type wirePost struct {
 }
 
 // wirePosts relates posts to quoted-key tags and to plain-key labels, both
-// writable.
-func wirePosts(t *testing.T) *parse.Resource[wirePost] {
+// writable, on p.
+func wirePosts(t *testing.T, p *parse.Provider) *parse.Resource[wirePost] {
 	t.Helper()
-	tags, err := parse.NewResource[wireTag]("tags")
+	tags, err := parse.NewResource[wireTag](p, "tags")
 	require.NoError(t, err)
-	labels, err := parse.NewResource[wirePlainTag]("labels")
+	labels, err := parse.NewResource[wirePlainTag](p, "labels")
 	require.NoError(t, err)
-	posts, err := parse.NewResource[wirePost]("posts")
+	posts, err := parse.NewResource[wirePost](p, "posts")
 	require.NoError(t, err)
 	require.NoError(t, posts.Relate("tags", parse.ManyToMany(tags, parse.Through("post_tags", "post_id", "tag_id"), parse.Writable())))
 	require.NoError(t, posts.Relate("labels", parse.ManyToMany(labels, parse.Through("post_labels", "post_id", "label_id"), parse.Writable())))
@@ -45,7 +45,7 @@ func wirePosts(t *testing.T) *parse.Resource[wirePost] {
 // key's as JSON strings, as responses write them and the relation's filter
 // shorthands take them, a plain key's as numbers.
 func TestRelationKeysTakeTheTargetKeysWire(t *testing.T) {
-	posts := wirePosts(t)
+	posts := wirePosts(t, onPostgres)
 
 	parsed, err := posts.ParseMergePatch([]byte(`{"tags":["5","9007199254740993"]}`))
 	require.NoError(t, err)
@@ -85,9 +85,16 @@ func TestRelationKeysTakeTheTargetKeysWire(t *testing.T) {
 
 // parse/client's Relation[Quoted[K]] sends the keys the server takes
 // (testdata/client_requests.json), and the relation statements bind them as
-// the target's integers.
+// the target's integers: the junction's untyped column keeps what is bound.
 func TestClientQuotedRelationOperationsParse(t *testing.T) {
-	posts := wirePosts(t)
+	provider, db := providertest.SQLite(t)
+	execStatements(t, db,
+		`CREATE TABLE posts (id INTEGER PRIMARY KEY)`, `INSERT INTO posts VALUES (1)`,
+		`CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT)`, `INSERT INTO tags VALUES (5, 'five'), (6, 'six')`,
+		`CREATE TABLE labels (id INTEGER PRIMARY KEY)`,
+		`CREATE TABLE post_tags (post_id, tag_id)`, `INSERT INTO post_tags VALUES (1, 6)`,
+		`CREATE TABLE post_labels (post_id, label_id)`)
+	posts := wirePosts(t, provider)
 	sent := readClientRequests(t).QuotedRelation
 	parsed, err := posts.ParsePatch(sent.JSONPatch)
 	require.NoError(t, err, "%s", sent.JSONPatch)
@@ -95,10 +102,8 @@ func TestClientQuotedRelationOperationsParse(t *testing.T) {
 
 	parsed, err = posts.ParseMergePatch(sent.MergePatch)
 	require.NoError(t, err, "%s", sent.MergePatch)
-	plan, err := posts.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID(int64(1)), parse.Scope{})
+	res, err := posts.Update(t.Context(), parsed, parse.ByID(int64(1)), parse.Scope{})
 	require.NoError(t, err)
-	stmts, err := posts.RelationStatements(plan, []parse.Key{{int64(1)}})
-	require.NoError(t, err)
-	require.NotEmpty(t, stmts)
-	assert.Contains(t, stmts[len(stmts)-1].Args, []int64{5})
+	assert.Positive(t, res.RelationRows)
+	assert.Equal(t, [][]any{{int64(5), "integer"}}, queryRows[[]any](t, db, `SELECT tag_id, typeof(tag_id) FROM post_tags WHERE post_id = 1`))
 }

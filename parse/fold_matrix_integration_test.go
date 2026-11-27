@@ -30,7 +30,7 @@ func TestFoldMatrix(t *testing.T) {
 // non-ASCII letter.
 func runFoldMatrix(t *testing.T, b sqlBackend, unicode bool) {
 	t.Helper()
-	db := b.open(t)
+	_, db := b.open(t)
 	schema, err := filtertest.FoldSchema()
 	require.NoError(t, err)
 	table := schemaTable(schema)

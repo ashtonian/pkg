@@ -47,21 +47,21 @@ type unsignedRow struct {
 // parsehttp.WriteError declines without writing, so the handler logs it and
 // answers its own 500 instead of telling the client its request was invalid.
 func TestBuildList_ServerFaultsAreNoParseError(t *testing.T) {
-	labels := parse.MustResource[faultLabel]("labels", parse.TenantColumn("tenant_id"))
-	devices := parse.MustResource[faultDevice]("devices", parse.TenantColumn("tenant_id"))
+	labels := parse.MustResource[faultLabel](onPostgres, "labels", parse.TenantColumn("tenant_id"))
+	devices := parse.MustResource[faultDevice](onPostgres, "devices", parse.TenantColumn("tenant_id"))
 	devices.MustRelate("labels", parse.HasMany(labels, "device_id", parse.PolicyScoped(), parse.Indexed()))
-	boards := parse.MustResource[faultBoard]("boards")
+	boards := parse.MustResource[faultBoard](onPostgres, "boards")
 	boards.MustRelate("labels", parse.ManyToMany(labels,
 		parse.Junction{Table: "board_labels", Source: []string{"board_id"}, Target: []string{"label_id"}, Tenant: "tenant_id"}, parse.Indexed()))
 
 	build := func(t *testing.T, r interface {
 		ParseListInput(parse.ListInput) (*parse.ListRequest, error)
-		BuildList(filter.Dialect, *parse.ListRequest, parse.Scope) (*parse.ListPlan, error)
+		BuildList(*parse.ListRequest, parse.Scope) (*parse.ListPlan, error)
 	}, f string, scope parse.Scope) error {
 		t.Helper()
 		req, err := r.ParseListInput(parse.ListInput{Filter: f})
 		require.NoError(t, err, "the request is valid")
-		_, err = r.BuildList(filter.PostgresDialect{}, req, scope)
+		_, err = r.BuildList(req, scope)
 		return err
 	}
 	policy := func(c *filter.PolicyConstraint) *filter.PolicyConstraints {
@@ -108,7 +108,8 @@ func TestBuildList_ServerFaultsAreNoParseError(t *testing.T) {
 // A request value the dialect's integers cannot hold is the request's E2073,
 // as a typed field's Go kind refuses one: SQLite's integers end at int64.
 func TestBuildList_AnUnsignedOperandSQLiteCannotHold(t *testing.T) {
-	rows := parse.MustResource[unsignedRow]("rows")
+	rows := parse.MustResource[unsignedRow](onSQLite, "rows")
+	numeric := parse.MustResource[unsignedRow](onPostgres, "rows")
 	for _, f := range []string{
 		`{"n":18446744073709551615}`,
 		`{"n":{"$gt":9223372036854775808}}`,
@@ -116,14 +117,16 @@ func TestBuildList_AnUnsignedOperandSQLiteCannotHold(t *testing.T) {
 	} {
 		req, err := rows.ParseListInput(parse.ListInput{Filter: f})
 		require.NoError(t, err, f)
-		_, err = rows.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+		_, err = rows.BuildList(req, parse.Scope{})
 		require.ErrorIs(t, err, filter.ECodeValueTypeMismatch, f)
 		pe, ok := errors.AsType[*core.ParseError](err)
 		require.True(t, ok, f)
 		assert.Equal(t, "n", pe.Details[core.DetailField], f)
 		assert.Contains(t, pe.Message, "exceeds SQLite's 64-bit signed integers", f)
 
-		_, err = rows.BuildList(filter.PostgresDialect{}, req, parse.Scope{})
+		req, err = numeric.ParseListInput(parse.ListInput{Filter: f})
+		require.NoError(t, err, f)
+		_, err = numeric.BuildList(req, parse.Scope{})
 		assert.NoError(t, err, "a numeric column holds it: %s", f)
 	}
 }

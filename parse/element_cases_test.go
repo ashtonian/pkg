@@ -50,11 +50,11 @@ var orderRows = [][5]any{
 	{"o6", `["a",{"sku":"a","qty":4}]`, `["ann"]`, "o4", `{"tags":["y"]}`},
 }
 
-// orderResource is the fixture's resource; children is its self-relation,
-// whose predicates read the orders table under an alias.
-func orderResource(t *testing.T) *parse.Resource[order] {
+// orderResource is the fixture's resource on p; children is its
+// self-relation, whose predicates read the orders table under an alias.
+func orderResource(t *testing.T, p *parse.Provider) *parse.Resource[order] {
 	t.Helper()
-	orders := parse.MustResource[order]("orders")
+	orders := parse.MustResource[order](p, "orders")
 	orders.MustRelate("children", parse.HasMany(orders, "parent_id", parse.Indexed()))
 	return orders
 }
@@ -91,7 +91,7 @@ var elementRelationCases = []struct {
 
 // The reference evaluator selects the rows the SQL dialects select.
 func TestElementCasesEvaluate(t *testing.T) {
-	orders := orderResource(t)
+	orders := orderResource(t, onPostgres)
 	for _, tc := range elementCases {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := orders.ParseList(url.Values{filter.ParamFilter: {tc.filter}})

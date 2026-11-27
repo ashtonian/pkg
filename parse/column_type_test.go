@@ -26,9 +26,9 @@ type session struct {
 	Count   int      `json:"count"   db:"count"`
 }
 
-func sessionResource(t *testing.T, opts ...parse.ResourceOption) (*parse.Resource[session], error) {
+func sessionResource(t *testing.T, p *parse.Provider, opts ...parse.ResourceOption) (*parse.Resource[session], error) {
 	t.Helper()
-	return parse.NewResource[session]("sessions", append([]parse.ResourceOption{
+	return parse.NewResource[session](p, "sessions", append([]parse.ResourceOption{
 		parse.ColumnType("addr", core.SQLInet),
 		parse.ColumnType("net", core.SQLCIDR),
 		parse.ColumnType("every", core.SQLInterval),
@@ -41,13 +41,11 @@ func sessionResource(t *testing.T, opts ...parse.ResourceOption) (*parse.Resourc
 // A declared column is read as the dialect reads its type, under its own
 // name; the others, and every column on SQLite, are read as they are.
 func TestColumnType_Projection(t *testing.T) {
-	r, err := sessionResource(t)
+	onPG, err := sessionResource(t, onPostgres)
 	require.NoError(t, err)
 	// An interval reads as its ISO 8601 text under any IntervalStyle; the
 	// PostgreSQL integration suite checks the text itself.
 	pg := filter.PostgresDialect{}
-	pgColumns, err := r.Columns(pg)
-	require.NoError(t, err)
 	assert.Equal(t, []string{
 		`"sessions"."id"`,
 		`abbrev("sessions"."addr") AS "addr"`,
@@ -58,33 +56,34 @@ func TestColumnType_Projection(t *testing.T) {
 		`CASE WHEN "sessions"."spans" IS NULL THEN NULL ELSE ARRAY(SELECT ` + pg.ReadColumn("a", core.SQLInterval) +
 			` FROM unnest("sessions"."spans") WITH ORDINALITY AS u(a, n) ORDER BY n) END AS "spans"`,
 		`"sessions"."count"`,
-	}, pgColumns)
+	}, onPG.Columns())
 	assert.NotContains(t, pg.ReadColumn(`"sessions"."every"`, core.SQLInterval), "::text AS",
 		"a text cast would follow the session's IntervalStyle")
-	sqliteColumns, err := r.Columns(filter.SQLiteDialect{})
+	onLite, err := sessionResource(t, onSQLite)
 	require.NoError(t, err)
 	assert.Equal(t, []string{
 		`"sessions"."id"`, `"sessions"."addr"`, `"sessions"."net"`, `"sessions"."every"`,
 		`"sessions"."allowed"`, `"sessions"."nets"`, `"sessions"."spans"`, `"sessions"."count"`,
-	}, sqliteColumns)
+	}, onLite.Columns())
 
-	only, err := sessionResource(t, parse.ReadColumns("id", "addr"))
+	only, err := sessionResource(t, onPostgres, parse.ReadColumns("id", "addr"))
 	require.NoError(t, err)
-	onlyColumns, err := only.Columns(filter.PostgresDialect{})
-	require.NoError(t, err)
-	assert.Equal(t, []string{`"sessions"."id"`, `abbrev("sessions"."addr") AS "addr"`}, onlyColumns)
+	assert.Equal(t, []string{`"sessions"."id"`, `abbrev("sessions"."addr") AS "addr"`}, only.Columns())
 }
 
 // Every dialect's projection reads each column under the name ColumnNames
 // gives at the same position.
 func TestColumnType_ColumnNamesNameTheProjection(t *testing.T) {
-	r, err := sessionResource(t)
-	require.NoError(t, err)
 	names := []string{"id", "addr", "net", "every", "allowed", "nets", "spans", "count"}
-	assert.Equal(t, names, r.ColumnNames())
-	for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
-		columns, err := r.Columns(d)
+	for _, on := range []struct {
+		p *parse.Provider
+		d filter.Dialect
+	}{{onPostgres, filter.PostgresDialect{}}, {onSQLite, filter.SQLiteDialect{}}} {
+		r, err := sessionResource(t, on.p)
 		require.NoError(t, err)
+		assert.Equal(t, names, r.ColumnNames())
+		d := on.d
+		columns := r.Columns()
 		require.Len(t, columns, len(names))
 		for i, column := range columns {
 			quoted := d.QuoteIdent(names[i])
@@ -92,28 +91,29 @@ func TestColumnType_ColumnNamesNameTheProjection(t *testing.T) {
 		}
 	}
 
-	only, err := sessionResource(t, parse.ReadColumns("id", "addr"))
+	only, err := sessionResource(t, onPostgres, parse.ReadColumns("id", "addr"))
 	require.NoError(t, err)
 	assert.Equal(t, []string{"id", "addr"}, only.ColumnNames())
 
+	r, err := sessionResource(t, onPostgres)
+	require.NoError(t, err)
 	r.ColumnNames()[0] = "changed"
 	assert.Equal(t, "id", r.ColumnNames()[0], "the names are a copy")
 }
 
 // A list's page and an update's RETURNING read the same projection.
 func TestColumnType_PlansReadTheProjection(t *testing.T) {
-	r, err := sessionResource(t)
+	r, err := sessionResource(t, onPostgres)
 	require.NoError(t, err)
-	d := filter.PostgresDialect{}
 	req, err := r.ParseList(url.Values{})
 	require.NoError(t, err)
-	list, err := r.BuildList(d, req, parse.Scope{})
+	list, err := r.BuildList(req, parse.Scope{})
 	require.NoError(t, err)
 	assert.Contains(t, list.Page.SQL, `SELECT "sessions"."id", abbrev("sessions"."addr") AS "addr", `)
 
 	p, err := r.ParseMergePatch([]byte(`{"addr":"10.0.0.1"}`))
 	require.NoError(t, err)
-	upd, err := r.BuildUpdate(d, p, parse.ByID("s1"), parse.Scope{})
+	upd, err := r.BuildUpdate(p, parse.ByID("s1"), parse.Scope{})
 	require.NoError(t, err)
 	assert.Contains(t, upd.Owner.SQL, ` RETURNING "sessions"."id", abbrev("sessions"."addr") AS "addr", `)
 }
@@ -130,7 +130,7 @@ func TestColumnType_RefusesWhatItCannotRead(t *testing.T) {
 		"array into string": {parse.ColumnType("id", core.SQLInetArray), `column "id" is inet[], read into a slice of strings, not string`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := sessionResource(t, tc.opt)
+			_, err := sessionResource(t, onPostgres, tc.opt)
 			assert.ErrorContains(t, err, tc.want)
 		})
 	}

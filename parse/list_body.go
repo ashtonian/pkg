@@ -33,7 +33,7 @@ import (
 // member, or a member of the wrong JSON type, is E2067, so a misspelt member
 // cannot widen a list. Flat field filters do not apply: a body has filter.
 // A read that fails is a *BodyReadError, not a request error.
-func (r *Resource[T]) ParseListBody(body io.Reader) (*ListRequest, error) {
+func (r *resourceCore) ParseListBody(body io.Reader) (*ListRequest, error) {
 	data, err := r.readBody(body, r.cfg.ListBodyLimit(), "list")
 	if err != nil {
 		return nil, err
@@ -56,7 +56,7 @@ func (r *Resource[T]) ParseListBody(body io.Reader) (*ListRequest, error) {
 
 // listMember decodes one member of a list body into in; null is an absent
 // member.
-func (r *Resource[T]) listMember(in *ListInput, name string, raw json.RawMessage) error {
+func (r *resourceCore) listMember(in *ListInput, name string, raw json.RawMessage) error {
 	if !filter.IsListParam(name) {
 		return listParamError(name, fmt.Sprintf("a list body has no member %q", name))
 	}
@@ -114,7 +114,7 @@ func (r *Resource[T]) listMember(in *ListInput, name string, raw json.RawMessage
 // ParseListBody. The query string carries only the parameters the endpoint
 // reads itself (AcceptParams), so one request cannot carry two filters, and
 // the body is application/json; anything else is E2067.
-func (r *Resource[T]) ParseListPost(query url.Values, contentType string, body io.Reader) (*ListRequest, error) {
+func (r *resourceCore) ParseListPost(query url.Values, contentType string, body io.Reader) (*ListRequest, error) {
 	for _, name := range slices.Sorted(maps.Keys(query)) {
 		switch {
 		case r.Accepts(name):
@@ -132,4 +132,4 @@ func (r *Resource[T]) ParseListPost(query url.Values, contentType string, body i
 
 // Accepts reports whether the endpoint reads query parameter name itself
 // (AcceptParams), so ParseList leaves it alone.
-func (r *Resource[T]) Accepts(name string) bool { return slices.Contains(r.accepted, name) }
+func (r *resourceCore) Accepts(name string) bool { return slices.Contains(r.accepted, name) }

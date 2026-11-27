@@ -16,7 +16,6 @@ package parse_test
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -32,9 +31,8 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/parsehttp"
-	"github.com/ashtonian/pkg/parse/parsesql"
 )
 
 const sdkWireFixturePath = "testdata/sdk_wire.json"
@@ -114,9 +112,11 @@ func TestSDKWireFixture(t *testing.T) {
 // so the first owner's include is cut and named in _truncated.
 const wireTagsPerOwner = filter.DefaultMaxIncludePerRelation + 1
 
-func wireDB(t *testing.T) *sql.DB {
+// wireDB is the SQLite provider the fixture's server runs on, its database
+// seeded.
+func wireDB(t *testing.T) *parse.Provider {
 	t.Helper()
-	db := dbtest.SQLite(t)
+	p, db := providertest.SQLite(t)
 	for _, stmt := range []string{
 		`CREATE TABLE wire_items (id TEXT PRIMARY KEY, name TEXT NOT NULL, labels TEXT NOT NULL, unit TEXT)`,
 		`CREATE TABLE wire_parts (id TEXT PRIMARY KEY, item_id TEXT NOT NULL, state TEXT NOT NULL)`,
@@ -139,19 +139,19 @@ func wireDB(t *testing.T) *sql.DB {
 	}
 	_, err := db.Exec(`INSERT INTO wire_item_tags VALUES ('d', 't001'), ('d', 't002')`)
 	require.NoError(t, err)
-	return db
+	return p
 }
 
 // wireServer serves wire_items as a parse server does: lists by GET and
 // POST, facets by OPTIONS, merge patches of one row or of the rows id[]
 // names, and the schema routes; and merge patches of one wire_stock row by
 // its key of two columns.
-func wireServer(t *testing.T, db *sql.DB) http.Handler {
+func wireServer(t *testing.T, p *parse.Provider) http.Handler {
 	t.Helper()
-	items := parse.MustResource[wireItem]("wire_items")
-	parts := parse.MustResource[wirePart]("wire_parts")
+	items := parse.MustResource[wireItem](p, "wire_items")
+	parts := parse.MustResource[wirePart](p, "wire_parts")
 	items.MustRelate("parts", parse.HasMany(parts, "item_id", parse.Indexed()))
-	stock := parse.MustResource[wireStock]("wire_stock", parse.PrimaryKey("warehouse_id", "sku"))
+	stock := parse.MustResource[wireStock](p, "wire_stock", parse.PrimaryKey("warehouse_id", "sku"))
 	reg := parse.NewSchemaRegistry()
 	require.NoError(t, parse.RegisterResource(reg, items))
 	require.NoError(t, parse.RegisterResource(reg, parts))
@@ -168,18 +168,14 @@ func wireServer(t *testing.T, db *sql.DB) http.Handler {
 	}
 
 	mux := http.NewServeMux()
-	routeItem(t, mux, db, items, handle)
-	routeItem(t, mux, db, stock, handle)
+	routeItem(t, mux, items, handle)
+	routeItem(t, mux, stock, handle)
 	list := handle(func(w http.ResponseWriter, r *http.Request) error {
 		req, err := parsehttp.ParseList(r, items)
 		if err != nil {
 			return err
 		}
-		plan, err := items.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
-		if err != nil {
-			return err
-		}
-		page, err := parsesql.QueryPage(r.Context(), db, items, plan)
+		page, err := items.List(r.Context(), req, parse.Scope{})
 		if err != nil {
 			return err
 		}
@@ -192,20 +188,11 @@ func wireServer(t *testing.T, db *sql.DB) http.Handler {
 		if err != nil {
 			return err
 		}
-		query, err := items.BuildFacets(filter.SQLiteDialect{}, req, parse.Scope{})
+		facets, err := items.Facets(r.Context(), req, parse.Scope{})
 		if err != nil {
 			return err
 		}
-		rows, err := db.QueryContext(r.Context(), query.SQL, query.Args...)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		facets, err := filter.ScanFacetUnion(rows)
-		if err != nil {
-			return err
-		}
-		return parsehttp.WriteJSON(w, r, http.StatusOK, parsehttp.FacetsAnswer{Facets: filter.FacetMap(facets)})
+		return parsehttp.WriteJSON(w, r, http.StatusOK, parsehttp.FacetsAnswer{Facets: facets})
 	}))
 	mux.Handle("PATCH /wire_items", handle(func(w http.ResponseWriter, r *http.Request) error {
 		q, err := parsehttp.Query(r)
@@ -213,7 +200,7 @@ func wireServer(t *testing.T, db *sql.DB) http.Handler {
 			return err
 		}
 		ids := q["id[]"]
-		updated, err := wireUpdate(r, db, items, parse.ByIDs(anys(ids)...))
+		updated, err := wireUpdate(r, items, parse.ByIDs(anys(ids)...))
 		if err != nil {
 			return err
 		}
@@ -233,7 +220,7 @@ func wireServer(t *testing.T, db *sql.DB) http.Handler {
 // routeItem serves the merge patch of one row of res below its table's
 // collection path, at a segment per key column (parsehttp.ItemPattern),
 // read back as the row's key (parsehttp.ItemKey).
-func routeItem[T any](t *testing.T, mux *http.ServeMux, db *sql.DB, res *parse.Resource[T],
+func routeItem[T any](t *testing.T, mux *http.ServeMux, res *parse.Resource[T],
 	handle func(func(http.ResponseWriter, *http.Request) error) http.HandlerFunc,
 ) {
 	t.Helper()
@@ -244,7 +231,7 @@ func routeItem[T any](t *testing.T, mux *http.ServeMux, db *sql.DB, res *parse.R
 		if err != nil {
 			return err
 		}
-		updated, err := wireUpdate(r, db, res, parse.ByKey(key))
+		updated, err := wireUpdate(r, res, parse.ByKey(key))
 		if err != nil {
 			return err
 		}
@@ -254,16 +241,12 @@ func routeItem[T any](t *testing.T, mux *http.ServeMux, db *sql.DB, res *parse.R
 
 // wireUpdate applies r's merge patch to target's rows of res and returns
 // them as the update left them.
-func wireUpdate[T any](r *http.Request, db *sql.DB, res *parse.Resource[T], target parse.Target) ([]T, error) {
+func wireUpdate[T any](r *http.Request, res *parse.Resource[T], target parse.Target) ([]T, error) {
 	parsed, err := parsehttp.ParsePatch(r, res)
 	if err != nil {
 		return nil, err
 	}
-	plan, err := res.BuildUpdate(filter.SQLiteDialect{}, parsed, target, parse.Scope{})
-	if err != nil {
-		return nil, err
-	}
-	updated, err := parsesql.Update(r.Context(), db, res, plan)
+	updated, err := res.Update(r.Context(), parsed, target, parse.Scope{})
 	return slices.Concat(updated.Changed, updated.Unchanged), err
 }
 

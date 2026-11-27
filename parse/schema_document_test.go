@@ -54,13 +54,13 @@ type schemaDocPart struct {
 
 func schemaDocument(t *testing.T) *parse.SchemaResponse {
 	t.Helper()
-	entities, err := parse.NewResource[schemaDocEntity]("doc_entities", parse.TenantColumn("tenant_id"))
+	entities, err := parse.NewResource[schemaDocEntity](onSQLite, "doc_entities", parse.TenantColumn("tenant_id"))
 	require.NoError(t, err)
-	parts, err := parse.NewResource[schemaDocPart]("doc_parts", parse.TenantColumn("tenant_id"))
+	parts, err := parse.NewResource[schemaDocPart](onSQLite, "doc_parts", parse.TenantColumn("tenant_id"))
 	require.NoError(t, err)
 	require.NoError(t, entities.Relate("parts", parse.HasMany(parts, "entity_id", parse.Includable(), parse.Facetable(),
 		parse.Describe("Parts", "The entity's parts"))))
-	labels, err := parse.NewResource[schemaDocLabel]("doc_labels", parse.TenantColumn("tenant_id"))
+	labels, err := parse.NewResource[schemaDocLabel](onSQLite, "doc_labels", parse.TenantColumn("tenant_id"))
 	require.NoError(t, err)
 	require.NoError(t, entities.Relate("labels", parse.ManyToMany(labels, parse.Through("doc_entity_labels", "entity_id", "label_id"), parse.Writable())))
 	reg := parse.NewSchemaRegistry()

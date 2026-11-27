@@ -65,7 +65,7 @@ func inSet(n int) string {
 func TestParserLimits_OneRule(t *testing.T) {
 	resource := func(t *testing.T, opts ...core.Option) *parse.Resource[limitedDoc] {
 		t.Helper()
-		r, err := parse.NewResource[limitedDoc]("limited", parse.ParserOptions(opts...))
+		r, err := parse.NewResource[limitedDoc](onSQLite, "limited", parse.ParserOptions(opts...))
 		require.NoError(t, err)
 		return r
 	}
@@ -139,7 +139,7 @@ func TestParserLimits_OneRule(t *testing.T) {
 			"WithMaxArraySize(-1)":    core.WithMaxArraySize(-1),
 			"WithMaxListBodySize(-1)": core.WithMaxListBodySize(-1),
 		} {
-			_, err := parse.NewResource[limitedDoc]("limited", parse.ParserOptions(opt))
+			_, err := parse.NewResource[limitedDoc](onSQLite, "limited", parse.ParserOptions(opt))
 			assert.ErrorContains(t, err, "parse: limited: parser options: "+option+": a limit is never negative")
 		}
 	})
@@ -152,7 +152,7 @@ func TestParserOptions_GeneratorOptionsAccumulate(t *testing.T) {
 		ID   string `sql:"id"        bson:"id"   parse:"filter"`
 		Name string `sql:"full_name" bson:"name" parse:"filter,patch"`
 	}
-	r, err := parse.NewResource[row]("rows", parse.ParserOptions(
+	r, err := parse.NewResource[row](onSQLite, "rows", parse.ParserOptions(
 		core.WithGeneratorOptions(core.WithColumnTag("sql")),
 		core.WithGeneratorOptions(core.WithFieldNameTag("bson")),
 	))

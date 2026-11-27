@@ -19,18 +19,18 @@ import (
 // policy composed by one rule (filter.ComposeConstraints), so a floor that
 // rule gains bounds updates as it bounds lists.
 func TestBuildUpdate_ScopesRowsAsAListDoes(t *testing.T) {
-	r := notes(t)
-	req, err := r.ParseList(url.Values{"title": {"one"}})
-	require.NoError(t, err)
-	p, err := r.ParseMergePatch([]byte(`{"rank":2}`))
-	require.NoError(t, err)
 	s := parse.Scope{Tenant: "t1", Policy: &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: "rank", Operator: filter.OpGte, Value: 1}}}}
 
-	for _, d := range []parse.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
-		t.Run(d.Name(), func(t *testing.T) {
-			list, err := r.BuildList(d, req, s)
+	for _, provider := range []*parse.Provider{onPostgres, onSQLite} {
+		t.Run(provider.Name(), func(t *testing.T) {
+			r := notes(t, provider)
+			req, err := r.ParseList(url.Values{"title": {"one"}})
 			require.NoError(t, err)
-			update, err := r.BuildUpdate(d, p, parse.ByFilter(req.Filter()), s, parse.SkipUnchanged())
+			p, err := r.ParseMergePatch([]byte(`{"rank":2}`))
+			require.NoError(t, err)
+			list, err := r.BuildList(req, s)
+			require.NoError(t, err)
+			update, err := r.BuildUpdate(p, parse.ByFilter(req.Filter()), s, parse.SkipUnchanged())
 			require.NoError(t, err)
 			require.NotNil(t, update.Current, "SkipUnchanged reads the target rows first")
 

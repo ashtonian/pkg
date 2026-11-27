@@ -86,12 +86,11 @@ type ResourceSchema struct {
 	// schema documents leave them out.
 	PolicyFields map[string]*FieldSchema
 	// Computed are the columns the resource reads through an expression
-	// (parse.ReadExpr), in declaration order. A statement built for a
-	// dialect reads such a column's fields, sort keys and search fields
-	// through the expression resolved for that dialect (ComputedSQL), and a
-	// relation's target the same way; the schema itself, and FieldExpr,
-	// name the column. A dialect an expression refuses fails every
-	// statement that compiles the schema.
+	// (parse.ReadExpr), in declaration order, each resolved for the dialect
+	// the schema's statements compile for. A statement reads such a
+	// column's fields, sort keys and search fields through its expression
+	// (ComputedSQL), and a relation's target the same way; the schema
+	// itself, and FieldExpr, name the column.
 	Computed []ComputedColumn
 
 	// policyRefused are the names a generated schema refuses to policies,

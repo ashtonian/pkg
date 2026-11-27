@@ -13,8 +13,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
-	"github.com/ashtonian/pkg/parse/parsesql"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -36,9 +35,9 @@ type skuItem struct {
 // names the row the driver stored.
 func TestValuerKey_BindsAsTheValueItWrites(t *testing.T) {
 	ctx := t.Context()
-	items, err := parse.NewResource[skuItem]("sku_items")
+	provider, db := providertest.SQLite(t)
+	items, err := parse.NewResource[skuItem](provider, "sku_items")
 	require.NoError(t, err)
-	db := dbtest.SQLite(t)
 	for _, stmt := range []string{
 		`CREATE TABLE sku_items (id TEXT PRIMARY KEY, qty INTEGER NOT NULL)`,
 		`CREATE TABLE sku_tags (sku_id TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (sku_id, tag_id))`,
@@ -51,9 +50,7 @@ func TestValuerKey_BindsAsTheValueItWrites(t *testing.T) {
 
 	parsed, err := items.ParsePatch([]byte(`[{"op":"replace","path":"/qty","value":7},{"op":"add","path":"/tags","value":["t1"]}]`))
 	require.NoError(t, err)
-	plan, err := items.BuildUpdate(filter.SQLiteDialect{}, parsed, parse.ByKey(parse.Key{skuCode("ab")}), parse.Scope{})
-	require.NoError(t, err)
-	res, err := parsesql.Update(ctx, db, items, plan)
+	res, err := items.Update(ctx, parsed, parse.ByKey(parse.Key{skuCode("ab")}), parse.Scope{})
 	require.NoError(t, err)
 	require.Len(t, res.Changed, 1, "the target names the stored row")
 
@@ -61,10 +58,7 @@ func TestValuerKey_BindsAsTheValueItWrites(t *testing.T) {
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT qty FROM sku_items WHERE id = 'AB'`).Scan(&qty))
 	assert.Equal(t, int64(7), qty)
 
-	owners, err := items.RelationStatements(plan, []parse.Key{{skuCode("ab")}})
-	require.NoError(t, err)
-	require.Len(t, owners, 1)
-	assert.Contains(t, owners[0].Args, `["AB"]`, "an owner key read back binds as the target did")
+	assert.Equal(t, []string{"AB:t1"}, queryRows[string](t, db, `SELECT sku_id || ':' || tag_id FROM sku_tags`), "an owner key read back binds as the target did")
 
 	rel := &core.RelationSchema{JoinTable: "sku_tags", SourceColumns: []string{"tag_id"}, TargetColumns: []string{"sku_id"},
 		SourceTypes: []core.TypeInfo{{Type: core.FieldTypeString}}, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeString}}}

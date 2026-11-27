@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"context"
 	"database/sql"
 	"testing"
 	"time"
@@ -12,9 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
-	"github.com/ashtonian/pkg/parse/parsesql"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
 type stockRow struct {
@@ -26,9 +23,9 @@ type stockRow struct {
 	DeletedAt   *time.Time `json:"deleted_at"   db:"deleted_at"`
 }
 
-func stockRows(t *testing.T) *parse.Resource[stockRow] {
+func stockRows(t *testing.T, p *parse.Provider) *parse.Resource[stockRow] {
 	t.Helper()
-	r, err := parse.NewResource[stockRow]("stock_rows", parse.PrimaryKey("warehouse_id", "sku"),
+	r, err := parse.NewResource[stockRow](p, "stock_rows", parse.PrimaryKey("warehouse_id", "sku"),
 		parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
 	require.NoError(t, err)
 	return r
@@ -50,7 +47,7 @@ func TestPrimaryKey_RefusesBadKeys(t *testing.T) {
 		{"soft-delete column", []parse.ResourceOption{parse.PrimaryKey("warehouse_id", "sku"), parse.DeletedColumn("sku")}, `deleted column "sku" is a key column`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parse.NewResource[stockRow]("stock_rows", tc.opts...)
+			_, err := parse.NewResource[stockRow](onSQLite, "stock_rows", tc.opts...)
 			assert.ErrorContains(t, err, tc.want)
 		})
 	}
@@ -58,17 +55,17 @@ func TestPrimaryKey_RefusesBadKeys(t *testing.T) {
 		ID   string         `json:"id"   db:"id"`
 		Spec map[string]any `json:"spec" db:"spec"`
 	}
-	_, err := parse.NewResource[documentKeyed]("documents", parse.PrimaryKey("id", "spec"))
+	_, err := parse.NewResource[documentKeyed](onSQLite, "documents", parse.PrimaryKey("id", "spec"))
 	require.ErrorContains(t, err, `key column "spec" is json; a key column is a scalar`)
-	_, err = parse.NewResource[stockRow]("stock_rows", parse.PrimaryKey("warehouse_id", "counted_at"))
+	_, err = parse.NewResource[stockRow](onSQLite, "stock_rows", parse.PrimaryKey("warehouse_id", "counted_at"))
 	require.NoError(t, err, "a timestamp is a key column")
-	r, err := parse.NewResource[stockRow]("stock_rows", parse.PrimaryKey("tenant_id", "sku"), parse.TenantColumn("tenant_id"))
+	r, err := parse.NewResource[stockRow](onSQLite, "stock_rows", parse.PrimaryKey("tenant_id", "sku"), parse.TenantColumn("tenant_id"))
 	require.NoError(t, err, "the tenant column is a key column")
 	assert.Equal(t, []string{"tenant_id", "sku"}, r.PrimaryKeyColumns())
 }
 
 func TestCompositeKey_ReadsAndDeclaresTheKey(t *testing.T) {
-	r := stockRows(t)
+	r := stockRows(t, onSQLite)
 	assert.Equal(t, []string{"warehouse_id", "sku"}, r.PrimaryKeyColumns())
 	assert.Equal(t, []string{"warehouse_id", "sku"}, r.FilterSchema().PrimaryKey)
 	for _, item := range []any{stockRow{WarehouseID: "w1", SKU: "a"}, &stockRow{WarehouseID: "w1", SKU: "a"}} {
@@ -87,17 +84,17 @@ func TestCompositeKey_ReadsAndDeclaresTheKey(t *testing.T) {
 // One key is an AND of the columns' equalities, several one bound set; a
 // key of another length than the key's is ErrKeyInvalid, stating both.
 func TestCompositeKey_UpdateTargets(t *testing.T) {
-	r := stockRows(t)
+	r := stockRows(t, onPostgres)
 	p, err := r.ParseMergePatch([]byte(`{"qty":7}`))
 	require.NoError(t, err)
 	scope := parse.Scope{Tenant: "t1"}
 
-	plan, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByKey(parse.Key{"w1", "a"}), scope)
+	plan, err := r.BuildUpdate(p, parse.ByKey(parse.Key{"w1", "a"}), scope)
 	require.NoError(t, err)
 	assert.Contains(t, plan.Owner.SQL, `WHERE (("stock_rows"."tenant_id" = $2 AND "stock_rows"."deleted_at" IS NULL) AND ("stock_rows"."warehouse_id" = $3 AND "stock_rows"."sku" = $4))`)
 	assert.Equal(t, []any{int64(7), "t1", "w1", "a"}, plan.Owner.Args)
 
-	plan, err = r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByKeys(parse.Key{"w1", "a"}, parse.Key{"w2", "b"}), scope)
+	plan, err = r.BuildUpdate(p, parse.ByKeys(parse.Key{"w1", "a"}, parse.Key{"w2", "b"}), scope)
 	require.NoError(t, err)
 	assert.Contains(t, plan.Owner.SQL, `("stock_rows"."warehouse_id", "stock_rows"."sku") IN (SELECT "k"."warehouse_id", "k"."sku" FROM jsonb_populate_recordset(NULL::"stock_rows", $3) AS "k")`)
 	assert.Len(t, plan.Owner.Args, 3, "the set binds one parameter however many keys it holds")
@@ -113,28 +110,29 @@ func TestCompositeKey_UpdateTargets(t *testing.T) {
 		{"mistyped column", parse.ByKey(parse.Key{"w1", 5}), "key column sku: expected string"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := r.BuildUpdate(filter.PostgresDialect{}, p, tc.target, scope)
+			_, err := r.BuildUpdate(p, tc.target, scope)
 			require.ErrorIs(t, err, parse.ErrKeyInvalid)
 			assert.ErrorContains(t, err, tc.want)
 		})
 	}
-	_, err = r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByKeys(), scope)
+	_, err = r.BuildUpdate(p, parse.ByKeys(), scope)
 	assert.ErrorIs(t, err, parse.ErrNoTarget)
 }
 
-func stockDB(t *testing.T) *sql.DB {
+// stockDB is a provider on a fresh SQLite database whose stock_rows hold
+// every warehouse's every SKU, so either column alone matches two rows and
+// only the pair names one.
+func stockDB(t *testing.T) (*parse.Provider, *sql.DB) {
 	t.Helper()
-	db := dbtest.SQLite(t)
+	p, db := providertest.SQLite(t)
 	_, err := db.ExecContext(t.Context(), `CREATE TABLE stock_rows (warehouse_id TEXT NOT NULL, sku TEXT NOT NULL, tenant_id TEXT NOT NULL,
 		qty INTEGER NOT NULL, counted_at TEXT, deleted_at TEXT, PRIMARY KEY (warehouse_id, sku))`)
 	require.NoError(t, err)
-	// Every warehouse holds every SKU, so either column alone matches two
-	// rows and only the pair names one.
 	for _, row := range [][2]string{{"w1", "a"}, {"w1", "b"}, {"w2", "a"}, {"w2", "b"}} {
 		_, err := db.ExecContext(t.Context(), `INSERT INTO stock_rows (warehouse_id, sku, tenant_id, qty, counted_at) VALUES (?, ?, 't1', 0, '2026-01-02T03:04:05Z')`, row[0], row[1])
 		require.NoError(t, err)
 	}
-	return db
+	return p, db
 }
 
 func stockQuantities(t *testing.T, db *sql.DB) map[string]int64 {
@@ -156,44 +154,43 @@ func stockQuantities(t *testing.T, db *sql.DB) map[string]int64 {
 // An update by key, by keys and a batch each change exactly the rows their
 // keys name.
 func TestCompositeKey_UpdatesReachTheirRows(t *testing.T) {
-	ctx := context.Background()
-	r := stockRows(t)
-	d := filter.SQLiteDialect{}
 	scope := parse.Scope{Tenant: "t1"}
+
+	p, db := stockDB(t)
+	r := stockRows(t, p)
 	seven, err := r.ParseMergePatch([]byte(`{"qty":7}`))
 	require.NoError(t, err)
-
-	db := stockDB(t)
-	plan, err := r.BuildUpdate(d, seven, parse.ByKey(parse.Key{"w1", "b"}), scope)
-	require.NoError(t, err)
-	res, err := parsesql.Update(ctx, db, r, plan)
+	res, err := r.Update(t.Context(), seven, parse.ByKey(parse.Key{"w1", "b"}), scope)
 	require.NoError(t, err)
 	require.Len(t, res.Changed, 1)
 	assert.Equal(t, map[string]int64{"w1/a": 0, "w1/b": 7, "w2/a": 0, "w2/b": 0}, stockQuantities(t, db))
 
-	db = stockDB(t)
-	plan, err = r.BuildUpdate(d, seven, parse.ByKeys(parse.Key{"w1", "b"}, parse.Key{"w2", "a"}, parse.Key{"w9", "a"}), scope)
+	p, db = stockDB(t)
+	r = stockRows(t, p)
+	seven, err = r.ParseMergePatch([]byte(`{"qty":7}`))
 	require.NoError(t, err)
-	res, err = parsesql.Update(ctx, db, r, plan)
+	res, err = r.Update(t.Context(), seven, parse.ByKeys(parse.Key{"w1", "b"}, parse.Key{"w2", "a"}, parse.Key{"w9", "a"}), scope)
 	require.NoError(t, err)
 	assert.Len(t, res.Changed, 2)
 	assert.Equal(t, map[string]int64{"w1/a": 0, "w1/b": 7, "w2/a": 7, "w2/b": 0}, stockQuantities(t, db))
 
-	db = stockDB(t)
+	p, db = stockDB(t)
+	r = stockRows(t, p)
+	seven, err = r.ParseMergePatch([]byte(`{"qty":7}`))
+	require.NoError(t, err)
 	one, err := r.ParseMergePatch([]byte(`{"qty":1}`))
 	require.NoError(t, err)
-	batch, err := r.BuildUpdateBatch(d, []parse.RowUpdate{{Key: parse.Key{"w2", "a"}, Patch: one}, {Key: parse.Key{"w1", "b"}, Patch: seven}}, scope, parse.UpdateBatchLimits{})
+	rows := []parse.RowUpdate{{Key: parse.Key{"w2", "a"}, Patch: one}, {Key: parse.Key{"w1", "b"}, Patch: seven}}
+	batch, err := r.BuildUpdateBatch(rows, scope, parse.UpdateBatchLimits{})
 	require.NoError(t, err)
 	require.Len(t, batch.Chunks, 1)
 	assert.Equal(t, []parse.Key{{"w1", "b"}, {"w2", "a"}}, batch.Chunks[0].Keys, "rows lock in key order")
 	assert.Contains(t, batch.Chunks[0].Current.SQL, `ORDER BY "stock_rows"."warehouse_id" COLLATE BINARY, "stock_rows"."sku" COLLATE BINARY`)
-	res, err = parsesql.UpdateBatch(ctx, db, r, batch)
+	res, err = r.UpdateBatch(t.Context(), rows, scope, parse.UpdateBatchLimits{})
 	require.NoError(t, err)
 	assert.Len(t, res.Changed, 2)
 	assert.Equal(t, map[string]int64{"w1/a": 0, "w1/b": 7, "w2/a": 1, "w2/b": 0}, stockQuantities(t, db))
 
-	require.NoError(t, batch.Chunks[0].CheckCurrent([]parse.Key{{"w2", "a"}, {"w1", "b"}}))
-	require.ErrorIs(t, batch.Chunks[0].CheckCurrent([]parse.Key{{"w2", "b"}, {"w1", "a"}}), parse.ErrUpdateBatchTargets, "the columns of two keys crossed are neither")
-	_, err = r.BuildUpdateBatch(d, []parse.RowUpdate{{Key: parse.Key{"w1", "b"}, Patch: one}, {Key: parse.Key{"w1", "b"}, Patch: seven}}, scope, parse.UpdateBatchLimits{})
+	_, err = r.BuildUpdateBatch([]parse.RowUpdate{{Key: parse.Key{"w1", "b"}, Patch: one}, {Key: parse.Key{"w1", "b"}, Patch: seven}}, scope, parse.UpdateBatchLimits{})
 	assert.ErrorContains(t, err, "update batch row 1 key: duplicate key")
 }

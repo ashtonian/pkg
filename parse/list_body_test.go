@@ -129,7 +129,7 @@ func TestParseListBody_AnInputSizeAtMaxInt(t *testing.T) {
 }
 
 func TestNewResource_RefusesANegativeListBodySize(t *testing.T) {
-	_, err := parse.NewResource[widget]("widgets", parse.ParserOptions(core.WithMaxListBodySize(-1)))
+	_, err := parse.NewResource[widget](onSQLite, "widgets", parse.ParserOptions(core.WithMaxListBodySize(-1)))
 	assert.ErrorContains(t, err, "parse: widgets: parser options: WithMaxListBodySize(-1): a limit is never negative")
 }
 
@@ -170,7 +170,7 @@ func TestParseListBody_ReadErrorsAreNotRequestErrors(t *testing.T) {
 // ParseListPost is a POST's list from its parts, for a framework that hands
 // a handler those rather than an *http.Request.
 func TestParseListPost(t *testing.T) {
-	res, err := parse.NewResource[gadgetRow]("gadgets", parse.AcceptParams("tenant"), atOneInstant())
+	res, err := parse.NewResource[gadgetRow](onSQLite, "gadgets", parse.AcceptParams("tenant"), atOneInstant())
 	require.NoError(t, err)
 	want, err := res.ParseListInput(parse.ListInput{Sort: "-id"})
 	require.NoError(t, err)
@@ -181,7 +181,7 @@ func TestParseListPost(t *testing.T) {
 }
 
 func TestParseListPost_Refusals(t *testing.T) {
-	res, err := parse.NewResource[gadgetRow]("gadgets", parse.AcceptParams("tenant"))
+	res, err := parse.NewResource[gadgetRow](onSQLite, "gadgets", parse.AcceptParams("tenant"))
 	require.NoError(t, err)
 	tests := []struct {
 		name        string
@@ -213,7 +213,7 @@ type gadgetRow struct {
 // limitedWidgets is widgets under parser options.
 func limitedWidgets(t *testing.T, opts ...core.Option) *parse.Resource[widget] {
 	t.Helper()
-	r, err := parse.NewResource[widget]("widgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"),
+	r, err := parse.NewResource[widget](onSQLite, "widgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"),
 		parse.PageSize(2, 3), atOneInstant(), parse.ParserOptions(opts...))
 	require.NoError(t, err)
 	return r

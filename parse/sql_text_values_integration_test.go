@@ -28,10 +28,10 @@ func TestSQLTextValuesSQL(t *testing.T) {
 	// PostgreSQL's connections write intervals in another style than its
 	// default: reads must not depend on it.
 	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
-		db := b.open(t)
+		provider, db := b.open(t)
 		table := networkEventTable()
 		b.create(t, db, table)
-		resource := parse.MustResource[networkEvent]("network_events")
+		resource := parse.MustResource[networkEvent](provider, "network_events")
 		insert := func(id string, at core.LocalTime, retention core.Interval, actorIP, network string, device any, spans []string, allowed ...string) {
 			t.Helper()
 			ip, err := core.ParseInet(actorIP)
@@ -52,9 +52,9 @@ func TestSQLTextValuesSQL(t *testing.T) {
 			t.Helper()
 			query, err := resource.ParseList(url.Values{"filter": {filterJSON}, "sort": {sort}})
 			require.NoError(t, err)
-			plan, err := resource.BuildList(b.dialect, query, parse.Scope{})
+			plan, err := resource.BuildList(query, parse.Scope{})
 			require.NoError(t, err)
-			return resourceRows(t, db, resource, b.dialect, plan.Page)
+			return resourceRows(t, resource, plan.Page)
 		}
 		ids := func(filterJSON string) []string {
 			t.Helper()
@@ -105,9 +105,9 @@ func TestSQLTextValuesSQL(t *testing.T) {
 		patch, err := resource.ParseMergePatch([]byte(`{"at":"07:15:00.250000","retention":"PT90M","actor_ip":"::ffff:10.0.0.9",
 			"network":"10.1.0.0/16","device":"0800.2b01.0205","allowed_ips":["2001:0db8:0:0:0:0:0:2"],"spans":["P1W","PT3600S"]}`))
 		require.NoError(t, err)
-		update, err := resource.BuildUpdate(b.dialect, patch, parse.ByID("b"), parse.Scope{})
+		update, err := resource.BuildUpdate(patch, parse.ByID("b"), parse.Scope{})
 		require.NoError(t, err)
-		updated := resourceRows(t, db, resource, b.dialect, update.Owner)
+		updated := resourceRows(t, resource, update.Owner)
 		require.Len(t, updated, 1)
 		wire, err = json.Marshal(updated[0])
 		require.NoError(t, err)

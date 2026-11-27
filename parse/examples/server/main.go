@@ -2,13 +2,18 @@
 // list contract HTTP handlers and the TypeScript SDK share
 // (filter.Param*): keyset-paginated lists with JSON or flat-parameter
 // filters, read from a GET's query string or a POST's JSON body, facets
-// over OPTIONS, JSON Merge Patch updates and schema discovery, over an
-// in-memory SQLite database. It is a module of its own, outside the
-// repository's Go workspace; from its directory:
+// over OPTIONS, JSON Merge Patch updates and schema discovery, on the
+// database its db settings name (parseprovider): an in-memory SQLite
+// database by default, or PostgreSQL. It is a module of its own, outside
+// the repository's Go workspace; from its directory:
 //
 //	GOWORK=off go run . --addr 127.0.0.1:8080
 //	curl '127.0.0.1:8080/api/products?category=books&sort=-price&page_size=2'
 //	curl -H 'Content-Type: application/json' -d '{"filter":{"category":"books"},"sort":"-price","page_size":2}' 127.0.0.1:8080/api/products
+//
+// On PostgreSQL:
+//
+//	PARSE_SERVER_DB_PROVIDER=postgres PARSE_SERVER_DB_DSN='postgres://user:password@127.0.0.1:5432/app' GOWORK=off go run .
 package main
 
 import (
@@ -30,8 +35,10 @@ import (
 	"github.com/ashtonian/pkg/config"
 	"github.com/ashtonian/pkg/config/kongprovider"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/parsesqlite"
+	"github.com/ashtonian/pkg/parse/parseprovider"
 )
 
 const (
@@ -50,6 +57,9 @@ type serverSettings struct {
 	ReadTimeout       time.Duration `koanf:"read_timeout" default:"10s" validate:"gt=0" desc:"HTTP request read deadline"`
 	WriteTimeout      time.Duration `koanf:"write_timeout" default:"10s" validate:"gt=0" desc:"HTTP response write deadline"`
 	IdleTimeout       time.Duration `koanf:"idle_timeout" default:"60s" validate:"gt=0" desc:"HTTP keep-alive idle deadline"`
+	// DB has no flags: the environment or the settings file sets it, so a
+	// DSN's password stays out of the process list and shell history.
+	DB parseprovider.Config `koanf:"db" kong:"-"`
 }
 
 func main() {
@@ -169,11 +179,14 @@ func run(ctx context.Context, stop context.CancelFunc, args []string, level *slo
 		<-reloading
 	}()
 
-	db, err := openDB(ctx)
+	db, err := openDB(ctx, startup.DB)
 	if err != nil {
 		return err
 	}
+	// Deferred after the reloader's stop, so it runs before it, once serve
+	// has drained the requests that use the database.
 	defer func() { err = errors.Join(err, db.Close()) }()
+	log.InfoContext(ctx, "database opened", slog.String("provider", db.Provider().Name()))
 	handler, err := newServer(db, log, startup.RequestTimeout, rand.Text)
 	if err != nil {
 		return err
@@ -222,56 +235,125 @@ func serve(ctx context.Context, stop context.CancelFunc, settings *serverSetting
 	return nil
 }
 
-// openDB creates and seeds an in-memory database. One connection: every
-// statement sees the same in-memory database. parse's SQLite functions are
-// registered before the database opens a connection. Transactions begin
-// IMMEDIATE, as parsesql needs for an update that reads before it writes.
-func openDB(ctx context.Context) (*sql.DB, error) {
-	if err := parsesqlite.Register(); err != nil {
+// openDB opens the database cfg names and seeds its products.
+func openDB(ctx context.Context, cfg parseprovider.Config) (*parseprovider.Database, error) {
+	db, err := parseprovider.Open(ctx, cfg)
+	if err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", ":memory:?_txlock=immediate")
+	err = seed(ctx, db)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
-	}
-	db.SetMaxOpenConns(1)
-	if err := seed(ctx, db); err != nil {
 		return nil, errors.Join(err, db.Close())
 	}
 	return db, nil
 }
 
-func seed(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, `CREATE TABLE products (
-		id         TEXT PRIMARY KEY,
-		name       TEXT NOT NULL,
-		category   TEXT NOT NULL,
-		price      REAL NOT NULL,
-		labels     TEXT NOT NULL DEFAULT '{}',
-		created_at TEXT NOT NULL
-	)`); err != nil {
-		return fmt.Errorf("create products: %w", err)
+// seedProducts are the demonstration products, p01 onwards, each created
+// an hour after the one before it from seedEpoch.
+var seedProducts = []struct {
+	name, category, labels string
+	price                  float64
+}{
+	{"Gaming Laptop", "electronics", `{"brand":"acme","refurb":false}`, 1299.99},
+	{"Wireless Mouse", "electronics", `{"brand":"acme"}`, 29.99},
+	{"USB-C Hub", "electronics", `{"brand":"volt"}`, 45},
+	{"Cotton T-Shirt", "clothing", `{}`, 19.99},
+	{"Running Shoes", "clothing", `{"sizes":[40,41,42]}`, 120},
+	{"Go Programming", "books", `{"format":"paperback"}`, 39.99},
+	{"Clean Code", "books", `{"format":"hardcover"}`, 32},
+	{"Design Patterns", "books", `{"format":"paperback"}`, 15},
+	{"Desk Lamp", "home", `{}`, 55},
+	{"Coffee Maker", "home", `{"brand":"volt"}`, 79.99},
+}
+
+var seedEpoch = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// seedSchema is one provider's statements for the products table, run in
+// order, and the insert of one product, which takes the id, name,
+// category, price, labels and creation time.
+type seedSchema struct {
+	create []string
+	insert string
+	// createdAt is a creation time as the provider's column holds it.
+	createdAt func(time.Time) any
+}
+
+// The tables hold what Product's types read: on SQLite the labels as JSON
+// text and the creation time as parse's timestamp text (core.FormatTimestamp),
+// on PostgreSQL jsonb and timestamptz. The labels' index is the one their
+// indexed tag declares, which PostgreSQL's containment filter uses.
+var (
+	sqliteSeed = seedSchema{
+		create: []string{`CREATE TABLE IF NOT EXISTS products (
+			id         TEXT PRIMARY KEY,
+			name       TEXT NOT NULL,
+			category   TEXT NOT NULL,
+			price      REAL NOT NULL,
+			labels     TEXT NOT NULL DEFAULT '{}',
+			created_at TEXT NOT NULL
+		)`},
+		insert:    `INSERT INTO products VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (id) DO NOTHING`,
+		createdAt: func(t time.Time) any { return core.FormatTimestamp(t) },
 	}
-	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	for i, p := range []struct {
-		name, category, labels string
-		price                  float64
-	}{
-		{"Gaming Laptop", "electronics", `{"brand":"acme","refurb":false}`, 1299.99},
-		{"Wireless Mouse", "electronics", `{"brand":"acme"}`, 29.99},
-		{"USB-C Hub", "electronics", `{"brand":"volt"}`, 45},
-		{"Cotton T-Shirt", "clothing", `{}`, 19.99},
-		{"Running Shoes", "clothing", `{"sizes":[40,41,42]}`, 120},
-		{"Go Programming", "books", `{"format":"paperback"}`, 39.99},
-		{"Clean Code", "books", `{"format":"hardcover"}`, 32},
-		{"Design Patterns", "books", `{"format":"paperback"}`, 15},
-		{"Desk Lamp", "home", `{}`, 55},
-		{"Coffee Maker", "home", `{"brand":"volt"}`, 79.99},
-	} {
-		_, err := db.ExecContext(ctx, `INSERT INTO products VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
-			fmt.Sprintf("p%02d", i+1), p.name, p.category, p.price, p.labels, core.FormatTimestamp(base.Add(time.Duration(i)*time.Hour)))
+	postgresSeed = seedSchema{
+		create: []string{`CREATE TABLE IF NOT EXISTS products (
+			id         text PRIMARY KEY,
+			name       text NOT NULL,
+			category   text NOT NULL,
+			price      double precision NOT NULL,
+			labels     jsonb NOT NULL DEFAULT '{}',
+			created_at timestamptz NOT NULL
+		)`, `CREATE INDEX IF NOT EXISTS products_labels ON products USING gin (labels)`},
+		insert:    `INSERT INTO products VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING`,
+		createdAt: func(t time.Time) any { return t },
+	}
+)
+
+// seed creates the products table when it is missing and adds the
+// demonstration products it does not hold, so a database that persists
+// keeps the changes made to them across restarts.
+func seed(ctx context.Context, db *parseprovider.Database) error {
+	sqlite, ok := db.SQLite()
+	if ok {
+		return sqliteSeed.run(ctx, sqliteExec(sqlite))
+	}
+	pool, ok := db.Postgres()
+	if ok {
+		return postgresSeed.run(ctx, poolExec(pool))
+	}
+	return fmt.Errorf("seeding products: provider %s holds no database", db.Provider().Name())
+}
+
+// execFunc runs one statement.
+type execFunc func(ctx context.Context, stmt string, args ...any) error
+
+func sqliteExec(db *sql.DB) execFunc {
+	return func(ctx context.Context, stmt string, args ...any) error {
+		_, err := db.ExecContext(ctx, stmt, args...)
+		return err
+	}
+}
+
+func poolExec(pool *pgxpool.Pool) execFunc {
+	return func(ctx context.Context, stmt string, args ...any) error {
+		_, err := pool.Exec(ctx, stmt, args...)
+		return err
+	}
+}
+
+// run creates the table and inserts the products through exec.
+func (s seedSchema) run(ctx context.Context, exec execFunc) error {
+	for _, stmt := range s.create {
+		err := exec(ctx, stmt)
 		if err != nil {
-			return fmt.Errorf("seed %s: %w", p.name, err)
+			return fmt.Errorf("creating products: %w", err)
+		}
+	}
+	for i, p := range seedProducts {
+		id := fmt.Sprintf("p%02d", i+1)
+		err := exec(ctx, s.insert, id, p.name, p.category, p.price, p.labels, s.createdAt(seedEpoch.Add(time.Duration(i)*time.Hour)))
+		if err != nil {
+			return fmt.Errorf("seeding product %s: %w", id, err)
 		}
 	}
 	return nil

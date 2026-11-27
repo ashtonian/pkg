@@ -33,7 +33,7 @@ type quotedItem struct {
 
 func quotedItems(t *testing.T) *parse.Resource[quotedItem] {
 	t.Helper()
-	r, err := parse.NewResource[quotedItem]("quoted_items", parse.PrimaryKey("key"))
+	r, err := parse.NewResource[quotedItem](onSQLite, "quoted_items", parse.PrimaryKey("key"))
 	require.NoError(t, err)
 	return r
 }
@@ -228,7 +228,7 @@ func TestWireStringTestValidates(t *testing.T) {
 		ID  int64 `json:"id"         db:"id"`
 		Qty int64 `json:"qty,string" db:"qty" parse:"patch" patch_ops:"replace,test" min:"1" max:"9007199254740993"`
 	}
-	r, err := parse.NewResource[bounded]("bounded")
+	r, err := parse.NewResource[bounded](onSQLite, "bounded")
 	require.NoError(t, err)
 	_, err = r.ParsePatch([]byte(`[{"op":"test","path":"/qty","value":"9007199254740993"}]`))
 	assert.NoError(t, err)
@@ -249,9 +249,9 @@ type wireBook struct {
 // A json:",string" key reaches the request as text even untagged for
 // filtering, and a relation's shorthand compares its target's key that way.
 func TestWireStringKeysAndRelations(t *testing.T) {
-	authors, err := parse.NewResource[wireAuthor]("authors")
+	authors, err := parse.NewResource[wireAuthor](onSQLite, "authors")
 	require.NoError(t, err)
-	books, err := parse.NewResource[wireBook]("books")
+	books, err := parse.NewResource[wireBook](onSQLite, "books")
 	require.NoError(t, err)
 	require.NoError(t, books.Relate("author", parse.BelongsTo(authors, "author_id")))
 
@@ -281,14 +281,14 @@ func TestWireStringDeclaredMemberRefused(t *testing.T) {
 		ID   string   `json:"id"   db:"id"`
 		Spec wireSpec `json:"spec" db:"spec" parse:"filter" paths:"qty:int"`
 	}
-	_, err := parse.NewResource[tagged]("tagged")
+	_, err := parse.NewResource[tagged](onSQLite, "tagged")
 	assert.ErrorContains(t, err, `json:",string"`)
 
 	type plain struct {
 		ID   string   `json:"id"   db:"id"`
 		Spec wireSpec `json:"spec" db:"spec" parse:"filter"`
 	}
-	r, err := parse.NewResource[plain]("plain")
+	r, err := parse.NewResource[plain](onSQLite, "plain")
 	require.NoError(t, err)
 	_, err = r.WithPaths(filter.PathDecl{Path: "spec.qty", Type: core.FieldTypeInt})
 	assert.ErrorContains(t, err, `json:",string"`)

@@ -1,3 +1,5 @@
+//go:build unit || integration
+
 package parse_test
 
 import (
@@ -9,7 +11,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,7 +28,7 @@ type networkEvent struct {
 }
 
 func TestSQLTextValueFilters(t *testing.T) {
-	resource := parse.MustResource[networkEvent]("network_events")
+	resource := parse.MustResource[networkEvent](onSQLite, "network_events")
 	for _, tt := range []struct {
 		filter, canonical string
 	}{
@@ -41,12 +42,13 @@ func TestSQLTextValueFilters(t *testing.T) {
 		{`{"spans":{"$contains":["PT90M"]}}`, "PT1H30M"},
 	} {
 		t.Run(tt.filter, func(t *testing.T) {
-			query, err := resource.ParseList(url.Values{"filter": {tt.filter}})
-			require.NoError(t, err)
-			for _, dialect := range []parse.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
-				plan, err := resource.BuildList(dialect, query, parse.Scope{})
+			for _, provider := range []*parse.Provider{onPostgres, onSQLite} {
+				events := parse.MustResource[networkEvent](provider, "network_events")
+				query, err := events.ParseList(url.Values{"filter": {tt.filter}})
 				require.NoError(t, err)
-				assert.Contains(t, boundText(plan.Page.Args), tt.canonical, "%s binds the canonical text", dialect.Name())
+				plan, err := events.BuildList(query, parse.Scope{})
+				require.NoError(t, err)
+				assert.Contains(t, boundText(plan.Page.Args), tt.canonical, "%s binds the canonical text", provider.Name())
 			}
 		})
 	}
@@ -89,15 +91,13 @@ func TestSQLTextValueFilters(t *testing.T) {
 // interval's canonical text, field by field: its own equality would match
 // P1M against P30D, which SQLite's text comparison does not.
 func TestSQLTextValueIntervalEquality(t *testing.T) {
-	resource := parse.MustResource[networkEvent]("network_events")
+	resource := parse.MustResource[networkEvent](onPostgres, "network_events")
 	query, err := resource.ParseList(url.Values{"filter": {`{"retention":"P30D"}`}})
 	require.NoError(t, err)
-	plan, err := resource.BuildList(filter.PostgresDialect{}, query, parse.Scope{})
+	plan, err := resource.BuildList(query, parse.Scope{})
 	require.NoError(t, err)
 	assert.Contains(t, plan.Page.SQL, `isfinite("network_events"."retention")`)
-	columns, err := resource.Columns(filter.PostgresDialect{})
-	require.NoError(t, err)
-	assert.Contains(t, strings.Join(columns, ","), `isfinite("network_events"."retention")`,
+	assert.Contains(t, strings.Join(resource.Columns(), ","), `isfinite("network_events"."retention")`,
 		"an Interval column reads as ISO 8601 text under any IntervalStyle")
 	declared, ok := resource.ColumnSQLType("retention")
 	require.True(t, ok)
@@ -105,9 +105,10 @@ func TestSQLTextValueIntervalEquality(t *testing.T) {
 }
 
 func TestSQLTextValuePatch(t *testing.T) {
-	resource := parse.MustResource[networkEvent]("network_events")
-	patch, err := resource.ParseMergePatch([]byte(`{"at":"10:30:00.500","retention":"PT90M","actor_ip":"192.168.0.5/32",
-		"network":"10.0.0.0/8","device":"08-00-2B-01-02-03","allowed_ips":["10.0.0.1","2001:0db8::1"],"spans":["P14M"]}`))
+	const body = `{"at":"10:30:00.500","retention":"PT90M","actor_ip":"192.168.0.5/32",
+		"network":"10.0.0.0/8","device":"08-00-2B-01-02-03","allowed_ips":["10.0.0.1","2001:0db8::1"],"spans":["P14M"]}`
+	resource := parse.MustResource[networkEvent](onSQLite, "network_events")
+	patch, err := resource.ParseMergePatch([]byte(body))
 	require.NoError(t, err)
 	target, err := resource.ApplyValidatedPatch(patch, networkEvent{ID: "one"})
 	require.NoError(t, err)
@@ -115,12 +116,15 @@ func TestSQLTextValuePatch(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"id":"one","at":"10:30:00.5","retention":"PT1H30M","actor_ip":"192.168.0.5",
 		"network":"10.0.0.0/8","device":"08:00:2b:01:02:03","allowed_ips":["10.0.0.1","2001:db8::1"],"spans":["P1Y2M"]}`, string(wire))
-	for _, dialect := range []parse.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
-		plan, err := resource.BuildUpdate(dialect, patch, parse.ByID("one"), parse.Scope{})
+	for _, provider := range []*parse.Provider{onPostgres, onSQLite} {
+		events := parse.MustResource[networkEvent](provider, "network_events")
+		patch, err := events.ParseMergePatch([]byte(body))
+		require.NoError(t, err)
+		plan, err := events.BuildUpdate(patch, parse.ByID("one"), parse.Scope{})
 		require.NoError(t, err)
 		args := boundText(plan.Owner.Args)
 		for _, canonical := range []string{"10:30:00.5", "PT1H30M", "192.168.0.5", "10.0.0.0/8", "08:00:2b:01:02:03", "P1Y2M"} {
-			assert.Contains(t, args, canonical, "%s writes the canonical text", dialect.Name())
+			assert.Contains(t, args, canonical, "%s writes the canonical text", provider.Name())
 		}
 	}
 
@@ -132,7 +136,7 @@ func TestSQLTextValuePatch(t *testing.T) {
 }
 
 func TestSQLTextValueDeclarations(t *testing.T) {
-	_, err := parse.NewResource[networkEvent]("network_events",
+	_, err := parse.NewResource[networkEvent](onPostgres, "network_events",
 		parse.ColumnType("actor_ip", core.SQLInet), parse.ColumnType("network", core.SQLCIDR),
 		parse.ColumnType("retention", core.SQLInterval), parse.ColumnType("allowed_ips", core.SQLInetArray))
 	require.NoError(t, err)
@@ -147,24 +151,24 @@ func TestSQLTextValueDeclarations(t *testing.T) {
 		{"allowed_ips", core.SQLCIDRArray},
 		{"retention", core.SQLDate},
 	} {
-		_, err := parse.NewResource[networkEvent]("network_events", parse.ColumnType(tt.column, tt.storage))
+		_, err := parse.NewResource[networkEvent](onPostgres, "network_events", parse.ColumnType(tt.column, tt.storage))
 		assert.Error(t, err, "%s declared %s", tt.column, tt.storage)
 	}
 
 	_, err = parse.NewResource[struct {
 		ID string     `db:"id"`
 		IP *core.Inet `db:"ip" parse:"sort"`
-	}]("unsortable")
+	}](onSQLite, "unsortable")
 	assert.ErrorContains(t, err, "inet fields are not sortable")
 	_, err = parse.NewResource[struct {
 		ID  string        `db:"id"`
 		TTL core.Interval `db:"ttl" parse:"filter,facet"`
-	}]("unfacetable")
+	}](onSQLite, "unfacetable")
 	assert.ErrorContains(t, err, "interval values have no facet key")
 	_, err = parse.NewResource[struct {
 		ID  string      `db:"id"`
 		IPs []core.CIDR `db:"ips" parse:"filter,facet"`
-	}]("unfacetable")
+	}](onSQLite, "unfacetable")
 	assert.ErrorContains(t, err, "cidr values have no facet key")
 }
 

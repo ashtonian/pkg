@@ -10,8 +10,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
@@ -19,6 +20,9 @@ import (
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/filter/filtertest"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
+	"github.com/ashtonian/pkg/parse/parsepgx"
+	"github.com/ashtonian/pkg/parse/parsesql"
 )
 
 // sqlEngine is a database parse's SQL runs on in the integration suites.
@@ -29,10 +33,10 @@ const (
 	postgresEngine sqlEngine = "postgres"
 )
 
-// sqlDialect compiles for a backend and writes a value as its executor
+// sqlDialect compiles for a backend and writes a value as its provider
 // binds it.
 type sqlDialect interface {
-	parse.Dialect
+	filter.Dialect
 	MarshalValue(value any, t core.TypeInfo) (any, error)
 }
 
@@ -44,7 +48,10 @@ type sqlDialect interface {
 type sqlBackend struct {
 	engine  sqlEngine
 	dialect sqlDialect
-	open    func(t *testing.T) *sql.DB
+	// sqlite opens a fresh SQLite database, and pool a pool on a fresh
+	// PostgreSQL schema; each backend sets its engine's.
+	sqlite func(t *testing.T) *sql.DB
+	pool   func(t *testing.T) *pgxpool.Pool
 	// storage replaces the engine's column type for a field type.
 	storage map[core.FieldType]string
 }
@@ -55,8 +62,8 @@ type sqlBackendOption func(*sqlBackend)
 // sqlBackends are SQLite and PostgreSQL, each with opts applied.
 func sqlBackends(opts ...sqlBackendOption) []sqlBackend {
 	backends := []sqlBackend{
-		{engine: sqliteEngine, dialect: filter.SQLiteDialect{}, open: func(t *testing.T) *sql.DB { return dbtest.SQLite(t) }},
-		{engine: postgresEngine, dialect: filter.PostgresDialect{}, open: func(t *testing.T) *sql.DB { return dbtest.Postgres(t) }},
+		{engine: sqliteEngine, dialect: filter.SQLiteDialect{}, sqlite: func(t *testing.T) *sql.DB { return dbtest.SQLite(t) }},
+		{engine: postgresEngine, dialect: filter.PostgresDialect{}, pool: func(t *testing.T) *pgxpool.Pool { return dbtest.PostgresPool(t) }},
 	}
 	for i := range backends {
 		backends[i] = backends[i].with(opts...)
@@ -82,6 +89,27 @@ func runSQLBackends(t *testing.T, fn func(t *testing.T, b sqlBackend), opts ...s
 	for _, b := range sqlBackends(opts...) {
 		t.Run(string(b.engine), func(t *testing.T) { fn(t, b) })
 	}
+}
+
+// open opens a fresh database on b: the provider resources run on there,
+// compiling for b's dialect, and a handle for the test's own statements.
+func (b sqlBackend) open(t *testing.T) (*parse.Provider, *sql.DB) {
+	t.Helper()
+	return b.openSettling(t, parse.DefaultSettleTimeout)
+}
+
+// openSettling is open with each statement that settles an update bounded
+// by settle (parsesql.SettleTimeout, parsepgx.SettleTimeout).
+func (b sqlBackend) openSettling(t *testing.T, settle time.Duration) (*parse.Provider, *sql.DB) {
+	t.Helper()
+	if b.engine == sqliteEngine {
+		db := b.sqlite(t)
+		return providertest.SQLiteOn(t, db, parsesql.SettleTimeout(settle)), db
+	}
+	pg, ok := b.dialect.(filter.PostgresDialect)
+	require.True(t, ok, "a %s backend compiles for %T", b.engine, b.dialect)
+	return providertest.PostgresOn(t, b.pool(t),
+		parsepgx.Collation(pg.Collation), parsepgx.ContainmentMaxValues(pg.ContainmentMaxValues), parsepgx.SettleTimeout(settle))
 }
 
 // with is b with opts applied.
@@ -119,7 +147,7 @@ func storing(ft core.FieldType, columnType string) sqlBackendOption {
 // enabled.
 func onPostGIS() sqlBackendOption {
 	return on(postgresEngine, func(b *sqlBackend) {
-		b.open = func(t *testing.T) *sql.DB { return dbtest.PostGIS(t) }
+		b.pool = func(t *testing.T) *pgxpool.Pool { return dbtest.PostGISPool(t) }
 	})
 }
 
@@ -137,12 +165,13 @@ func collation(c filter.PostgresCollation) sqlBackendOption {
 // connection the pool opens has them.
 func sessionParams(params map[string]string) sqlBackendOption {
 	return on(postgresEngine, func(b *sqlBackend) {
-		b.open = func(t *testing.T) *sql.DB {
-			config := dbtest.PostgresConfig(t)
-			maps.Copy(config.RuntimeParams, params)
-			db := stdlib.OpenDB(*config)
-			t.Cleanup(func() { _ = db.Close() })
-			return db
+		b.pool = func(t *testing.T) *pgxpool.Pool {
+			config := dbtest.PostgresPoolConfig(t)
+			maps.Copy(config.ConnConfig.RuntimeParams, params)
+			pool, err := pgxpool.NewWithConfig(dbtest.Context(t), config)
+			require.NoError(t, err)
+			t.Cleanup(pool.Close)
+			return pool
 		}
 	})
 }
@@ -151,7 +180,7 @@ func sessionParams(params map[string]string) sqlBackendOption {
 // hook dbtest.OnStatement puts in its context.
 func hooked() sqlBackendOption {
 	return on(sqliteEngine, func(b *sqlBackend) {
-		b.open = func(t *testing.T) *sql.DB { return dbtest.SQLiteHooked(t) }
+		b.sqlite = func(t *testing.T) *sql.DB { return dbtest.SQLiteHooked(t) }
 	})
 }
 

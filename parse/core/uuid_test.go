@@ -18,6 +18,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
 type md5Sum [16]byte
@@ -169,24 +170,24 @@ func TestUUIDTypes_AreRecognizedByBehaviour(t *testing.T) {
 	text, _ := first.MarshalText()
 	require.Equal(t, "01ARZ3NDEKTSV4RRFFQ69G5FAV", string(text))
 
-	events, err := parse.NewResource[ulidEvent]("events")
+	events, err := parse.NewResource[ulidEvent](providertest.Compile(filter.SQLiteDialect{}), "events")
 	require.NoError(t, err)
 	req, err := events.ParseList(url.Values{"id": {"01ARZ3NDEKTSV4RRFFQ69G5FAV"}})
 	require.NoError(t, err)
-	plan, err := events.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+	plan, err := events.BuildList(req, parse.Scope{})
 	require.NoError(t, err)
 	assert.Contains(t, plan.Page.Args, "01ARZ3NDEKTSV4RRFFQ69G5FAV")
 
 	req, err = events.ParseList(url.Values{filter.ParamPageSize: {"1"}})
 	require.NoError(t, err)
-	plan, err = events.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+	plan, err = events.BuildList(req, parse.Scope{})
 	require.NoError(t, err)
 	page, err := events.Page([]ulidEvent{{ID: first}, {ID: second}}, plan)
 	require.NoError(t, err)
 	require.True(t, page.PageInfo.HasNextPage)
 	next, err := events.ParseList(url.Values{filter.ParamCursor: {string(page.PageInfo.EndCursor)}})
 	require.NoError(t, err)
-	plan, err = events.BuildList(filter.SQLiteDialect{}, next, parse.Scope{})
+	plan, err = events.BuildList(next, parse.Scope{})
 	require.NoError(t, err)
 	assert.Contains(t, plan.Page.Args, "01ARZ3NDEKTSV4RRFFQ69G5FAV", "the seek is past the first row's text")
 }

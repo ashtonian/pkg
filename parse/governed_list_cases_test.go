@@ -46,12 +46,13 @@ type govLabel struct {
 	Name     string `json:"name"      db:"name"      parse:"filter"`
 }
 
-func governedDocuments(t *testing.T) *parse.Resource[govDocument] {
+// governedDocuments builds the documents, with their relations, on p.
+func governedDocuments(t *testing.T, p *parse.Provider) *parse.Resource[govDocument] {
 	t.Helper()
-	documents := parse.MustResource[govDocument]("documents", parse.TenantColumn("tenant_id"), parse.ParserOptions(core.WithMaxCost(1<<10)))
-	notes := parse.MustResource[govNote]("notes", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
-	reactions := parse.MustResource[govReaction]("reactions", parse.TenantColumn("tenant_id"))
-	labels := parse.MustResource[govLabel]("labels", parse.TenantColumn("tenant_id"))
+	documents := parse.MustResource[govDocument](p, "documents", parse.TenantColumn("tenant_id"), parse.ParserOptions(core.WithMaxCost(1<<10)))
+	notes := parse.MustResource[govNote](p, "notes", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
+	reactions := parse.MustResource[govReaction](p, "reactions", parse.TenantColumn("tenant_id"))
+	labels := parse.MustResource[govLabel](p, "labels", parse.TenantColumn("tenant_id"))
 	notes.MustRelate("reactions", parse.HasMany(reactions, "note_id", parse.Indexed()))
 	documents.MustRelate("notes", parse.HasMany(notes, "document_id", parse.Indexed(), parse.Includable(), parse.Facetable()))
 	documents.MustRelate("labels", parse.ManyToMany(labels,

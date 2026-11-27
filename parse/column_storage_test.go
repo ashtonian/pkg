@@ -50,14 +50,27 @@ type columnStorageRow struct {
 }
 
 func TestColumnStorage_JSONFilterAndPatchBinding(t *testing.T) {
-	r, err := parse.NewResource[columnStorageRow]("documents",
-		parse.ColumnType("document_text", core.SQLJSONB),
-		parse.ColumnType("document_bytes", core.SQLJSONB),
-		parse.ColumnType("document_items", core.SQLJSONB),
-		parse.ColumnType("native_items", core.SQLTextArray),
-		parse.ColumnType("private_document", core.SQLJSONB),
-	)
-	require.NoError(t, err)
+	documents := func(p *parse.Provider) *parse.Resource[columnStorageRow] {
+		r, err := parse.NewResource[columnStorageRow](p, "documents",
+			parse.ColumnType("document_text", core.SQLJSONB),
+			parse.ColumnType("document_bytes", core.SQLJSONB),
+			parse.ColumnType("document_items", core.SQLJSONB),
+			parse.ColumnType("native_items", core.SQLTextArray),
+			parse.ColumnType("private_document", core.SQLJSONB),
+		)
+		require.NoError(t, err)
+		return r
+	}
+	r, lite := documents(onPostgres), documents(onSQLite)
+	// update builds body's merge patch for ByID("one") with each resource.
+	update := func(t *testing.T, r *parse.Resource[columnStorageRow], body string) *parse.UpdatePlan {
+		t.Helper()
+		p, err := r.ParseMergePatch([]byte(body))
+		require.NoError(t, err)
+		plan, err := r.BuildUpdate(p, parse.ByID("one"), parse.Scope{})
+		require.NoError(t, err)
+		return plan
+	}
 	for _, tt := range []struct {
 		field, input, encoded string
 	}{
@@ -68,34 +81,23 @@ func TestColumnStorage_JSONFilterAndPatchBinding(t *testing.T) {
 		t.Run(tt.field, func(t *testing.T) {
 			req, err := r.ParseList(url.Values{"filter": {`{"` + tt.field + `":{"$eq":` + tt.input + `}}`}})
 			require.NoError(t, err)
-			plan, err := r.BuildList(filter.PostgresDialect{}, req, parse.Scope{})
+			plan, err := r.BuildList(req, parse.Scope{})
 			require.NoError(t, err)
 			assert.Contains(t, plan.Page.Args, tt.encoded)
 			assert.Contains(t, plan.Page.SQL, "::jsonb")
 
-			p, err := r.ParseMergePatch([]byte(`{"` + tt.field + `":` + tt.input + `}`))
-			require.NoError(t, err)
-			pg, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("one"), parse.Scope{})
-			require.NoError(t, err)
-			assert.Contains(t, pg.Owner.Args, tt.encoded)
-			sq, err := r.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByID("one"), parse.Scope{})
-			require.NoError(t, err)
-			assert.Contains(t, sq.Owner.Args, tt.encoded)
+			body := `{"` + tt.field + `":` + tt.input + `}`
+			assert.Contains(t, update(t, r, body).Owner.Args, tt.encoded)
+			assert.Contains(t, update(t, lite, body).Owner.Args, tt.encoded)
 		})
 	}
 
-	p, err := r.ParseMergePatch([]byte(`{"native":["one","two"]}`))
-	require.NoError(t, err)
-	pg, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("one"), parse.Scope{})
-	require.NoError(t, err)
-	assert.Contains(t, pg.Owner.Args, []string{"one", "two"})
-	sq, err := r.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByID("one"), parse.Scope{})
-	require.NoError(t, err)
-	assert.Contains(t, sq.Owner.Args, `["one","two"]`)
+	assert.Contains(t, update(t, r, `{"native":["one","two"]}`).Owner.Args, []string{"one", "two"})
+	assert.Contains(t, update(t, lite, `{"native":["one","two"]}`).Owner.Args, `["one","two"]`)
 
-	p, err = r.ParseServerMergePatch([]byte(`{"private_document":"hidden"}`))
+	p, err := r.ParseServerMergePatch([]byte(`{"private_document":"hidden"}`))
 	require.NoError(t, err)
-	pg, err = r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("one"), parse.Scope{})
+	pg, err := r.BuildUpdate(p, parse.ByID("one"), parse.Scope{})
 	require.NoError(t, err)
 	assert.Contains(t, pg.Owner.Args, `"hidden"`)
 }
@@ -105,9 +107,9 @@ func TestColumnStorage_ResourceProfilesAreIndependent(t *testing.T) {
 		ID   string `json:"id" db:"id" parse:"sort"`
 		Name string `json:"name" db:"stored_name" parse:"filter,patch"`
 	}
-	document, err := parse.NewResource[row]("documents", parse.ColumnType("stored_name", core.SQLJSONB))
+	document, err := parse.NewResource[row](onPostgres, "documents", parse.ColumnType("stored_name", core.SQLJSONB))
 	require.NoError(t, err)
-	text, err := parse.NewResource[row]("texts")
+	text, err := parse.NewResource[row](onPostgres, "texts")
 	require.NoError(t, err)
 	for _, tt := range []struct {
 		r       *parse.Resource[row]
@@ -117,7 +119,7 @@ func TestColumnStorage_ResourceProfilesAreIndependent(t *testing.T) {
 	} {
 		p, err := tt.r.ParseMergePatch([]byte(`{"name":"hello"}`))
 		require.NoError(t, err)
-		plan, err := tt.r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("one"), parse.Scope{})
+		plan, err := tt.r.BuildUpdate(p, parse.ByID("one"), parse.Scope{})
 		require.NoError(t, err)
 		assert.Contains(t, plan.Owner.Args, tt.encoded)
 	}
@@ -145,12 +147,12 @@ func TestColumnStorage_DeclaredJSONControlsDriverValues(t *testing.T) {
 		if declared {
 			opts = append(opts, parse.ColumnType("amount", core.SQLJSONB))
 		}
-		r, err := parse.NewResource[row]("documents", opts...)
-		require.NoError(t, err)
-		p, err := r.ParseMergePatch([]byte(`{"amount":"200"}`))
-		require.NoError(t, err)
-		for _, dialect := range []parse.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
-			plan, err := r.BuildUpdate(dialect, p, parse.ByID("one"), parse.Scope{})
+		for _, provider := range []*parse.Provider{onPostgres, onSQLite} {
+			r, err := parse.NewResource[row](provider, "documents", opts...)
+			require.NoError(t, err)
+			p, err := r.ParseMergePatch([]byte(`{"amount":"200"}`))
+			require.NoError(t, err)
+			plan, err := r.BuildUpdate(p, parse.ByID("one"), parse.Scope{})
 			require.NoError(t, err)
 			if declared {
 				assert.Contains(t, plan.Owner.Args, `"200"`)
@@ -167,11 +169,11 @@ func TestColumnStorage_AppliedJSONMatchesSQLDecode(t *testing.T) {
 		Data    columnStorageTransform `json:"data" db:"data" parse:"patch"`
 		Dynamic any                    `json:"dynamic" db:"dynamic" parse:"patch"`
 	}
-	r, err := parse.NewResource[row]("documents", parse.ColumnType("data", core.SQLJSONB), parse.ColumnType("dynamic", core.SQLJSONB))
+	r, err := parse.NewResource[row](onPostgres, "documents", parse.ColumnType("data", core.SQLJSONB), parse.ColumnType("dynamic", core.SQLJSONB))
 	require.NoError(t, err)
 	p, err := r.ValidateOperations([]patch.RawPatchOp{{Op: "replace", Path: "/data", HasValue: true, Value: map[string]any{"count": 0}}})
 	require.NoError(t, err)
-	plan, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("one"), parse.Scope{})
+	plan, err := r.BuildUpdate(p, parse.ByID("one"), parse.Scope{})
 	require.NoError(t, err)
 	var expected columnStorageTransform
 	raw, ok := plan.Owner.Args[0].(string)
@@ -195,13 +197,13 @@ func TestColumnStorage_JSONCapabilitiesFollowStorage(t *testing.T) {
 		ID   string `json:"id" db:"id"`
 		Name string `json:"name" db:"name" parse:"sort"`
 	}
-	_, err := parse.NewResource[sorted]("documents", parse.ColumnType("name", core.SQLJSONB))
+	_, err := parse.NewResource[sorted](onPostgres, "documents", parse.ColumnType("name", core.SQLJSONB))
 	require.ErrorContains(t, err, "not sortable")
 	type searched struct {
 		ID   string `json:"id" db:"id"`
 		Name string `json:"name" db:"name" parse:"search"`
 	}
-	_, err = parse.NewResource[searched]("documents", parse.ColumnType("name", core.SQLJSONB))
+	_, err = parse.NewResource[searched](onPostgres, "documents", parse.ColumnType("name", core.SQLJSONB))
 	require.ErrorContains(t, err, "not json")
 	type object struct {
 		Value string `json:"value"`
@@ -210,7 +212,7 @@ func TestColumnStorage_JSONCapabilitiesFollowStorage(t *testing.T) {
 		ID   string `json:"id" db:"id"`
 		Body object `json:"body" db:"body" parse:"filter,patch"`
 	}
-	r, err := parse.NewResource[shaped]("documents", parse.ColumnType("body", core.SQLJSONB))
+	r, err := parse.NewResource[shaped](onPostgres, "documents", parse.ColumnType("body", core.SQLJSONB))
 	require.NoError(t, err)
 	assert.Equal(t, core.FieldTypeObject, r.FilterSchema().Fields["body"].DataType)
 }
@@ -236,7 +238,7 @@ func TestColumnStorage_JSONPredicatesAndPathsFollowPhysicalType(t *testing.T) {
 			if tt.storage != "" {
 				opts = append(opts, parse.ColumnType("data", tt.storage))
 			}
-			r, err := parse.NewResource[row]("documents", opts...)
+			r, err := parse.NewResource[row](onPostgres, "documents", opts...)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, r.FilterSchema().Fields["data"].Storage)
 			pathStorage := tt.want
@@ -252,14 +254,14 @@ func TestColumnStorage_JSONPredicatesAndPathsFollowPhysicalType(t *testing.T) {
 			} {
 				req, err := r.ParseList(url.Values{"filter": {op.input}})
 				require.NoError(t, err)
-				plan, err := r.BuildList(filter.PostgresDialect{}, req, parse.Scope{})
+				plan, err := r.BuildList(req, parse.Scope{})
 				require.NoError(t, err)
 				assert.Contains(t, plan.Page.SQL, tt.expr+op.sql+"$1::jsonb")
 			}
 
 			req, err := r.ParseList(url.Values{"filter": {`{"data.key":{"$eq":"value"}}`}, "sort": {"data.key"}})
 			require.NoError(t, err)
-			plan, err := r.BuildList(filter.PostgresDialect{}, req, parse.Scope{})
+			plan, err := r.BuildList(req, parse.Scope{})
 			require.NoError(t, err)
 			assert.Contains(t, plan.Page.SQL, "jsonb_typeof("+tt.expr+" -> 'key')")
 			assert.Contains(t, plan.Page.SQL, "ORDER BY ")
@@ -276,14 +278,14 @@ func TestColumnStorage_ConflictingDocumentStorageFailsConstruction(t *testing.T)
 		ID   string          `json:"id" db:"id"`
 		Data json.RawMessage `json:"data" db:"data" parse:"filter" storage:"json" paths:"key:string:filter+sort"`
 	}
-	_, err := parse.NewResource[row]("documents", parse.ColumnType("data", core.SQLJSONB))
+	_, err := parse.NewResource[row](onPostgres, "documents", parse.ColumnType("data", core.SQLJSONB))
 	require.ErrorContains(t, err, `field Data: storage "json" conflicts with declared column type "jsonb"`)
 	for _, declared := range []core.SQLType{core.SQLJSON, "", core.SQLJSON} {
 		var opts []parse.ResourceOption
 		if declared != "" {
 			opts = append(opts, parse.ColumnType("data", declared))
 		}
-		r, err := parse.NewResource[row]("documents", opts...)
+		r, err := parse.NewResource[row](onPostgres, "documents", opts...)
 		require.NoError(t, err)
 		assert.Equal(t, filter.StorageJSON, r.FilterSchema().Fields["data"].Storage)
 		assert.Equal(t, filter.StorageJSON, r.SortSchema().Fields["data.key"].Path.Storage)

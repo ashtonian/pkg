@@ -7,7 +7,6 @@ import (
 	"net/url"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
 )
 
 type StockItem struct {
@@ -20,7 +19,7 @@ type StockItem struct {
 // resumes after exactly one row; an update reaches one row by its whole
 // key, and several rows by a set of keys bound as one parameter.
 func ExamplePrimaryKey() {
-	stock := parse.MustResource[StockItem]("stock", parse.PrimaryKey("warehouse_id", "sku"))
+	stock := parse.MustResource[StockItem](onPostgres, "stock", parse.PrimaryKey("warehouse_id", "sku"))
 
 	q, _ := url.ParseQuery(`filter={"qty":{"$gt":0}}&sort=-qty&page_size=2`)
 	req, err := stock.ParseList(q)
@@ -28,7 +27,7 @@ func ExamplePrimaryKey() {
 		fmt.Println(err)
 		return
 	}
-	list, err := stock.BuildList(filter.PostgresDialect{}, req, parse.Scope{})
+	list, err := stock.BuildList(req, parse.Scope{})
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -45,7 +44,7 @@ func ExamplePrimaryKey() {
 		parse.ByKey(parse.Key{"w1", "a"}),
 		parse.ByKeys(parse.Key{"w1", "a"}, parse.Key{"w2", "a"}),
 	} {
-		update, err := stock.BuildUpdate(filter.PostgresDialect{}, parsed, target, parse.Scope{})
+		update, err := stock.BuildUpdate(parsed, target, parse.Scope{})
 		if err != nil {
 			fmt.Println(err)
 			return

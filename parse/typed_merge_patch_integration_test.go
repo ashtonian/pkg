@@ -15,6 +15,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/parsehttp"
 )
 
@@ -46,11 +47,14 @@ func TestTypedMergePatchPreservesSiblings(t *testing.T) {
 // leave out and is refused on one its type always writes, which is the
 // rule the SDK's MergeDocument type states.
 func runTypedMergePatch(t *testing.T, b sqlBackend) {
-	open := b.open
 	d := b.dialect
 	docType := b.columnType(core.TypeInfo{Type: core.FieldTypeJSON})
-	r, err := parse.NewResource[mergePrefsRow]("merge_prefs")
-	require.NoError(t, err)
+	resource := func(t *testing.T, p *parse.Provider) *parse.Resource[mergePrefsRow] {
+		t.Helper()
+		r, err := parse.NewResource[mergePrefsRow](p, "merge_prefs")
+		require.NoError(t, err)
+		return r
+	}
 	initial := mergePrefsRow{ID: "one", Prefs: mergePrefs{City: "York", Units: "metric", Label: "home"}}
 
 	for _, tc := range []struct {
@@ -63,13 +67,11 @@ func runTypedMergePatch(t *testing.T, b sqlBackend) {
 		{"a member written as null, given a value", `{"prefs":{"note":"call"}}`, mergePrefs{City: "York", Units: "metric", Label: "home", Note: new("call")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := open(t)
+			provider, db := b.open(t)
+			r := resource(t, provider)
 			_, err := db.ExecContext(t.Context(), `CREATE TABLE merge_prefs (id TEXT PRIMARY KEY, prefs `+docType+` NOT NULL)`)
 			require.NoError(t, err)
-			insert := `INSERT INTO merge_prefs VALUES (?, ?)`
-			if isPostgres(d) {
-				insert = `INSERT INTO merge_prefs VALUES ($1, $2)`
-			}
+			insert := `INSERT INTO merge_prefs VALUES (` + d.Placeholder(1) + `, ` + d.Placeholder(2) + `)`
 			stored, err := json.Marshal(initial.Prefs)
 			require.NoError(t, err)
 			_, err = db.ExecContext(t.Context(), insert, initial.ID, string(stored))
@@ -77,18 +79,14 @@ func runTypedMergePatch(t *testing.T, b sqlBackend) {
 
 			parsed, err := parsehttp.ParsePatch(sdkPatchRequest(t, tc.body), r)
 			require.NoError(t, err)
-			plan, err := r.BuildUpdate(d, parsed, parse.ByID(initial.ID), parse.Scope{})
-			require.NoError(t, err)
-			res, err := applyUpdate(t, db, r, d, plan, false)
+			res, err := applyUpdate(t, r, false, parsed, parse.ByID(initial.ID), parse.Scope{})
 			require.NoError(t, err)
 			want := mergePrefsRow{ID: initial.ID, Prefs: tc.want}
 			assert.Equal(t, []mergePrefsRow{want}, res.Changed)
 
 			req, err := r.ParseList(nil)
 			require.NoError(t, err)
-			list, err := r.BuildList(d, req, parse.Scope{})
-			require.NoError(t, err)
-			assert.Equal(t, []mergePrefsRow{want}, listPage(t, db, r, d, list).Items)
+			assert.Equal(t, []mergePrefsRow{want}, listPage(t, r, req, parse.Scope{}).Items)
 
 			applied, err := r.ApplyValidatedPatch(parsed, initial)
 			require.NoError(t, err)
@@ -101,7 +99,7 @@ func runTypedMergePatch(t *testing.T, b sqlBackend) {
 		{"nor does one it writes as null", `{"prefs":{"note":null}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parsehttp.ParsePatch(sdkPatchRequest(t, tc.body), r)
+			_, err := parsehttp.ParsePatch(sdkPatchRequest(t, tc.body), resource(t, providertest.Compile(d)))
 			pe, ok := errors.AsType[*core.ParseError](err)
 			require.True(t, ok, "%v is no ParseError", err)
 			assert.Equal(t, core.CodePatchValueInvalid.String(), pe.Code)

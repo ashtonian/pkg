@@ -16,11 +16,12 @@ import (
 )
 
 // RowScanner reads the rows of one statement over the resource into T: a
-// list's page, an update's RETURNING, Current or Reread, or a repository's
-// own read of Columns. Every such statement reads ColumnNames in order, so
+// list's page, an update's RETURNING or Current, or a repository's own
+// read of Columns. Every such statement reads ColumnNames in order, so
 // the scanner holds one rule per column, decided once when it is built, and
-// a row pays only for its values. Executors (parsepgx, parsesql) build one
-// per statement; a caller running a statement itself does the same.
+// a row pays only for its values. The resource scans its own statements'
+// rows with one; a caller running a statement of its own over Columns
+// builds one and scans with it.
 //
 // A column lands in the field the resource compiled it from: the column
 // tag (core.WithColumnTag, default db), else the column convention over the
@@ -35,11 +36,17 @@ import (
 // declared JSON or JSONB (ColumnType), for the columns ScanJSON names, and
 // on SQLite, which stores them as JSON text, for every document and array
 // field (core.TypeOf) whose type is not an sql.Scanner. A timestamp on
-// SQLite is its text (core.FormatTimestamp) and is parsed. The dialect says
-// which values it stores as text (Dialect.StoresAsText); RowScanner refuses
-// one that stores a value of another type so. The driver scans
-// every other column into its field.
+// SQLite is its text (core.FormatTimestamp) and is parsed. The provider's
+// dialect says which values it stores as text (filter.Dialect.StoresAsText);
+// NewResource refuses a column of a type the dialect stores so and no scan
+// decodes. The driver scans every other column into its field.
 type RowScanner[T any] struct {
+	rules *rowRules
+}
+
+// rowRules are a scan's rules, one per column. They do not depend on T, so
+// the resource builds them (resourceCore.rowRules) and keeps its own.
+type rowRules struct {
 	table   string
 	columns []rowColumn
 	// documents counts the columns decoded as stored documents.
@@ -82,40 +89,50 @@ func ScanJSON(columns ...string) ScanOption {
 
 var scannerType = reflect.TypeFor[sql.Scanner]()
 
-// RowScanner builds the scanner for rows of a statement r compiled for
-// dialect d. A ScanJSON column the resource does not read is an error.
-func (r *Resource[T]) RowScanner(d Dialect, opts ...ScanOption) (*RowScanner[T], error) {
-	if d == nil {
-		return nil, fmt.Errorf("parse: %s: row scanner needs a dialect", r.table)
+// RowScanner builds the scanner for rows of a statement over Columns. A
+// ScanJSON column the resource does not read is an error.
+func (r *Resource[T]) RowScanner(opts ...ScanOption) (*RowScanner[T], error) {
+	rules, err := r.rowRules(opts...)
+	if err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
 	}
+	scanner := &RowScanner[T]{rules: &rules}
+	return scanner, nil
+}
+
+// rowRules are the rules of a scan of rows over Columns (RowScanner), its
+// errors without the table, which the failure of the statement whose rows
+// it scans names (StatementError).
+func (r *resourceCore) rowRules(opts ...ScanOption) (rowRules, error) {
+	d := r.dialect
 	var cfg scanConfig
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 	for _, name := range cfg.json {
 		if !slices.Contains(r.read, name) {
-			return nil, fmt.Errorf("parse: %s: ScanJSON names %q, which the resource does not read", r.table, name)
+			return rowRules{}, fmt.Errorf("ScanJSON names %q, which the resource does not read", name)
 		}
 		err := r.undecodable[name]
 		if err != nil {
-			return nil, fmt.Errorf("parse: %s: ScanJSON names %q: %w", r.table, name, err)
+			return rowRules{}, fmt.Errorf("ScanJSON names %q: %w", name, err)
 		}
 	}
-	scanner := &RowScanner[T]{table: r.table, columns: make([]rowColumn, len(r.read))}
+	rules := rowRules{table: r.table, columns: make([]rowColumn, len(r.read))}
 	for i, name := range r.read {
 		f := r.columnFields[name]
 		storage, declared := r.sqlTypes[name]
 		decode, err := rowDecodeOf(f.Type(), declared && storage.IsJSON() || slices.Contains(cfg.json, name), d)
 		if err != nil {
-			return nil, fmt.Errorf("parse: %s: column %s: %w", r.table, name, err)
+			return rowRules{}, fmt.Errorf("column %s: %w", name, err)
 		}
 		c := rowColumn{name: name, field: f, decode: decode}
 		if c.decode == decodeJSON {
-			scanner.documents++
+			rules.documents++
 		}
-		scanner.columns[i] = c
+		rules.columns[i] = c
 	}
-	return scanner, nil
+	return rules, nil
 }
 
 // textStorage is what a row scan asks of a dialect: which values it stores
@@ -158,7 +175,7 @@ func rowDecodeOf(t reflect.Type, json bool, d textStorage) (rowDecode, error) {
 // encoding/json cannot decode a member of its type
 // (jsonkeys.CheckDecodable). An sql.Scanner's column is decoded as a
 // document only under ScanJSON, which RowScanner refuses on it.
-func (r *Resource[T]) checkScannable() error {
+func (r *resourceCore) checkScannable() error {
 	for _, name := range r.read {
 		f := r.columnFields[name]
 		err := f.CheckWritable()
@@ -182,27 +199,48 @@ func (r *Resource[T]) checkScannable() error {
 }
 
 // Scan reads one row. scan is the driver's row scan (sql.Rows.Scan,
-// pgx.Rows.Scan), called once with one destination per column; its error
-// is returned as it is, as drivers name the column that failed. Stored
-// documents are decoded once scan has returned, so a type's own
-// UnmarshalJSON runs outside the driver's scan: a panic in it unwinds
-// through rows the driver can still close (database/sql's Rows.Close waits
-// forever after a panic inside Rows.Scan).
+// pgx.Rows.Scan), called once with one destination per column; drivers
+// name the column that failed in its error. Stored documents are decoded
+// once scan has returned, so a type's own UnmarshalJSON runs outside the
+// driver's scan: a panic in it unwinds through rows the driver can still
+// close (database/sql's Rows.Close waits forever after a panic inside
+// Rows.Scan).
 func (s *RowScanner[T]) Scan(scan func(dest ...any) error) (T, error) {
+	item, err := scanRow[T](s.rules, scan)
+	if err != nil {
+		var zero T
+		return zero, fmt.Errorf("parse: %s: %w", s.rules.table, err)
+	}
+	return item, nil
+}
+
+// scanRow scans one row into a new T by rules, its errors without the
+// table, which the failure of the statement whose rows it scans names
+// (StatementError).
+func scanRow[T any](rules *rowRules, scan func(dest ...any) error) (T, error) {
 	var item T
-	v := reflect.ValueOf(&item).Elem()
+	err := rules.scan(reflect.ValueOf(&item).Elem(), scan)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return item, nil
+}
+
+// scan scans one row into v, a settable T, allocating a pointer T's value
+// first.
+func (rr *rowRules) scan(v reflect.Value, scan func(dest ...any) error) error {
 	for v.Kind() == reflect.Pointer {
 		v.Set(reflect.New(v.Type().Elem()))
 		v = v.Elem()
 	}
-	dest := make([]any, len(s.columns))
+	dest := make([]any, len(rr.columns))
 	// Sized up front: dest points into documents, so it never grows.
-	documents := make([]heldDocument, 0, s.documents)
-	for i, c := range s.columns {
+	documents := make([]heldDocument, 0, rr.documents)
+	for i, c := range rr.columns {
 		fv, err := c.field.Settable(v)
 		if err != nil {
-			var zero T
-			return zero, fmt.Errorf("parse: %s: column %s: %w", s.table, c.name, err)
+			return fmt.Errorf("column %s: %w", c.name, err)
 		}
 		switch c.decode {
 		case decodeJSON:
@@ -214,18 +252,17 @@ func (s *RowScanner[T]) Scan(scan func(dest ...any) error) (T, error) {
 			dest[i] = fv.Addr().Interface()
 		}
 	}
-	if err := scan(dest...); err != nil {
-		var zero T
-		return zero, err
+	err := scan(dest...)
+	if err != nil {
+		return err
 	}
 	for _, doc := range documents {
 		err := doc.target.Scan(doc.src)
 		if err != nil {
-			var zero T
-			return zero, fmt.Errorf("parse: %s: column %s: %w", s.table, doc.column, err)
+			return fmt.Errorf("column %s: %w", doc.column, err)
 		}
 	}
-	return item, nil
+	return nil
 }
 
 // heldDocument keeps a stored document as the driver's scan hands it over,
