@@ -354,8 +354,11 @@ func (l *lister) offer(ctx context.Context, rec *record, res *passResult, top *t
 	}
 	if l.cursor != nil {
 		past, err := l.past(values)
-		if err != nil || !past {
+		if err != nil {
 			return parse.StatementFailed(l.table, "page", err)
+		}
+		if !past {
+			return nil
 		}
 	}
 	if top.wants(values) {
