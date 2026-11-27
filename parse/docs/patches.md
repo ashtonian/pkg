@@ -282,7 +282,7 @@ for i, column := range update.Columns() {
 }
 ```
 
-A row's values are in the form a row stores them, `core.StorageValue`'s, which is what a SQLite column holds: NULL for nil, a nil pointer or a nil array; a date and a timestamp as their canonical text; a document or an array as its JSON text; anything else as its `driver.Value`. `Columns` names the columns the SET clause assigns, in its order, and `RowWrite.Values` what each becomes, as the database writes it:
+A row's values are in the form a row stores them, `core.StorageValue`'s, which is what a SQLite column holds: NULL for nil, a nil pointer or a nil array; a date and a timestamp as their canonical text; a document, a geo shape or an array as its JSON text; anything else as its `driver.Value`. `Columns` names the columns the SET clause assigns, in its order, and `RowWrite.Values` what each becomes, as the database writes it:
 
 | Column | Written |
 |---|---|

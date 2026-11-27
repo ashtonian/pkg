@@ -19,7 +19,8 @@ import (
 //     (TimestampLayout), so text order is time order.
 //   - A driver.Valuer, unless the column declares JSON storage, is the
 //     value it writes, NULL for nil.
-//   - A document (json, object) and an array are their JSON text, a list
+//   - A document (json, object), a geo shape (a point a JSONB column
+//     holds, filter's geo tag) and an array are their JSON text, a list
 //     of timestamps with each element its canonical text. A nil array is
 //     NULL, as a driver writes a nil slice to a native array column, where
 //     JSON null would be no array a read takes (filter.ColumnValue); a
@@ -42,7 +43,7 @@ func StorageValue(t TypeInfo, v any) (driver.Value, error) {
 		return driver.DefaultParameterConverter.ConvertValue(v)
 	}
 	switch t.Type {
-	case FieldTypeJSON, FieldTypeArray, FieldTypeObject:
+	case FieldTypeJSON, FieldTypeArray, FieldTypeObject, FieldTypeGeo:
 		held, err := Deref(v)
 		if err != nil || held == nil {
 			return nil, err

@@ -162,7 +162,7 @@ func TestStoredScalar(t *testing.T) {
 }
 
 // A value is stored in one form, whatever Go value spells it: a timestamp
-// as its canonical text, a document and an array as their JSON text, a
+// as its canonical text, a document, a geo shape and an array as their JSON text, a
 // value type as its canonical text, anything else as its driver value.
 func TestStorageValue(t *testing.T) {
 	instant := time.Date(2026, 1, 2, 3, 4, 5, 500_000_000, time.FixedZone("", 2*60*60))
@@ -195,6 +195,8 @@ func TestStorageValue(t *testing.T) {
 		{"a nil map", TypeInfo{Type: FieldTypeJSON}, map[string]any(nil), `null`},
 		{"raw JSON, compacted", TypeInfo{Type: FieldTypeJSON}, json.RawMessage(`{"a": 1}`), `{"a":1}`},
 		{"a struct", TypeInfo{Type: FieldTypeObject}, struct{ W int }{W: 2}, `{"W":2}`},
+		{"a geo point", TypeInfo{Type: FieldTypeGeo}, map[string]float64{"lon": 2, "lat": 1}, `{"lat":1,"lon":2}`},
+		{"a geo point's raw JSON, compacted", TypeInfo{Type: FieldTypeGeo}, json.RawMessage(`{"lat": 1, "lon": 2}`), `{"lat":1,"lon":2}`},
 		{"a declared json Valuer, as its JSON", TypeInfo{Type: FieldTypeJSON, SQLType: SQLJSON}, upper("a"), `"a"`},
 		{"an array", TypeInfo{Type: FieldTypeArray, Elem: FieldTypeString}, []string{"a", "b"}, `["a","b"]`},
 		{"an empty array", TypeInfo{Type: FieldTypeArray, Elem: FieldTypeString}, []string{}, `[]`},

@@ -32,7 +32,7 @@ func (def *tableDef) prefixRange(prefix core.Key) (keyRange, error) {
 	probe := &record{values: make([]any, len(def.columns))}
 	for i, v := range normalized {
 		at := def.key[i]
-		probe.values[at], err = storageValue(v, def.columns[at].typ)
+		probe.values[at], err = core.StorageValue(def.columns[at].typ, v)
 		if err != nil {
 			return keyRange{}, fmt.Errorf("key column %s: %w", def.columns[at].name, err)
 		}

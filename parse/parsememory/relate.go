@@ -117,7 +117,7 @@ func (u *updater) pairsOf(op patch.RelationPatchOp) (*pairs, error) {
 			return nil, err
 		}
 		pt.tenantAt = at[0]
-		pt.tenant, err = storageValue(u.scope.Tenant, def.columns[pt.tenantAt].typ)
+		pt.tenant, err = core.StorageValue(def.columns[pt.tenantAt].typ, u.scope.Tenant)
 		if err != nil {
 			return nil, fmt.Errorf("tenant column %s: %w", rel.TenantColumn, err)
 		}

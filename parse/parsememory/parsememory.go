@@ -220,7 +220,7 @@ func (def *tableDef) record(row Row) (*record, error) {
 		if !ok {
 			continue
 		}
-		stored, err := storageValue(v, c.typ)
+		stored, err := core.StorageValue(c.typ, v)
 		if err == nil {
 			err = checkHolds(c.typ, stored)
 		}
@@ -245,8 +245,9 @@ func (def *tableDef) record(row Row) (*record, error) {
 
 // checkHolds refuses v, a stored value, when its column's type t orders
 // values and v is none of them, so every comparison a request makes of
-// the column (core.CompareCanonical) can read it. A document's, an
-// array's or a shape's value is its JSON, which storageValue wrote.
+// the column (core.CompareCanonical) can read it. A document's, a geo
+// shape's or an array's value is its JSON, which core.StorageValue wrote,
+// and a value of no declared type is held as it is.
 func checkHolds(t core.TypeInfo, v any) error {
 	switch t.Type {
 	case core.FieldTypeJSON, core.FieldTypeObject, core.FieldTypeArray, core.FieldTypeGeo, core.FieldTypeAny:
@@ -266,7 +267,7 @@ func (def *tableDef) probe(key parse.Key) (*record, error) {
 	}
 	rec := &record{values: make([]any, len(def.columns))}
 	for i, at := range def.key {
-		rec.values[at], err = storageValue(normalized[i], def.columns[at].typ)
+		rec.values[at], err = core.StorageValue(def.columns[at].typ, normalized[i])
 		if err != nil {
 			return nil, fmt.Errorf("key column %s: %w", def.columns[at].name, err)
 		}
