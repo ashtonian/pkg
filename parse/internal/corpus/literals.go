@@ -1,6 +1,6 @@
 //go:build integration
 
-package dialect_test
+package corpus
 
 import (
 	"database/sql"
@@ -9,14 +9,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
-// TestQuoteLiteral_ReadsAsItself selects each literal as the database reads
-// it: PostgreSQL whatever standard_conforming_strings is, so a label that
-// a filter writes into a statement is its own whatever the session sets.
-func TestQuoteLiteral_ReadsAsItself(t *testing.T) {
+// Each literal is selected as the database reads it: PostgreSQL whatever
+// standard_conforming_strings is, so a label that a filter writes into a
+// statement is its own whatever the session sets.
+func quoteLiteralReadsAsItself(t *testing.T, engine Engine) {
 	// What a string literal must escape somewhere: single quotes, which
 	// every literal doubles, and backslashes, which PostgreSQL reads as
 	// escapes in a plain literal when standard_conforming_strings is off.
@@ -29,20 +28,24 @@ func TestQuoteLiteral_ReadsAsItself(t *testing.T) {
 			assert.Equal(t, s, got, quote(s))
 		}
 	}
+	b := sqlBackendOf(engine)
+	connect := func(t *testing.T) *sql.Conn {
+		t.Helper()
+		conn, err := b.db(t).Conn(t.Context())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = conn.Close() })
+		return conn
+	}
+	if b.engine == SQLite {
+		selects(t, connect(t), dialect.SQLite{}.QuoteLiteral)
+		return
+	}
 	for _, setting := range []string{"on", "off"} {
-		t.Run("postgres, standard_conforming_strings "+setting, func(t *testing.T) {
-			conn, err := dbtest.Postgres(t).Conn(t.Context())
-			require.NoError(t, err)
-			t.Cleanup(func() { _ = conn.Close() })
-			_, err = conn.ExecContext(t.Context(), "SET standard_conforming_strings = "+setting)
+		t.Run("standard_conforming_strings "+setting, func(t *testing.T) {
+			conn := connect(t)
+			_, err := conn.ExecContext(t.Context(), "SET standard_conforming_strings = "+setting)
 			require.NoError(t, err)
 			selects(t, conn, dialect.Postgres{}.QuoteLiteral)
 		})
 	}
-	t.Run("sqlite", func(t *testing.T) {
-		conn, err := dbtest.SQLite(t).Conn(t.Context())
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = conn.Close() })
-		selects(t, conn, dialect.SQLite{}.QuoteLiteral)
-	})
 }

@@ -46,6 +46,10 @@ func sqlCases() []sqlCase {
 		{name: "QuotedMatrix", run: quotedMatrix},
 		{name: "SetMatrix", run: setMatrix},
 
+		{name: "CoveredByMatchesPostGIS", only: Postgres, run: coveredByMatchesPostGIS},
+		{name: "CoveredByMatchesPostGISConstantPolygon", only: Postgres, run: coveredByMatchesPostGISConstantPolygon},
+		{name: "DistanceMatchesPostGIS", only: Postgres, run: distanceMatchesPostGIS},
+
 		{name: "ReservedIdentifiers", run: reservedIdentifiers},
 
 		{name: "CompositeKeyPaging", run: compositeKeyPaging},
@@ -61,6 +65,23 @@ func sqlCases() []sqlCase {
 		{name: "GovernedLists_Memory", run: governedListsMemory},
 		{name: "GovernedMixedTypes", run: governedMixedTypes},
 		{name: "ListBodyTransport", run: listBodyTransport},
+
+		{name: "QuoteLiteral_ReadsAsItself", run: quoteLiteralReadsAsItself},
+
+		{name: "ArrayAppendKeepsElementTypes", only: SQLite, run: arrayAppendKeepsElementTypes},
+		{name: "BuildPatchSQL_ChangePredicate", run: buildPatchSQLChangePredicate},
+		{name: "BuildPatchSQL_FoldsOrderedOps", run: buildPatchSQLFoldsOrderedOps},
+		{name: "BuildPatchSQL_Members", run: buildPatchSQLMembers},
+		{name: "BuildPatchSQL_Merge", run: buildPatchSQLMerge},
+		{name: "BuildPatchSQL_SQLiteWritesAQuoteOrBackslashInAMember", only: SQLite, run: buildPatchSQLSQLiteWritesAQuoteOrBackslashInAMember},
+		{name: "Patch_NullableWrapperColumns", run: patchNullableWrapperColumns},
+		{name: "PathLabels_ReachTheMemberEncodingJSONNames", run: pathLabelsReachTheMemberEncodingJSONNames},
+
+		{name: "Applier_AgreesWithTheDatabase", run: applierAgreesWithTheDatabase},
+		{name: "Applier_FailingMemberOperationAgreesWithTheDatabase", run: applierFailingMemberOperationAgreesWithTheDatabase},
+		{name: "Applier_MergesIntoARawMessageMember", run: applierMergesIntoARawMessageMember},
+
+		{name: "RenderRelationOp_Executes", run: renderRelationOpExecutes},
 
 		{name: "SetPlans_SQLiteDecimalKeyIndex", only: SQLite, run: setPlansSQLiteDecimalKeyIndex},
 
