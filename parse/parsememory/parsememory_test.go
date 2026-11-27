@@ -592,3 +592,46 @@ func TestUpdate_RefusesPairsATableCannotKey(t *testing.T) {
 	require.ErrorContains(t, err, `parse: tagged: relations: parsememory: relation tags: pair table "tagged_tags": key column seq: NULL`)
 	assert.Equal(t, []string{"x"}, stored(t, r, "b").Tags, "the replace's removal was undone with it")
 }
+
+// patched is a resource whose relation its patches write and its filters
+// do not read.
+type patched struct {
+	ID   string   `json:"id"   db:"id"   parse:"filter,sort"`
+	Tags []string `json:"tags" db:"-"    parse:"patch" relation:"patched_tags,patched_id,tag_id,id"`
+}
+
+// patchedPair is a row of patched's pair table, keyed by both its columns.
+type patchedPair struct {
+	PatchedID string `json:"patched_id" db:"patched_id" parse:"filter,sort"`
+	TagID     string `json:"tag_id"     db:"tag_id"     parse:"filter,sort"`
+}
+
+// A relation a resource patches but does not filter declares its pair
+// table as a filtered one does, so a patch writes and removes its pairs.
+func TestUpdate_WritesARelationOnlyPatchesReach(t *testing.T) {
+	db := open(t, 10)
+	r, err := parse.NewResource[patched](db.Provider(), "patched")
+	require.NoError(t, err)
+	pairs, err := parse.NewResource[patchedPair](db.Provider(), "patched_tags", parse.PrimaryKey("patched_id", "tag_id"))
+	require.NoError(t, err)
+	require.NoError(t, db.Put(t.Context(), "patched", parsememory.Row{"id": "a"}, parsememory.Row{"id": "b"}))
+	held := func() []patchedPair {
+		page, err := pairs.List(t.Context(), nil, parse.Scope{})
+		require.NoError(t, err)
+		return page.Items
+	}
+
+	p, err := r.ParseMergePatch([]byte(`{"tags":["x","y"]}`))
+	require.NoError(t, err)
+	res, err := r.Update(t.Context(), p, parse.ByID("a"), parse.Scope{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), res.RelationRows)
+	assert.Equal(t, []patchedPair{{"a", "x"}, {"a", "y"}}, held())
+
+	p, err = r.ParsePatch([]byte(`[{"op":"remove","path":"/tags","value":["x"]}]`))
+	require.NoError(t, err)
+	res, err = r.Update(t.Context(), p, parse.ByIDs("a", "b"), parse.Scope{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), res.RelationRows)
+	assert.Equal(t, []patchedPair{{"a", "y"}}, held())
+}

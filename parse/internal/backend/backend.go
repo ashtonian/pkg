@@ -145,6 +145,12 @@ type Resource struct {
 	// Schema is the filter schema: the fields, system fields and relations
 	// the composed filters name.
 	Schema *filter.ResourceSchema
+	// PatchRelations are the many-to-many relations the resource's patches
+	// write that Schema does not hold, by field name: a field patched but
+	// not filtered (`parse:"patch"`), or a relation path a patch schema
+	// was customized with. Schema holds every other relation a patch
+	// writes, a declared one (parse.Resource.Relate) included.
+	PatchRelations map[string]*core.RelationSchema
 	// Computed reports whether the resource reads a column through an
 	// expression (parse.ReadExpr).
 	Computed bool
@@ -165,10 +171,10 @@ type Column struct {
 // and again when a relation adds a pair table (parse.Resource.Relate).
 // Declare declares res's table, with its key and every column of
 // TableColumns, and the pair table of each many-to-many relation its
-// schema holds, whose rows are keyed by every column. It is idempotent: a
-// table already declared gains the columns it lacks. Resources on one
-// table must agree on its key and on every column's type; a disagreement
-// is refused and declares nothing.
+// Schema or PatchRelations hold, whose rows are keyed by every column.
+// It is idempotent: a table already declared gains the columns it lacks.
+// Resources on one table must agree on its key and on every column's
+// type; a disagreement is refused and declares nothing.
 type Declarer interface {
 	Declare(res *Resource) error
 }

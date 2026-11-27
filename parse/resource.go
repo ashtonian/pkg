@@ -784,20 +784,46 @@ func (r *resourceCore) descriptor() *backend.Resource {
 		table[i] = backend.Column{Name: name, Type: r.storedTypeInfo(name)}
 	}
 	desc := &backend.Resource{
-		Table:        r.table,
-		Columns:      slices.Clone(r.read),
-		Key:          slices.Clone(r.pk),
-		KeyTypes:     r.keyColumns().types,
-		TableColumns: table,
-		Tenant:       r.tenant,
-		Deleted:      r.deleted,
-		Schema:       r.filterSchema,
-		Computed:     r.readExprs != nil,
+		Table:          r.table,
+		Columns:        slices.Clone(r.read),
+		Key:            slices.Clone(r.pk),
+		KeyTypes:       r.keyColumns().types,
+		TableColumns:   table,
+		Tenant:         r.tenant,
+		Deleted:        r.deleted,
+		Schema:         r.filterSchema,
+		PatchRelations: r.patchRelations(),
+		Computed:       r.readExprs != nil,
 	}
 	if r.dialect != nil {
 		desc.SQL = &backend.SQLResource{Projection: strings.Join(r.Columns(), ", ")}
 	}
 	return desc
+}
+
+// patchRelations are the many-to-many relations the resource's patch
+// schemas write that its filter schema does not hold, by field name
+// (backend.Resource.PatchRelations).
+func (r *resourceCore) patchRelations() map[string]*core.RelationSchema {
+	var relations map[string]*core.RelationSchema
+	for _, schema := range []*patch.PatchSchema{r.patchSchema, r.serverPatchSchema} {
+		for key, path := range schema.Paths() {
+			rel := path.Relation
+			if rel == nil || rel.Kind != core.ManyToMany {
+				continue
+			}
+			name := strings.TrimPrefix(key, "/")
+			field, filtered := r.filterSchema.Fields[name]
+			if filtered && field.Relation != nil {
+				continue
+			}
+			if relations == nil {
+				relations = map[string]*core.RelationSchema{}
+			}
+			relations[name] = rel
+		}
+	}
+	return relations
 }
 
 // ColumnNames is the unqualified name of each Columns entry, in the same

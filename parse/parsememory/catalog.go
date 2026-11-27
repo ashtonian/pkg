@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/backend"
 )
 
@@ -144,7 +145,8 @@ func (c *catalog) table(name string) (*tableDef, bool) {
 }
 
 // declare declares res's table and the pair tables of its many-to-many
-// relations (backend.Declarer), all or none of them.
+// relations, those its filters read and those only its patches write
+// (backend.Declarer), all or none of them.
 func (c *catalog) declare(res *backend.Resource) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -158,10 +160,10 @@ func (c *catalog) declare(res *backend.Resource) error {
 		return err
 	}
 	next[res.Table] = merged
-	if res.Schema != nil {
-		for _, name := range slices.Sorted(maps.Keys(res.Schema.Fields)) {
-			rel := res.Schema.Fields[name].Relation
-			if rel == nil || rel.Kind != core.ManyToMany {
+	for _, relations := range []map[string]*core.RelationSchema{filterRelations(res.Schema), res.PatchRelations} {
+		for _, name := range slices.Sorted(maps.Keys(relations)) {
+			rel := relations[name]
+			if rel.Kind != core.ManyToMany {
 				continue
 			}
 			decl, err := pairTable(rel, res, next)
@@ -177,6 +179,20 @@ func (c *catalog) declare(res *backend.Resource) error {
 	}
 	c.tables.Store(&next)
 	return nil
+}
+
+// filterRelations are the relations of schema's fields, by field name.
+func filterRelations(schema *filter.ResourceSchema) map[string]*core.RelationSchema {
+	relations := map[string]*core.RelationSchema{}
+	if schema == nil {
+		return relations
+	}
+	for name, f := range schema.Fields {
+		if f.Relation != nil {
+			relations[name] = f.Relation
+		}
+	}
+	return relations
 }
 
 // resourceTable is the table res reads: every column of its type, keyed by
