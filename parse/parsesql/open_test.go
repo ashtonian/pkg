@@ -69,8 +69,9 @@ func TestChoice_OpensByName(t *testing.T) {
 	require.EqualError(t, err, `parseprovider: provider: "postgres": this binary links sqlite`)
 }
 
-// Open begins every transaction IMMEDIATE, so a second writer waits for the
-// first rather than committing between an update's read and its write.
+// Open's database begins every transaction IMMEDIATE, the application's
+// own on DB() included, so a second writer waits for the first rather than
+// committing between an update's read and its write.
 func TestOpen_BeginsTransactionsImmediate(t *testing.T) {
 	cfg := providertest.Defaults[parsesql.Config](t)
 	cfg.DSN = filepath.Join(t.TempDir(), "app.db")

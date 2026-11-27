@@ -35,6 +35,21 @@ func HookedMemoryDB(t testing.TB) *sql.DB {
 	return db
 }
 
+// HookedFileDB is the SQLite database dsn names, a file, with parse's
+// functions, on up to conns connections that report each statement to the
+// hook dbtest.OnStatement puts in its context (dbtest.HookedPool), closed at
+// test cleanup. Its transactions begin as dsn's _txlock says.
+func HookedFileDB(t testing.TB, dsn string, conns int) *sql.DB {
+	t.Helper()
+	handle := registeredHandle(t)
+	db := dbtest.HookedPool(t, handle.Driver(), dsn, conns)
+	err := handle.Close()
+	if err != nil {
+		t.Fatalf("closing the sqlite handle: %v", err)
+	}
+	return db
+}
+
 // registeredHandle opens, without connecting, a handle on dbtest.SQLiteDSN
 // through the sqlite driver, parse's functions registered on it first.
 func registeredHandle(t testing.TB) *sql.DB {

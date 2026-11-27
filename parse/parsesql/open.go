@@ -18,10 +18,10 @@ import (
 // Config sets up the SQLite database Open opens. Its tags are
 // github.com/ashtonian/pkg/config's: loaded through config, a zero setting
 // takes its default, and the defaults open an in-memory database. Open
-// checks every setting whichever way the Config was built. Open begins every
-// transaction IMMEDIATE (_txlock=immediate), the write transaction an update
-// that reads before it writes needs, and sets the busy timeout, so the DSN
-// sets neither.
+// checks every setting whichever way the Config was built. Open sets the
+// busy timeout and begins every transaction IMMEDIATE (_txlock=immediate),
+// the application's own on DB() included, the write transaction an update
+// that reads before it writes needs, so the DSN sets neither.
 type Config struct {
 	DSN           string        `koanf:"dsn" default:":memory:" validate:"required" sensitive:"true" desc:"SQLite database: a file path (absolute, ./ or ../, ending .db, .sqlite or .sqlite3), a file: URI or :memory:"`
 	MaxOpenConns  int           `koanf:"max_open_conns" default:"1" validate:"min=1" desc:"Connections the database holds open, all kept idle and never recycled; an in-memory database without cache=shared is one database per connection and needs 1"`

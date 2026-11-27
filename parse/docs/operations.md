@@ -67,11 +67,13 @@ The batch runs in one transaction (a savepoint inside the resource's, under
 `In`): every chunk's `Current` first, each required to hold exactly its
 chunk's keys, then every `Owner` in chunk order. A target that is missing,
 stale, inaccessible or invalid returns `ErrUpdateBatchTargets` and writes
-nothing. PostgreSQL locks the targets in key order; on SQLite the connection
-begins write transactions (`_txlock=immediate`, see
-[SQLite](integrations.md#sqlite)). The returned `UpdateResult` holds the
-owners' changed postimages in `Changed` and, with `SkipUnchanged`, the targets
-they left — which keep their stamps and counters — in `Unchanged`.
+nothing. PostgreSQL locks the targets in key order; on SQLite the batch's
+transaction holds the write lock from its start (`BEGIN IMMEDIATE`; an
+application's own transaction needs `_txlock=immediate`, see
+[SQLite configuration](../parsesql/README.md#sqlite-configuration)). The
+returned `UpdateResult` holds the owners' changed postimages in `Changed` and,
+with `SkipUnchanged`, the targets they left — which keep their stamps and
+counters — in `Unchanged`.
 
 `UpdateBatchPlan.Chunks` holds each chunk's canonical `Keys`, its `Current`
 statement and an optional `Owner` statement: what `UpdateBatch` runs, in that
