@@ -1,10 +1,5 @@
 //go:build unit || concurrency
 
-// The tests that run parse code on several goroutines. Parse starts none of
-// its own, so only these can fail under race: the concurrency tag lets
-// make test-parse-race build them alone, without instrumenting the package's
-// other tests (tools/test_ci_parse_race.py requires the tag on such files).
-
 package parse_test
 
 import (
@@ -19,6 +14,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
@@ -96,13 +92,13 @@ func TestParseFilterWithCostIsolatesResourceBudget(t *testing.T) {
 // expressions.
 func TestReadExpr_ConcurrentBuilds(t *testing.T) {
 	type computedSet struct {
-		accounts      *parse.Resource[computedAccount]
-		tenants       *parse.Resource[accountTenant]
+		accounts      *parse.Resource[parsetest.ComputedAccount]
+		tenants       *parse.Resource[parsetest.AccountTenant]
 		req, ownerReq *parse.ListRequest
 	}
-	sets := make([]computedSet, len(computedDialects))
-	for i, tt := range computedDialects {
-		_, accounts, tenants, _ := newComputedResources(providertest.Compile(tt.dialect))
+	sets := make([]computedSet, len(computedDialects()))
+	for i, tt := range computedDialects() {
+		_, accounts, tenants, _ := parsetest.NewComputedResources(providertest.Compile(tt.dialect))
 		req, err := accounts.ParseList(url.Values{
 			filter.ParamFilter: {`{"email":{"$ne":""}}`},
 			filter.ParamSort:   {"-member_count"},
@@ -132,12 +128,12 @@ func TestReadExpr_ConcurrentBuilds(t *testing.T) {
 	wg.Wait()
 	for i, plan := range plans {
 		require.NoError(t, errs[i])
-		tt := computedDialects[i%2]
+		tt := computedDialects()[i%2]
 		assert.Contains(t, plan.Page.SQL, "("+tt.email+") <> ")
 		if i%4 < 2 {
 			assert.Contains(t, plan.Page.SQL, "("+tt.groupIDs+`) AS "group_ids"`)
 		} else {
-			assert.Contains(t, plan.Page.SQL, "("+groupSizeExpr+") = ")
+			assert.Contains(t, plan.Page.SQL, "("+parsetest.GroupSizeExpr+") = ")
 		}
 	}
 }

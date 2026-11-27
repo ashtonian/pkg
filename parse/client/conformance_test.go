@@ -9,7 +9,7 @@ package client
 // fails these tests until it is classified.
 //
 // What the client builds is recorded in parse's
-// testdata/client_requests.json, and parse's client_conformance_test.go
+// testdata/client_requests.json, and parse's conformance_test.go
 // holds the server to it: a filter built for a case means what the case's
 // input means, with its verdict, code, AST and SQL. This module imports no
 // parse package, so the server reads the requests there. Regenerate after
@@ -706,7 +706,7 @@ func buildClientRequests(t *testing.T) clientRequests {
 	return r
 }
 
-// The requests parse's client_conformance_test.go reads are the ones this
+// The requests parse's conformance_test.go reads are the ones this
 // client builds.
 func TestClientRequests(t *testing.T) {
 	out, err := json.MarshalIndent(buildClientRequests(t), "", "  ")

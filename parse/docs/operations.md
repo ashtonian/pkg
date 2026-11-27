@@ -133,14 +133,14 @@ SQLite cases run locally. PostgreSQL and PostGIS tests run against the servers `
 | Source | What it exercises |
 |---|---|
 | [Main example](../example_test.go) | Public typed parser/list/patch flow |
-| [SQL examples](../examples_sql_test.go) | Request-to-SQL examples across dialects |
+| [SQL examples](../example_guides_test.go) | Request-to-SQL examples across dialects |
 | [pgx recipe](../parsepgx/recipe_test.go) | List and Merge Patch endpoints on `parsepgx`; `TestRecipe` serves them against PostgreSQL |
 | [parsepgx suite](../parsepgx/parsepgx_integration_test.go) | Page walks with totals, facets and includes; tenancy; every pgx exec mode; snapshots; update rollback; guarded updates |
 | [parsepgx cancellation](../parsepgx/cancel_integration_test.go) | Concurrent relation updates of one owner; lists and updates cancelled or past their deadline mid-statement |
 | [Change predicate cases](../patch/change_predicate_cases_test.go) | `SkipUnchanged`'s comparisons per column kind, executed on SQLite and PostgreSQL |
 | [HTTP server](../examples/server/) | SQLite requests, pagination, facets, and patching |
 | [Filter conformance](../filter/filtertest/) | Shared operator/type behavior for backend implementers |
-| [Typed JSON parity](../typed_document_integration_test.go) | Stored SQLite document versus typed application |
+| [Database corpus](../internal/corpus/) | Every database-backed case, run by `parsesql`'s and `parsepgx`'s `TestCorpus` on their engine: executor contract, lists, keysets, facets, filters, keys, values, updates, policies, relations, tenancy, reserved identifiers, PostgreSQL plans |
 | [SDK fixtures](../testdata/) | Go-to-TypeScript schema/filter/page contracts |
 
 For the SDK, run `make test-parse-sdk` from the repository root, which first checks the pinned pnpm, or run `pnpm install --frozen-lockfile`, `pnpm run check`, `pnpm run check:compat`, `pnpm run lint`, `pnpm test`, and `pnpm run build` from `sdk/ts`. Regenerate shared fixtures only when the contract change is intentional; the [SDK guide](../sdk/ts/README.md#testing) lists the commands.

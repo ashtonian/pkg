@@ -158,6 +158,7 @@ PARSE_POSTGRES_DSN=postgres://… go test -tags=integration -count=1 ./parsepgx/
 | File | Responsibility |
 |------|----------------|
 | `parsepgx.go` | `New` and its collation check, `Option`s, `Tx`; the database and transaction the root package sends steps to: batches read to their end even past a panic (`send`), the transaction-or-savepoint wrapper and its settle under `backend.Settle`, which failed `COMMIT`s are `parse.ErrCommitUnknown` (`commitFailed`), and the json/jsonb columns a result reports (`rows.Documents`) |
+| `corpus_integration_test.go` | `TestCorpus`: parse's database corpus (`internal/corpus`) on PostgreSQL, as `parsesql`'s runs it on SQLite |
 | `new_test.go` | What `New` refuses before any statement |
 | `commit_test.go` | Which failed `COMMIT`s are `parse.ErrCommitUnknown`, and the table they name |
 | `json_integration_test.go` | Typed JSON lists/updates, nulls, projections and failure isolation in every execution mode |

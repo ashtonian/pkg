@@ -498,11 +498,6 @@ type Scope struct {
 // filter.ComposeConstraints decides: a nil or empty tree does not.
 func (s Scope) governed() bool { return s.Governance != nil && !s.Governance.IsEmpty() }
 
-// ErrTenantRequired is a list of a tenant-scoped resource built with
-// neither Scope.Tenant nor Scope.Governance, or an update without
-// Scope.Tenant. It is the server's mistake, never the request's.
-var ErrTenantRequired = errors.New("a tenant-scoped resource needs Scope.Tenant")
-
 // Statement is one parameterized SQL statement.
 type Statement struct {
 	SQL  string
@@ -672,4 +667,152 @@ func (r *resourceCore) IncludeQueries(plan *ListPlan, ownerKeys []Key) ([]filter
 		}
 	}
 	return out, nil
+}
+
+// facetParam reports whether name is a list parameter a facets request
+// reads. The others shape a page, and a facets request has none.
+func facetParam(name string) bool {
+	switch name {
+	case filter.ParamFacets, filter.ParamFilter, filter.ParamSearch, filter.ParamIncludeDeleted:
+		return true
+	}
+	return false
+}
+
+// ParseFacets reads a facets request's query parameters: facets, the JSON
+// filter and the flat field filters, search and include_deleted, read and
+// refused as ParseList reads and refuses them. A list parameter that shapes
+// a page (cursor, sort, page_size, include_total, include, fields) is
+// E2067, never accepted and ignored. BuildFacets compiles the request.
+func (r *resourceCore) ParseFacets(q url.Values) (*ListRequest, error) {
+	for _, name := range slices.Sorted(maps.Keys(q)) {
+		if filter.IsListParam(name) && !facetParam(name) {
+			return nil, listParamError(name, fmt.Sprintf("a facets request takes no %s: it counts the filtered rows and has no page", name))
+		}
+	}
+	return r.ParseList(q)
+}
+
+// BuildFacets compiles a facets request (ParseFacets) under scope s into
+// the facet statement Facets runs, the one BuildList compiles for a page
+// asking for the same facets: the same filter, search, tenant floor,
+// soft-delete masking and policy. A request naming no facets compiles to
+// nil.
+func (r *resourceCore) BuildFacets(req *ListRequest, s Scope) (*filter.FacetQuery, error) {
+	plan, err := r.BuildList(req, s)
+	if err != nil {
+		return nil, err
+	}
+	return plan.Facets, nil
+}
+
+// ParseFilter parses a filter query string.
+func (r *resourceCore) ParseFilter(query string) (*filter.ParsedFilter, error) {
+	return r.parseFilter(query, r.cfg)
+}
+
+func (r *resourceCore) parseFilter(query string, cfg *core.ParserConfig) (*filter.ParsedFilter, error) {
+	fp := filter.NewFilterParser(r.filterSchema, cfg)
+	ast, err := fp.Parse(query)
+	if err != nil {
+		return nil, err
+	}
+	return filter.NewParsedFilterFor(r.filterSchema, ast), nil
+}
+
+// ParseRequestFilter parses a list request's filter: the JSON filter
+// parameter (filter.ParamFilter) and the flat field parameters
+// (status=active&price_gte=10, see filter.QueryParamParser), ANDed and bounded
+// by the parser's limits as one filter. A parameter that is neither a list
+// parameter (filter.Param*), a name filter.QueryParamAccept lists, nor a
+// filterable field is E2071; filter.QueryParamLenient ignores it instead. An
+// accepted name the parser reads itself, a list parameter or a flat filter
+// on a field, is refused with a plain error (filter.CheckAcceptedParam). A
+// list parameter given more than once is E2067, as in ParseList. The search
+// parameter the search schema advertises (core.WithSearchParam) is a list
+// parameter too. The parser's own configuration bounds the flat parameters,
+// whatever opts say.
+func (r *resourceCore) ParseRequestFilter(q url.Values, opts ...filter.QueryParamOption) (*filter.ParsedFilter, error) {
+	err := r.listParamsOnce(q)
+	if err != nil {
+		return nil, err
+	}
+	now := r.cfg.Now()
+	fp := filter.NewFilterParser(r.filterSchema, r.cfg).At(now)
+	jsonAST, err := fp.Parse(q.Get(filter.ParamFilter))
+	if err != nil {
+		return nil, err
+	}
+	flatOpts := append(slices.Clone(opts), filter.QueryParamConfig(r.cfg))
+	if r.searchParam != "" {
+		flatOpts = append(flatOpts, filter.QueryParamAccept(r.searchParam))
+	}
+	qp, err := filter.NewQueryParamParser(r.filterSchema, flatOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
+	}
+	flatAST, err := qp.At(now).Parse(q)
+	if err != nil {
+		return nil, err
+	}
+	ast, err := fp.And(jsonAST, flatAST)
+	if err != nil {
+		return nil, err
+	}
+	return filter.NewParsedFilterFor(r.filterSchema, ast), nil
+}
+
+// ParseFilterMap parses a pre-decoded filter map into a ParsedFilter, skipping
+// the JSON marshal/unmarshal roundtrip used by ParseFilter. Prefer this in
+// adapter and service code that constructs filters from typed values:
+//
+//	parsed, err := sessions.ParseFilterMap(map[string]any{"user_id": userID})
+//
+// instead of
+//
+//	body, _ := json.Marshal(map[string]any{"user_id": userID})
+//	parsed, err := sessions.ParseFilter(string(body))
+func (r *resourceCore) ParseFilterMap(m map[string]any) (*filter.ParsedFilter, error) {
+	fp := filter.NewFilterParser(r.filterSchema, r.cfg)
+	ast, err := fp.ParseMap(m)
+	if err != nil {
+		return nil, err
+	}
+	return filter.NewParsedFilterFor(r.filterSchema, ast), nil
+}
+
+// ParseSort parses a sort parameter string.
+func (r *resourceCore) ParseSort(sortParam string) (*filter.SortResult, error) {
+	return filter.ParseSort(r.sortSchema, sortParam)
+}
+
+// ListQuery returns a ListQuery builder for the provider's dialect,
+// pre-loaded with this type's filter, sort, and search schemas and the
+// parser's config, so ListFilter input is held to the same limits, codec
+// and clock as ParseFilter. When the type declares `parse:"...,search"`
+// fields, a ListSearch query composes the dialect's search predicate. A
+// computed column (ReadExpr) compiles as its expression. The error is
+// filter.NewListQuery's, for a key the list cannot end its keyset on.
+func (r *resourceCore) ListQuery() (*filter.ListQuery, error) {
+	return newListQuery(r.filterSchema, r.sortSchema, r.searchSchema, r.dialect, r.cfg)
+}
+
+func newListQuery(fs *filter.ResourceSchema, ss *filter.SortSchema, search *filter.SearchSchema, d filter.Dialect, cfg *core.ParserConfig) (*filter.ListQuery, error) {
+	lq, err := filter.NewListQuery(fs, ss, d)
+	if err != nil {
+		return nil, err
+	}
+	return lq.WithFilterConfig(cfg).WithSearchSchema(search), nil
+}
+
+// ParseFilterWithCost applies a caller-selected cost budget for this call while
+// preserving the resource's schema, codec, clock and other parser limits. The
+// positive budget comes from server policy; request parsing uses ParseFilter.
+func (r *resourceCore) ParseFilterWithCost(query string, maxCost int) (*filter.ParsedFilter, error) {
+	if maxCost <= 0 {
+		return nil, fmt.Errorf("parse: filter cost budget must be positive")
+	}
+	cfg := *r.cfg
+	cfg.MaxCost = maxCost
+	return r.parseFilter(query, &cfg)
 }

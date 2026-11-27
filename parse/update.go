@@ -3,7 +3,9 @@ package parse
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
@@ -63,27 +65,6 @@ func (t Target) empty() bool {
 	ast := t.filter.AST()
 	return ast == nil || ast.Root == nil
 }
-
-// ErrNoTarget is an update built without keys or a non-empty filter.
-var ErrNoTarget = errors.New("an update needs a key or a filter")
-
-// ErrKeyInvalid is a target key, a Target's or an update batch row's, the
-// key columns cannot hold: a value of another Go type, text that is not a
-// UUID for a UUID column, or another number of values than the key has
-// columns (ByID on a key of two). The key is the server's, from its route
-// or its store, so a client never sees it as a filter error.
-var ErrKeyInvalid = errors.New("not a value of the key column's type")
-
-// ErrForeign is a request value a resource did not parse handed to it: a
-// ListRequest, filter or patch another resource parsed, a WithPaths view's
-// or its base's included, or one assembled by hand. A resource compiles and
-// applies only what its own schemas validated; parse the value with it.
-var ErrForeign = errors.New("not parsed by this resource")
-
-// ErrUpdateScope is an update built with a widening Scope: an update
-// reaches only its own tenant's live rows, so Governance and IncludeDeleted
-// do not apply to it.
-var ErrUpdateScope = errors.New("an update reaches only its tenant's live rows")
 
 // UpdateOption configures BuildUpdate.
 type UpdateOption func(*updateConfig)
@@ -628,4 +609,270 @@ func (r *resourceCore) checkAssignments(assignments []patch.ColumnAssignment, bu
 		}
 	}
 	return nil
+}
+
+// RowUpdate narrows one row's key, a value per key column in key order, to
+// its policy and applies its column patch.
+type RowUpdate struct {
+	Key    Key
+	Patch  *patch.ParsedPatch
+	Policy *filter.PolicyConstraints
+}
+
+// UpdateBatchLimits bounds total rows and parameters per statement. Zero uses
+// 500 rows and the dialect's conservative parameter budget; negative refuses.
+type UpdateBatchLimits struct {
+	MaxRows, MaxParameters int
+}
+
+// UpdateBatchPlan is a batch of row updates compiled for its resource's
+// provider (BuildUpdateBatch): the statements UpdateBatch runs, in one
+// transaction, every chunk's Current read and checked before any Owner.
+type UpdateBatchPlan struct {
+	Chunks []UpdateBatchChunk
+
+	table string
+}
+
+// UpdateBatchChunk contains one bounded preimage read and its optional update.
+// Owner returns changed rows; absent changed keys retain their Current images.
+type UpdateBatchChunk struct {
+	Keys    []Key
+	Current Statement
+	Owner   *Statement
+
+	key keyColumns
+}
+
+// checkCurrent verifies the keys of the rows Current returned (Key): each
+// is one of the chunk's Keys, and each of those is returned once.
+func (c UpdateBatchChunk) checkCurrent(keys []Key) error {
+	if len(keys) != len(c.Keys) || len(c.Keys) == 0 {
+		return ErrUpdateBatchTargets
+	}
+	wanted := make(map[any]bool, len(c.Keys))
+	for _, key := range c.Keys {
+		id, err := c.key.identity(key)
+		if err != nil || wanted[id] {
+			return ErrUpdateBatchTargets
+		}
+		wanted[id] = true
+	}
+	seen := make(map[any]bool, len(keys))
+	for _, key := range keys {
+		id, err := c.key.identity(key)
+		if err != nil || !wanted[id] || seen[id] {
+			return ErrUpdateBatchTargets
+		}
+		seen[id] = true
+	}
+	return nil
+}
+
+// BuildUpdateBatch compiles distinct column patches through the same typed
+// expressions, tenant/live floors and options as BuildUpdate. A row's patch
+// the resource did not parse is ErrForeign, and a row key the key column
+// cannot hold ErrKeyInvalid; relation changes and identity-column writes
+// fail before a plan is returned. UpdateBatch runs the plan.
+func (r *resourceCore) BuildUpdateBatch(rows []RowUpdate, scope Scope, limits UpdateBatchLimits, opts ...UpdateOption) (*UpdateBatchPlan, error) {
+	d := r.dialect
+	// One scope, and one instant, for every row's statements.
+	common, err := r.bindUpdateScope(scope)
+	if err != nil {
+		return nil, err
+	}
+	limits, err = updateBatchLimits(d, limits)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) > limits.MaxRows {
+		return nil, fmt.Errorf("parse: %s: update batch exceeds %d rows", r.table, limits.MaxRows)
+	}
+	config, options, err := r.updateOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+	key := r.keyColumns()
+	ordered := make([]RowUpdate, len(rows))
+	seen := make(map[any]bool, len(rows))
+	for i, row := range rows {
+		err := r.ownsPatch(row.Patch, fmt.Sprintf("update batch row %d patch", i))
+		if err != nil {
+			return nil, err
+		}
+		// As the database holds the key, so the rows Current returns check
+		// against it and two keys it holds equal are one row's.
+		normalized, err := key.requested(row.Key)
+		if err == nil {
+			normalized, err = key.stored(d, normalized)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parse: %s: update batch row %d key: %w", r.table, i, err)
+		}
+		id, err := key.identity(normalized)
+		if err != nil {
+			return nil, fmt.Errorf("parse: %s: update batch row %d key: %w", r.table, i, err)
+		}
+		if seen[id] {
+			return nil, fmt.Errorf("parse: %s: update batch row %d key: duplicate key", r.table, i)
+		}
+		seen[id], row.Key = true, normalized
+		ordered[i] = row
+	}
+	// Rows lock in key order, as Current's ORDER BY reads them, so two
+	// batches over the same rows cannot each hold a lock the other waits on.
+	// The keys are normalized, which their columns' types always order; the
+	// first refusal is kept and returned all the same.
+	var orderErr error
+	slices.SortFunc(ordered, func(a, b RowUpdate) int {
+		c, err := key.compare(a.Key, b.Key)
+		if err != nil && orderErr == nil {
+			orderErr = err
+		}
+		return c
+	})
+	if orderErr != nil {
+		return nil, fmt.Errorf("parse: %s: update batch: %w", r.table, orderErr)
+	}
+	plan := &UpdateBatchPlan{Chunks: []UpdateBatchChunk{}, table: r.table}
+	var compiled []compiledRowUpdate
+	var offset int
+	for _, row := range ordered {
+		item, err := r.compileRowUpdate(row, common, options, offset)
+		if err != nil {
+			return nil, err
+		}
+		if offset+len(item.args) > limits.MaxParameters {
+			if len(compiled) == 0 {
+				return nil, fmt.Errorf("parse: %s: one update exceeds the parameter budget", r.table)
+			}
+			chunk, err := r.renderUpdateBatch(compiled, common, key, config.skipUnchanged)
+			if err != nil {
+				return nil, err
+			}
+			plan.Chunks = append(plan.Chunks, chunk)
+			compiled, offset = nil, 0
+			item, err = r.compileRowUpdate(row, common, options, 0)
+			if err != nil {
+				return nil, err
+			}
+			if len(item.args) > limits.MaxParameters {
+				return nil, fmt.Errorf("parse: %s: one update exceeds the parameter budget", r.table)
+			}
+		}
+		compiled = append(compiled, item)
+		offset += len(item.args)
+	}
+	if len(compiled) > 0 {
+		chunk, err := r.renderUpdateBatch(compiled, common, key, config.skipUnchanged)
+		if err != nil {
+			return nil, err
+		}
+		plan.Chunks = append(plan.Chunks, chunk)
+	}
+	return plan, nil
+}
+
+type compiledRowUpdate struct {
+	row         RowUpdate
+	assignments []patch.ColumnAssignment
+	where       string
+	change      string
+	args        []any
+}
+
+func (r *resourceCore) compileRowUpdate(row RowUpdate, scope updateScope, options []patch.PatchSQLOption, offset int) (compiledRowUpdate, error) {
+	set, err := patch.BuildPatchSQL(row.Patch, r.dialect, append(slices.Clone(options), patch.WithStartParam(offset))...)
+	if err != nil {
+		return compiledRowUpdate{}, err
+	}
+	if len(set.RelationOps) != 0 {
+		return compiledRowUpdate{}, fmt.Errorf("parse: %s: update batch relation mutations are unsupported", r.table)
+	}
+	if len(set.Preconditions) != 0 {
+		// A batch locks and checks its rows by key alone; which operation a
+		// row's document fails is BuildUpdate's Conflict to report.
+		refused := core.NewError(patch.ECodeOpNotSQLCompilable, fmt.Sprintf("row %v: a batch update does not compile an operation below a JSON document field that the stored row must decide; update the row with BuildUpdate", row.Key),
+			core.WithPath(set.Preconditions[0].Path))
+		return compiledRowUpdate{}, refused
+	}
+	err = r.checkAssignments(set.Assignments, "update batch")
+	if err != nil {
+		return compiledRowUpdate{}, err
+	}
+	scope.policy = updateRowPolicy(scope.policy, row.Policy)
+	where, args, err := r.updateWhere(ByKey(row.Key), scope, offset+set.ParamCount)
+	if err != nil {
+		return compiledRowUpdate{}, err
+	}
+	compiled := compiledRowUpdate{row: row, assignments: set.Assignments, where: where, change: set.ChangePredicate, args: append(set.Args, args...)}
+	return compiled, nil
+}
+
+func (r *resourceCore) renderUpdateBatch(rows []compiledRowUpdate, scope updateScope, key keyColumns, skipUnchanged bool) (UpdateBatchChunk, error) {
+	d := r.dialect
+	chunk := UpdateBatchChunk{Keys: make([]Key, len(rows)), key: key}
+	var currentWhere, changedWhere []string
+	var args []any
+	assignments := map[string][]string{}
+	for i, row := range rows {
+		chunk.Keys[i] = row.row.Key
+		currentScope := scope
+		currentScope.policy = updateRowPolicy(scope.policy, row.row.Policy)
+		where, currentArgs, err := r.updateWhere(ByKey(row.row.Key), currentScope, len(chunk.Current.Args))
+		if err != nil {
+			return UpdateBatchChunk{}, err
+		}
+		currentWhere = append(currentWhere, "("+where+")")
+		chunk.Current.Args = append(chunk.Current.Args, currentArgs...)
+		args = append(args, row.args...)
+		if len(row.assignments) == 0 {
+			// Keep every bound predicate parameter typed even for a no-op item.
+			changedWhere = append(changedWhere, "(("+row.where+") AND FALSE)")
+			continue
+		}
+		guard := "(" + row.where + ")"
+		if skipUnchanged {
+			guard += " AND (" + row.change + ")"
+		}
+		changedWhere = append(changedWhere, "("+guard+")")
+		for _, assignment := range row.assignments {
+			assignments[assignment.Column] = append(assignments[assignment.Column], "WHEN ("+row.where+") THEN "+assignment.Expression)
+		}
+	}
+	columns := r.projection
+	chunk.Current.SQL = "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + strings.Join(currentWhere, " OR ") + " ORDER BY " + key.order(d, r.table) + d.RowLock()
+	if len(assignments) != 0 {
+		clauses := make([]string, 0, len(assignments))
+		for _, column := range slices.Sorted(maps.Keys(assignments)) {
+			quoted := d.QuoteIdent(column)
+			clauses = append(clauses, quoted+" = CASE "+strings.Join(assignments[column], " ")+" ELSE "+quoted+" END")
+		}
+		chunk.Owner = &Statement{SQL: "UPDATE " + d.QuoteIdent(r.table) + " SET " + strings.Join(clauses, ", ") + " WHERE " + strings.Join(changedWhere, " OR ") + " RETURNING " + columns, Args: args}
+	}
+	return chunk, nil
+}
+
+func updateRowPolicy(common, row *filter.PolicyConstraints) *filter.PolicyConstraints {
+	if common == nil {
+		return row
+	}
+	if row == nil {
+		return common
+	}
+	both := &filter.PolicyConstraints{And: []*filter.PolicyConstraints{common, row}}
+	return both
+}
+
+func updateBatchLimits(d filter.Dialect, limits UpdateBatchLimits) (UpdateBatchLimits, error) {
+	if limits.MaxRows < 0 || limits.MaxParameters < 0 {
+		return limits, errors.New("parse: update batch limits must not be negative")
+	}
+	if limits.MaxRows == 0 {
+		limits.MaxRows = 500
+	}
+	if limits.MaxParameters == 0 {
+		limits.MaxParameters = d.MaxParams()
+	}
+	return limits, nil
 }

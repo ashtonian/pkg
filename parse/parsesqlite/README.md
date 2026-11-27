@@ -120,8 +120,8 @@ go test -tags=unit -race ./parsesqlite/ ./internal/decimals/ ./internal/geo/
 go test -tags=unit -race -run 'TestEvaluateDecimalConformance|TestEvaluateGeoConformance|TestEvaluateConformance' ./filter/
 # The matrices run on SQLite and PostgreSQL in the integration lane. The PostgreSQL runs read
 # PARSE_POSTGRES_DSN and PARSE_POSTGIS_DSN (make parse-postgres-up starts a server and prints them)
-# and skip when they are unset; -run 'TestDecimalMatrix/sqlite' selects one backend's run.
-go test -tags=integration -run 'TestDecimalMatrix|TestNumberKeys|TestGeoMatrix|TestFilterMatrix' ./
+# and skip when they are unset. parsesql runs the corpus on SQLite and parsepgx on PostgreSQL.
+go test -tags=integration -run 'TestCorpus/(DecimalMatrix|NumberKeys|GeoMatrix|FilterMatrix)$' ./parsesql/ ./parsepgx/
 go test -tags=integration -run 'MatchesPostGIS' ./internal/geo/
 ```
 

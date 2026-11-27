@@ -420,7 +420,7 @@ PostgreSQL dialect:
 
 ## Request-to-SQL examples
 
-The examples compile against this resource ([source](../examples_sql_test.go)). Each block below is an example's output, which `go test` checks; `…` stands for text left out, long UUIDs and repeated predicates.
+The examples compile against this resource ([source](../example_guides_test.go)). Each block below is an example's output, which `go test` checks; `…` stands for text left out, long UUIDs and repeated predicates.
 
 ```go
 type Product struct {
