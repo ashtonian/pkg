@@ -39,6 +39,11 @@
 // without the functions fails with SQLite's "no such function:
 // parse_decimal" rather than comparing a rounded double. Another SQLite
 // driver registers the table Functions returns.
+//
+// Both also refuse a connection whose SQLite is older than
+// MinSQLiteVersion, the oldest release parse's plans read every document
+// member's name on: the open fails with a *VersionError. Another driver
+// calls CheckVersion from a connection hook of its own.
 package parsesqlite
 
 import (
@@ -95,24 +100,33 @@ func Functions() []Function { return slices.Clone(functions[:]) }
 
 // Register registers parse_decimal, parse_decimal_key,
 // parse_decimal_float32, parse_geo_near, parse_geo_in_box and
-// parse_geo_covered_by with modernc.org/sqlite, for every connection the
-// "sqlite" driver opens afterwards; connections already open lack them. It
-// registers once per process: later calls, from any goroutine or package,
-// return the first call's result. When a name is already taken, the
-// functions before it in [Functions] are registered and the rest are not.
+// parse_geo_covered_by with modernc.org/sqlite, and the connection hook
+// that refuses a SQLite older than MinSQLiteVersion, for every connection
+// the "sqlite" driver opens afterwards; connections already open lack
+// them. It registers once per process: later calls, from any goroutine or
+// package, return the first call's result. When a name is already taken,
+// the hook and the functions before it in [Functions] are registered and
+// the rest are not.
 func Register() error { return register() }
 
 var register = sync.OnceValue(func() error {
+	sqlite.RegisterConnectionHook(versionHook(MinSQLiteVersion))
 	return registerAll(sqlite.RegisterDeterministicScalarFunction)
 })
 
-// RegisterOn registers the functions on d alone, so they reach only the
-// connections d opens: a driver the caller constructs and registers under a
-// name of its own with sql.Register, or opens through a connector. Call it
-// once per driver, before d opens its first connection. When a name is
-// already taken on d, the functions before it in [Functions] are registered
-// and the rest are not.
+// RegisterOn registers the functions and the version hook on d alone, so
+// they reach only the connections d opens: a driver the caller constructs
+// and registers under a name of its own with sql.Register, or opens
+// through a connector. Call it once per driver, before d opens its first
+// connection. When a name is already taken on d, the hook and the
+// functions before it in [Functions] are registered and the rest are not.
 func RegisterOn(d *sqlite.Driver) error {
+	return registerOn(d, MinSQLiteVersion)
+}
+
+// registerOn is RegisterOn refusing a SQLite older than need.
+func registerOn(d *sqlite.Driver, need string) error {
+	d.RegisterConnectionHook(versionHook(need))
 	return registerAll(d.RegisterDeterministicScalarFunction)
 }
 

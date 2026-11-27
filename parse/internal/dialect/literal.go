@@ -23,6 +23,14 @@ func (SQLite) QuoteLiteral(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
+// SQLiteMinVersion is the oldest SQLite release whose JSON functions read
+// every label SQLiteJSONPath writes as itself. From 3.45.0 they compare a
+// label with a member's name as decoded, so `$."a<b"` names the member
+// encoding/json writes as "a\u003cb"; from 3.47.0 they read an escaped
+// double quote inside a quoted label, where an older release ends the
+// label there.
+const SQLiteMinVersion = "3.47.0"
+
 // SQLiteJSONPath is the SQLite JSON path of an object member, labels its
 // members' names from the document down: each label quoted, its
 // backslashes and double quotes escaped, so it reads as itself whatever it

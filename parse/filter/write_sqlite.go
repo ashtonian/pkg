@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
@@ -50,30 +51,63 @@ func (SQLiteDialect) ArrayAppend(array string, element any, bind func(any) strin
 // MemberDocument is expr itself: SQLite's JSON functions read its text.
 func (SQLiteDialect) MemberDocument(expr string) (string, error) { return expr, nil }
 
-// SetMember is json_set at the member's JSON path (dialect.SQLiteJSONPath),
-// its value read back through json() so a document stays one.
+// SetMember is json_set at the member's JSON path (sqliteMemberPath), its
+// value read back through json() so a document stays one.
 func (SQLiteDialect) SetMember(doc string, member []string, value json.RawMessage, bind func(any) string) (string, error) {
-	path := bind(dialect.SQLiteJSONPath(member))
+	path, err := sqliteMemberPath(member, bind)
+	if err != nil {
+		return "", err
+	}
 	return "json_set(" + doc + ", " + path + ", json(" + bind(string(value)) + "))", nil
 }
 
 // RemoveMember is json_remove at the member's JSON path.
 func (SQLiteDialect) RemoveMember(doc string, member []string, bind func(any) string) (string, error) {
-	return "json_remove(" + doc + ", " + bind(dialect.SQLiteJSONPath(member)) + ")", nil
+	path, err := sqliteMemberPath(member, bind)
+	if err != nil {
+		return "", err
+	}
+	return "json_remove(" + doc + ", " + path + ")", nil
 }
 
 // HasMember reads the member's json_type, NULL where it is missing.
 func (SQLiteDialect) HasMember(doc string, member []string, bind func(any) string) (string, error) {
-	return "(json_type(" + doc + ", " + bind(dialect.SQLiteJSONPath(member)) + ") IS NOT NULL)", nil
+	path, err := sqliteMemberPath(member, bind)
+	if err != nil {
+		return "", err
+	}
+	return "(json_type(" + doc + ", " + path + ") IS NOT NULL)", nil
 }
 
 // IsObject compares the member's json_type with 'object'.
 func (SQLiteDialect) IsObject(doc string, member []string, bind func(any) string) (string, error) {
-	typ := "json_type(" + doc + ")"
-	if len(member) > 0 {
-		typ = "json_type(" + doc + ", " + bind(dialect.SQLiteJSONPath(member)) + ")"
+	if len(member) == 0 {
+		return "COALESCE(json_type(" + doc + ") = 'object', FALSE)", nil
 	}
-	return "COALESCE(" + typ + " = 'object', FALSE)", nil
+	path, err := sqliteMemberPath(member, bind)
+	if err != nil {
+		return "", err
+	}
+	return "COALESCE(json_type(" + doc + ", " + path + ") = 'object', FALSE)", nil
+}
+
+// sqliteMemberPath binds member's JSON path (dialect.SQLiteJSONPath), or
+// refuses a name holding a double quote or a backslash. The path escapes
+// both inside a quoted label, which only SQLite dialect.SQLiteMinVersion
+// and later read as written: an older release ends the label at an
+// escaped quote, so json_set writes other members. parsesqlite refuses an
+// older library on each connection it checks, but the statement cannot
+// tell whether its connection was one.
+func sqliteMemberPath(member []string, bind func(any) string) (string, error) {
+	for _, name := range member {
+		if !strings.ContainsAny(name, `"\`) {
+			continue
+		}
+		err := &core.ParseError{Kind: core.ParseErrorKindPatch, Code: core.CodeOpNotSQLCompilable.String(),
+			Message: fmt.Sprintf("SQLite JSON paths before %s read the member name %q otherwise, and the statement cannot tell which release runs it", dialect.SQLiteMinVersion, name)}
+		return "", err
+	}
+	return bind(dialect.SQLiteJSONPath(member)), nil
 }
 
 // RelationRows reads the owners and the values each from one bound JSON

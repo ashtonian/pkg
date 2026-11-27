@@ -16,16 +16,14 @@ import (
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
-// awkwardLabel holds what a JSON path label must escape somewhere: a
-// double quote and a backslash in SQLite's quoted labels, a single quote
-// in an SQL string literal, and a backslash in PostgreSQL's escape strings.
-const awkwardLabel = `q"u\o'te`
-
-// TestPathLabels_PatchWritesWhatAFilterReads writes a member named
-// awkwardLabel through a patch, which binds its path, and reads it back
-// through a filter, which inlines it, on each dialect. A filter's declared
-// members are names alone (filter.MaxPathMemberLen), so the path is built
-// by hand: each label renders safely whatever it holds.
+// TestPathLabels_PatchWritesWhatAFilterReads writes a member named label
+// through a patch, which binds its path, and reads it back through a
+// filter, which inlines it, on each dialect. Each label holds what a JSON
+// path label must escape somewhere: a single quote in an SQL string
+// literal, and on PostgreSQL a double quote and a backslash, which SQLite
+// refuses to write (sqliteMemberPath). A filter's declared members are
+// names alone (filter.MaxPathMemberLen), so the path is built by hand:
+// each label renders safely whatever it holds.
 func TestPathLabels_PatchWritesWhatAFilterReads(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -34,9 +32,10 @@ func TestPathLabels_PatchWritesWhatAFilterReads(t *testing.T) {
 		storage core.SQLType
 		path    filter.JSONStorage
 		schema  string
+		label   string
 	}{
-		{"sqlite", dbtest.SQLite, filter.SQLiteDialect{}, core.SQLJSON, filter.StorageText, `CREATE TABLE docs (id INTEGER PRIMARY KEY, doc TEXT)`},
-		{"postgres", dbtest.Postgres, filter.PostgresDialect{}, core.SQLJSONB, filter.StorageJSONB, `CREATE TABLE docs (id BIGINT PRIMARY KEY, doc JSONB)`},
+		{"sqlite", dbtest.SQLite, filter.SQLiteDialect{}, core.SQLJSON, filter.StorageText, `CREATE TABLE docs (id INTEGER PRIMARY KEY, doc TEXT)`, `it's a.b[0]`},
+		{"postgres", dbtest.Postgres, filter.PostgresDialect{}, core.SQLJSONB, filter.StorageJSONB, `CREATE TABLE docs (id BIGINT PRIMARY KEY, doc JSONB)`, `q"u\o'te`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := tc.open(t)
@@ -45,7 +44,7 @@ func TestPathLabels_PatchWritesWhatAFilterReads(t *testing.T) {
 			_, err = db.ExecContext(t.Context(), `INSERT INTO docs (id, doc) VALUES (1, '{"other":1}'), (2, '{"other":2}')`)
 			require.NoError(t, err)
 
-			body, err := json.Marshal([]map[string]any{{"op": "add", "path": core.FormatPointer("doc", awkwardLabel), "value": "x"}})
+			body, err := json.Marshal([]map[string]any{{"op": "add", "path": core.FormatPointer("doc", tc.label), "value": "x"}})
 			require.NoError(t, err)
 			parsed, err := patch.NewParser(memberSchema(tc.storage), nil).Parse(body)
 			require.NoError(t, err)
@@ -59,7 +58,7 @@ func TestPathLabels_PatchWritesWhatAFilterReads(t *testing.T) {
 			require.NoError(t, err)
 
 			field := &filter.FieldSchema{ExternalName: "member", DataType: core.FieldTypeString,
-				Path: &filter.JSONPath{Table: "docs", Column: "doc", Segments: []string{awkwardLabel}, Storage: tc.path}}
+				Path: &filter.JSONPath{Table: "docs", Column: "doc", Segments: []string{tc.label}, Storage: tc.path}}
 			var args []any
 			cond, err := tc.d.Condition(field, filter.OpEq, "x", func(v any) string {
 				args = append(args, v)

@@ -64,7 +64,11 @@
 // decides geo filters through deterministic functions the database must
 // have: [github.com/ashtonian/pkg/parse/parsesqlite.Register] registers
 // them, and [github.com/ashtonian/pkg/parse/parsesqlite.Functions] lists
-// them for another driver.
+// them for another driver. The plans need SQLite 3.47.0 or later, whose
+// JSON paths read every quoted label as written; Register refuses an older
+// library on each connection. A statement cannot tell which release runs
+// it, so SQLiteDialect refuses to write or test a document member whose
+// name holds a double quote or a backslash, as E2070.
 //
 // A dialect's TwoValuedCondition renders some predicates a second way that
 // an index serves, used where an even number of $not (usually none) enclose
