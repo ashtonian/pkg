@@ -153,7 +153,8 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 	for _, req := range facets {
 		f, fcfg, err := facetField(schema, req)
 		if err != nil {
-			if _, coded := errors.AsType[*core.ParseError](err); coded {
+			_, coded := errors.AsType[*core.ParseError](err)
+			if coded {
 				return FacetQuery{}, err
 			}
 			return FacetQuery{}, fmt.Errorf("BuildFacetQuery: %w", err)

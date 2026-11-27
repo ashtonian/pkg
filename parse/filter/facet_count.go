@@ -58,7 +58,8 @@ func NewFacetCounts(schema *ResourceSchema, facets []FacetRequest) ([]*FacetCoun
 	for i, req := range facets {
 		f, cfg, err := facetField(schema, req)
 		if err != nil {
-			if _, coded := errors.AsType[*core.ParseError](err); coded {
+			_, coded := errors.AsType[*core.ParseError](err)
+			if coded {
 				return nil, err
 			}
 			return nil, fmt.Errorf("counting facets: %w", err)

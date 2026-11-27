@@ -20,6 +20,7 @@ import (
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/parsememory"
 	"github.com/ashtonian/pkg/parse/parseprovider"
+	"github.com/ashtonian/pkg/parse/patch"
 )
 
 type note struct {
@@ -462,4 +463,132 @@ func TestList_PagesCountsFacetsAndIncludes(t *testing.T) {
 	back := list(t, second.PageInfo.StartCursor)
 	assert.Equal(t, []string{"a"}, ids(back), "a backward cursor reads the page before")
 	assert.True(t, back.PageInfo.HasNextPage)
+}
+
+type tagged struct {
+	ID    string            `json:"id"    db:"id"    parse:"filter,sort"`
+	Name  string            `json:"name"  db:"name"  parse:"filter,patch"`
+	Attrs map[string]string `json:"attrs" db:"attrs" parse:"patch" patch_ops:"replace,add,remove"`
+	Tags  []string          `json:"tags"  db:"-"     parse:"filter,patch,include" relation:"tagged_tags,tagged_id,tag_id,id"`
+}
+
+// taggedOn builds the tagged resource, whose patches may write members of
+// attrs, and writes a, tagged x, and b, untagged.
+func taggedOn(t *testing.T, db *parsememory.Database) *parse.Resource[tagged] {
+	t.Helper()
+	r, err := parse.NewResource[tagged](db.Provider(), "tagged", parse.CustomizeSchemas(func(s parse.Schemas) error {
+		return s.Patch.AddPath("/attrs/*", &patch.PathSchema{
+			AllowedOps: []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpReplace, patch.PatchOpRemove},
+			DataType:   core.FieldTypeString, SQLColumn: "attrs",
+		})
+	}))
+	require.NoError(t, err)
+	require.NoError(t, db.Put(t.Context(), "tagged",
+		parsememory.Row{"id": "a", "name": "alpha", "attrs": map[string]string{"k": "v"}},
+		parsememory.Row{"id": "b", "name": "beta", "attrs": map[string]string{}}))
+	return r
+}
+
+// stored is the row of id as r lists it, with its tags.
+func stored(t *testing.T, r *parse.Resource[tagged], id string) tagged {
+	t.Helper()
+	req, err := r.ParseListInput(parse.ListInput{Filter: `{"id":"` + id + `"}`, Include: []string{"tags"}})
+	require.NoError(t, err)
+	page, err := r.List(t.Context(), req, parse.Scope{})
+	require.NoError(t, err)
+	require.Len(t, page.Items, 1)
+	item := page.Items[0]
+	item.Tags = page.Relations["tags"][id]
+	return item
+}
+
+// An update writes the patch's columns and relations together, or, when
+// any part fails, nothing: a member operation the stored document does not
+// allow is the operation's own error and writes no target, and a write in
+// a transaction that fails restores the transaction to where it stood,
+// which goes on.
+func TestUpdate_WritesAllOrNothing(t *testing.T) {
+	db := open(t, 10)
+	r := taggedOn(t, db)
+	ctx := t.Context()
+	require.NoError(t, db.Put(ctx, "tagged_tags", parsememory.Row{"tagged_id": "a", "tag_id": "x"}))
+
+	p, err := r.ParseMergePatch([]byte(`{"name":"renamed","tags":["y","z"]}`))
+	require.NoError(t, err)
+	res, err := r.Update(ctx, p, parse.ByID("a"), parse.Scope{})
+	require.NoError(t, err)
+	require.Len(t, res.Changed, 1)
+	assert.Equal(t, int64(3), res.RelationRows, "x removed, y and z written")
+	assert.Equal(t, tagged{ID: "a", Name: "renamed", Attrs: map[string]string{"k": "v"}, Tags: []string{"y", "z"}}, stored(t, r, "a"))
+
+	missing, err := r.ParsePatch([]byte(`[{"op":"replace","path":"/name","value":"lost"},{"op":"remove","path":"/attrs/k"}]`))
+	require.NoError(t, err)
+	_, err = r.Update(ctx, missing, parse.ByIDs("a", "b"), parse.Scope{})
+	pe, ok := errors.AsType[*core.ParseError](err)
+	require.True(t, ok, "the operation's own error: %v", err)
+	assert.Equal(t, "/attrs/k", pe.Path)
+	_, ran := errors.AsType[*parse.StatementError](err)
+	assert.False(t, ran, "a refused operation is the patch's error, as the SQL providers' conflict statement reports it")
+	assert.Equal(t, "renamed", stored(t, r, "a").Name, "a, which the operation applies to, is not written either")
+
+	txn, err := db.Begin(ctx)
+	require.NoError(t, err)
+	require.NoError(t, txn.Put(ctx, "tagged", parsememory.Row{"id": "c", "name": "gamma", "attrs": map[string]string{}}))
+	inTxn, err := r.In(parsememory.Tx(txn))
+	require.NoError(t, err)
+	_, err = inTxn.Update(ctx, missing, parse.ByIDs("a", "c"), parse.Scope{})
+	require.Error(t, err)
+	res, err = inTxn.Update(ctx, p, parse.ByID("c"), parse.Scope{})
+	require.NoError(t, err, "the transaction goes on after the failed update")
+	require.Len(t, res.Changed, 1)
+	require.NoError(t, txn.Commit(ctx))
+	assert.Equal(t, tagged{ID: "c", Name: "renamed", Attrs: map[string]string{}, Tags: []string{"y", "z"}}, stored(t, r, "c"))
+}
+
+// A relation write past MaxRows fails with ErrRowLimit and keeps nothing
+// the update wrote, its column changes included; in a transaction it ends
+// the transaction.
+func TestUpdate_RowLimitKeepsNothingTheUpdateWrote(t *testing.T) {
+	db := open(t, 2)
+	r := taggedOn(t, db)
+	ctx := t.Context()
+	require.NoError(t, db.Put(ctx, "tagged_tags", parsememory.Row{"tagged_id": "a", "tag_id": "x"}))
+	p, err := r.ParseMergePatch([]byte(`{"name":"renamed","tags":["x","y","z"]}`))
+	require.NoError(t, err)
+	_, err = r.Update(ctx, p, parse.ByID("a"), parse.Scope{})
+	require.ErrorIs(t, err, parsememory.ErrRowLimit)
+	assert.Equal(t, tagged{ID: "a", Name: "alpha", Attrs: map[string]string{"k": "v"}, Tags: []string{"x"}}, stored(t, r, "a"))
+
+	txn, err := db.Begin(ctx)
+	require.NoError(t, err)
+	require.NoError(t, txn.Delete(ctx, "tagged", parse.Key{"b"}))
+	inTxn, err := r.In(parsememory.Tx(txn))
+	require.NoError(t, err)
+	_, err = inTxn.Update(ctx, p, parse.ByID("a"), parse.Scope{})
+	require.ErrorIs(t, err, parsememory.ErrRowLimit)
+	require.ErrorIs(t, txn.Commit(ctx), parsememory.ErrTxnDone)
+	assert.Equal(t, "beta", stored(t, r, "b").Name, "the delete before the limit was dropped with the transaction")
+}
+
+// A pair table a resource keys by a column of its own, which no pair
+// writes, reads its relation's pairs but holds no pair a membership change
+// writes: the memory provider generates no keys.
+func TestUpdate_RefusesPairsATableCannotKey(t *testing.T) {
+	type pairRow struct {
+		Seq      int64  `json:"seq"       db:"seq"`
+		TaggedID string `json:"tagged_id" db:"tagged_id"`
+		TagID    string `json:"tag_id"    db:"tag_id"`
+	}
+	db := open(t, 10)
+	_, err := parse.NewResource[pairRow](db.Provider(), "tagged_tags", parse.PrimaryKey("seq"))
+	require.NoError(t, err)
+	r := taggedOn(t, db)
+	require.NoError(t, db.Put(t.Context(), "tagged_tags", parsememory.Row{"seq": int64(9), "tagged_id": "b", "tag_id": "x"}))
+	assert.Equal(t, []string{"x"}, stored(t, r, "b").Tags)
+
+	p, err := r.ParseMergePatch([]byte(`{"tags":["y"]}`))
+	require.NoError(t, err)
+	_, err = r.Update(t.Context(), p, parse.ByID("b"), parse.Scope{})
+	require.ErrorContains(t, err, `parse: tagged: relations: parsememory: relation tags: pair table "tagged_tags": key column seq: NULL`)
+	assert.Equal(t, []string{"x"}, stored(t, r, "b").Tags, "the replace's removal was undone with it")
 }

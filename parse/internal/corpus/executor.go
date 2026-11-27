@@ -102,7 +102,7 @@ func execFailureOf(t *testing.T, b sqlBackend, r *parse.Resource[parsetest.ExecI
 	if b.engine != Memory {
 		renaming, err := r.ParseMergePatch([]byte(`{"name":"renamed","tags":["forbidden"]}`))
 		require.NoError(t, err)
-		return execFailure{
+		failure := execFailure{
 			run: func(t *testing.T, tx *parse.Tx) error {
 				scoped, err := r.In(tx)
 				require.NoError(t, err)
@@ -112,12 +112,13 @@ func execFailureOf(t *testing.T, b sqlBackend, r *parse.Resource[parsetest.ExecI
 			statement: "relations",
 			name:      func(t *testing.T) string { return columnOf(t, b, db, "exec_items", "name", "id", "e1")[0] },
 		}
+		return failure
 	}
 	docs := parse.MustResource[execDoc](r.Provider(), "exec_docs")
 	loadExecDocs(t, b, db)
 	renaming, err := docs.ParseMergePatch([]byte(`{"name":"renamed"}`))
 	require.NoError(t, err)
-	return execFailure{
+	failure := execFailure{
 		run: func(t *testing.T, tx *parse.Tx) error {
 			scoped, err := docs.In(tx)
 			require.NoError(t, err)
@@ -127,6 +128,7 @@ func execFailureOf(t *testing.T, b sqlBackend, r *parse.Resource[parsetest.ExecI
 		statement: "owner",
 		name:      func(t *testing.T) string { return columnOf(t, b, db, "exec_docs", "name", "id", "d1")[0] },
 	}
+	return failure
 }
 
 func execItemID(item parsetest.ExecItem) string { return item.ID }
@@ -218,13 +220,14 @@ type inTx struct {
 }
 
 // values is column, as text, of each of table's rows whose by column holds
-// key, in text order.
-func (x inTx) values(table, column, by, key string) []string {
+// key, in text order, read under ctx on the Memory engine; a SQL engine
+// reads it with the statements the transaction runs under its own.
+func (x inTx) values(ctx context.Context, table, column, by, key string) []string {
 	x.t.Helper()
 	if x.store == nil {
 		return x.run("SELECT " + column + " FROM " + table + " WHERE " + by + " = '" + key + "' ORDER BY " + column)
 	}
-	rows, err := x.store.Rows(x.t.Context(), table)
+	rows, err := x.store.Rows(ctx, table)
 	require.NoError(x.t, err)
 	var out []string
 	for _, row := range rows {
@@ -237,19 +240,21 @@ func (x inTx) values(table, column, by, key string) []string {
 }
 
 // set writes value to column of table's row id, as the application's own
-// write, and returns the ids of the rows it wrote.
-func (x inTx) set(table, column, id, value string) []string {
+// write, under ctx on the Memory engine, and returns the ids of the rows it
+// wrote.
+func (x inTx) set(ctx context.Context, table, column, id, value string) []string {
 	x.t.Helper()
 	if x.store == nil {
 		return x.run("UPDATE " + table + " SET " + column + " = '" + value + "' WHERE id = '" + id + "' RETURNING id")
 	}
-	rows, err := x.store.Rows(x.t.Context(), table)
+	rows, err := x.store.Rows(ctx, table)
 	require.NoError(x.t, err)
 	for _, row := range rows {
 		if row["id"] == id {
 			row[column] = value
-			require.NoError(x.t, x.store.Put(x.t.Context(), table, row))
-			return []string{id}
+			require.NoError(x.t, x.store.Put(ctx, table, row))
+			written := []string{id}
+			return written
 		}
 	}
 	return nil
@@ -509,13 +514,13 @@ func runExecutorContract(t *testing.T, b sqlBackend) {
 	t.Run("in the caller's transaction an update commits with the caller's own statements", func(t *testing.T) {
 		r, db := setup(t)
 		callerTx(t, b, db, func(tx *parse.Tx, x inTx) {
-			assert.Equal(t, []string{"e2"}, x.set("exec_items", "name", "e2", "by the application"))
+			assert.Equal(t, []string{"e2"}, x.set(t.Context(), "exec_items", "name", "e2", "by the application"))
 			scoped, err := r.In(tx)
 			require.NoError(t, err)
 			res, err := update(t.Context(), t, scoped, `{"name":"renamed","tags":["blue"]}`, parse.ByID("e1"))
 			require.NoError(t, err)
 			assert.Equal(t, []string{"e1"}, sortedIDs(res.Changed, execItemID))
-			assert.Equal(t, []string{"renamed"}, x.values("exec_items", "name", "id", "e1"), "the update is visible in the transaction")
+			assert.Equal(t, []string{"renamed"}, x.values(t.Context(), "exec_items", "name", "id", "e1"), "the update is visible in the transaction")
 			require.NoError(t, tx.Commit(t.Context()))
 		})
 		assert.Equal(t, "renamed", stored(t, r, db, "e1").Name)
@@ -594,7 +599,7 @@ func runExecutorContract(t *testing.T, b sqlBackend) {
 			require.NoError(t, err)
 			_, err = scoped.Update(t.Context(), renaming, parse.ByID("d1"), parse.Scope{})
 			assert.Equal(t, "owner", statementOf(t, err))
-			assert.Equal(t, []string{"one"}, x.values("exec_docs", "name", "id", "d1"), "the caller's transaction is usable and keeps nothing")
+			assert.Equal(t, []string{"one"}, x.values(t.Context(), "exec_docs", "name", "id", "d1"), "the caller's transaction is usable and keeps nothing")
 		})
 	})
 
@@ -625,8 +630,11 @@ func runExecutorContract(t *testing.T, b sqlBackend) {
 					scoped, err := r.In(tx)
 					require.NoError(t, err)
 					_, err = scoped.Update(ctx, renaming, parse.ByID("e1"), execScope())
-					name := x.values("exec_items", "name", "id", "e1")
-					tags := x.values("exec_tags", "tag_id", "item_id", "e1")
+					// The update's context is cancelled: what it left is read without
+					// its cancellation.
+					read := context.WithoutCancel(ctx)
+					name := x.values(read, "exec_items", "name", "id", "e1")
+					tags := x.values(read, "exec_tags", "tag_id", "item_id", "e1")
 					if tc.applied {
 						require.NoError(t, err)
 						assert.Equal(t, []string{"renamed"}, name)
@@ -718,7 +726,7 @@ func runExecutorContract(t *testing.T, b sqlBackend) {
 			scoped, err := panics.In(tx)
 			require.NoError(t, err)
 			assert.PanicsWithValue(t, execPanicked, updating(scoped))
-			assert.Equal(t, []string{"one"}, x.values("exec_panics", "name", "id", "p1"), "the caller's transaction is usable and keeps nothing")
+			assert.Equal(t, []string{"one"}, x.values(t.Context(), "exec_panics", "name", "id", "p1"), "the caller's transaction is usable and keeps nothing")
 		})
 	})
 

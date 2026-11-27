@@ -37,37 +37,54 @@ func (e executor) view() (view, error) {
 // write runs apply, one update of table's resource, in a write: under a
 // savepoint of the transaction, restored when apply fails, or in a write
 // of its own, which waits for the writer under ctx and is published only
-// when apply succeeds. ErrRowLimit ends the transaction it happens in.
+// when apply succeeds. ErrRowLimit ends the transaction it happens in. A
+// panic in apply, such as a sink's scanner panicking, settles the write on
+// its way out as an error does: the savepoint is restored, or the write
+// aborted and the writer released.
 func (e executor) write(ctx context.Context, table string, apply func(*write) error) error {
 	err := e.db.open()
 	if err != nil {
 		return err
 	}
 	if e.txn != nil {
-		w := e.txn.w
-		if w.done {
-			return ErrTxnDone
-		}
-		saved := w.savepoint()
-		err := apply(w)
-		switch {
-		case errors.Is(err, ErrRowLimit):
-			w.abort()
-		case err != nil:
-			w.restore(saved)
-		}
-		return err
+		return e.underSavepoint(apply)
 	}
 	w, err := e.db.store.begin(ctx)
 	if err != nil {
 		return parse.StatementFailed(table, "begin", err)
 	}
+	// After a commit, abort is a no-op.
+	defer w.abort()
 	err = apply(w)
 	if err != nil {
-		w.abort()
 		return err
 	}
 	return parse.StatementFailed(table, "commit", w.commit())
+}
+
+// underSavepoint runs apply in the executor's transaction under a
+// savepoint, restored unless apply returns nil.
+func (e executor) underSavepoint(apply func(*write) error) error {
+	w := e.txn.w
+	if w.done {
+		return ErrTxnDone
+	}
+	saved := w.savepoint()
+	returned := false
+	defer func() {
+		if !returned {
+			w.restore(saved)
+		}
+	}()
+	err := apply(w)
+	returned = true
+	switch {
+	case errors.Is(err, ErrRowLimit):
+		w.abort()
+	case err != nil:
+		w.restore(saved)
+	}
+	return err
 }
 
 func (e executor) Query(_ context.Context, req backend.QueryRequest, _ backend.QuerySink) error {

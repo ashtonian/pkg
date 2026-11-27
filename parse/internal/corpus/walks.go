@@ -50,7 +50,8 @@ func queryWalk[T any](lq *filter.ListQuery, query func(t *testing.T, res *filter
 		require.NoError(t, err, "sort=%s, %d a page", sort, limit)
 		return p
 	}
-	return listWalk[T]{page: page, id: id}
+	walk := listWalk[T]{page: page, id: id}
+	return walk
 }
 
 // resourceWalk walks the pages res lists, as its provider lists them. res's
@@ -62,7 +63,8 @@ func resourceWalk[T any](res *parse.Resource[T], id func(T) int64) listWalk[T] {
 		require.NoError(t, err)
 		return listPage(t, res, req, parse.Scope{})
 	}
-	return listWalk[T]{page: page, id: id}
+	walk := listWalk[T]{page: page, id: id}
+	return walk
 }
 
 // check walks the list by sort at every page size, forwards from the first
@@ -685,9 +687,11 @@ func measureWalk(t *testing.T, m measureDB) (w listWalk[parsetest.MeasureRow], n
 		for i, it := range p.Items {
 			rows[i] = parsetest.MeasureRow{ID: it.ID, Doc: string(it.Doc)}
 		}
-		return &filter.Page[parsetest.MeasureRow]{Items: rows, PageInfo: p.PageInfo}
+		measured := &filter.Page[parsetest.MeasureRow]{Items: rows, PageInfo: p.PageInfo}
+		return measured
 	}
-	return listWalk[parsetest.MeasureRow]{page: page, id: id}, "doc.n"
+	walk := listWalk[parsetest.MeasureRow]{page: page, id: id}
+	return walk, "doc.n"
 }
 
 // storedMeasures are the measures as the database reads them back: the

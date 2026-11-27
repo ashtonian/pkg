@@ -465,7 +465,7 @@ func gadgetTable() sqlTable {
 }
 
 func gadgetTagTable() sqlTable {
-	table := sqlTable{name: "gadget_tags", columns: []sqlColumn{
+	table := sqlTable{name: "gadget_tags", key: []string{"gadget_id", "tag_id", "tenant_id"}, columns: []sqlColumn{
 		column[string]("gadget_id").required(), column[string]("tag_id").required(), column[string]("tenant_id").required(),
 	}}
 	return table
@@ -839,7 +839,7 @@ func storedNote(t *testing.T, b sqlBackend, db *sql.DB, r *parse.Resource[parset
 		require.NoError(t, err)
 		for _, row := range rows {
 			if row["id"] == id {
-				return scannedNote(t, row)
+				return scannedNote(t, row, r.Columns())
 			}
 		}
 		require.Fail(t, "no note "+id)
@@ -849,10 +849,10 @@ func storedNote(t *testing.T, b sqlBackend, db *sql.DB, r *parse.Resource[parset
 	return got[0]
 }
 
-// scannedNote is a note's stored row as its resource scans it: the columns
-// parsetest.Note reads, each through database/sql's conversion, a document
-// or an array from its JSON.
-func scannedNote(t *testing.T, row map[string]any) parsetest.Note {
+// scannedNote is a note's stored row as its resource scans it: of the
+// columns parsetest.Note holds, those the resource reads (columns), each
+// through database/sql's conversion, a document or an array from its JSON.
+func scannedNote(t *testing.T, row map[string]any, columns []string) parsetest.Note {
 	t.Helper()
 	var n parsetest.Note
 	n.ID, n.TenantID = columnText(t, row["id"]), columnText(t, row["tenant_id"])
@@ -861,7 +861,9 @@ func scannedNote(t *testing.T, row map[string]any) parsetest.Note {
 	}
 	n.Rank, n.Version = asInt64(t, row["rank"]), asInt64(t, row["version"])
 	for column, into := range map[string]any{"labels": &n.Labels, "attrs": &n.Attrs} {
-		require.NoError(t, json.Unmarshal([]byte(columnText(t, row[column])), into), column)
+		if slices.Contains(columns, column) {
+			require.NoError(t, json.Unmarshal([]byte(columnText(t, row[column])), into), column)
+		}
 	}
 	for column, into := range map[string]**time.Time{"updated_at": &n.UpdatedAt, "deleted_at": &n.DeletedAt} {
 		if row[column] == nil {

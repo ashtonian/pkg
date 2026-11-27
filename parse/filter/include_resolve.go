@@ -158,6 +158,79 @@ func ResolveRelationFacet(ctx context.Context, field *FieldSchema, ownerKeys []c
 	return counts, nil
 }
 
+// VisibleTargets are those of keys whose target rows of field's declared
+// many-to-many a request may relate under scope, read through lookup
+// outside SQL: the rows VisibleRelated admits, in the tenant (or admitted
+// by the target's policy) and live. A store that writes pairs itself
+// pairs and unpairs only these, as patch.RenderRelationOp's statements
+// do. Each key holds a value per target key column (TargetKeys),
+// normalized to its type (core.NormalizeKey); the visible keys are
+// returned in keys' order. scope's Tenant, Related and Now are read, as
+// VisibleRelated reads them.
+func VisibleTargets(ctx context.Context, field *FieldSchema, keys []core.Key, lookup RelationLookup, scope RelationScope) ([]core.Key, error) {
+	if field == nil || field.Relation == nil || field.Relation.TargetTable == "" {
+		return nil, errors.New("filter: VisibleTargets: field is not a many-to-many with a target")
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	rel := field.Relation
+	now := scope.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	r := newMemberResolver(lookup, resolveConfig{scope: relationScope{tenant: scope.Tenant}, related: scope.policies().at(now)})
+	var policy *ParsedFilter
+	if rel.Policy {
+		if field.Related == nil {
+			return nil, unresolvableRelation(field, "is policy-scoped without a target schema to hold its policy")
+		}
+		root, err := r.cfg.related.on(field, nil)
+		if err != nil {
+			return nil, err
+		}
+		// The policy's own relations, as a policy-scoped predicate's.
+		root, err = r.resolve(ctx, root)
+		if err != nil {
+			return nil, err
+		}
+		if root != nil {
+			policy = NewParsedFilter(&FilterAST{Root: root})
+		}
+	}
+	where, err := r.scoped(rel.TargetTable, rel.TargetKeys, rel.TargetTenant, rel.TargetDeleted, ownersIn(rel.TargetKeys, keys).typed(rel.TargetTypes))
+	if err != nil {
+		return nil, err
+	}
+	values, _, err := r.lookupValues(ctx, projecting(&Lookup{Table: rel.TargetTable, Where: where, Filter: policy}, rel.TargetKeys))
+	if err != nil {
+		return nil, err
+	}
+	held := make(map[string]bool, len(values))
+	for _, v := range values {
+		k, err := pairKey(v, len(rel.TargetKeys))
+		if err != nil {
+			return nil, fmt.Errorf("filter: visible targets of %s: %w", field.ExternalName, err)
+		}
+		text, err := core.KeyTextOf(rel.TargetTypes, k)
+		if err != nil {
+			return nil, fmt.Errorf("filter: visible targets of %s: %w", field.ExternalName, err)
+		}
+		held[text] = true
+	}
+	visible := make([]core.Key, 0, len(keys))
+	for _, k := range keys {
+		text, err := core.KeyTextOf(rel.TargetTypes, k)
+		if err != nil {
+			return nil, fmt.Errorf("filter: visible targets of %s: %w", field.ExternalName, err)
+		}
+		if held[text] {
+			visible = append(visible, k)
+		}
+	}
+	return visible, nil
+}
+
 // relationPairs reads the visible pairs of field's relation whose owner is
 // among ownerKeys from lookup, under cfg's scope, and hands each to visit:
 // its owner named by its text (core.KeyTextOf), its target normalized

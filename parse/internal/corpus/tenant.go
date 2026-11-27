@@ -280,7 +280,7 @@ func integerTenantKeysPairsHoldTheBoundKey(t *testing.T, engine Engine) {
 			[][]any{{1, 44, "alpha"}})
 		b.load(t, db, sqlTable{name: "commands", key: []string{"id"}, columns: []sqlColumn{id("id"), id("tenant_id"), id("device_id"), text("status")}},
 			[][]any{{7, 44, 1, "sent"}, {8, 44, 1, "sent"}})
-		b.load(t, db, sqlTable{name: "device_commands", columns: []sqlColumn{untyped("device_id"), untyped("command_id"), untyped("tenant_id")}},
+		b.load(t, db, sqlTable{name: "device_commands", key: []string{"device_id", "command_id", "tenant_id"}, columns: []sqlColumn{untyped("device_id"), untyped("command_id"), untyped("tenant_id")}},
 			[][]any{{1, 8, 44}})
 		junction := parse.Junction{Table: "device_commands", Source: []string{"device_id"}, Target: []string{"command_id"}, Tenant: "tenant_id"}
 		devices := parse.MustResource[int32TenantDevice](provider, "devices", parse.TenantColumn("tenant_id"))

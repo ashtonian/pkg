@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"slices"
 	"strings"
 	"time"
 
@@ -227,12 +228,7 @@ func selectsNone(cond *filter.LookupCond) bool {
 		_, none := cond.Value.(noTenant)
 		return none
 	}
-	for _, c := range cond.And {
-		if selectsNone(c) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(cond.And, selectsNone)
 }
 
 func (lk lookup) LookupValues(ctx context.Context, l *filter.Lookup) ([]any, error) {

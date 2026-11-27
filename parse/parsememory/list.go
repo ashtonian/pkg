@@ -354,13 +354,15 @@ func (l *lister) rowTenant(rec *record) (tenantGroup, any, error) {
 		return tenantGroup{}, nil, err
 	}
 	if null {
-		return tenantGroup{null: true}, noTenant{}, nil
+		group := tenantGroup{null: true}
+		return group, noTenant{}, nil
 	}
 	text, err := core.KeyTextOf([]core.TypeInfo{l.def.columns[l.tenantAt].typ}, core.Key{v})
 	if err != nil {
 		return tenantGroup{}, nil, fmt.Errorf("tenant column %s: %w", l.def.columns[l.tenantAt].name, err)
 	}
-	return tenantGroup{text: text}, v, nil
+	group := tenantGroup{text: text}
+	return group, v, nil
 }
 
 // tenantFilter is the governed list's filter with its relations bound to
@@ -422,7 +424,8 @@ func (l *lister) sortRow(rec *record) (sortRow, error) {
 		}
 		values[i] = v
 	}
-	return sortRow{rec: rec, values: values}, nil
+	row := sortRow{rec: rec, values: values}
+	return row, nil
 }
 
 // direction is k's direction in the walk: flipped for a backward seek.

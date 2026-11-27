@@ -1,12 +1,10 @@
 package parsememory
 
 import (
-	"database/sql/driver"
 	"encoding/json"
 	"reflect"
 
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
 )
 
 // storage is how the store holds column values, which a row scan reads
@@ -23,21 +21,18 @@ func (storage) StoresAsText(t core.FieldType) bool {
 }
 
 // storageValue is v, a Go value of a column of type t, as a table holds it:
-// nil, a nil pointer, map or slice is NULL, and a shape (geo) is held as its
-// JSON, as a document is.
+// the one storage form of a row's values (core.StorageValue), which a
+// composed update's values are in too (patch.ComposedPatch.Apply). A shape
+// (geo) is held as its JSON text, a nil one as NULL.
 func storageValue(v any, t core.TypeInfo) (any, error) {
+	if t.Type != core.FieldTypeGeo {
+		return core.StorageValue(t, v)
+	}
 	v, err := core.Deref(v)
 	if err != nil || v == nil || nilReference(v) {
 		return nil, err
 	}
-	if t.Type == core.FieldTypeGeo {
-		return geoText(v)
-	}
-	m, err := filter.SQLiteDialect{}.MarshalValue(v, t)
-	if err != nil || m == nil {
-		return nil, err
-	}
-	return driver.DefaultParameterConverter.ConvertValue(m)
+	return geoText(v)
 }
 
 func nilReference(v any) bool {
