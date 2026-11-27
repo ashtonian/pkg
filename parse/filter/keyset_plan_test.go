@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -74,6 +75,70 @@ func TestKeysetSeek_SQLiteSearchesTheSortIndex(t *testing.T) {
 			plan := queryPlan(t, db, "SELECT * FROM "+tt.table+" "+res.Fragment, res.Args)
 			assert.Contains(t, plan, "SEARCH "+tt.table+" USING COVERING INDEX "+tt.index+" (", res.Fragment)
 			assert.NotContains(t, plan, "USE TEMP B-TREE FOR ORDER BY", res.Fragment)
+		})
+	}
+}
+
+// pricedItem's amount is a decimal held as TEXT, which SQLite orders through
+// parse_decimal_key: an index on the key's expression serves its seeks.
+type pricedItem struct {
+	ID     int64           `json:"id"     db:"id"     parse:"filter,sort"`
+	Qty    int64           `json:"qty"    db:"qty"    parse:"filter,sort"`
+	Amount decimal.Decimal `json:"amount" db:"amount" parse:"filter,sort"`
+}
+
+// SQLite seeks a row value's index only from a bare leading column, so a
+// seek led by an expression, here a decimal's order key, also bounds that
+// key on its own, which an index on the expression seeks: the plan SEARCHes
+// the sort's index, led by the expression or by a bare column before it,
+// and needs no sort of its own.
+func TestKeysetSeek_SQLiteDecimalKeySearchesItsIndex(t *testing.T) {
+	db := dbtest.SQLite(t)
+	for _, stmt := range []string{
+		`CREATE TABLE priced_items (id INTEGER PRIMARY KEY, qty INTEGER NOT NULL, amount TEXT NOT NULL)`,
+		`INSERT INTO priced_items WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 20000) SELECT n, n % 50, (n % 1000) || '.' || (n % 7) FROM g`,
+		`CREATE INDEX priced_items_amount_key ON priced_items (parse_decimal_key(amount), id)`,
+		`CREATE INDEX priced_items_qty_amount_key ON priced_items (qty, parse_decimal_key(amount), id)`,
+		`CREATE INDEX priced_items_amount_qty_key ON priced_items (parse_decimal_key(amount), qty, id)`,
+		`ANALYZE`,
+	} {
+		_, err := db.ExecContext(t.Context(), stmt)
+		require.NoError(t, err, stmt)
+	}
+	g := core.NewSchemaGenerator(core.WithSQLTableName("priced_items"))
+	fs, err := filter.GenerateFilterSchema[pricedItem](g)
+	require.NoError(t, err)
+	fs.PrimaryKey = []string{"id"}
+	ss, err := filter.GenerateSortSchema[pricedItem](g)
+	require.NoError(t, err)
+	lq := mustListQuery(t, fs, ss, filter.SQLiteDialect{})
+	amount := func(dir filter.SortDirection) filter.CursorField {
+		return filter.CursorField{Name: "amount", Value: "500.3", Direction: dir}
+	}
+	id := func(dir filter.SortDirection) filter.CursorField {
+		return filter.CursorField{Name: "id", Value: int64(1500), Direction: dir}
+	}
+	qty := filter.CursorField{Name: "qty", Value: int64(5), Direction: filter.SortAsc}
+
+	for _, tt := range []struct {
+		name   string
+		sort   string
+		cursor string
+		index  string
+		seek   string
+	}{
+		{"a decimal key and the key", "amount", mintCursor(t, false, amount(filter.SortAsc), id(filter.SortAsc)), "priced_items_amount_key", "<expr>>?"},
+		{"a descending decimal key", "-amount", mintCursor(t, false, amount(filter.SortDesc), id(filter.SortDesc)), "priced_items_amount_key", "<expr><?"},
+		{"backwards over a decimal key", "amount", mintCursor(t, true, amount(filter.SortAsc), id(filter.SortAsc)), "priced_items_amount_key", "<expr><?"},
+		{"a decimal key, a bare key and the key", "amount,qty", mintCursor(t, false, amount(filter.SortAsc), qty, id(filter.SortAsc)), "priced_items_amount_qty_key", "<expr>>?"},
+		{"a bare key, a decimal key and the key", "qty,amount", mintCursor(t, false, qty, amount(filter.SortAsc), id(filter.SortAsc)), "priced_items_qty_amount_key", "qty>?"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := lq.Build(filter.ListSort(tt.sort), filter.ListLimit(10), filter.ListCursor(tt.cursor))
+			require.NoError(t, err)
+			plan := queryPlan(t, db, "SELECT id FROM priced_items "+res.Fragment, res.Args)
+			assert.Contains(t, plan, "SEARCH priced_items USING COVERING INDEX "+tt.index+" ("+tt.seek+")", res.Fragment)
+			assert.NotContains(t, plan, "TEMP B-TREE", res.Fragment)
 		})
 	}
 }

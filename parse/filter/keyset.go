@@ -346,6 +346,19 @@ func keyExpr(d Dialect, k CursorKey) string {
 	return keyValue(d, k)
 }
 
+// bareColumn reports whether k's seek element is its column itself, as an
+// index on the column holds it: not a mapper's or a computed column's Expr,
+// not a path, and not the column read through a function, such as a
+// decimal's order key or a date's reading. A text column is bare: the
+// dialect puts its code-point collation where the planner still seeks the
+// column (codePointPair).
+func bareColumn(d Dialect, k CursorKey) bool {
+	if k.Expr != "" || k.Path != nil {
+		return false
+	}
+	return codePointKey(k) || keyExpr(d, k) == k.sql(d)
+}
+
 // codePointKey reports whether k orders as text by code point: a string,
 // or a path's timestamp or UUID member, which a document holds as text.
 func codePointKey(k CursorKey) bool {
@@ -403,11 +416,13 @@ func SeekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 // Keys that all walk one direction, none nullable and no value NULL, take a
 // row-value comparison, (key_0, …, key_n) > (v_0, …, v_n), which every
 // dialect has (SQLite from 3.15.0, below the release parse supports) and
-// which seeks an index on the keys to the cursor's row. Others take the
-// lexicographic expansion, OR over depth i of (key_0 = v_0 AND … AND key_i
-// after v_i), NULL-aware. bind binds one value and returns its placeholder;
-// every non-null token value is bound once and its placeholder reused
-// across depths.
+// which seeks an index on the keys to the cursor's row; led by an
+// expression on a dialect that seeks no such row value
+// (rowValueSeeksExpressions), it also bounds key_0 on its own. Others take
+// the lexicographic expansion, OR over depth i of (key_0 = v_0 AND … AND
+// key_i after v_i), NULL-aware. bind binds one value and returns its
+// placeholder; every non-null token value is bound once and its placeholder
+// reused across depths.
 func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any) string) string {
 	phs := make([]string, len(keys))
 	native := len(keys) > 1
@@ -426,10 +441,10 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 	if native {
 		exprs := make([]string, len(keys))
 		for i, k := range keys {
-			// Only a bare column can be seeked on, and only it is left for
-			// the dialect to place the collation: an expression may carry
-			// its own, which on SQLite outranks the operand's.
-			if codePointKey(k) && k.Expr == "" && k.Path == nil {
+			// Only a bare column is left for the dialect to place the
+			// collation: an expression may carry its own, which on SQLite
+			// outranks the operand's.
+			if codePointKey(k) && bareColumn(d, k) {
 				exprs[i], phs[i] = d.codePointPair(keyValue(d, k), phs[i])
 				continue
 			}
@@ -439,7 +454,13 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 		if effectiveDirection(keys[0], token.Reverse) == SortDesc {
 			op = "<"
 		}
-		return "(" + strings.Join(exprs, ", ") + ") " + op + " (" + strings.Join(phs, ", ") + ")"
+		seek := "(" + strings.Join(exprs, ", ") + ") " + op + " (" + strings.Join(phs, ", ") + ")"
+		if d.rowValueSeeksExpressions() || bareColumn(d, keys[0]) {
+			return seek
+		}
+		// The row value implies the bound; the bound alone is what an
+		// index on the leading key's expression seeks.
+		return "(" + exprs[0] + " " + op + "= " + phs[0] + " AND " + seek + ")"
 	}
 
 	var branches []string
