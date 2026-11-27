@@ -312,14 +312,14 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 			// undeclared one would order as the database orders the
 			// column (PostgreSQL text by its collation), not as its
 			// cursor compares.
-			scalar, err := scalarStorage(g, field)
+			scalar, err := ScalarStorage(g, field)
 			if err != nil {
 				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 			}
-			if scalar == "" {
+			if scalar.Type == "" {
 				return nil, fmt.Errorf("field %s: a struct sorts as the scalar its column holds: declare it with storage:\"scalar:<type>\" (<type> is %s)", field.GoName(), pathTypeNames)
 			}
-			fieldType, kind = scalar, kindOf(scalar)
+			fieldType, kind = scalar.Type, scalar.NumberKind
 		}
 		// A mapper sees the field's own type, as the filter schema's does.
 		expr, err := g.MappedExpr(tableName, fieldName, info.Type, tags.Column)

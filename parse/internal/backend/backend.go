@@ -27,10 +27,23 @@ import (
 // SQL compiles for (nil for a provider that compiles none), its database,
 // and the operations it supports.
 type Provider struct {
-	Name         string
-	Dialect      filter.Dialect
+	Name    string
+	Dialect filter.Dialect
+	// Storage is how the provider's database stores the values a row scan
+	// reads back; nil is the Dialect's. A provider without a dialect whose
+	// rows hold values as text sets it.
+	Storage      Storage
 	DB           DB
 	Capabilities Capabilities
+}
+
+// Storage is how a provider's database stores column values, as a row scan
+// reads them back: StoresAsText reports the types it holds as text the
+// scan decodes, a timestamp's canonical text, a document's or an array's
+// JSON (filter.Dialect is one). Name names it in a scan's refusals.
+type Storage interface {
+	Name() string
+	StoresAsText(t core.FieldType) bool
 }
 
 // Capabilities is a set of the operations a provider may lack. The root
@@ -118,6 +131,11 @@ type Resource struct {
 	// the storage each declares.
 	Key      []string
 	KeyTypes []core.TypeInfo
+	// TableColumns are every column of the resource's type, in field
+	// order, each with its type and the storage it declares: the table a
+	// provider that holds its own rows declares (Declarer). Columns are
+	// among them.
+	TableColumns []Column
 	// Tenant and Deleted are the tenant and soft-delete columns, "" for
 	// none.
 	Tenant  string
@@ -131,6 +149,26 @@ type Resource struct {
 	// SQL is the SQL text the resource's statements are compiled around;
 	// nil on a provider without a dialect.
 	SQL *SQLResource
+}
+
+// Column is one column of a resource's table and the type its values hold.
+type Column struct {
+	Name string
+	Type core.TypeInfo
+}
+
+// Declarer is a provider's database that holds its tables itself rather
+// than reading a schema the application created: the root package declares
+// each resource's table to it as the resource is built (parse.NewResource)
+// and again when a relation adds a pair table (parse.Resource.Relate).
+// Declare declares res's table, with its key and every column of
+// TableColumns, and the pair table of each many-to-many relation its
+// schema holds, whose rows are keyed by every column. It is idempotent: a
+// table already declared gains the columns it lacks. Resources on one
+// table must agree on its key and on every column's type; a disagreement
+// is refused and declares nothing.
+type Declarer interface {
+	Declare(res *Resource) error
 }
 
 // SQLResource is the SQL text a resource's descriptor carries for a

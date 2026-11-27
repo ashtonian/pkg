@@ -325,12 +325,19 @@ func (r *resourceCore) Relate(name string, rel Relation) error {
 	if err != nil {
 		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
 	}
-	// The last check: past it nothing fails, so the graph never holds a
-	// relation the resource does not declare.
-	err = r.tenantNode.relate(t.tenantGraph(), rel.policy)
+	addEdge, err := r.tenantNode.relate(t.tenantGraph(), rel.policy)
 	if err != nil {
 		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
 	}
+	// The last check: past it nothing fails, so neither the graph nor the
+	// provider's tables hold a relation the resource does not declare.
+	desc := *r.desc
+	desc.Schema = &related
+	err = r.declare(&desc)
+	if err != nil {
+		return err
+	}
+	addEdge()
 	fs.Fields[name] = field
 	if membership != nil {
 		// The name is an identifier the schemas do not hold (checked above),

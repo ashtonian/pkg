@@ -23,6 +23,9 @@ import (
 type Provider struct {
 	name    string
 	dialect filter.Dialect
+	// storage is how the database stores the values a row scan reads back:
+	// the dialect's, unless the provider names its own.
+	storage backend.Storage
 	db      backend.DB
 	// capabilities are the operations the provider supports; the others
 	// are refused (supports).
@@ -32,7 +35,10 @@ type Provider struct {
 // NewProvider is for parse's provider packages, which open a provider for
 // an application (parsesql.New, parsepgx.New).
 func NewProvider(p backend.Provider) *Provider {
-	provider := &Provider{name: p.Name, dialect: p.Dialect, db: p.DB, capabilities: p.Capabilities}
+	provider := &Provider{name: p.Name, dialect: p.Dialect, storage: p.Storage, db: p.DB, capabilities: p.Capabilities}
+	if provider.storage == nil && p.Dialect != nil {
+		provider.storage = p.Dialect
+	}
 	return provider
 }
 

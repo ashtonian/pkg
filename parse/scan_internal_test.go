@@ -72,18 +72,19 @@ func TestJSONColumn_CustomDecoderAndPresence(t *testing.T) {
 	assert.Nil(t, pointer)
 }
 
-// textStoring is a dialect that stores the values of the types it names as
-// text a row scan decodes, and every other value as the driver's own.
+// textStoring is a provider's storage that holds the values of the types it
+// names as text a row scan decodes, and every other value as the driver's
+// own.
 type textStoring map[core.FieldType]bool
 
-func (textStoring) Name() string { return "provider" }
+func (textStoring) Name() string { return "texty" }
 
 func (s textStoring) StoresAsText(t core.FieldType) bool { return s[t] }
 
 // TestRowDecodeOf_DecodesOnlyTheTextItReads: a scan decodes the text a
-// dialect stores a timestamp, a document or an array as, leaves every
-// other value to the driver where the dialect stores it as its own, and
-// refuses a dialect that stores one of another type as text, which no
+// provider stores a timestamp, a document or an array as, leaves every
+// other value to the driver where the provider stores it as its own, and
+// refuses a provider that stores one of another type as text, which no
 // decoder reads.
 func TestRowDecodeOf_DecodesOnlyTheTextItReads(t *testing.T) {
 	all := textStoring{core.FieldTypeTimestamp: true, core.FieldTypeObject: true, core.FieldTypeJSON: true, core.FieldTypeArray: true, core.FieldTypeInt: true, core.FieldTypeString: true}
@@ -109,7 +110,7 @@ func TestRowDecodeOf_DecodesOnlyTheTextItReads(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := rowDecodeOf(tc.t, tc.json, tc.d)
 			if tc.refused {
-				require.ErrorContains(t, err, "dialect provider stores")
+				require.ErrorContains(t, err, "provider texty stores")
 				return
 			}
 			require.NoError(t, err)

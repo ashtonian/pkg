@@ -101,7 +101,7 @@ jobs:
             {
               "test": {"go": ["./..."]},
               "test-darwin": {"go": ["./process/...", "./state/...", "./onepassword/...", "./config/...", "./config/kongprovider/..."]},
-              "parse-postgres": {"go": ["./parse/...", "./parse/parsepgx/...", "./parse/parsesql/..."]},
+              "parse-postgres": {"go": ["./parse/...", "./parse/parsepgx/...", "./parse/parsesql/...", "./parse/parsememory/..."]},
               "cookbook-postgres": {"paths": ["config/examples/cookbook/go.mod", "config/examples/cookbook/go.sum", "config/examples/cookbook/internal/pgtest/**", "config/examples/cookbook/settingsstore/**"], "go": ["./config"]},
               "parse-sdk": ["parse/sdk/**", "parse/testdata/**", "parse/examples/server/README.md", "tools/check-parse-sdk-*", "tools/check-pnpm.mjs"],
               "parse-benchmarks": {"paths": ["tools/bench-parse.sh"], "go": ["./parse", "./parse/core", "./parse/filter", "./parse/internal/jsonkeys", "./parse/parsehttp"]},

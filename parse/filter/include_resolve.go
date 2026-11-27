@@ -2,10 +2,12 @@ package filter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"reflect"
 	"slices"
+	"time"
 
 	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
@@ -47,48 +49,7 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 	if cfg.scope.row.column != "" {
 		return IncludeRows{}, fmt.Errorf("resolving include %s: a lookup reads one tenant's rows; resolve each tenant's owners with RelationScope.Tenant instead of RowTenant", field.ExternalName)
 	}
-	err = checkResolvable(field)
-	if err != nil {
-		return IncludeRows{}, err
-	}
 	rel := field.Relation
-	out := IncludeRows{IDs: map[string][]string{}}
-	if len(ownerKeys) == 0 {
-		return out, nil
-	}
-	if lookup == nil {
-		return IncludeRows{}, unresolvableRelation(field, "needs an include lookup to be evaluated outside SQL")
-	}
-	for i, k := range ownerKeys {
-		if len(k) != len(rel.SourceColumns) {
-			return IncludeRows{}, fmt.Errorf("resolving include %s: owner key %d has %d values for the %d key columns", field.ExternalName, i, len(k), len(rel.SourceColumns))
-		}
-	}
-	r := newMemberResolver(lookup, resolveConfig{scope: cfg.scope, related: cfg.related})
-	op := OpSome
-	if field.Related == nil {
-		op = OpNotNull
-	}
-	l, _, err := r.relationLookup(ctx, &FilterNode{Field: field, Op: op})
-	if err != nil {
-		return IncludeRows{}, fmt.Errorf("resolving include %s: %w", field.ExternalName, err)
-	}
-	projecting(l, rel.TargetColumns)
-	l.Where = WhereAll(l.Where, ownersIn(rel.SourceColumns, ownerKeys).typed(rel.SourceTypes))
-	l, err = r.inner(ctx, l)
-	if err != nil {
-		return IncludeRows{}, fmt.Errorf("resolving include %s: %w", field.ExternalName, err)
-	}
-	if contextErr := ctx.Err(); contextErr != nil {
-		return IncludeRows{}, contextErr
-	}
-	pairs, err := lookup.LookupPairs(ctx, l, rel.SourceColumns)
-	if err != nil {
-		return IncludeRows{}, fmt.Errorf("resolving include %s: %w", field.ExternalName, err)
-	}
-	if pairs == nil {
-		return IncludeRows{}, fmt.Errorf("resolving include %s: lookup returned no iterator", field.ExternalName)
-	}
 	// Column by column, as the statement ranks a key of several. Targets
 	// are normalized keys (core.NormalizeKey), which their columns' types
 	// always order; the first refusal is kept and returned all the same.
@@ -106,37 +67,14 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 		return 0
 	}
 	byOwner := map[string][]core.Key{}
-	for pair, err := range pairs {
-		if err != nil {
-			return IncludeRows{}, fmt.Errorf("resolving include %s: %w", field.ExternalName, err)
-		}
-		if contextErr := ctx.Err(); contextErr != nil {
-			return IncludeRows{}, contextErr
-		}
-		owner, err := pairKey(pair.Owner, len(rel.SourceColumns))
-		if err != nil {
-			return IncludeRows{}, fmt.Errorf("resolving include %s owner: %w", field.ExternalName, err)
-		}
-		// Named by its canonical text, the text SQL names it by.
-		name, err := core.KeyTextOf(rel.SourceTypes, owner)
-		if err != nil {
-			return IncludeRows{}, fmt.Errorf("resolving include %s owner: %w", field.ExternalName, err)
-		}
-		stored, err := pairKey(pair.Target, len(rel.TargetColumns))
-		if err != nil {
-			return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, err)
-		}
-		target, err := core.NormalizeKey(rel.TargetTypes, stored)
-		if err != nil {
-			return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, err)
-		}
-		keys := byOwner[name]
+	visit := func(owner string, target core.Key) error {
+		keys := byOwner[owner]
 		at, found := slices.BinarySearchFunc(keys, target, compare)
 		if orderErr != nil {
-			return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, orderErr)
+			return fmt.Errorf("target: %w", orderErr)
 		}
 		if found || at > cfg.maxPerOwner {
-			continue
+			return nil
 		}
 		// Keep only the lowest cap+1 distinct keys. The extra key proves
 		// truncation without retaining an unbounded related-row set.
@@ -144,8 +82,14 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 		if len(keys)-1 > cfg.maxPerOwner {
 			keys = keys[:cfg.maxPerOwner+1]
 		}
-		byOwner[name] = keys
+		byOwner[owner] = keys
+		return nil
 	}
+	err = relationPairs(ctx, field, ownerKeys, lookup, resolveConfig{scope: cfg.scope, related: cfg.related}, visit)
+	if err != nil {
+		return IncludeRows{}, fmt.Errorf("resolving include %s: %w", field.ExternalName, err)
+	}
+	out := IncludeRows{IDs: map[string][]string{}}
 	for owner, keys := range byOwner {
 		if len(keys) > cfg.maxPerOwner {
 			out.Truncated = append(out.Truncated, owner)
@@ -162,6 +106,134 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 	}
 	slices.Sort(out.Truncated)
 	return out, nil
+}
+
+// ResolveRelationFacet answers a relation facet of BuildFacetQuery outside
+// SQL: for each visible target of field's relation, under scope as an
+// include reads them (ResolveInclude), the number of distinct owners among
+// ownerKeys that it pairs with, keyed by the target key's text
+// (core.KeyTextOf), the key the facet's bucket carries. FacetBuckets
+// orders and cuts the counts. Owners of more than one tenant resolve per
+// tenant, each with its scope's Tenant: a RowTenant is refused.
+func ResolveRelationFacet(ctx context.Context, field *FieldSchema, ownerKeys []core.Key, lookup IncludeLookup, scope RelationScope) (map[string]int64, error) {
+	if field == nil || field.Relation == nil {
+		return nil, fmt.Errorf("resolving relation facet: field is no relation")
+	}
+	if !field.Facetable {
+		return nil, fmt.Errorf("resolving relation facet: field %q is not facetable", field.ExternalName)
+	}
+	cfg := resolveConfig{scope: scope.tenancy(), related: scope.policies().at(time.Now().UTC())}
+	err := cfg.scope.check()
+	if err != nil {
+		return nil, fmt.Errorf("resolving relation facet %s: %w", field.ExternalName, err)
+	}
+	if cfg.scope.row.column != "" {
+		return nil, fmt.Errorf("resolving relation facet %s: a lookup reads one tenant's rows; resolve each tenant's owners with RelationScope.Tenant instead of RowTenant", field.ExternalName)
+	}
+	rel := field.Relation
+	// Owners, not pairs: two pairs of one owner and one target (typed
+	// edges) count the owner once, as COUNT(DISTINCT owner) does.
+	owners := map[string]map[string]struct{}{}
+	visit := func(owner string, target core.Key) error {
+		name, err := core.KeyTextOf(rel.TargetTypes, target)
+		if err != nil {
+			return fmt.Errorf("target: %w", err)
+		}
+		seen, ok := owners[name]
+		if !ok {
+			seen = map[string]struct{}{}
+			owners[name] = seen
+		}
+		seen[owner] = struct{}{}
+		return nil
+	}
+	err = relationPairs(ctx, field, ownerKeys, lookup, cfg, visit)
+	if err != nil {
+		return nil, fmt.Errorf("resolving relation facet %s: %w", field.ExternalName, err)
+	}
+	counts := make(map[string]int64, len(owners))
+	for name, seen := range owners {
+		counts[name] = int64(len(seen))
+	}
+	return counts, nil
+}
+
+// relationPairs reads the visible pairs of field's relation whose owner is
+// among ownerKeys from lookup, under cfg's scope, and hands each to visit:
+// its owner named by its text (core.KeyTextOf), its target normalized
+// (core.NormalizeKey). A pair table holding one pair twice hands it twice.
+func relationPairs(ctx context.Context, field *FieldSchema, ownerKeys []core.Key, lookup IncludeLookup, cfg resolveConfig, visit func(owner string, target core.Key) error) error {
+	err := checkResolvable(field)
+	if err != nil {
+		return err
+	}
+	rel := field.Relation
+	if len(ownerKeys) == 0 {
+		return nil
+	}
+	if lookup == nil {
+		return unresolvableRelation(field, "needs an include lookup to be evaluated outside SQL")
+	}
+	for i, k := range ownerKeys {
+		if len(k) != len(rel.SourceColumns) {
+			return fmt.Errorf("owner key %d has %d values for the %d key columns", i, len(k), len(rel.SourceColumns))
+		}
+	}
+	r := newMemberResolver(lookup, cfg)
+	op := OpSome
+	if field.Related == nil {
+		op = OpNotNull
+	}
+	l, _, err := r.relationLookup(ctx, &FilterNode{Field: field, Op: op})
+	if err != nil {
+		return err
+	}
+	projecting(l, rel.TargetColumns)
+	l.Where = WhereAll(l.Where, ownersIn(rel.SourceColumns, ownerKeys).typed(rel.SourceTypes))
+	l, err = r.inner(ctx, l)
+	if err != nil {
+		return err
+	}
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	pairs, err := lookup.LookupPairs(ctx, l, rel.SourceColumns)
+	if err != nil {
+		return err
+	}
+	if pairs == nil {
+		return errors.New("lookup returned no iterator")
+	}
+	for pair, err := range pairs {
+		if err != nil {
+			return err
+		}
+		if contextErr := ctx.Err(); contextErr != nil {
+			return contextErr
+		}
+		owner, err := pairKey(pair.Owner, len(rel.SourceColumns))
+		if err != nil {
+			return fmt.Errorf("owner: %w", err)
+		}
+		// Named by its canonical text, the text SQL names it by.
+		name, err := core.KeyTextOf(rel.SourceTypes, owner)
+		if err != nil {
+			return fmt.Errorf("owner: %w", err)
+		}
+		stored, err := pairKey(pair.Target, len(rel.TargetColumns))
+		if err != nil {
+			return fmt.Errorf("target: %w", err)
+		}
+		target, err := core.NormalizeKey(rel.TargetTypes, stored)
+		if err != nil {
+			return fmt.Errorf("target: %w", err)
+		}
+		err = visit(name, target)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ownersIn is the condition holding a lookup's rows to the owner keys:

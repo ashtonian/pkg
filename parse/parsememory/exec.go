@@ -1,0 +1,126 @@
+package parsememory
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/ashtonian/pkg/parse"
+	"github.com/ashtonian/pkg/parse/internal/backend"
+)
+
+// executor runs composed requests (backend.Executor) on db's tables: in
+// txn when it is set, its reads seeing its writes and its updates under a
+// savepoint of it; otherwise each read on the published snapshot and each
+// update in a write of its own.
+type executor struct {
+	db  *Database
+	txn *Txn
+}
+
+// view is what the executor's reads read: the transaction's write, or the
+// snapshot published when the read begins.
+func (e executor) view() (view, error) {
+	err := e.db.open()
+	if err != nil {
+		return nil, err
+	}
+	if e.txn == nil {
+		return e.db.store.read(), nil
+	}
+	if e.txn.w.done {
+		return nil, ErrTxnDone
+	}
+	return e.txn.w, nil
+}
+
+// write runs apply, one update of table's resource, in a write: under a
+// savepoint of the transaction, restored when apply fails, or in a write
+// of its own, which waits for the writer under ctx and is published only
+// when apply succeeds. ErrRowLimit ends the transaction it happens in.
+func (e executor) write(ctx context.Context, table string, apply func(*write) error) error {
+	err := e.db.open()
+	if err != nil {
+		return err
+	}
+	if e.txn != nil {
+		w := e.txn.w
+		if w.done {
+			return ErrTxnDone
+		}
+		saved := w.savepoint()
+		err := apply(w)
+		switch {
+		case errors.Is(err, ErrRowLimit):
+			w.abort()
+		case err != nil:
+			w.restore(saved)
+		}
+		return err
+	}
+	w, err := e.db.store.begin(ctx)
+	if err != nil {
+		return parse.StatementFailed(table, "begin", err)
+	}
+	err = apply(w)
+	if err != nil {
+		w.abort()
+		return err
+	}
+	return parse.StatementFailed(table, "commit", w.commit())
+}
+
+func (e executor) Query(_ context.Context, req backend.QueryRequest, _ backend.QuerySink) error {
+	unsupported := &parse.UnsupportedError{Provider: Name, Capability: backend.Query.String()}
+	return fmt.Errorf("parse: %s: %w", req.Resource.Table, unsupported)
+}
+
+// database is the provider's database as a backend.DB, which declares the
+// tables its resources read (backend.Declarer).
+type database struct {
+	executor
+}
+
+func newDatabase(db *Database) database {
+	d := database{executor: executor{db: db}}
+	return d
+}
+
+func (d database) Declare(res *backend.Resource) error {
+	return d.db.catalog.declare(res)
+}
+
+func (d database) Begin(ctx context.Context) (backend.Tx, error) {
+	txn, err := d.db.Begin(ctx)
+	if err != nil {
+		return nil, parse.StatementFailed("", "begin", err)
+	}
+	begun := transaction{executor: executor{db: d.db, txn: txn}}
+	return begun, nil
+}
+
+// Join runs requests in tx, a transaction of this database (Begin, Tx).
+func (d database) Join(tx backend.Tx) (backend.Executor, error) {
+	t, ok := tx.(transaction)
+	if !ok || t.db != d.db {
+		return nil, errNotJoinable
+	}
+	return t.executor, nil
+}
+
+// errNotJoinable is a transaction to join that this database did not
+// begin.
+var errNotJoinable = errors.New("parsememory: not a transaction of this database")
+
+// transaction is a transaction of the database as a backend.Tx.
+type transaction struct {
+	executor
+}
+
+func (t transaction) Commit(ctx context.Context) error {
+	return parse.StatementFailed("", "commit", t.txn.Commit(ctx))
+}
+
+func (t transaction) Rollback(ctx context.Context) error {
+	return t.txn.Rollback(ctx)
+}

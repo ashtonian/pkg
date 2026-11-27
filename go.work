@@ -13,6 +13,7 @@ use (
 	./gitx
 	./parse
 	./parse/client
+	./parse/parsememory
 	./parse/parsepgx
 	./parse/parsesql
 	./config

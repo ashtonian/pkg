@@ -71,12 +71,16 @@ type resourceCore struct {
 	searchParam string
 	// read are the columns the resource reads, in field order, and
 	// sqlTypes the declared database types among them (ColumnType);
-	// tableColumns is every column of T, and columnFields the field holding
-	// each.
+	// tableColumns is every column of T, columnOrder the same in field
+	// order, and columnFields the field holding each.
 	read         []string
 	sqlTypes     map[string]core.SQLType
 	tableColumns map[string]reflect.Type
+	columnOrder  []string
 	columnFields map[string]*core.Field
+	// scalars are the scalar types of the document columns their storage
+	// declares one for (filter.ScalarStorage): the type the column holds.
+	scalars map[string]core.TypeInfo
 	// undecodable holds why a read column's type, an sql.Scanner the
 	// resource does not declare JSON, cannot be decoded as a stored
 	// document (jsonkeys.CheckDecodable): RowScanner refuses ScanJSON on it.
@@ -159,7 +163,27 @@ func NewResource[T any](p *Provider, table string, opts ...ResourceOption) (*Res
 		}
 	}
 	r := &Resource[T]{resourceCore: *c, applier: applier}
+	err = r.declare(r.desc)
+	if err != nil {
+		return nil, err
+	}
 	return r, nil
+}
+
+// declare declares desc's tables to the provider's database when the
+// database holds its tables itself (backend.Declarer): the last step of
+// building or relating a resource, so a refusal leaves nothing declared
+// that the resource does not hold.
+func (r *resourceCore) declare(desc *backend.Resource) error {
+	d, ok := r.provider.db.(backend.Declarer)
+	if !ok {
+		return nil
+	}
+	err := d.Declare(desc)
+	if err != nil {
+		return fmt.Errorf("parse: %s: declaring the table: %w", r.table, err)
+	}
+	return nil
 }
 
 // newResourceCore is NewResource's resource without what depends on T:
@@ -251,7 +275,12 @@ func newResourceCore(p *Provider, table string, rowType reflect.Type, generate f
 	}
 	r.tenantNode = newTenantNode(table, tenant)
 	r.tableColumns = columns
+	r.columnOrder = order
 	r.columnFields = fieldsByColumn
+	r.scalars, err = scalarColumns(r.gen, fieldsByColumn)
+	if err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", table, err)
+	}
 
 	read, err := readColumns(table, cfg, columns)
 	if err != nil {
@@ -711,18 +740,59 @@ func (r *resourceCore) Columns() []string {
 	return out
 }
 
+// scalarColumns are the scalar types the storage of each document column
+// of fields declares (filter.ScalarStorage).
+func scalarColumns(g *core.SchemaGenerator, fields map[string]*core.Field) (map[string]core.TypeInfo, error) {
+	scalars := map[string]core.TypeInfo{}
+	for name, f := range fields {
+		info, err := g.FieldType(f)
+		if err != nil {
+			return nil, fmt.Errorf("column %s: %w", name, err)
+		}
+		if !core.IsDocument(info.Type) {
+			continue
+		}
+		scalar, err := filter.ScalarStorage(g, f)
+		if err != nil {
+			return nil, fmt.Errorf("column %s: %w", name, err)
+		}
+		if scalar.Type != "" {
+			scalars[name] = scalar
+		}
+	}
+	return scalars, nil
+}
+
+// storedTypeInfo is the type of the values column holds: its field's
+// (columnTypeInfo), or the scalar its storage declares a document field's
+// column holds.
+func (r *resourceCore) storedTypeInfo(column string) core.TypeInfo {
+	info := r.columnTypeInfo(column)
+	scalar, ok := r.scalars[column]
+	if ok {
+		scalar.SQLType = info.SQLType
+		return scalar
+	}
+	return info
+}
+
 // descriptor is the resource's descriptor (backend.Resource), with its
 // projection for a provider with a dialect.
 func (r *resourceCore) descriptor() *backend.Resource {
+	table := make([]backend.Column, len(r.columnOrder))
+	for i, name := range r.columnOrder {
+		table[i] = backend.Column{Name: name, Type: r.storedTypeInfo(name)}
+	}
 	desc := &backend.Resource{
-		Table:    r.table,
-		Columns:  slices.Clone(r.read),
-		Key:      slices.Clone(r.pk),
-		KeyTypes: r.keyColumns().types,
-		Tenant:   r.tenant,
-		Deleted:  r.deleted,
-		Schema:   r.filterSchema,
-		Computed: r.readExprs != nil,
+		Table:        r.table,
+		Columns:      slices.Clone(r.read),
+		Key:          slices.Clone(r.pk),
+		KeyTypes:     r.keyColumns().types,
+		TableColumns: table,
+		Tenant:       r.tenant,
+		Deleted:      r.deleted,
+		Schema:       r.filterSchema,
+		Computed:     r.readExprs != nil,
 	}
 	if r.dialect != nil {
 		desc.SQL = &backend.SQLResource{Projection: strings.Join(r.Columns(), ", ")}

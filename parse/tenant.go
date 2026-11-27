@@ -143,33 +143,42 @@ func newTenantNode(table string, own *tenantColumn) *tenantNode {
 	return n
 }
 
-// relate adds n's relation to to, and with it to's tenant columns to the
-// key of n and of every resource that reaches n. When one of those keys
-// would hold a textual and an integer column, the relation is refused and
-// nothing changes.
-func (n *tenantNode) relate(to *tenantNode, policy bool) error {
-	n.edges = append(n.edges, tenantEdge{to: to, policy: policy})
+// relate checks n's relation to to, which adds to's tenant columns to the
+// key of n and of every resource that reaches n, and returns what adds it.
+// When one of those keys would hold a textual and an integer column, the
+// relation is refused; nothing changes until the returned add runs.
+func (n *tenantNode) relate(to *tenantNode, policy bool) (func(), error) {
+	edge := tenantEdge{to: to, policy: policy}
+	n.edges = append(n.edges, edge)
 	dependants := n.dependants()
 	keys := make([]tenantKey, len(dependants))
+	var conflict *tenantConflict
+	var at *tenantNode
 	for i, d := range dependants {
-		key, conflict := tenantKeyOf(d.reached())
+		keys[i], conflict = tenantKeyOf(d.reached())
 		if conflict != nil {
-			n.edges = n.edges[:len(n.edges)-1]
-			a, b := conflict.first, conflict.other
-			if d == n {
-				return fmt.Errorf("tenant columns %s (%s) and %s (%s) hold different types, but one request binds its tenant to both",
-					a.name(n.table), a.info.Type, b.name(n.table), b.info.Type)
-			}
-			return fmt.Errorf("%s binds one request's tenant to tenant columns %s (%s) and %s (%s), which hold different types",
-				d.table, a.name(n.table), a.info.Type, b.name(n.table), b.info.Type)
+			at = d
+			break
 		}
-		keys[i] = key
 	}
-	to.owners = append(to.owners, n)
-	for i, d := range dependants {
-		d.key = keys[i]
+	n.edges = n.edges[:len(n.edges)-1]
+	if conflict != nil {
+		a, b := conflict.first, conflict.other
+		if at == n {
+			return nil, fmt.Errorf("tenant columns %s (%s) and %s (%s) hold different types, but one request binds its tenant to both",
+				a.name(n.table), a.info.Type, b.name(n.table), b.info.Type)
+		}
+		return nil, fmt.Errorf("%s binds one request's tenant to tenant columns %s (%s) and %s (%s), which hold different types",
+			at.table, a.name(n.table), a.info.Type, b.name(n.table), b.info.Type)
 	}
-	return nil
+	add := func() {
+		n.edges = append(n.edges, edge)
+		to.owners = append(to.owners, n)
+		for i, d := range dependants {
+			d.key = keys[i]
+		}
+	}
+	return add, nil
 }
 
 // dependants is n and every resource whose relations reach it.

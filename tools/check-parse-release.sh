@@ -6,7 +6,7 @@ set -euo pipefail
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 scratch=$(mktemp -d)
 trap 'chmod -R u+w "$scratch" 2>/dev/null; rm -rf "$scratch"' EXIT
-modules=(parse parse/parsepgx parse/parsesql)
+modules=(parse parse/parsepgx parse/parsesql parse/parsememory)
 parse_module=github.com/ashtonian/pkg/parse
 (
   cd "$repo_root/tools/modarchive"
@@ -61,11 +61,19 @@ while IFS=$'\t' read -r module module_version source; do
     # a requirement in every consumer's module graph and vulnerability scan.
     go list -deps -test -tags=unit,integration -f '{{if and (not .Standard) .CgoFiles}}{{.ImportPath}}{{end}}' "$module/..." | sort -u |
       awk -v module="$module" 'NF {print "cgo package in " module " or its tests: " $0 > "/dev/stderr"; bad=1} END {exit bad}'
-    if [[ $module == "$parse_module" ]]; then
-      # parse requires no database driver: a consumer's module graph holds
-      # one only through the provider module it requires.
-      go list -m all | awk '/^(github\.com\/jackc\/|modernc\.org\/)/ {print "parse requires a database driver: " $0 > "/dev/stderr"; bad=1} END {exit bad}'
-    else
+    case $module in
+    "$parse_module" | "$parse_module/parsememory")
+      # parse requires no database driver, nor does the memory provider,
+      # which runs no SQL: a consumer's module graph holds one only through
+      # the SQL provider module it requires.
+      go list -m all | awk -v module="$module" '/^(github\.com\/jackc\/|modernc\.org\/)/ {print module " requires a database driver: " $0 > "/dev/stderr"; bad=1} END {exit bad}'
+      ;;
+    *)
+      # A SQL provider links no package of the memory provider.
+      go list -deps "$module/..." | awk -v memory="$parse_module/parsememory" '$0 == memory || index($0, memory "/") == 1 {print "a SQL provider links the memory provider: " $0 > "/dev/stderr"; bad=1} END {exit bad}'
+      ;;
+    esac
+    if [[ $module != "$parse_module" ]]; then
       # A provider built against another release of parse fails to compile,
       # naming both releases: parse's next minor release here.
       other="$scratch/parse-other-$name"
