@@ -362,7 +362,7 @@ func TestSQLiteDialect_MarshalValueWritesCanonicalTimestamps(t *testing.T) {
 	assert.Equal(t, `["`+canonical+`",null]`, got)
 	got, err = filter.SQLiteDialect{}.MarshalValue([]time.Time(nil), list)
 	require.NoError(t, err)
-	assert.Equal(t, `null`, got, "a nil list is JSON null")
+	assert.Nil(t, got, "a nil list is NULL, as a driver writes it to a native array")
 	got, err = filter.SQLiteDialect{}.MarshalValue(&[]time.Time{instant}, list)
 	require.NoError(t, err)
 	assert.Equal(t, `["`+canonical+`"]`, got, "a pointer to a list")

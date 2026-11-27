@@ -120,6 +120,8 @@ func sqlCases() []sqlCase {
 		{name: "Applier_FailingMemberOperationAgreesWithTheDatabase", run: applierFailingMemberOperationAgreesWithTheDatabase},
 		{name: "Applier_MergesIntoARawMessageMember", run: applierMergesIntoARawMessageMember},
 
+		{name: "ComposedPatch_ApplyAgreesWithTheDatabase", run: composedPatchApplyAgreesWithTheDatabase},
+
 		{name: "RenderRelationOp_Executes", run: renderRelationOpExecutes},
 
 		{name: "CanonicalOrder", run: canonicalOrder},

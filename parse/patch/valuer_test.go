@@ -35,6 +35,8 @@ func (a amount) Value() (driver.Value, error) { return a.text, nil }
 // A patch to a column whose Go type is a database value binds that value,
 // not its JSON form: the quoted "200" a decimal encodes to reached a NUMERIC
 // column as the string "\"200\"" (PostgreSQL refused it; SQLite stored it).
+// PostgreSQL binds the Valuer, which pgx reads; SQLite binds the value it
+// stores (core.StorageValue), which database/sql passes on as it is.
 func TestPatch_ADatabaseValueColumnBindsTheValue(t *testing.T) {
 	type Limit struct {
 		ID  string `json:"id"`
@@ -52,9 +54,7 @@ func TestPatch_ADatabaseValueColumnBindsTheValue(t *testing.T) {
 		built, err := patch.BuildPatchSQL(parsed, dialect)
 		require.NoError(t, err)
 		require.Len(t, built.Args, 1, dialect.Name())
-		valuer, ok := built.Args[0].(driver.Valuer)
-		require.True(t, ok)
-		v, err := valuer.Value()
+		v, err := driver.DefaultParameterConverter.ConvertValue(built.Args[0])
 		require.NoError(t, err)
 		assert.Equal(t, "200", v, dialect.Name())
 	}

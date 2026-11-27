@@ -139,6 +139,7 @@ SQLite cases run locally. PostgreSQL and PostGIS tests run against the servers `
 | [parsepgx suite](../parsepgx/parsepgx_integration_test.go) | Page walks with totals, facets and includes; tenancy; every pgx exec mode; snapshots; update rollback; guarded updates |
 | [parsepgx cancellation](../parsepgx/cancel_integration_test.go) | Concurrent relation updates of one owner; lists and updates cancelled or past their deadline mid-statement |
 | [Change predicate cases](../internal/corpus/patch.go) | `SkipUnchanged`'s comparisons per column kind, executed on SQLite and PostgreSQL |
+| [Composed update cases](../internal/corpus/patch_storage.go) | `ComposedPatch.Apply` over a row's stored values against each engine's `UPDATE`: the values written, the change verdict and the refusals, for every operation kind and column type |
 | [HTTP server](../examples/server/) | SQLite requests, pagination, facets, and patching |
 | [Filter conformance](../filter/filtertest/) | Shared operator/type behavior for backend implementers |
 | [Database corpus](../internal/corpus/) | Every database-backed case, run by `parsesql`'s and `parsepgx`'s `TestCorpus` on their engine: executor contract, lists, keysets, facets, filters, keys, values, updates, policies, relations, tenancy, reserved identifiers, SQLite query plans, filter's builders on the database, patch SQL, string literals, PostGIS geo measures |
