@@ -11,25 +11,26 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 )
 
 // A merge patch into a map keyed by an integer or by a type with text
 // methods applies as encoding/json decodes the members over the map.
 func TestMergePatch_MapKeysDecodeAsEncodingJSON(t *testing.T) {
-	r := parse.MustResource[keyedMaps](onSQLite, "keyed_maps")
-	for _, tc := range keyedMapMerges() {
-		t.Run(tc.name, func(t *testing.T) {
-			parsed, err := r.ParseMergePatch([]byte(tc.body))
+	r := parse.MustResource[parsetest.KeyedMaps](onSQLite, "keyed_maps")
+	for _, tc := range parsetest.KeyedMapMerges() {
+		t.Run(tc.Name, func(t *testing.T) {
+			parsed, err := r.ParseMergePatch([]byte(tc.Body))
 			require.NoError(t, err)
-			got, err := r.ApplyValidatedPatch(parsed, keyedMapsRow())
+			got, err := r.ApplyValidatedPatch(parsed, parsetest.KeyedMapsRow())
 			require.NoError(t, err)
-			assert.Equal(t, mergedByEncodingJSON(t, keyedMapsRow(), tc.body), got)
+			assert.Equal(t, parsetest.MergedByEncodingJSON(t, parsetest.KeyedMapsRow(), tc.Body), got)
 		})
 	}
 }
 
 func TestMergePatch_MapKeysRefused(t *testing.T) {
-	r := parse.MustResource[keyedMaps](onSQLite, "keyed_maps")
+	r := parse.MustResource[parsetest.KeyedMaps](onSQLite, "keyed_maps")
 	for _, tc := range keyedMapRefusals() {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := r.ParseMergePatch([]byte(tc.body))

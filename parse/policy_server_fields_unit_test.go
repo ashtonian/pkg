@@ -12,10 +12,11 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 )
 
 func TestPolicy_NamesColumnsRequestsCannotFilter(t *testing.T) {
-	docs := serverFieldDocuments(t, onPostgres)
+	docs := parsetest.ServerFieldDocuments(t, onPostgres)
 	tests := []struct {
 		name       string
 		constraint *filter.PolicyConstraint
@@ -30,7 +31,7 @@ func TestPolicy_NamesColumnsRequestsCannotFilter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			plan, err := docs.BuildList(nil, policyOn(tt.constraint))
+			plan, err := docs.BuildList(nil, parsetest.PolicyOn(tt.constraint))
 			require.NoError(t, err)
 			assert.Contains(t, plan.Page.SQL, tt.wantSQL)
 			assert.Equal(t, []any{tt.wantArg}, plan.Page.Args[:1])
@@ -39,7 +40,7 @@ func TestPolicy_NamesColumnsRequestsCannotFilter(t *testing.T) {
 }
 
 func TestPolicy_ServerFieldsStayOutOfRequests(t *testing.T) {
-	docs := serverFieldDocuments(t, onPostgres)
+	docs := parsetest.ServerFieldDocuments(t, onPostgres)
 	for _, q := range []url.Values{
 		{filter.ParamFilter: {`{"owner_id":7}`}},
 		{filter.ParamFilter: {`{"region":"eu"}`}},
@@ -59,22 +60,22 @@ func TestPolicy_ServerFieldsStayOutOfRequests(t *testing.T) {
 }
 
 func TestPolicy_ServerFieldsKeepTheirTypes(t *testing.T) {
-	docs := serverFieldDocuments(t, onPostgres)
+	docs := parsetest.ServerFieldDocuments(t, onPostgres)
 
-	_, err := docs.BuildList(nil, policyOn(&filter.PolicyConstraint{Field: "owner_id", Operator: filter.OpLike, Value: "7%"}))
+	_, err := docs.BuildList(nil, parsetest.PolicyOn(&filter.PolicyConstraint{Field: "owner_id", Operator: filter.OpLike, Value: "7%"}))
 	assert.ErrorIs(t, err, filter.ErrPolicyInvalid, "an operator the type has not")
 
-	_, err = docs.BuildList(nil, policyOn(&filter.PolicyConstraint{Field: "owner_id", Operator: filter.OpEq, Value: "seven"}))
+	_, err = docs.BuildList(nil, parsetest.PolicyOn(&filter.PolicyConstraint{Field: "owner_id", Operator: filter.OpEq, Value: "seven"}))
 	assert.ErrorIs(t, err, filter.ErrPolicyInvalid, "a value the type refuses")
 
-	_, err = docs.BuildList(nil, policyOn(&filter.PolicyConstraint{Field: "region", Operator: filter.OpEq, Value: "apac"}))
+	_, err = docs.BuildList(nil, parsetest.PolicyOn(&filter.PolicyConstraint{Field: "region", Operator: filter.OpEq, Value: "apac"}))
 	assert.ErrorIs(t, err, filter.ErrPolicyInvalid, "a value outside the field's enum")
 
-	plan, err := docs.BuildList(nil, policyOn(&filter.PolicyConstraint{Field: "owner_id", Operator: filter.OpEq, Value: "seven", UnknownIfInvalid: true}))
+	plan, err := docs.BuildList(nil, parsetest.PolicyOn(&filter.PolicyConstraint{Field: "owner_id", Operator: filter.OpEq, Value: "seven", UnknownIfInvalid: true}))
 	require.NoError(t, err)
 	assert.Contains(t, plan.Page.SQL, "WHERE NULL", "an invalid value under UnknownIfInvalid admits no row")
 
-	_, err = docs.BuildList(nil, policyOn(&filter.PolicyConstraint{Field: "owner", Operator: filter.OpEq, Value: 7}))
+	_, err = docs.BuildList(nil, parsetest.PolicyOn(&filter.PolicyConstraint{Field: "owner", Operator: filter.OpEq, Value: 7}))
 	assert.ErrorIs(t, err, filter.ErrPolicyInvalid, "a name no column has still fails closed")
 }
 
@@ -91,8 +92,8 @@ var serverFieldRows = []map[string]any{
 // PostgreSQL cases run over the same rows, with the reference evaluator, as
 // a memory backend does.
 func TestPolicyServerFields_Memory(t *testing.T) {
-	docs := serverFieldDocuments(t, onPostgres)
-	ast, err := filter.ApplyPolicyConstraints(docs.FilterSchema(), nil, ownerEUPolicy().Policy)
+	docs := parsetest.ServerFieldDocuments(t, onPostgres)
+	ast, err := filter.ApplyPolicyConstraints(docs.FilterSchema(), nil, parsetest.OwnerEUPolicy().Policy)
 	require.NoError(t, err)
 	var ids []int
 	for _, row := range serverFieldRows {
@@ -148,7 +149,7 @@ func policySQL[T any](t *testing.T, c *filter.PolicyConstraint) (string, error) 
 	t.Helper()
 	r, err := parse.NewResource[T](onPostgres, "documents")
 	require.NoError(t, err)
-	plan, err := r.BuildList(nil, policyOn(c))
+	plan, err := r.BuildList(nil, parsetest.PolicyOn(c))
 	if err != nil {
 		return "", err
 	}
@@ -223,12 +224,12 @@ func TestPolicy_UntypedFieldsKeepTheirErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := docs.BuildList(nil, policyOn(&filter.PolicyConstraint{Field: tt.field, Operator: filter.OpNull}))
+			_, err := docs.BuildList(nil, parsetest.PolicyOn(&filter.PolicyConstraint{Field: tt.field, Operator: filter.OpNull}))
 			assert.ErrorContains(t, err, tt.wantErr)
 		})
 	}
 
-	plan, err := docs.BuildList(nil, policyOn(&filter.PolicyConstraint{Field: "id", Operator: filter.OpEq, Value: 1}))
+	plan, err := docs.BuildList(nil, parsetest.PolicyOn(&filter.PolicyConstraint{Field: "id", Operator: filter.OpEq, Value: 1}))
 	require.NoError(t, err)
 	assert.Contains(t, plan.Page.SQL, `"documents"."id" = $1`, "the resource's other fields still resolve")
 }
@@ -244,10 +245,10 @@ func TestRelate_RefusesPolicyNames(t *testing.T) {
 	comments := parse.MustResource[serverFieldComment](onPostgres, "comments")
 	for _, name := range []string{"owner_id", "region", "region_code", "folder_id"} {
 		t.Run(name, func(t *testing.T) {
-			docs := serverFieldDocuments(t, onPostgres)
+			docs := parsetest.ServerFieldDocuments(t, onPostgres)
 			assert.ErrorContains(t, docs.Relate(name, parse.HasMany(comments, "document_id")), "server policies")
 
-			plan, err := docs.BuildList(nil, policyOn(&filter.PolicyConstraint{Field: name, Operator: filter.OpNotNull}))
+			plan, err := docs.BuildList(nil, parsetest.PolicyOn(&filter.PolicyConstraint{Field: name, Operator: filter.OpNotNull}))
 			require.NoError(t, err)
 			assert.NotContains(t, plan.Page.SQL, "EXISTS", "a policy on the name still constrains the column")
 		})
@@ -260,6 +261,6 @@ func TestRelate_RefusesPolicyNames(t *testing.T) {
 	})
 
 	t.Run("a name no field has", func(t *testing.T) {
-		assert.NoError(t, serverFieldDocuments(t, onPostgres).Relate("comments", parse.HasMany(comments, "document_id")))
+		assert.NoError(t, parsetest.ServerFieldDocuments(t, onPostgres).Relate("comments", parse.HasMany(comments, "document_id")))
 	})
 }

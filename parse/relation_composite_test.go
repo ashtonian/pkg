@@ -11,16 +11,17 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
-func crResources(t *testing.T) (*parse.Resource[crStock], *parse.Resource[crMove], *parse.Resource[crTag]) {
+func crResources(t *testing.T) (*parse.Resource[parsetest.CrStock], *parse.Resource[parsetest.CrMove], *parse.Resource[parsetest.CrTag]) {
 	t.Helper()
-	stock, err := parse.NewResource[crStock](onSQLite, "cr_stock", parse.PrimaryKey("warehouse_id", "sku"))
+	stock, err := parse.NewResource[parsetest.CrStock](onSQLite, "cr_stock", parse.PrimaryKey("warehouse_id", "sku"))
 	require.NoError(t, err)
-	moves, err := parse.NewResource[crMove](onSQLite, "cr_moves")
+	moves, err := parse.NewResource[parsetest.CrMove](onSQLite, "cr_moves")
 	require.NoError(t, err)
-	tags, err := parse.NewResource[crTag](onSQLite, "cr_tags")
+	tags, err := parse.NewResource[parsetest.CrTag](onSQLite, "cr_tags")
 	require.NoError(t, err)
 	return stock, moves, tags
 }
@@ -33,41 +34,41 @@ func TestRelate_CompositeKeyDeclarations(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
 		owner   string
-		rel     func(stock *parse.Resource[crStock], moves *parse.Resource[crMove], tags *parse.Resource[crTag]) parse.Relation
+		rel     func(stock *parse.Resource[parsetest.CrStock], moves *parse.Resource[parsetest.CrMove], tags *parse.Resource[parsetest.CrTag]) parse.Relation
 		wantErr string
 	}{
 		{
 			name:  "has-many on the owner's key",
 			owner: "stock",
-			rel: func(_ *parse.Resource[crStock], moves *parse.Resource[crMove], _ *parse.Resource[crTag]) parse.Relation {
+			rel: func(_ *parse.Resource[parsetest.CrStock], moves *parse.Resource[parsetest.CrMove], _ *parse.Resource[parsetest.CrTag]) parse.Relation {
 				return parse.HasMany(moves, key, parse.Includable(), parse.Facetable())
 			},
 		},
 		{
 			name:  "belongs-to the target's key",
 			owner: "moves",
-			rel: func(stock *parse.Resource[crStock], _ *parse.Resource[crMove], _ *parse.Resource[crTag]) parse.Relation {
+			rel: func(stock *parse.Resource[parsetest.CrStock], _ *parse.Resource[parsetest.CrMove], _ *parse.Resource[parsetest.CrTag]) parse.Relation {
 				return parse.BelongsTo(stock, key)
 			},
 		},
 		{
 			name:  "many-to-many from the key",
 			owner: "stock",
-			rel: func(_ *parse.Resource[crStock], _ *parse.Resource[crMove], tags *parse.Resource[crTag]) parse.Relation {
+			rel: func(_ *parse.Resource[parsetest.CrStock], _ *parse.Resource[parsetest.CrMove], tags *parse.Resource[parsetest.CrTag]) parse.Relation {
 				return parse.ManyToMany(tags, parse.Through("cr_stock_tags", key, "tag_id"), parse.Includable(), parse.Facetable(), parse.Writable())
 			},
 		},
 		{
 			name:  "many-to-many to the key",
 			owner: "tags",
-			rel: func(stock *parse.Resource[crStock], _ *parse.Resource[crMove], _ *parse.Resource[crTag]) parse.Relation {
+			rel: func(stock *parse.Resource[parsetest.CrStock], _ *parse.Resource[parsetest.CrMove], _ *parse.Resource[parsetest.CrTag]) parse.Relation {
 				return parse.ManyToMany(stock, parse.Through("cr_stock_tags", "tag_id", key), parse.Includable(), parse.Facetable(), parse.Writable())
 			},
 		},
 		{
 			name:  "has-many foreign key shorter than the key",
 			owner: "stock",
-			rel: func(_ *parse.Resource[crStock], moves *parse.Resource[crMove], _ *parse.Resource[crTag]) parse.Relation {
+			rel: func(_ *parse.Resource[parsetest.CrStock], moves *parse.Resource[parsetest.CrMove], _ *parse.Resource[parsetest.CrTag]) parse.Relation {
 				return parse.HasMany(moves, "sku")
 			},
 			wantErr: `relation "rel": foreign key (sku) pairs by position with cr_stock's key (warehouse_id, sku), so it names as many columns`,
@@ -75,7 +76,7 @@ func TestRelate_CompositeKeyDeclarations(t *testing.T) {
 		{
 			name:  "belongs-to foreign key naming a column twice",
 			owner: "moves",
-			rel: func(stock *parse.Resource[crStock], _ *parse.Resource[crMove], _ *parse.Resource[crTag]) parse.Relation {
+			rel: func(stock *parse.Resource[parsetest.CrStock], _ *parse.Resource[parsetest.CrMove], _ *parse.Resource[parsetest.CrTag]) parse.Relation {
 				return parse.BelongsTo(stock, []string{"sku", "sku"})
 			},
 			wantErr: `foreign key names "sku" twice`,
@@ -83,7 +84,7 @@ func TestRelate_CompositeKeyDeclarations(t *testing.T) {
 		{
 			name:  "paired columns of different key kinds",
 			owner: "moves",
-			rel: func(stock *parse.Resource[crStock], _ *parse.Resource[crMove], _ *parse.Resource[crTag]) parse.Relation {
+			rel: func(stock *parse.Resource[parsetest.CrStock], _ *parse.Resource[parsetest.CrMove], _ *parse.Resource[parsetest.CrTag]) parse.Relation {
 				return parse.BelongsTo(stock, []string{"code", "sku"})
 			},
 			wantErr: "cr_moves.code is string and cr_stock.warehouse_id, its pair, is int",
@@ -91,7 +92,7 @@ func TestRelate_CompositeKeyDeclarations(t *testing.T) {
 		{
 			name:  "unknown foreign key column",
 			owner: "stock",
-			rel: func(_ *parse.Resource[crStock], moves *parse.Resource[crMove], _ *parse.Resource[crTag]) parse.Relation {
+			rel: func(_ *parse.Resource[parsetest.CrStock], moves *parse.Resource[parsetest.CrMove], _ *parse.Resource[parsetest.CrTag]) parse.Relation {
 				return parse.HasMany(moves, []string{"warehouse_id", "skew"})
 			},
 			wantErr: `foreign key "skew" is not a column of cr_moves`,
@@ -99,7 +100,7 @@ func TestRelate_CompositeKeyDeclarations(t *testing.T) {
 		{
 			name:  "pair table source shorter than the owner's key",
 			owner: "stock",
-			rel: func(_ *parse.Resource[crStock], _ *parse.Resource[crMove], tags *parse.Resource[crTag]) parse.Relation {
+			rel: func(_ *parse.Resource[parsetest.CrStock], _ *parse.Resource[parsetest.CrMove], tags *parse.Resource[parsetest.CrTag]) parse.Relation {
 				return parse.ManyToMany(tags, parse.Through("cr_stock_tags", "stock_id", "tag_id"))
 			},
 			wantErr: "pair table cr_stock_tags's source (stock_id) pairs by position with cr_stock's key (warehouse_id, sku), so it names as many columns",
@@ -107,7 +108,7 @@ func TestRelate_CompositeKeyDeclarations(t *testing.T) {
 		{
 			name:  "pair table target longer than the target's key",
 			owner: "stock",
-			rel: func(_ *parse.Resource[crStock], _ *parse.Resource[crMove], tags *parse.Resource[crTag]) parse.Relation {
+			rel: func(_ *parse.Resource[parsetest.CrStock], _ *parse.Resource[parsetest.CrMove], tags *parse.Resource[parsetest.CrTag]) parse.Relation {
 				return parse.ManyToMany(tags, parse.Through("cr_stock_tags", key, []string{"tag_id", "kind"}))
 			},
 			wantErr: "pair table cr_stock_tags's target (tag_id, kind) pairs by position with cr_tags's key (id), so it names as many columns",
@@ -115,7 +116,7 @@ func TestRelate_CompositeKeyDeclarations(t *testing.T) {
 		{
 			name:  "include on another owner column",
 			owner: "stock",
-			rel: func(_ *parse.Resource[crStock], moves *parse.Resource[crMove], _ *parse.Resource[crTag]) parse.Relation {
+			rel: func(_ *parse.Resource[parsetest.CrStock], moves *parse.Resource[parsetest.CrMove], _ *parse.Resource[parsetest.CrTag]) parse.Relation {
 				return parse.HasMany(moves, "sku", parse.References("sku"), parse.Includable())
 			},
 			wantErr: "an include groups related keys by the owner's key (warehouse_id, sku), and the relation correlates on sku",

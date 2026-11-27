@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
+	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/parsepgx"
 )
@@ -46,7 +48,7 @@ type countedRow struct {
 // names the table once, then the statement, then the column.
 func TestList_NamesAScanFailureOnce(t *testing.T) {
 	p, db := providertest.SQLite(t)
-	execStatements(t, db,
+	dbtest.Exec(t, db,
 		`CREATE TABLE "counted" ("id" TEXT PRIMARY KEY, "counts" TEXT)`,
 		`INSERT INTO "counted" VALUES ('a', 'null')`)
 	r := parse.MustResource[countedRow](p, "counted")
@@ -59,7 +61,7 @@ func TestList_NamesAScanFailureOnce(t *testing.T) {
 // provider, or none, is refused before it is used.
 func TestIn(t *testing.T) {
 	p, _ := providertest.SQLite(t)
-	r := execItems(p)
+	r := parsetest.ExecItems(p)
 	assert.Same(t, p, r.Provider())
 	tx, err := p.Begin(t.Context())
 	require.NoError(t, err)

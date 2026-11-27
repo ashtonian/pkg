@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
+	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
@@ -139,7 +141,7 @@ type tenantKeyLabel struct {
 }
 
 func TestRelate_TenantKeysAgree(t *testing.T) {
-	commands := parse.MustResource[tenantKeyCommand](onPostgres, "commands", parse.TenantColumn("tenant_id"))
+	commands := parse.MustResource[parsetest.TenantKeyCommand](onPostgres, "commands", parse.TenantColumn("tenant_id"))
 	labels := parse.MustResource[tenantKeyLabel](onPostgres, "labels", parse.TenantColumn("tenant_id"))
 
 	t.Run("a target holding the tenant as another type is refused", func(t *testing.T) {
@@ -154,7 +156,7 @@ func TestRelate_TenantKeysAgree(t *testing.T) {
 	})
 
 	t.Run("an owner without a tenant takes its target's key type", func(t *testing.T) {
-		devices := parse.MustResource[untenantedDevice](onPostgres, "devices")
+		devices := parse.MustResource[parsetest.UntenantedDevice](onPostgres, "devices")
 		devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed()))
 		req, err := devices.ParseListInput(parse.ListInput{Filter: `{"commands":{"$some":{"status":"pending"}}}`})
 		require.NoError(t, err)
@@ -186,7 +188,7 @@ func TestRelate_TenantKeysAgree(t *testing.T) {
 		// the membership statements bound: the tenant as text would be
 		// stored as text, and would delete no pair it replaces.
 		provider, db := providertest.SQLite(t)
-		execStatements(t, db,
+		dbtest.Exec(t, db,
 			`CREATE TABLE devices (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, name TEXT NOT NULL)`,
 			`CREATE TABLE commands (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, device_id INTEGER NOT NULL, status TEXT NOT NULL)`,
 			`CREATE TABLE device_commands (device_id, command_id, tenant_id)`,
@@ -195,7 +197,7 @@ func TestRelate_TenantKeysAgree(t *testing.T) {
 			`INSERT INTO device_commands VALUES (1, 8, 44)`,
 		)
 		stored := parse.MustResource[int32TenantDevice](provider, "devices", parse.TenantColumn("tenant_id"))
-		stored.MustRelate("commands", parse.ManyToMany(parse.MustResource[tenantKeyCommand](provider, "commands", parse.TenantColumn("tenant_id")),
+		stored.MustRelate("commands", parse.ManyToMany(parse.MustResource[parsetest.TenantKeyCommand](provider, "commands", parse.TenantColumn("tenant_id")),
 			junction, parse.Includable(), parse.Writable()))
 		p, err := stored.ParseMergePatch([]byte(`{"commands":[7]}`))
 		require.NoError(t, err)
@@ -203,6 +205,6 @@ func TestRelate_TenantKeysAgree(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(2), res.RelationRows, "the pair to 8 removed, the pair to 7 added")
 		assert.Equal(t, [][]any{{int64(1), int64(7), "integer", int64(44)}},
-			queryRows[[]any](t, db, `SELECT device_id, command_id, typeof(tenant_id), tenant_id FROM device_commands`))
+			dbtest.QueryRows[[]any](t, db, `SELECT device_id, command_id, typeof(tenant_id), tenant_id FROM device_commands`))
 	})
 }

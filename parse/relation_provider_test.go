@@ -11,6 +11,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/parsesql"
 )
@@ -24,14 +25,14 @@ func TestRelate_RefusesATargetOnAnotherProvider(t *testing.T) {
 		"another database of a kind": providertest.Compile(filter.PostgresDialect{}),
 	} {
 		t.Run(name, func(t *testing.T) {
-			devices := parse.MustResource[untenantedDevice](onPostgres, "devices")
-			commands := parse.MustResource[untenantedCommand](target, "commands")
+			devices := parse.MustResource[parsetest.UntenantedDevice](onPostgres, "devices")
+			commands := parse.MustResource[parsetest.UntenantedCommand](target, "commands")
 			err := devices.Relate("commands", parse.HasMany(commands, "device_id"))
 			require.ErrorIs(t, err, parse.ErrProviderMismatch)
 			require.ErrorContains(t, err, `parse: devices: relation "commands": target commands`)
 			assert.NotContains(t, devices.FilterSchema().Fields, "commands")
 
-			own := parse.MustResource[untenantedCommand](onPostgres, "commands")
+			own := parse.MustResource[parsetest.UntenantedCommand](onPostgres, "commands")
 			require.NoError(t, devices.Relate("commands", parse.HasMany(own, "device_id")))
 		})
 	}
@@ -41,7 +42,7 @@ func TestRelate_RefusesATargetOnAnotherProvider(t *testing.T) {
 // the provider began it or it is the application's own, and not in one
 // another provider of its kind began.
 func TestIn_RefusesATransactionOfAnotherProvider(t *testing.T) {
-	devices := parse.MustResource[untenantedDevice](onPostgres, "devices")
+	devices := parse.MustResource[parsetest.UntenantedDevice](onPostgres, "devices")
 	_, err := devices.In(nil)
 	require.ErrorContains(t, err, "parse: devices: nil transaction")
 
@@ -68,7 +69,7 @@ func TestIn_RefusesATransactionOfAnotherProvider(t *testing.T) {
 			require.ErrorIs(t, err, parse.ErrProviderMismatch)
 			require.ErrorContains(t, err, "parse: devices: sqlite transaction for a resource on postgres")
 
-			stored := parse.MustResource[untenantedDevice](p, "devices")
+			stored := parse.MustResource[parsetest.UntenantedDevice](p, "devices")
 			_, err = stored.In(tx)
 			require.NoError(t, err)
 		})
@@ -81,7 +82,7 @@ func TestIn_RefusesATransactionOfAnotherProvider(t *testing.T) {
 		require.NoError(t, err)
 		defer func() { assert.NoError(t, tx.Rollback(t.Context())) }()
 
-		_, err = parse.MustResource[untenantedDevice](p, "devices").In(tx)
+		_, err = parse.MustResource[parsetest.UntenantedDevice](p, "devices").In(tx)
 		require.ErrorIs(t, err, parse.ErrProviderMismatch)
 		assert.ErrorContains(t, err, "parse: devices: transaction another sqlite provider began")
 	})

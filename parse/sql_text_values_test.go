@@ -9,26 +9,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/ashtonian/pkg/parse"
+	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 )
 
-// networkEvent has a column of each value type with one canonical text.
-type networkEvent struct {
-	ID         string          `json:"id" db:"id" parse:"filter,sort"`
-	At         *core.LocalTime `json:"at" db:"at" parse:"filter,patch,sort,facet"`
-	Retention  *core.Interval  `json:"retention" db:"retention" parse:"filter,patch"`
-	ActorIP    *core.Inet      `json:"actor_ip" db:"actor_ip" parse:"filter,patch"`
-	Network    *core.CIDR      `json:"network" db:"network" parse:"filter,patch"`
-	Device     *core.MACAddr   `json:"device" db:"device" parse:"filter,patch,facet"`
-	AllowedIPs []core.Inet     `json:"allowed_ips" db:"allowed_ips" parse:"filter,patch"`
-	Spans      []core.Interval `json:"spans" db:"spans" parse:"filter,patch"`
-}
-
 func TestSQLTextValueFilters(t *testing.T) {
-	resource := parse.MustResource[networkEvent](onSQLite, "network_events")
+	resource := parse.MustResource[parsetest.NetworkEvent](onSQLite, "network_events")
 	for _, tt := range []struct {
 		filter, canonical string
 	}{
@@ -43,7 +33,7 @@ func TestSQLTextValueFilters(t *testing.T) {
 	} {
 		t.Run(tt.filter, func(t *testing.T) {
 			for _, provider := range []*parse.Provider{onPostgres, onSQLite} {
-				events := parse.MustResource[networkEvent](provider, "network_events")
+				events := parse.MustResource[parsetest.NetworkEvent](provider, "network_events")
 				query, err := events.ParseList(url.Values{"filter": {tt.filter}})
 				require.NoError(t, err)
 				plan, err := events.BuildList(query, parse.Scope{})
@@ -91,7 +81,7 @@ func TestSQLTextValueFilters(t *testing.T) {
 // interval's canonical text, field by field: its own equality would match
 // P1M against P30D, which SQLite's text comparison does not.
 func TestSQLTextValueIntervalEquality(t *testing.T) {
-	resource := parse.MustResource[networkEvent](onPostgres, "network_events")
+	resource := parse.MustResource[parsetest.NetworkEvent](onPostgres, "network_events")
 	query, err := resource.ParseList(url.Values{"filter": {`{"retention":"P30D"}`}})
 	require.NoError(t, err)
 	plan, err := resource.BuildList(query, parse.Scope{})
@@ -107,17 +97,17 @@ func TestSQLTextValueIntervalEquality(t *testing.T) {
 func TestSQLTextValuePatch(t *testing.T) {
 	const body = `{"at":"10:30:00.500","retention":"PT90M","actor_ip":"192.168.0.5/32",
 		"network":"10.0.0.0/8","device":"08-00-2B-01-02-03","allowed_ips":["10.0.0.1","2001:0db8::1"],"spans":["P14M"]}`
-	resource := parse.MustResource[networkEvent](onSQLite, "network_events")
+	resource := parse.MustResource[parsetest.NetworkEvent](onSQLite, "network_events")
 	patch, err := resource.ParseMergePatch([]byte(body))
 	require.NoError(t, err)
-	target, err := resource.ApplyValidatedPatch(patch, networkEvent{ID: "one"})
+	target, err := resource.ApplyValidatedPatch(patch, parsetest.NetworkEvent{ID: "one"})
 	require.NoError(t, err)
 	wire, err := json.Marshal(target)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"id":"one","at":"10:30:00.5","retention":"PT1H30M","actor_ip":"192.168.0.5",
 		"network":"10.0.0.0/8","device":"08:00:2b:01:02:03","allowed_ips":["10.0.0.1","2001:db8::1"],"spans":["P1Y2M"]}`, string(wire))
 	for _, provider := range []*parse.Provider{onPostgres, onSQLite} {
-		events := parse.MustResource[networkEvent](provider, "network_events")
+		events := parse.MustResource[parsetest.NetworkEvent](provider, "network_events")
 		patch, err := events.ParseMergePatch([]byte(body))
 		require.NoError(t, err)
 		plan, err := events.BuildUpdate(patch, parse.ByID("one"), parse.Scope{})
@@ -136,7 +126,7 @@ func TestSQLTextValuePatch(t *testing.T) {
 }
 
 func TestSQLTextValueDeclarations(t *testing.T) {
-	_, err := parse.NewResource[networkEvent](onPostgres, "network_events",
+	_, err := parse.NewResource[parsetest.NetworkEvent](onPostgres, "network_events",
 		parse.ColumnType("actor_ip", core.SQLInet), parse.ColumnType("network", core.SQLCIDR),
 		parse.ColumnType("retention", core.SQLInterval), parse.ColumnType("allowed_ips", core.SQLInetArray))
 	require.NoError(t, err)
@@ -151,7 +141,7 @@ func TestSQLTextValueDeclarations(t *testing.T) {
 		{"allowed_ips", core.SQLCIDRArray},
 		{"retention", core.SQLDate},
 	} {
-		_, err := parse.NewResource[networkEvent](onPostgres, "network_events", parse.ColumnType(tt.column, tt.storage))
+		_, err := parse.NewResource[parsetest.NetworkEvent](onPostgres, "network_events", parse.ColumnType(tt.column, tt.storage))
 		assert.Error(t, err, "%s declared %s", tt.column, tt.storage)
 	}
 

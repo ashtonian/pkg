@@ -18,6 +18,8 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
@@ -55,7 +57,7 @@ func widgetsOn(t *testing.T, p *parse.Provider) *parse.Resource[widget] {
 func widgetStore(t *testing.T) (*parse.Resource[widget], *sql.DB) {
 	t.Helper()
 	p, db := providertest.SQLite(t)
-	execStatements(t, db,
+	dbtest.Exec(t, db,
 		`CREATE TABLE widgets (id TEXT PRIMARY KEY, tenant_id TEXT, name TEXT, rank INTEGER, deleted_at TEXT)`,
 		`CREATE TABLE widget_tags (widget_id TEXT, tag_id TEXT, tenant_id TEXT)`,
 		`INSERT INTO widgets VALUES ('w1','t1','alpha',1,NULL), ('w2','t1','beta',1,NULL), ('w3','t1','gamma',1,NULL),
@@ -76,7 +78,7 @@ func list(t *testing.T, r *parse.Resource[widget], query string, s parse.Scope) 
 	require.NoError(t, err)
 	plan, err := r.BuildList(req, s)
 	require.NoError(t, err)
-	page, err := r.Page(resourceRows(t, r, plan.Page), plan)
+	page, err := r.Page(parsetest.ResourceRows(t, r, plan.Page), plan)
 	require.NoError(t, err)
 	return page, plan
 }
@@ -297,7 +299,7 @@ func TestBuildList_HoldsRowsToTheScope(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			page, _ := list(t, r, tc.query, tc.scope)
-			assert.Equal(t, tc.want, itemIDs(page.Items, widgetID))
+			assert.Equal(t, tc.want, parsetest.ItemIDs(page.Items, widgetID))
 		})
 	}
 }
@@ -316,7 +318,7 @@ func TestBuildList_WalksTiedSortValuesExactly(t *testing.T) {
 		var total int64
 		require.NoError(t, db.QueryRow(plan.Count.SQL, plan.Count.Args...).Scan(&total))
 		assert.Equal(t, int64(4), total, "the total counts the population, not the page")
-		seen = append(seen, itemIDs(page.Items, widgetID)...)
+		seen = append(seen, parsetest.ItemIDs(page.Items, widgetID)...)
 		last = page
 		if !page.PageInfo.HasNextPage {
 			break
@@ -326,7 +328,7 @@ func TestBuildList_WalksTiedSortValuesExactly(t *testing.T) {
 	assert.Equal(t, []string{"w1", "w2", "w3", "w5"}, seen)
 
 	back, _ := list(t, r, "sort=rank&cursor="+url.QueryEscape(string(last.PageInfo.StartCursor)), scope)
-	assert.Equal(t, []string{"w1", "w2"}, itemIDs(back.Items, widgetID), "the page before the last, in presentation order")
+	assert.Equal(t, []string{"w1", "w2"}, parsetest.ItemIDs(back.Items, widgetID), "the page before the last, in presentation order")
 }
 
 func TestBuildList_UsesTheDeclaredKeyOnRequestViews(t *testing.T) {
@@ -404,7 +406,7 @@ func TestPagePointers(t *testing.T) {
 	plan, err := r.BuildList(req, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
 	var ptrs []*widget
-	for _, w := range resourceRows(t, r, plan.Page) {
+	for _, w := range parsetest.ResourceRows(t, r, plan.Page) {
 		ptrs = append(ptrs, &w)
 	}
 	page, err := r.PagePointers(ptrs, plan)
@@ -422,7 +424,7 @@ func TestPage_OfNoRowsEncodesItemsAsAnArray(t *testing.T) {
 	require.NoError(t, err)
 	plan, err := r.BuildList(req, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
-	scanned := resourceRows(t, r, plan.Page)
+	scanned := parsetest.ResourceRows(t, r, plan.Page)
 	require.Empty(t, scanned)
 
 	rows := func(items []widget) func() (any, error) {

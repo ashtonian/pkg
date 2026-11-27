@@ -10,6 +10,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
@@ -206,7 +207,7 @@ func TestRowScanner_ScansFieldsAnUnexportedStructEmbeddedByValuePromotes(t *test
 	require.NoError(t, err)
 	r, err := parse.NewResource[byValueRow](p, "by_value")
 	require.NoError(t, err)
-	rows := resourceRows(t, r, parse.Statement{SQL: `SELECT ` + joinColumns(r.Columns()) + ` FROM "by_value"`})
+	rows := parsetest.ResourceRows(t, r, parse.Statement{SQL: `SELECT ` + parsetest.JoinColumns(r.Columns()) + ` FROM "by_value"`})
 	want := byValueRow{ID: "a", hiddenColumns: hiddenColumns{Extra: "promoted"}, Doc: byValueDoc{hiddenMembers: hiddenMembers{X: "member"}, Y: "own"}}
 	assert.Equal(t, []byValueRow{want}, rows)
 }
@@ -219,6 +220,6 @@ func TestRowScanner_LeavesAnUnreadColumnBehindAnUnexportedEmbeddedPointer(t *tes
 	require.NoError(t, err)
 	r, err := parse.NewResource[hiddenColumnRow](p, "rows", parse.ReadColumns("id"))
 	require.NoError(t, err, "a column the resource does not read is never scanned")
-	rows := resourceRows(t, r, parse.Statement{SQL: `SELECT ` + joinColumns(r.Columns()) + ` FROM "rows"`})
+	rows := parsetest.ResourceRows(t, r, parse.Statement{SQL: `SELECT ` + parsetest.JoinColumns(r.Columns()) + ` FROM "rows"`})
 	assert.Equal(t, []hiddenColumnRow{{ID: "a"}}, rows)
 }

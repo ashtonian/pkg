@@ -14,6 +14,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
@@ -158,7 +159,7 @@ func TestClock_OneInstantPerUpdatePlan(t *testing.T) {
 		// The update's plan takes the clock's next reading. k0 is visible at
 		// that instant (created before now+2h); k1 only at a later reading.
 		instant := at.Add(time.Hour)
-		execStatements(t, db,
+		dbtest.Exec(t, db,
 			`CREATE TABLE clock_items (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL)`,
 			`CREATE TABLE clock_types (id TEXT PRIMARY KEY, created_at TEXT NOT NULL)`,
 			`CREATE TABLE clock_item_types (item_id TEXT NOT NULL, type_id TEXT NOT NULL, PRIMARY KEY (item_id, type_id))`,
@@ -174,7 +175,7 @@ func TestClock_OneInstantPerUpdatePlan(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, instant, at, "the update read the clock once")
 		assert.Equal(t, int64(1), res.RelationRows)
-		assert.Equal(t, []string{"i1:k0"}, queryRows[string](t, db, `SELECT item_id || ':' || type_id FROM clock_item_types ORDER BY 1`),
+		assert.Equal(t, []string{"i1:k0"}, dbtest.QueryRows[string](t, db, `SELECT item_id || ':' || type_id FROM clock_item_types ORDER BY 1`),
 			"a membership change admits the related rows at the plan's instant")
 	})
 	t.Run("batch", func(t *testing.T) {

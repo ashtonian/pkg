@@ -12,6 +12,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
@@ -45,7 +46,7 @@ func TestRowScanner_SQLiteStorage(t *testing.T) {
 		"b", core.FormatTimestamp(at), "P1M")
 	require.NoError(t, err)
 	r := parse.MustResource[storedRow](p, "stored")
-	rows := resourceRows(t, r, parse.Statement{SQL: `SELECT ` + joinColumns(r.Columns()) + ` FROM "stored" ORDER BY "id"`})
+	rows := parsetest.ResourceRows(t, r, parse.Statement{SQL: `SELECT ` + parsetest.JoinColumns(r.Columns()) + ` FROM "stored" ORDER BY "id"`})
 	require.Len(t, rows, 2)
 	until := at.Add(time.Hour)
 	assert.Equal(t, storedRow{
@@ -62,7 +63,7 @@ func TestRowScanner_RefusesWhatTheRowCannotHold(t *testing.T) {
 		"tags" TEXT, "spans" TEXT, "raw" TEXT, "dynamic" TEXT, "every" TEXT)`)
 	require.NoError(t, err)
 	r := parse.MustResource[storedRow](p, "stored")
-	read := parse.Statement{SQL: `SELECT ` + joinColumns(r.Columns()) + ` FROM "stored"`}
+	read := parse.Statement{SQL: `SELECT ` + parsetest.JoinColumns(r.Columns()) + ` FROM "stored"`}
 	for name, values := range map[string]string{
 		"NULL into a time.Time":               `('a', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'PT1H')`,
 		"a member spelt in another case":      `('a', '2026-01-02T03:04:05.000000000Z', NULL, NULL, '{"Theme":"dark"}', NULL, NULL, NULL, NULL, 'PT1H')`,

@@ -11,6 +11,8 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
@@ -19,7 +21,7 @@ import (
 // to: Current locks the targets, Conflict names the failing operation, and
 // Owner's WHERE holds the same precondition.
 func TestBuildUpdate_MembersPlanAConflictRead(t *testing.T) {
-	r := gadgetAttrsResource(t, onPostgres)
+	r := parsetest.GadgetAttrsResource(t, onPostgres)
 	parsed, err := r.ParsePatch([]byte(`[{"op":"replace","path":"/attrs/color","value":"red"}]`))
 	require.NoError(t, err)
 	plan, err := r.BuildUpdate(parsed, parse.ByID(int64(1)), parse.Scope{})
@@ -40,9 +42,9 @@ func TestBuildUpdate_MembersPlanAConflictRead(t *testing.T) {
 // before anything is written.
 func TestUpdate_MembersConflictNamesTheFailingOperation(t *testing.T) {
 	provider, db := providertest.SQLite(t)
-	execStatements(t, db, `CREATE TABLE gadget_attrs (id INTEGER PRIMARY KEY, attrs TEXT NOT NULL)`,
+	dbtest.Exec(t, db, `CREATE TABLE gadget_attrs (id INTEGER PRIMARY KEY, attrs TEXT NOT NULL)`,
 		`INSERT INTO gadget_attrs VALUES (1, '{}')`)
-	r := gadgetAttrsResource(t, provider)
+	r := parsetest.GadgetAttrsResource(t, provider)
 	parsed, err := r.ParsePatch([]byte(`[{"op":"replace","path":"/attrs/color","value":"red"}]`))
 	require.NoError(t, err)
 	_, err = r.Update(t.Context(), parsed, parse.ByID(int64(1)), parse.Scope{})
@@ -50,13 +52,13 @@ func TestUpdate_MembersConflictNamesTheFailingOperation(t *testing.T) {
 	require.True(t, ok, "%v is no ParseError", err)
 	assert.Equal(t, core.CodePatchValueInvalid.String(), pe.Code)
 	assert.Equal(t, "/attrs/color", pe.Path)
-	assert.Equal(t, []string{"{}"}, queryRows[string](t, db, `SELECT attrs FROM gadget_attrs`), "no row is written")
+	assert.Equal(t, []string{"{}"}, dbtest.QueryRows[string](t, db, `SELECT attrs FROM gadget_attrs`), "no row is written")
 }
 
 // A batch compiles its rows' documents whole: a member operation the stored
 // row decides is refused, one the row's own patch settles is not.
 func TestBuildUpdateBatch_MembersTheStoredRowDecides(t *testing.T) {
-	r := gadgetAttrsResource(t, onPostgres)
+	r := parsetest.GadgetAttrsResource(t, onPostgres)
 	member, err := r.ParsePatch([]byte(`[{"op":"remove","path":"/attrs/old"}]`))
 	require.NoError(t, err)
 	_, err = r.BuildUpdateBatch([]parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: member}}, parse.Scope{}, parse.UpdateBatchLimits{})

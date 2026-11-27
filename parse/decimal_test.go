@@ -15,14 +15,9 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
-
-type ledgerLine struct {
-	ID     string           `json:"id"     db:"id"     parse:"filter,sort"`
-	Amount decimal.Decimal  `json:"amount" db:"amount" parse:"filter,patch,sort"`
-	Fee    *decimal.Decimal `json:"fee"    db:"fee"    parse:"filter,patch,sort"`
-}
 
 func TestDecimalRequestContract(t *testing.T) {
 	for _, tt := range []struct {
@@ -34,7 +29,7 @@ func TestDecimalRequestContract(t *testing.T) {
 		{onPostgres, `"ledger_lines"."amount" > $`, `"ledger_lines"."fee" <= $`, `"ledger_lines"."amount" DESC`},
 		{onSQLite, `parse_decimal_key("ledger_lines"."amount") > parse_decimal_key(?`, `parse_decimal_key("ledger_lines"."fee") <= parse_decimal_key(?`, `parse_decimal_key("ledger_lines"."amount") DESC`},
 	} {
-		resource := parse.MustResource[ledgerLine](tt.provider, "ledger_lines")
+		resource := parse.MustResource[parsetest.LedgerLine](tt.provider, "ledger_lines")
 		query, err := resource.ParseList(url.Values{
 			"filter":  {`{"amount":{"$gt":"9.50"}}`},
 			"fee_lte": {"1.0"},
@@ -50,7 +45,7 @@ func TestDecimalRequestContract(t *testing.T) {
 		assert.Subset(t, plan.Page.Args, []any{"9.5", "1"}, name)
 	}
 
-	resource := parse.MustResource[ledgerLine](onSQLite, "ledger_lines")
+	resource := parse.MustResource[parsetest.LedgerLine](onSQLite, "ledger_lines")
 
 	for _, bad := range []url.Values{
 		{"filter": {`{"amount":"ten"}`}},
@@ -64,7 +59,7 @@ func TestDecimalRequestContract(t *testing.T) {
 }
 
 func TestDecimalMergePatch(t *testing.T) {
-	resource := parse.MustResource[ledgerLine](onSQLite, "ledger_lines")
+	resource := parse.MustResource[parsetest.LedgerLine](onSQLite, "ledger_lines")
 	tests := []struct {
 		body       string
 		wantAmount string
@@ -79,7 +74,7 @@ func TestDecimalMergePatch(t *testing.T) {
 		t.Run(tt.body, func(t *testing.T) {
 			p, err := resource.ParseMergePatch([]byte(tt.body))
 			require.NoError(t, err)
-			target, err := resource.ApplyValidatedPatch(p, ledgerLine{ID: "one", Fee: new(decimal.RequireFromString("3"))})
+			target, err := resource.ApplyValidatedPatch(p, parsetest.LedgerLine{ID: "one", Fee: new(decimal.RequireFromString("3"))})
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantAmount, target.Amount.String())
 			if tt.wantFee == nil {
@@ -106,13 +101,13 @@ func TestDecimalMergePatch(t *testing.T) {
 // The wire form a decimal marshals to is the form a patch and a filter
 // accept back.
 func TestDecimalWireRoundTrip(t *testing.T) {
-	resource := parse.MustResource[ledgerLine](onSQLite, "ledger_lines")
+	resource := parse.MustResource[parsetest.LedgerLine](onSQLite, "ledger_lines")
 	wire, err := json.Marshal(map[string]any{"amount": decimal.RequireFromString("10.25")})
 	require.NoError(t, err)
 	require.JSONEq(t, `{"amount":"10.25"}`, string(wire))
 	p, err := resource.ParseMergePatch(wire)
 	require.NoError(t, err)
-	target, err := resource.ApplyValidatedPatch(p, ledgerLine{})
+	target, err := resource.ApplyValidatedPatch(p, parsetest.LedgerLine{})
 	require.NoError(t, err)
 	assert.True(t, decimal.RequireFromString("10.25").Equal(target.Amount))
 

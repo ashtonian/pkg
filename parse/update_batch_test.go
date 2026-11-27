@@ -12,12 +12,14 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
 func TestUpdateBatchRefusals(t *testing.T) {
-	r := updateBatchResource(t, onPostgres)
-	patch := updateBatchPatch(t, r, `{"reference":"new"}`)
+	r := parsetest.UpdateBatchResource(t, onPostgres)
+	patch := parsetest.UpdateBatchPatch(t, r, `{"reference":"new"}`)
 	for _, test := range []struct {
 		name   string
 		rows   []parse.RowUpdate
@@ -32,7 +34,7 @@ func TestUpdateBatchRefusals(t *testing.T) {
 		{"row-limit", []parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: patch}, {Key: parse.Key{int64(2)}, Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxRows: 1}, nil},
 		{"parameter-limit", []parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxParameters: 1}, nil},
 		{"invalid-key", []parse.RowUpdate{{Key: parse.Key{"not-an-integer"}, Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, nil},
-		{"relation", []parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: updateBatchPatch(t, r, `{"tags":["x"]}`)}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, nil},
+		{"relation", []parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: parsetest.UpdateBatchPatch(t, r, `{"tags":["x"]}`)}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, nil},
 		{"key-write", []parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, []parse.UpdateOption{parse.Increment("id")}},
 		{"tenant-write", []parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, []parse.UpdateOption{parse.StampSQL("tenant_id", "'t2'")}},
 	} {
@@ -57,7 +59,7 @@ func TestUpdateBatchCanonicalKeys(t *testing.T) {
 	}
 	id := uuid.MustParse("018c018c-0123-7123-8123-0123456789ab")
 	provider, db := providertest.SQLite(t)
-	execStatements(t, db, `CREATE TABLE uuid_rows (id TEXT PRIMARY KEY, name TEXT NOT NULL)`,
+	dbtest.Exec(t, db, `CREATE TABLE uuid_rows (id TEXT PRIMARY KEY, name TEXT NOT NULL)`,
 		`INSERT INTO uuid_rows VALUES ('`+id.String()+`', 'old')`)
 	r, err := parse.NewResource[row](provider, "uuid_rows")
 	require.NoError(t, err)

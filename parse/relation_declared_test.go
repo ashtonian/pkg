@@ -14,19 +14,20 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 )
 
 // One `$some` is one correlated EXISTS over the target's live rows in the
 // tenant, its predicates on one aliased row.
 func TestDeclaredRelations_SQL(t *testing.T) {
-	r := relationResources(t, onPostgres)
-	plan := relationPlan(t, r.devices, `{"commands":{"$some":{"status":"pending","attempts":{"$gt":2}}}}`, relationScopeT1())
+	r := parsetest.RelationResources(t, onPostgres)
+	plan := relationPlan(t, r.Devices, `{"commands":{"$some":{"status":"pending","attempts":{"$gt":2}}}}`, parsetest.RelationScopeT1())
 	assert.Contains(t, plan.Page.SQL, `EXISTS (SELECT 1 FROM "commands" WHERE "commands"."device_id" = "devices"."id" AND "commands"."tenant_id" = $1 AND "commands"."deleted_at" IS NULL AND ("commands"."attempts" > $2 AND "commands"."status" = $3))`)
 
-	plan = relationPlan(t, r.devices, `{"tags":{"$some":{"label":"red"}}}`, relationScopeT1())
+	plan = relationPlan(t, r.Devices, `{"tags":{"$some":{"label":"red"}}}`, parsetest.RelationScopeT1())
 	assert.Contains(t, plan.Page.SQL, `EXISTS (SELECT 1 FROM "device_tags" "rel1__" JOIN "tags" ON "tags"."id" = "rel1__"."tag_id" WHERE "rel1__"."device_id" = "devices"."id" AND "rel1__"."tenant_id" = $1 AND "tags"."tenant_id" = $2 AND "tags"."deleted_at" IS NULL AND "tags"."label" = $3)`)
 
-	assets := relationPlan(t, r.assets, `{"parent":{"$is":{"name":"root"}}}`, parse.Scope{Tenant: "t1"})
+	assets := relationPlan(t, r.Assets, `{"parent":{"$is":{"name":"root"}}}`, parse.Scope{Tenant: "t1"})
 	assert.Contains(t, assets.Page.SQL, `EXISTS (SELECT 1 FROM "assets" "assets_rel1__" WHERE "assets_rel1__"."id" = "assets"."parent_id" AND "assets_rel1__"."tenant_id" = $1 AND "assets_rel1__"."name" = $2)`, "the target is aliased away from its owner")
 }
 
@@ -37,11 +38,11 @@ func relationPlan(t *testing.T, r interface {
 	req, err := r.ParseList(url.Values{filter.ParamFilter: {f}})
 	require.NoError(t, err)
 	switch res := r.(type) {
-	case *parse.Resource[relDevice]:
+	case *parse.Resource[parsetest.RelDevice]:
 		plan, err := res.BuildList(req, s)
 		require.NoError(t, err)
 		return plan
-	case *parse.Resource[relAsset]:
+	case *parse.Resource[parsetest.RelAsset]:
 		plan, err := res.BuildList(req, s)
 		require.NoError(t, err)
 		return plan
@@ -51,7 +52,7 @@ func relationPlan(t *testing.T, r interface {
 }
 
 func TestDeclaredRelations_Refuse(t *testing.T) {
-	r := relationResources(t, onPostgres)
+	r := parsetest.RelationResources(t, onPostgres)
 	for _, tc := range []struct {
 		name, filter string
 		code         string
@@ -69,24 +70,24 @@ func TestDeclaredRelations_Refuse(t *testing.T) {
 		{"nine relation predicates", `{"$and":[` + strings.Repeat(`{"commands":{"$some":{}}},`, 8) + `{"commands":{"$some":{}}}]}`, filter.ECodeMaxConditions.String()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := r.devices.ParseList(url.Values{filter.ParamFilter: {tc.filter}})
+			_, err := r.Devices.ParseList(url.Values{filter.ParamFilter: {tc.filter}})
 			var pe *core.ParseError
 			require.ErrorAs(t, err, &pe)
 			assert.Equal(t, tc.code, pe.Code, pe.Message)
 		})
 	}
 
-	_, err := r.devices.ParseList(url.Values{filter.ParamFilter: {`{"commands":{"$some":{"device":"d1"}}}`}})
+	_, err := r.Devices.ParseList(url.Values{filter.ParamFilter: {`{"commands":{"$some":{"device":"d1"}}}`}})
 	require.NoError(t, err, "a key comparison two levels deep")
 
-	req, err := r.devices.ParseList(url.Values{filter.ParamFilter: {`{"type":{"$is":{}}}`}})
+	req, err := r.Devices.ParseList(url.Values{filter.ParamFilter: {`{"type":{"$is":{}}}`}})
 	require.NoError(t, err)
-	_, err = r.devices.BuildList(req, parse.Scope{Tenant: "t1"})
+	_, err = r.Devices.BuildList(req, parse.Scope{Tenant: "t1"})
 	assert.ErrorIs(t, err, filter.ErrRelatedPolicyRequired, "a policy-scoped relation needs the target's policy")
 }
 
 func TestRelate_RefusesBadDeclarations(t *testing.T) {
-	commands := parse.MustResource[relCommand](onPostgres, "commands", parse.TenantColumn("tenant_id"))
+	commands := parse.MustResource[parsetest.RelCommand](onPostgres, "commands", parse.TenantColumn("tenant_id"))
 	for name, tc := range map[string]struct {
 		relName string
 		rel     parse.Relation
@@ -101,7 +102,7 @@ func TestRelate_RefusesBadDeclarations(t *testing.T) {
 		"references on a pairing": {"tags", parse.ManyToMany(commands, parse.Through("pairs", "device_id", "tag_id"), parse.References("id"))},
 	} {
 		t.Run(name, func(t *testing.T) {
-			devices := parse.MustResource[relDevice](onPostgres, "devices", parse.TenantColumn("tenant_id"))
+			devices := parse.MustResource[parsetest.RelDevice](onPostgres, "devices", parse.TenantColumn("tenant_id"))
 			assert.Error(t, devices.Relate(tc.relName, tc.rel))
 		})
 	}
@@ -188,16 +189,16 @@ func TestRelate_CorrelatesOnScalarKeys(t *testing.T) {
 // constraint naming the relation — still tests only visible related rows,
 // and flat parameters are parsed as the JSON filter is.
 func TestDeclaredRelations_EveryEntryReachesOnlyVisibleRows(t *testing.T) {
-	r := relationResources(t, onPostgres)
-	s := relationScopeT1()
+	r := parsetest.RelationResources(t, onPostgres)
+	s := parsetest.RelationScopeT1()
 	s.Policy = &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: "commands", Operator: filter.OpEq, Value: "c4"}}}
-	plan, err := r.devices.BuildList(nil, s)
+	plan, err := r.Devices.BuildList(nil, s)
 	require.NoError(t, err)
 	assert.Contains(t, plan.Page.SQL, `"commands"."deleted_at" IS NULL`, "the policy's key comparison is a relation predicate")
 
-	req, err := r.devices.ParseList(url.Values{"commands": {"c1"}})
+	req, err := r.Devices.ParseList(url.Values{"commands": {"c1"}})
 	require.NoError(t, err)
-	plan, err = r.devices.BuildList(req, s)
+	plan, err = r.Devices.BuildList(req, s)
 	require.NoError(t, err)
 	assert.Equal(t, 2, strings.Count(plan.Page.SQL, `"commands"."deleted_at" IS NULL`), plan.Page.SQL)
 }
@@ -205,8 +206,8 @@ func TestDeclaredRelations_EveryEntryReachesOnlyVisibleRows(t *testing.T) {
 // A relation's label and description reach schema discovery as a column's
 // tags do.
 func TestRelate_DescribeReachesDiscovery(t *testing.T) {
-	commands := parse.MustResource[relCommand](onPostgres, "commands", parse.TenantColumn("tenant_id"))
-	devices := parse.MustResource[relDevice](onPostgres, "devices", parse.TenantColumn("tenant_id"))
+	commands := parse.MustResource[parsetest.RelCommand](onPostgres, "commands", parse.TenantColumn("tenant_id"))
+	devices := parse.MustResource[parsetest.RelDevice](onPostgres, "devices", parse.TenantColumn("tenant_id"))
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Describe("Commands", "Commands sent to the device")))
 	reg := parse.NewSchemaRegistry()
 	require.NoError(t, parse.RegisterResource(reg, devices))

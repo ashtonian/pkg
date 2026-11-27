@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
+	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
@@ -88,7 +89,7 @@ func TestRelationKeysTakeTheTargetKeysWire(t *testing.T) {
 // the target's integers: the junction's untyped column keeps what is bound.
 func TestClientQuotedRelationOperationsParse(t *testing.T) {
 	provider, db := providertest.SQLite(t)
-	execStatements(t, db,
+	dbtest.Exec(t, db,
 		`CREATE TABLE posts (id INTEGER PRIMARY KEY)`, `INSERT INTO posts VALUES (1)`,
 		`CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT)`, `INSERT INTO tags VALUES (5, 'five'), (6, 'six')`,
 		`CREATE TABLE labels (id INTEGER PRIMARY KEY)`,
@@ -105,5 +106,5 @@ func TestClientQuotedRelationOperationsParse(t *testing.T) {
 	res, err := posts.Update(t.Context(), parsed, parse.ByID(int64(1)), parse.Scope{})
 	require.NoError(t, err)
 	assert.Positive(t, res.RelationRows)
-	assert.Equal(t, [][]any{{int64(5), "integer"}}, queryRows[[]any](t, db, `SELECT tag_id, typeof(tag_id) FROM post_tags WHERE post_id = 1`))
+	assert.Equal(t, [][]any{{int64(5), "integer"}}, dbtest.QueryRows[[]any](t, db, `SELECT tag_id, typeof(tag_id) FROM post_tags WHERE post_id = 1`))
 }

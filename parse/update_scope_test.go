@@ -12,6 +12,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 )
 
 // An update reaches the rows a list in the same scope reads: its WHERE, for
@@ -23,7 +24,7 @@ func TestBuildUpdate_ScopesRowsAsAListDoes(t *testing.T) {
 
 	for _, provider := range []*parse.Provider{onPostgres, onSQLite} {
 		t.Run(provider.Name(), func(t *testing.T) {
-			r := notes(t, provider)
+			r := parsetest.Notes(t, provider)
 			req, err := r.ParseList(url.Values{"title": {"one"}})
 			require.NoError(t, err)
 			p, err := r.ParseMergePatch([]byte(`{"rank":2}`))

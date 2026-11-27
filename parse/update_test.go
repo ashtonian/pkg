@@ -13,10 +13,11 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 )
 
 func TestBuildUpdate_Refuses(t *testing.T) {
-	r := gadgets(t, onPostgres)
+	r := parsetest.Gadgets(t, onPostgres)
 	p, err := r.ParseMergePatch([]byte(`{"name":"x"}`))
 	require.NoError(t, err)
 	empty, err := r.ParseFilterMap(map[string]any{})
@@ -52,7 +53,7 @@ func TestBuildUpdate_Refuses(t *testing.T) {
 }
 
 func TestBuildUpdate_LocksRelationOwnersOnPostgres(t *testing.T) {
-	r := gadgets(t, onPostgres)
+	r := parsetest.Gadgets(t, onPostgres)
 	p, err := r.ParseMergePatch([]byte(`{"tags":["blue"]}`))
 	require.NoError(t, err)
 	plan, err := r.BuildUpdate(p, parse.ByID("g1"), parse.Scope{Tenant: "t1"})

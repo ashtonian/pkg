@@ -7,21 +7,18 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 )
 
-type civilTask struct {
-	ID    string     `json:"id" db:"id" parse:"filter,sort"`
-	DueOn *core.Date `json:"due_on" db:"due_on" parse:"filter,patch,sort"`
-}
-
 func TestCivilDateRequestContract(t *testing.T) {
-	resource := parse.MustResource[civilTask](onSQLite, "tasks")
-	_, err := parse.NewResource[civilTask](onSQLite, "tasks", parse.ColumnType("due_on", core.SQLDate))
+	resource := parse.MustResource[parsetest.CivilTask](onSQLite, "tasks")
+	_, err := parse.NewResource[parsetest.CivilTask](onSQLite, "tasks", parse.ColumnType("due_on", core.SQLDate))
 	require.NoError(t, err)
 	_, err = parse.NewResource[struct {
 		ID  string `db:"id"`
@@ -30,7 +27,7 @@ func TestCivilDateRequestContract(t *testing.T) {
 	require.Error(t, err)
 
 	for _, provider := range []*parse.Provider{onPostgres, onSQLite} {
-		tasks := parse.MustResource[civilTask](provider, "tasks")
+		tasks := parse.MustResource[parsetest.CivilTask](provider, "tasks")
 		for _, day := range []string{"2026-10-26", "2028-02-29"} {
 			query, err := tasks.ParseList(url.Values{"filter": {`{"due_on":{"$lte":"` + day + `"}}`}, "sort": {"due_on,id"}})
 			require.NoError(t, err)
@@ -41,7 +38,7 @@ func TestCivilDateRequestContract(t *testing.T) {
 	for _, day := range []string{"2026-10-26", "2028-02-29"} {
 		patch, err := resource.ParseMergePatch([]byte(`{"due_on":"` + day + `"}`))
 		require.NoError(t, err)
-		target, err := resource.ApplyValidatedPatch(patch, civilTask{ID: "one"})
+		target, err := resource.ApplyValidatedPatch(patch, parsetest.CivilTask{ID: "one"})
 		require.NoError(t, err)
 		require.NotNil(t, target.DueOn)
 		assert.Equal(t, core.Date(day), *target.DueOn)

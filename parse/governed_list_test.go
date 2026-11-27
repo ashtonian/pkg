@@ -10,10 +10,11 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 )
 
 func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {
-	r := governedDocuments(t, onPostgres)
+	r := parsetest.GovernedDocuments(t, onPostgres)
 	build := func(t *testing.T, scope parse.Scope) (*parse.ListPlan, error) {
 		t.Helper()
 		req, err := r.ParseListInput(parse.ListInput{
@@ -25,7 +26,7 @@ func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {
 	}
 
 	t.Run("every relation tenant column is compared with the row's", func(t *testing.T) {
-		plan, err := build(t, parse.Scope{Governance: governanceA()})
+		plan, err := build(t, parse.Scope{Governance: parsetest.GovernanceA()})
 		require.NoError(t, err, "a governed list needs no Scope.Tenant")
 		for _, want := range []string{
 			`"notes"."tenant_id" = "documents"."tenant_id"`,           // depth one
@@ -56,9 +57,9 @@ func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {
 	})
 
 	t.Run("a scope's tenant is not used under governance", func(t *testing.T) {
-		governed, err := build(t, parse.Scope{Governance: governanceA()})
+		governed, err := build(t, parse.Scope{Governance: parsetest.GovernanceA()})
 		require.NoError(t, err)
-		withTenant, err := build(t, parse.Scope{Governance: governanceA(), Tenant: "not-checked"})
+		withTenant, err := build(t, parse.Scope{Governance: parsetest.GovernanceA(), Tenant: "not-checked"})
 		require.NoError(t, err)
 		assert.Equal(t, governed.Page, withTenant.Page)
 	})
@@ -88,16 +89,16 @@ func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {
 	})
 
 	t.Run("a resource without a tenant column holds relations to Scope.Tenant", func(t *testing.T) {
-		labels := parse.MustResource[govLabel](onPostgres, "labels", parse.TenantColumn("tenant_id"))
-		boards := parse.MustResource[untenantedDevice](onPostgres, "boards")
+		labels := parse.MustResource[parsetest.GovLabel](onPostgres, "labels", parse.TenantColumn("tenant_id"))
+		boards := parse.MustResource[parsetest.UntenantedDevice](onPostgres, "boards")
 		boards.MustRelate("labels", parse.ManyToMany(labels,
 			parse.Junction{Table: "board_labels", Source: []string{"device_id"}, Target: []string{"label_id"}, Tenant: "tenant_id"}, parse.Indexed()))
 		req, err := boards.ParseListInput(parse.ListInput{Filter: `{"labels":"la"}`})
 		require.NoError(t, err)
-		plan, err := boards.BuildList(req, parse.Scope{Governance: govEq("id", int64(1)), Tenant: "A"})
+		plan, err := boards.BuildList(req, parse.Scope{Governance: parsetest.GovEq("id", int64(1)), Tenant: "A"})
 		require.NoError(t, err)
 		assert.Contains(t, plan.Page.Args, "A")
-		_, err = boards.BuildList(req, parse.Scope{Governance: govEq("id", int64(1))})
+		_, err = boards.BuildList(req, parse.Scope{Governance: parsetest.GovEq("id", int64(1))})
 		assert.ErrorContains(t, err, "tenant-scoped", "its relations still need a tenant")
 	})
 }

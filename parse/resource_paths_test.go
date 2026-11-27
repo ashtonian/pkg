@@ -16,6 +16,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
@@ -107,7 +108,7 @@ func TestResource_WithPathsIsARequestView(t *testing.T) {
 	}
 	page, err := view.List(t.Context(), req, parse.Scope{})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"b", "a"}, itemIDs(page.Items, func(it customItem) string { return it.ID }), "silver then gold; bronze filtered out, absent tiers never match $ne")
+	assert.Equal(t, []string{"b", "a"}, parsetest.ItemIDs(page.Items, func(it customItem) string { return it.ID }), "silver then gold; bronze filtered out, absent tiers never match $ne")
 
 	require.NotNil(t, plan.Facets)
 	require.Len(t, page.Facets, 1)

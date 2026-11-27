@@ -107,7 +107,7 @@ make test-parse-unit         # unit tests, SQLite in memory
 make test-parse-integration  # SQLite and PostgreSQL
 ```
 
-The executor contract (`executor_contract_integration_test.go` in the root package: changed and unchanged rows, junction counts, rollback, savepoints, batches, pages, transactions) runs on SQLite through this package and on PostgreSQL through `parsepgx`. The row contract's cases (`row_contract_integration_test.go`) page every row shape on both. This package's own tests cover the version check, transactions and savepoints, and a connection wait under the caller's context.
+`TestCorpus` (`corpus_integration_test.go`) runs parse's database corpus (`internal/corpus`) on SQLite through this package, as `parsepgx`'s runs it on PostgreSQL: the executor contract (changed and unchanged rows, junction counts, rollback, savepoints, batches, pages, transactions), the row contract over every row shape, and the list, filter, key, value, update, policy, relation and tenancy cases. `go test -tags=integration -run 'TestCorpus/ExecutorContract' ./parsesql/` runs one case. This package's own tests cover the version check, transactions and savepoints, and a connection wait under the caller's context.
 
 ## Operations
 
@@ -134,4 +134,5 @@ SQL text comes from the resource's compiled plans, never from request strings, a
 |------|----------------|
 | [`parsesql.go`](parsesql.go) | `New`, `Tx`, `Name`, `SettleTimeout`; the database and transaction the root package's steps run on: statements one after another, the transaction an update begins on a connection taken under the caller's context, the savepoint in a scoped transaction, and their settle |
 | [`version.go`](version.go) | `MinSQLiteVersion`, `CheckVersion`, `VersionError`, and the `sqlite_version()` read `New` checks |
+| [`corpus_integration_test.go`](corpus_integration_test.go) | `TestCorpus`: parse's database corpus on SQLite |
 | [`drivers_test.go`](drivers_test.go) | The [supported SQLite](#supported-sqlite) check: the required driver's release and the constructs the minimum is for |

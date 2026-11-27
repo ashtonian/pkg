@@ -16,6 +16,7 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
@@ -23,13 +24,13 @@ import (
 func TestReadExpr_Columns(t *testing.T) {
 	for _, tt := range computedDialects {
 		t.Run(tt.dialect.Name(), func(t *testing.T) {
-			_, accounts, _, _ := newComputedResources(providertest.Compile(tt.dialect))
+			_, accounts, _, _ := parsetest.NewComputedResources(providertest.Compile(tt.dialect))
 			assert.Equal(t, []string{
 				`"accounts"."id"`,
 				`"accounts"."tenant_id"`,
 				`"accounts"."name"`,
 				"(" + tt.email + `) AS "email"`,
-				"(" + memberCountExpr + `) AS "member_count"`,
+				"(" + parsetest.MemberCountExpr + `) AS "member_count"`,
 				"(" + tt.groupIDs + `) AS "group_ids"`,
 				"(" + tt.contact + `) AS "contact"`,
 			}, accounts.Columns())
@@ -53,7 +54,7 @@ func TestReadExpr_Columns(t *testing.T) {
 func TestReadExpr_SchemasCompileAgainstEachDialectsExpression(t *testing.T) {
 	for _, tt := range computedDialects {
 		t.Run(tt.dialect.Name(), func(t *testing.T) {
-			_, accounts, _, _ := newComputedResources(providertest.Compile(tt.dialect))
+			_, accounts, _, _ := parsetest.NewComputedResources(providertest.Compile(tt.dialect))
 			req, err := accounts.ParseList(url.Values{
 				filter.ParamFilter:       {`{"member_count":{"$gte":1},"email":{"$ne":""}}`},
 				filter.ParamSort:         {"-member_count,email"},
@@ -64,7 +65,7 @@ func TestReadExpr_SchemasCompileAgainstEachDialectsExpression(t *testing.T) {
 			require.NoError(t, err)
 			plan, err := accounts.BuildList(req, parse.Scope{Tenant: "t1"})
 			require.NoError(t, err)
-			memberCount, email := "("+memberCountExpr+")", "("+tt.email+")"
+			memberCount, email := "("+parsetest.MemberCountExpr+")", "("+tt.email+")"
 			assert.Contains(t, plan.Page.SQL, memberCount+" >= ")
 			assert.Contains(t, plan.Page.SQL, email+" <> ")
 			assert.Contains(t, plan.Page.SQL, "ORDER BY "+memberCount+" DESC")
@@ -94,13 +95,13 @@ func TestReadExpr_SchemasCompileAgainstEachDialectsExpression(t *testing.T) {
 func TestReadExpr_ListQueryCompilesTheDialectsExpression(t *testing.T) {
 	for _, tt := range computedDialects {
 		t.Run(tt.dialect.Name(), func(t *testing.T) {
-			_, accounts, _, _ := newComputedResources(providertest.Compile(tt.dialect))
+			_, accounts, _, _ := parsetest.NewComputedResources(providertest.Compile(tt.dialect))
 			lq, err := accounts.ListQuery()
 			require.NoError(t, err)
 			res, err := lq.Build(filter.ListFilter(`{"member_count":{"$gte":1}}`), filter.ListSort("-member_count"))
 			require.NoError(t, err)
-			assert.Contains(t, res.Where, "("+memberCountExpr+") >= ")
-			assert.Contains(t, res.OrderBy, "("+memberCountExpr+") DESC")
+			assert.Contains(t, res.Where, "("+parsetest.MemberCountExpr+") >= ")
+			assert.Contains(t, res.OrderBy, "("+parsetest.MemberCountExpr+") DESC")
 		})
 	}
 }
@@ -140,9 +141,9 @@ func TestReadExpr_UnderAColumnMapper(t *testing.T) {
 // A resource compiles under its provider's dialect settings: on two
 // PostgreSQL providers one expression orders by each one's collation.
 func TestReadExpr_DialectSettingsApplyPerProvider(t *testing.T) {
-	email := "(" + pgEmailExpr + ")"
+	email := "(" + parsetest.PgEmailExpr + ")"
 	for _, d := range []filter.PostgresDialect{{}, {Collation: filter.CollationC}} {
-		_, accounts, _, _ := newComputedResources(providertest.Compile(d))
+		_, accounts, _, _ := parsetest.NewComputedResources(providertest.Compile(d))
 		req, err := accounts.ParseList(url.Values{filter.ParamSort: {"email"}})
 		require.NoError(t, err)
 		plan, err := accounts.BuildList(req, parse.Scope{Tenant: "t1"})
@@ -160,15 +161,15 @@ func TestReadExpr_RefusedDialect(t *testing.T) {
 		if _, ok := d.(filter.PostgresDialect); !ok {
 			return "", filter.ErrUnsupportedDialect
 		}
-		return pgGroupIDsExpr, nil
+		return parsetest.PgGroupIDsExpr, nil
 	}
-	_, err := parse.NewResource[computedAccount](onSQLite, "accounts", computedAccountOptions(postgresOnly)...)
+	_, err := parse.NewResource[parsetest.ComputedAccount](onSQLite, "accounts", parsetest.ComputedAccountOptions(postgresOnly)...)
 	require.ErrorIs(t, err, filter.ErrUnsupportedDialect)
 	require.ErrorContains(t, err, `parse: accounts: computed column "group_ids" for dialect sqlite`)
-	_, err = parse.NewResource[computedAccount](onSQLite, "accounts", computedAccountOptions(parse.SQL(" "))...)
+	_, err = parse.NewResource[parsetest.ComputedAccount](onSQLite, "accounts", parsetest.ComputedAccountOptions(parse.SQL(" "))...)
 	require.ErrorContains(t, err, `parse: accounts: computed column "group_ids" for dialect sqlite: no expression`)
 
-	accounts := newComputedAccounts(newAccessGroups(onPostgres), postgresOnly)
+	accounts := parsetest.NewComputedAccounts(parsetest.NewAccessGroups(onPostgres), postgresOnly)
 	req, err := accounts.ParseList(url.Values{
 		filter.ParamFilter:       {`{"member_count":{"$gte":1}}`},
 		filter.ParamFacets:       {"member_count"},
@@ -178,7 +179,7 @@ func TestReadExpr_RefusedDialect(t *testing.T) {
 	require.NoError(t, err)
 	scope := parse.Scope{Tenant: "t1"}
 	rename, groups := computedPatch(t, accounts, `{"name":"x"}`), computedPatch(t, accounts, `{"groups":[30]}`)
-	assert.Contains(t, strings.Join(accounts.Columns(), ", "), "("+pgGroupIDsExpr+`) AS "group_ids"`)
+	assert.Contains(t, strings.Join(accounts.Columns(), ", "), "("+parsetest.PgGroupIDsExpr+`) AS "group_ids"`)
 	entryPoints := []struct {
 		name  string
 		build func() error
@@ -204,7 +205,7 @@ func TestReadExpr_RefusedDialect(t *testing.T) {
 		})
 	}
 
-	tenants := newAccountTenants(accounts)
+	tenants := parsetest.NewAccountTenants(accounts)
 	for _, tt := range []struct {
 		name  string
 		query url.Values
@@ -226,7 +227,7 @@ func TestReadExpr_RefusedDialect(t *testing.T) {
 	}
 
 	t.Run("owner's membership change", func(t *testing.T) {
-		groups := parse.MustResource[accessGroup](onPostgres, "access_groups", parse.TenantColumn("tenant_id"))
+		groups := parse.MustResource[parsetest.AccessGroup](onPostgres, "access_groups", parse.TenantColumn("tenant_id"))
 		groups.MustRelate("accounts", parse.ManyToMany(accounts, parse.Through("account_groups", "group_id", "account_id"), parse.Writable()))
 		p, err := groups.ParseMergePatch([]byte(`{"accounts":[1]}`))
 		require.NoError(t, err)
@@ -255,7 +256,7 @@ func TestReadExpr_Refusals(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := parse.NewResource[computedAccount](onSQLite, "accounts", computedAccountOptions(groupIDsExpr, tt.opt)...)
+			_, err := parse.NewResource[parsetest.ComputedAccount](onSQLite, "accounts", parsetest.ComputedAccountOptions(parsetest.GroupIDsExpr, tt.opt)...)
 			assert.ErrorContains(t, err, tt.want)
 		})
 	}
@@ -289,7 +290,7 @@ func TestReadExpr_Refusals(t *testing.T) {
 		AccountID int `json:"account_id" db:"account_id" parse:"filter"`
 	}
 	memberships := parse.MustResource[membership](onSQLite, "memberships", parse.ReadExpr("account_id", parse.SQL("1")))
-	_, accounts, _, _ := newComputedResources(onSQLite)
+	_, accounts, _, _ := parsetest.NewComputedResources(onSQLite)
 	err = accounts.Relate("memberships", parse.HasMany(memberships, "account_id"))
 	assert.ErrorContains(t, err, `correlates on memberships's computed column "account_id"`)
 
@@ -310,10 +311,10 @@ func TestReadExpr_Refusals(t *testing.T) {
 // policy (Scope.Related).
 func TestReadExpr_RelationFiltersCompileTheTargetsExpressions(t *testing.T) {
 	scope := parse.Scope{Tenant: "t1"}
-	memberCount, size := "("+memberCountExpr+")", "("+groupSizeExpr+")"
+	memberCount, size := "("+parsetest.MemberCountExpr+")", "("+parsetest.GroupSizeExpr+")"
 	for _, tt := range computedDialects {
 		t.Run(tt.dialect.Name(), func(t *testing.T) {
-			groups, _, tenants, memberships := newComputedResources(providertest.Compile(tt.dialect))
+			groups, _, tenants, memberships := parsetest.NewComputedResources(providertest.Compile(tt.dialect))
 			email := "(" + tt.email + ")"
 			tests := []struct {
 				name, sql, want string
@@ -347,7 +348,7 @@ func TestReadExpr_RelationFiltersCompileTheTargetsExpressions(t *testing.T) {
 func TestReadExpr_RelationCycles(t *testing.T) {
 	scope := parse.Scope{Tenant: "t1"}
 	for _, tt := range computedDialects {
-		groups, _, _, _ := newComputedResources(providertest.Compile(tt.dialect))
+		groups, _, _, _ := parsetest.NewComputedResources(providertest.Compile(tt.dialect))
 		sql := pageSQL(t, groups, `{"accounts":{"$some":{"email":"","groups":{"$some":{"id":20}}}}}`, scope)
 		assert.Contains(t, sql, `"access_groups_rel2__"."id" = `)
 		assert.Contains(t, sql, "("+tt.email+") = ")
@@ -368,8 +369,8 @@ func TestReadExpr_RelationIncludesCompileTheTargetsPolicy(t *testing.T) {
 		"accounts": {Constraints: []*filter.PolicyConstraint{{Field: "member_count", Operator: filter.OpGte, Value: 1}}},
 	}}
 	provider, db := providertest.SQLite(t)
-	execStatements(t, db, computedAccountFixture()...)
-	_, accounts, tenants, _ := newComputedResources(provider)
+	dbtest.Exec(t, db, parsetest.ComputedAccountFixture()...)
+	_, accounts, tenants, _ := parsetest.NewComputedResources(provider)
 	req, err := tenants.ParseList(url.Values{filter.ParamInclude: {"shared_accounts"}})
 	require.NoError(t, err)
 	plan, err := tenants.BuildList(req, scope)
@@ -380,13 +381,13 @@ func TestReadExpr_RelationIncludesCompileTheTargetsPolicy(t *testing.T) {
 	// A membership change holds its pairs to the targets the same policy
 	// admits, once the owner statement has returned the group, and so
 	// writes nothing.
-	groups := newAccessGroups(provider)
+	groups := parsetest.NewAccessGroups(provider)
 	groups.MustRelate("accounts", parse.ManyToMany(accounts, parse.Through("account_groups", "group_id", "account_id"), parse.Writable(), parse.PolicyScoped()))
 	p, err := groups.ParseMergePatch([]byte(`{"accounts":[1]}`))
 	require.NoError(t, err)
 	_, err = groups.Update(t.Context(), p, parse.ByID(20), scope)
 	assert.ErrorContains(t, err, "field member_count is not a column of accounts and cannot be filtered through a relation")
-	assert.Equal(t, []string{"1:10", "1:20", "2:20", "3:30"}, queryRows[string](t, db, `SELECT account_id || ':' || group_id FROM account_groups ORDER BY 1`))
+	assert.Equal(t, []string{"1:10", "1:20", "2:20", "3:30"}, dbtest.QueryRows[string](t, db, `SELECT account_id || ':' || group_id FROM account_groups ORDER BY 1`))
 }
 
 // pageSQL is the page statement r builds for filterJSON.
@@ -415,7 +416,7 @@ func TestReadExpr_UpdatesNeitherStampNorIncrementComputedColumns(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			for _, d := range computedDialects {
-				_, accounts, _, _ := newComputedResources(providertest.Compile(d.dialect))
+				_, accounts, _, _ := parsetest.NewComputedResources(providertest.Compile(d.dialect))
 				rename := computedPatch(t, accounts, `{"name":"x"}`)
 				_, err := accounts.BuildUpdate(rename, parse.ByID(1), scope, tt.opt)
 				assert.ErrorContains(t, err, tt.want, "BuildUpdate %s", d.dialect.Name())
@@ -432,8 +433,8 @@ func TestReadExpr_UpdatesNeitherStampNorIncrementComputedColumns(t *testing.T) {
 func TestReadExpr_UpdateRereadsAfterRelationChanges(t *testing.T) {
 	db := dbtest.SQLiteHooked(t)
 	provider := providertest.SQLiteOn(t, db)
-	execStatements(t, db, computedAccountFixture()...)
-	_, accounts, _, _ := newComputedResources(provider)
+	dbtest.Exec(t, db, parsetest.ComputedAccountFixture()...)
+	_, accounts, _, _ := parsetest.NewComputedResources(provider)
 	scope := parse.Scope{Tenant: "t1"}
 	var statements []string
 	ctx := dbtest.OnStatement(t.Context(), func(_ context.Context, query string) { statements = append(statements, query) })
@@ -464,7 +465,7 @@ func TestReadExpr_PolicyFieldsCompileAgainstEachDialectsExpression(t *testing.T)
 	contact := &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: "contact", Operator: filter.OpEq, Value: "b"}}}
 	for _, tt := range computedDialects {
 		t.Run(tt.dialect.Name(), func(t *testing.T) {
-			_, accounts, tenants, _ := newComputedResources(providertest.Compile(tt.dialect))
+			_, accounts, tenants, _ := parsetest.NewComputedResources(providertest.Compile(tt.dialect))
 			_, err := accounts.ParseList(url.Values{filter.ParamFilter: {`{"contact":"b"}`}})
 			var pe *core.ParseError
 			require.ErrorAs(t, err, &pe, "requests cannot filter by it")
@@ -496,7 +497,7 @@ func TestReadExpr_PolicyFieldsCompileAgainstEachDialectsExpression(t *testing.T)
 	}
 }
 
-func computedPatch(t *testing.T, accounts *parse.Resource[computedAccount], body string) *patch.ParsedPatch {
+func computedPatch(t *testing.T, accounts *parse.Resource[parsetest.ComputedAccount], body string) *patch.ParsedPatch {
 	t.Helper()
 	p, err := accounts.ParseMergePatch([]byte(body))
 	require.NoError(t, err)

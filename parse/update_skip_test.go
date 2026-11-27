@@ -14,11 +14,13 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
 
 func TestSkipUnchanged_SQL(t *testing.T) {
-	at := core.FormatTimestamp(skipAt())
+	at := core.FormatTimestamp(parsetest.SkipAt())
 	const columns = `"notes"."id", "notes"."tenant_id", "notes"."title", "notes"."rank", "notes"."version", "notes"."updated_at", "notes"."deleted_at"`
 	for _, tc := range []struct {
 		provider       *parse.Provider
@@ -39,7 +41,7 @@ func TestSkipUnchanged_SQL(t *testing.T) {
 			`SELECT ` + columns + ` FROM "notes" WHERE (("notes"."tenant_id" = ?1 AND "notes"."deleted_at" IS NULL) AND "notes"."id" = ?2)`},
 	} {
 		t.Run(tc.provider.Name(), func(t *testing.T) {
-			plan := skipUpdate(t, notes(t, tc.provider), `{"title":"n","rank":2}`, parse.ByID("n1"))
+			plan := parsetest.SkipUpdate(t, parsetest.Notes(t, tc.provider), `{"title":"n","rank":2}`, parse.ByID("n1"))
 			assert.Equal(t, tc.owner, plan.Owner.SQL)
 			assert.Equal(t, []any{int64(2), "n", at, "t1", "n1"}, plan.Owner.Args, "the predicate binds nothing of its own")
 			require.NotNil(t, plan.Current)
@@ -54,14 +56,14 @@ func TestSkipUnchanged_SQL(t *testing.T) {
 // and cannot deadlock on each other: Current, a relation-only patch's Owner,
 // and Lock, which an unguarded UPDATE of several rows runs first, since the
 // UPDATE takes its own locks in the order its plan reads the rows. One row
-// needs no order, and SQLite locks no rows. TestExecutorContract/postgres
-// runs the deadlock itself.
+// needs no order, and SQLite locks no rows. The corpus's ExecutorContract
+// case runs the deadlock itself on PostgreSQL (parsepgx's TestCorpus).
 func TestBuildUpdate_LocksSeveralRowsInKeyOrder(t *testing.T) {
-	pg := notes(t, onPostgres)
+	pg := parsetest.Notes(t, onPostgres)
 	byTitle, err := pg.ParseFilterMap(map[string]any{"title": "one"})
 	require.NoError(t, err)
 	const ordered = ` ORDER BY "notes"."id" COLLATE pg_c_utf8 FOR UPDATE`
-	build := func(t *testing.T, r *parse.Resource[note], body string, target parse.Target, opts ...parse.UpdateOption) *parse.UpdatePlan {
+	build := func(t *testing.T, r *parse.Resource[parsetest.Note], body string, target parse.Target, opts ...parse.UpdateOption) *parse.UpdatePlan {
 		t.Helper()
 		p, err := r.ParseMergePatch([]byte(body))
 		require.NoError(t, err)
@@ -98,7 +100,7 @@ func TestBuildUpdate_LocksSeveralRowsInKeyOrder(t *testing.T) {
 		})
 	}
 	t.Run("sqlite", func(t *testing.T) {
-		lite := notes(t, onSQLite)
+		lite := parsetest.Notes(t, onSQLite)
 		current := build(t, lite, `{"title":"x"}`, parse.ByIDs("n2", "n1"), parse.SkipUnchanged()).Current
 		require.NotNil(t, current)
 		assert.NotContains(t, current.SQL, "ORDER BY")
@@ -107,7 +109,7 @@ func TestBuildUpdate_LocksSeveralRowsInKeyOrder(t *testing.T) {
 }
 
 func TestSkipUnchanged_LeavesTheDefaultAlone(t *testing.T) {
-	r := notes(t, onPostgres)
+	r := parsetest.Notes(t, onPostgres)
 	p, err := r.ParseMergePatch([]byte(`{"title":"n","rank":2}`))
 	require.NoError(t, err)
 	plan, err := r.BuildUpdate(p, parse.ByID("n1"), parse.Scope{Tenant: "t1"}, parse.Increment("version"))
@@ -126,7 +128,7 @@ type pointerKeyed struct {
 func keyedTable(t *testing.T) (*parse.Provider, *sql.DB) {
 	t.Helper()
 	p, db := providertest.SQLite(t)
-	execStatements(t, db, `CREATE TABLE keyed (id TEXT PRIMARY KEY, name TEXT NOT NULL)`,
+	dbtest.Exec(t, db, `CREATE TABLE keyed (id TEXT PRIMARY KEY, name TEXT NOT NULL)`,
 		`INSERT INTO keyed VALUES ('a', 'old'), ('b', 'new')`)
 	return p, db
 }
@@ -160,7 +162,7 @@ func TestUnchanged_ComparesPointerKeysByValue(t *testing.T) {
 	require.Len(t, res.Unchanged, 1)
 	assert.Equal(t, "b", *res.Unchanged[0].ID)
 
-	execStatements(t, db, `INSERT INTO keyed VALUES (NULL, 'new')`)
+	dbtest.Exec(t, db, `INSERT INTO keyed VALUES (NULL, 'new')`)
 	_, err = renameSkipping(t, r, byName[pointerKeyed](t))
 	assert.ErrorContains(t, err, "has no key")
 }
@@ -203,7 +205,7 @@ func TestUnchanged_RefusesARowWhoseKeyIsNull(t *testing.T) {
 	assert.Equal(t, []valuerKeyed{{ID: "a", Name: "new"}}, res.Changed)
 	assert.Equal(t, []valuerKeyed{{ID: "b", Name: "new"}}, res.Unchanged)
 
-	execStatements(t, db, `INSERT INTO keyed VALUES (NULL, 'new')`)
+	dbtest.Exec(t, db, `INSERT INTO keyed VALUES (NULL, 'new')`)
 	_, err = renameSkipping(t, r, byName[valuerKeyed](t))
 	require.ErrorContains(t, err, "keyed: a row has no key: key column id holds no value")
 }

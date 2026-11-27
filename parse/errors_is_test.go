@@ -14,6 +14,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
@@ -71,7 +72,7 @@ func TestRootSentinels_OnePrefixShape(t *testing.T) {
 	// A batch's targets are judged against the rows its Current reads, so
 	// ErrUpdateBatchTargets comes from a database: an empty table here.
 	sp, db := providertest.SQLite(t)
-	execStatements(t, db, `CREATE TABLE devices (id TEXT PRIMARY KEY, tenant_id INTEGER NOT NULL, name TEXT NOT NULL)`)
+	dbtest.Exec(t, db, `CREATE TABLE devices (id TEXT PRIMARY KEY, tenant_id INTEGER NOT NULL, name TEXT NOT NULL)`)
 	stored := parse.MustResource[device](sp, "devices", parse.TenantColumn("tenant_id"))
 	storedRename, err := stored.ParseMergePatch([]byte(`{"name":"x"}`))
 	require.NoError(t, err)

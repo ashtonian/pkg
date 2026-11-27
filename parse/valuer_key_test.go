@@ -13,6 +13,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
@@ -58,7 +59,7 @@ func TestValuerKey_BindsAsTheValueItWrites(t *testing.T) {
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT qty FROM sku_items WHERE id = 'AB'`).Scan(&qty))
 	assert.Equal(t, int64(7), qty)
 
-	assert.Equal(t, []string{"AB:t1"}, queryRows[string](t, db, `SELECT sku_id || ':' || tag_id FROM sku_tags`), "an owner key read back binds as the target did")
+	assert.Equal(t, []string{"AB:t1"}, dbtest.QueryRows[string](t, db, `SELECT sku_id || ':' || tag_id FROM sku_tags`), "an owner key read back binds as the target did")
 
 	rel := &core.RelationSchema{JoinTable: "sku_tags", SourceColumns: []string{"tag_id"}, TargetColumns: []string{"sku_id"},
 		SourceTypes: []core.TypeInfo{{Type: core.FieldTypeString}}, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeString}}}
