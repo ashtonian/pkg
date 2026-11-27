@@ -14,7 +14,6 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
 // A key field takes equality, the range operators and $in, those its type
@@ -94,12 +93,4 @@ func TestKeyField_RefusesAnUnorderedTypesRange(t *testing.T) {
 	assert.Equal(t, filter.ECodeInvalidOperator.String(), pe.Code)
 	_, err = r.ParseListInput(parse.ListInput{Filter: `{"id":{"$in":["10.0.0.9","10.0.0.10"]}}`})
 	require.NoError(t, err, "an inet key keeps equality and $in")
-}
-
-// A UUID key's range selects the same rows in filter.Evaluate and on
-// SQLite, which holds the canonical lowercase text.
-func TestUUIDKeyRanges_SQLite(t *testing.T) {
-	runUUIDKeyRanges(t, dbtest.SQLite(t), filter.SQLiteDialect{},
-		`CREATE TABLE uuid_keyed (id TEXT PRIMARY KEY, name TEXT NOT NULL)`,
-		func(id uuid.UUID) any { return id.String() })
 }

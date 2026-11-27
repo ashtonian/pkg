@@ -1,4 +1,4 @@
-//go:build unit || integration
+//go:build integration
 
 package parse_test
 
@@ -21,14 +21,16 @@ import (
 // order crosses several pages.
 const walkPage = 2
 
-// runPathWalks pages through PathRecords by every PathOrders sort.
-func runPathWalks(t *testing.T, p pathDB) {
-	t.Helper()
-	loadPathRecords(t, p)
-	r, err := parse.NewResource[filtertest.PathRecord]("path_records", parse.PageSize(walkPage, 10))
-	require.NoError(t, err)
-	walkOrders(t, walker[filtertest.PathRecord]{db: p.db, dialect: p.dialect, resource: r,
-		id: func(r filtertest.PathRecord) string { return r.ID }}, filtertest.PathOrders)
+// Keyset walks over path sort keys on each backend, PathRecords paged by
+// every PathOrders sort.
+func TestPathWalks(t *testing.T) {
+	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
+		db := loadPathRecords(t, b, pathSchema(t, ""))
+		r, err := parse.NewResource[filtertest.PathRecord]("path_records", parse.PageSize(walkPage, 10))
+		require.NoError(t, err)
+		walkOrders(t, walker[filtertest.PathRecord]{db: db, dialect: b.dialect, resource: r,
+			id: func(r filtertest.PathRecord) string { return r.ID }}, filtertest.PathOrders)
+	})
 }
 
 // walker lists a resource's rows from db; id names a row.

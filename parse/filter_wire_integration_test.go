@@ -4,8 +4,7 @@ package parse_test
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
+	"encoding/json"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -28,46 +27,21 @@ func TestJSONIntegerEdges_SameRowsOnEveryBackend(t *testing.T) {
 		`{"doc":{"n":9223372036854775807}}`:                {1},
 		`{"doc":{"$contains":{"n":-9223372036854775808}}}`: {4},
 	}
-	for name, open := range map[string]func(*testing.T) (*sql.DB, filter.Dialect, string){
-		"sqlite": func(t *testing.T) (*sql.DB, filter.Dialect, string) {
-			return dbtest.SQLite(t), filter.SQLiteDialect{}, "TEXT"
-		},
-		"postgres": func(t *testing.T) (*sql.DB, filter.Dialect, string) {
-			return dbtest.Postgres(t), filter.PostgresDialect{}, "JSONB"
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			db, d, docType := open(t)
-			_, err := db.Exec("CREATE TABLE docs (id INT, doc " + docType + ")")
-			require.NoError(t, err)
-			for i, doc := range stored {
-				_, err := db.Exec(fmt.Sprintf("INSERT INTO docs VALUES (%s, %s)", d.Placeholder(1), d.Placeholder(2)), i+1, doc)
-				require.NoError(t, err)
-			}
-			for q, want := range queries {
-				ast, err := filter.NewFilterParser(schema, nil).Parse(q)
-				require.NoError(t, err, q)
-				res, err := filter.NewSQLBuilder(schema, d).Build(ast)
-				require.NoError(t, err, q)
-				assert.Equal(t, want, queryInts(t, db, "SELECT id FROM docs WHERE "+res.Where+" ORDER BY id", res.Args), q)
-			}
-		})
-	}
-}
-
-func queryInts(t *testing.T, db *sql.DB, q string, args []any) []int {
-	t.Helper()
-	rows, err := db.Query(q, args...)
-	require.NoError(t, err)
-	defer rows.Close()
-	var out []int
-	for rows.Next() {
-		var id int
-		require.NoError(t, rows.Scan(&id))
-		out = append(out, id)
-	}
-	require.NoError(t, rows.Err())
-	return out
+	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
+		db := b.open(t)
+		rows := make([][]any, len(stored))
+		for i, doc := range stored {
+			rows[i] = []any{i + 1, doc}
+		}
+		b.load(t, db, sqlTable{name: "docs", columns: []sqlColumn{column[int]("id"), column[json.RawMessage]("doc")}}, rows)
+		for q, want := range queries {
+			ast, err := filter.NewFilterParser(schema, nil).Parse(q)
+			require.NoError(t, err, q)
+			res, err := filter.NewSQLBuilder(schema, b.dialect).Build(ast)
+			require.NoError(t, err, q)
+			assert.Equal(t, want, queryRows[int](t, db, "SELECT id FROM docs WHERE "+res.Where+" ORDER BY id", res.Args...), q)
+		}
+	})
 }
 
 // Through a native pgx connection — the production driver — UUID

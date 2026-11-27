@@ -3,9 +3,7 @@
 package parse_test
 
 import (
-	"database/sql"
 	"errors"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,86 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
-	"github.com/ashtonian/pkg/parse/parsesql"
-	"github.com/ashtonian/pkg/parse/patch"
 )
-
-type gadget struct {
-	ID        string   `json:"id"         db:"id"         parse:"filter,sort"`
-	TenantID  string   `json:"tenant_id"  db:"tenant_id"`
-	Name      string   `json:"name"       db:"name"       parse:"filter,sort,patch"`
-	Rank      int64    `json:"rank"       db:"rank"       parse:"filter,patch"`
-	UpdatedAt string   `json:"updated_at" db:"updated_at"`
-	DeletedAt *string  `json:"deleted_at" db:"deleted_at"`
-	Tags      []string `json:"tags"       db:"-"          parse:"filter,patch" relation:"gadget_tags,gadget_id,tag_id,id,tenant_id" indexed:"true"`
-}
-
-func gadgets(t *testing.T) *parse.Resource[gadget] {
-	t.Helper()
-	r, err := parse.NewResource[gadget]("gadgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
-	require.NoError(t, err)
-	return r
-}
-
-// gadgetDB: t1 holds g1, g2 and a deleted g3; t2 holds h1. Tags pair in
-// each row's tenant.
-func gadgetDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db := dbtest.SQLite(t)
-	for _, stmt := range []string{
-		`CREATE TABLE gadgets (id TEXT PRIMARY KEY, tenant_id TEXT, name TEXT, rank INTEGER, updated_at TEXT, deleted_at TEXT)`,
-		`CREATE TABLE gadget_tags (gadget_id TEXT, tag_id TEXT, tenant_id TEXT)`,
-		`INSERT INTO gadgets VALUES ('g1','t1','one',1,'old',NULL), ('g2','t1','two',1,'old',NULL),
-			('g3','t1','three',1,'old','2026-01-01T00:00:00Z'), ('h1','t2','other',1,'old',NULL)`,
-		`INSERT INTO gadget_tags VALUES ('g1','red','t1'), ('h1','red','t2')`,
-	} {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
-	return db
-}
-
-func gadgetIDs(gs []gadget) []string {
-	out := make([]string, len(gs))
-	for i, g := range gs {
-		out[i] = g.ID
-	}
-	slices.Sort(out)
-	return out
-}
-
-func gadgetNames(t *testing.T, db *sql.DB) map[string]string {
-	t.Helper()
-	rows, err := db.Query(`SELECT id, name FROM gadgets`)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, rows.Close()) }()
-	out := map[string]string{}
-	for rows.Next() {
-		var id, name string
-		require.NoError(t, rows.Scan(&id, &name))
-		out[id] = name
-	}
-	require.NoError(t, rows.Err())
-	return out
-}
-
-func tagPairs(t *testing.T, db *sql.DB) []string {
-	t.Helper()
-	rows, err := db.Query(`SELECT gadget_id || ':' || tag_id || '@' || tenant_id FROM gadget_tags ORDER BY 1`)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, rows.Close()) }()
-	var out []string
-	for rows.Next() {
-		var s string
-		require.NoError(t, rows.Scan(&s))
-		out = append(out, s)
-	}
-	require.NoError(t, rows.Err())
-	return out
-}
 
 func TestBuildUpdate_Refuses(t *testing.T) {
 	r := gadgets(t)
@@ -131,197 +51,6 @@ func TestBuildUpdate_Refuses(t *testing.T) {
 	}
 }
 
-func TestBuildUpdate_ChangesOnlyTheScopedTargetRows(t *testing.T) {
-	r := gadgets(t)
-	p, err := r.ParseMergePatch([]byte(`{"name":"renamed","rank":7}`))
-	require.NoError(t, err)
-	for name, tc := range map[string]struct {
-		target parse.Target
-		scope  parse.Scope
-		want   []string
-	}{
-		"by key":                    {parse.ByID("g1"), parse.Scope{Tenant: "t1"}, []string{"g1"}},
-		"by keys":                   {parse.ByIDs("g1", "g2"), parse.Scope{Tenant: "t1"}, []string{"g1", "g2"}},
-		"another tenant's key":      {parse.ByID("h1"), parse.Scope{Tenant: "t1"}, nil},
-		"a deleted row":             {parse.ByID("g3"), parse.Scope{Tenant: "t1"}, nil},
-		"by filter, in its tenant":  {byFilter(t, r, `{"rank":1}`), parse.Scope{Tenant: "t1"}, []string{"g1", "g2"}},
-		"policy narrows the target": {parse.ByIDs("g1", "g2"), parse.Scope{Tenant: "t1", Policy: nameIs("two")}, []string{"g2"}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			db := gadgetDB(t)
-			plan, err := r.BuildUpdate(filter.SQLiteDialect{}, p, tc.target, tc.scope)
-			require.NoError(t, err)
-			require.True(t, plan.Writes)
-			got := resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Owner)
-			assert.Equal(t, tc.want, nilIfEmpty(gadgetIDs(got)), "the rows RETURNING reports")
-			for _, g := range got {
-				assert.Equal(t, "renamed", g.Name)
-				assert.Equal(t, int64(7), g.Rank)
-			}
-			names := gadgetNames(t, db)
-			for id, name := range names {
-				if slices.Contains(tc.want, id) {
-					assert.Equal(t, "renamed", name, id)
-				} else {
-					assert.NotEqual(t, "renamed", name, "%s is outside the target or scope", id)
-				}
-			}
-		})
-	}
-}
-
-func byFilter(t *testing.T, r *parse.Resource[gadget], f string) parse.Target {
-	t.Helper()
-	pf, err := r.ParseFilter(f)
-	require.NoError(t, err)
-	return parse.ByFilter(pf)
-}
-
-func nameIs(name string) *filter.PolicyConstraints {
-	return &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: "name", Operator: filter.OpEq, Value: name}}}
-}
-
-func nilIfEmpty(s []string) []string {
-	if len(s) == 0 {
-		return nil
-	}
-	return s
-}
-
-func TestBuildUpdate_Stamps(t *testing.T) {
-	r := gadgets(t)
-	p, err := r.ParseMergePatch([]byte(`{"name":"x"}`))
-	require.NoError(t, err)
-	at := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
-
-	db := gadgetDB(t)
-	plan, err := r.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByID("g1"), parse.Scope{Tenant: "t1"}, parse.Stamp("updated_at", at))
-	require.NoError(t, err)
-	got := resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Owner)
-	require.Len(t, got, 1)
-	assert.Equal(t, core.FormatTimestamp(at), got[0].UpdatedAt)
-
-	plan, err = r.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByID("g2"), parse.Scope{Tenant: "t1"}, parse.StampSQL("updated_at", "'database clock'"))
-	require.NoError(t, err)
-	got = resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Owner)
-	require.Len(t, got, 1)
-	assert.Equal(t, "database clock", got[0].UpdatedAt)
-
-	rel, err := r.ParseMergePatch([]byte(`{"tags":["blue"]}`))
-	require.NoError(t, err)
-	plan, err = r.BuildUpdate(filter.SQLiteDialect{}, rel, parse.ByID("g1"), parse.Scope{Tenant: "t1"}, parse.Stamp("updated_at", at.Add(time.Hour)))
-	require.NoError(t, err)
-	got = resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Owner)
-	assert.Equal(t, core.FormatTimestamp(at), got[0].UpdatedAt, "a relation change alone writes no column, so it stamps none")
-}
-
-type revision struct {
-	ID        string `json:"id"         db:"id"         parse:"filter,sort"`
-	TenantID  string `json:"tenant_id"  db:"tenant_id"`
-	Name      string `json:"name"       db:"name"       parse:"filter,patch"`
-	Version   int64  `json:"version"    db:"version"    parse:"filter,server"`
-	UpdatedAt string `json:"updated_at" db:"updated_at"`
-}
-
-func TestBuildUpdate_Increments(t *testing.T) {
-	r, err := parse.NewResource[revision]("revisions", parse.TenantColumn("tenant_id"))
-	require.NoError(t, err)
-	db := dbtest.SQLite(t)
-	for _, stmt := range []string{
-		`CREATE TABLE revisions (id TEXT PRIMARY KEY, tenant_id TEXT, name TEXT, version INTEGER NOT NULL DEFAULT 1, updated_at TEXT)`,
-		`INSERT INTO revisions (id, tenant_id, name, updated_at) VALUES ('r1','t1','one','old'), ('r2','t1','two','old')`,
-	} {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
-	at := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
-	update := func(t *testing.T, p *patch.ParsedPatch, target parse.Target) []revision {
-		t.Helper()
-		plan, err := r.BuildUpdate(filter.SQLiteDialect{}, p, target, parse.Scope{Tenant: "t1"},
-			parse.Increment("version"), parse.Stamp("updated_at", at))
-		require.NoError(t, err)
-		res, err := parsesql.Update(t.Context(), db, r, plan)
-		require.NoError(t, err)
-		assert.Empty(t, res.Unchanged, "a plain update writes every target")
-		return res.Changed
-	}
-
-	rename, err := r.ParseMergePatch([]byte(`{"name":"renamed"}`))
-	require.NoError(t, err)
-	got := update(t, rename, parse.ByID("r1"))
-	require.Len(t, got, 1)
-	assert.Equal(t, int64(2), got[0].Version, "RETURNING reports the moved version")
-	assert.Equal(t, core.FormatTimestamp(at), got[0].UpdatedAt, "the stamp still applies")
-
-	got = update(t, rename, parse.ByIDs("r1", "r2"))
-	require.Len(t, got, 2)
-	versions := map[string]int64{got[0].ID: got[0].Version, got[1].ID: got[1].Version}
-	assert.Equal(t, map[string]int64{"r1": 3, "r2": 2}, versions, "each row moves one past its own version")
-
-	server, err := r.ServerMergePatchMap(map[string]any{"name": "server", "version": 40})
-	require.NoError(t, err)
-	got = update(t, server, parse.ByID("r2"))
-	require.Len(t, got, 1)
-	assert.Equal(t, int64(3), got[0].Version, "the server's own patch does not set the version either")
-	assert.Equal(t, "server", got[0].Name)
-}
-
-func TestBuildUpdate_RelationsChangeOnlyTheRowsTheOwnerMatched(t *testing.T) {
-	r := gadgets(t)
-	p, err := r.ParseMergePatch([]byte(`{"tags":["blue","green"]}`))
-	require.NoError(t, err)
-	db := gadgetDB(t)
-
-	plan, err := r.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByIDs("g1", "h1", "g3"), parse.Scope{Tenant: "t1"})
-	require.NoError(t, err)
-	assert.True(t, plan.Writes)
-	assert.True(t, plan.HasRelations())
-	assert.True(t, strings.HasPrefix(plan.Owner.SQL, "SELECT "), "a relation-only patch selects its owners")
-
-	res, err := parsesql.Update(t.Context(), db, r, plan)
-	require.NoError(t, err)
-	assert.Empty(t, res.Changed)
-	assert.Equal(t, []string{"g1"}, gadgetIDs(res.Unchanged), "h1 is t2's, g3 is deleted")
-	assert.Equal(t, int64(3), res.RelationRows, "red out of g1, blue and green in")
-	assert.Equal(t, []string{"g1:blue@t1", "g1:green@t1", "h1:red@t2"}, tagPairs(t, db), "the requested h1 is not the matched one")
-
-	none, err := r.RelationStatements(plan, nil)
-	require.NoError(t, err)
-	assert.Empty(t, none, "no matched owners, no junction writes")
-}
-
-func TestBuildUpdate_ColumnsAndRelationsTogether(t *testing.T) {
-	r := gadgets(t)
-	p, err := r.ParseMergePatch([]byte(`{"name":"both","tags":["blue"]}`))
-	require.NoError(t, err)
-	db := gadgetDB(t)
-	plan, err := r.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByID("g1"), parse.Scope{Tenant: "t1"})
-	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(plan.Owner.SQL, `UPDATE "gadgets" SET `))
-	assert.True(t, plan.HasRelations())
-	res, err := parsesql.Update(t.Context(), db, r, plan)
-	require.NoError(t, err)
-	require.Len(t, res.Changed, 1)
-	assert.Equal(t, "both", res.Changed[0].Name)
-	assert.Equal(t, "both", gadgetNames(t, db)["g1"])
-	assert.Equal(t, []string{"g1:blue@t1", "h1:red@t2"}, tagPairs(t, db))
-}
-
-func TestBuildUpdate_AnEmptyPatchIsAScopedRead(t *testing.T) {
-	r := gadgets(t)
-	p, err := r.ParseMergePatch([]byte(`{}`))
-	require.NoError(t, err)
-	db := gadgetDB(t)
-	plan, err := r.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByIDs("g1", "h1"), parse.Scope{Tenant: "t1"})
-	require.NoError(t, err)
-	assert.False(t, plan.Writes)
-	assert.False(t, plan.HasRelations())
-	res, err := parsesql.Update(t.Context(), db, r, plan)
-	require.NoError(t, err)
-	assert.Empty(t, res.Changed)
-	assert.Equal(t, []string{"g1"}, gadgetIDs(res.Unchanged))
-}
-
 func TestBuildUpdate_LocksRelationOwnersOnPostgres(t *testing.T) {
 	r := gadgets(t)
 	p, err := r.ParseMergePatch([]byte(`{"tags":["blue"]}`))
@@ -335,7 +64,7 @@ func TestBuildUpdate_LocksRelationOwnersOnPostgres(t *testing.T) {
 	plan, err = r.BuildUpdate(filter.PostgresDialect{}, sc, parse.ByID("g1"), parse.Scope{Tenant: "t1"}, parse.StampSQL("updated_at", "NOW()"))
 	require.NoError(t, err)
 	assert.Equal(t, `UPDATE "gadgets" SET "name" = $1, "rank" = $2, "updated_at" = NOW() WHERE (("gadgets"."tenant_id" = $3 AND "gadgets"."deleted_at" IS NULL) AND "gadgets"."id" = $4) `+
-		`RETURNING "gadgets"."id", "gadgets"."tenant_id", "gadgets"."name", "gadgets"."rank", "gadgets"."updated_at", "gadgets"."deleted_at"`, plan.Owner.SQL)
+		`RETURNING "gadgets"."id", "gadgets"."tenant_id", "gadgets"."name", "gadgets"."rank", "gadgets"."version", "gadgets"."updated_at", "gadgets"."deleted_at"`, plan.Owner.SQL)
 	assert.Equal(t, []any{"n", int64(2), "t1", "g1"}, plan.Owner.Args)
 }
 
