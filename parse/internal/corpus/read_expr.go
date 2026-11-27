@@ -3,10 +3,12 @@
 package corpus
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -184,6 +186,85 @@ func keysOf[T any](t *testing.T, db *sql.DB, r *parse.Resource[T], filterJSON st
 		out = append(out, fmt.Sprint(row[key]))
 	}
 	return out
+}
+
+// The relation's includes and facets compile its target's policy for the
+// owner's dialect too. They read the target under an alias, so a policy on
+// a computed column fails the build instead of reading a stored column the
+// table lacks.
+func readExprRelationIncludesCompileTheTargetsPolicy(t *testing.T, engine Engine) {
+	runOn(t, engine, func(t *testing.T, b sqlBackend) {
+		scope := parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
+			"accounts": {Constraints: []*filter.PolicyConstraint{{Field: "member_count", Operator: filter.OpGte, Value: 1}}},
+		}}
+		provider, db := b.open(t)
+		dbtest.Exec(t, db, parsetest.ComputedAccountFixture()...)
+		_, accounts, tenants, _ := parsetest.NewComputedResources(provider)
+		req, err := tenants.ParseList(url.Values{filter.ParamInclude: {"shared_accounts"}})
+		require.NoError(t, err)
+		plan, err := tenants.BuildList(req, scope)
+		require.NoError(t, err)
+		_, err = tenants.IncludeQueries(plan, []parse.Key{{"t1"}})
+		require.ErrorContains(t, err, "field member_count is not a column of accounts and cannot be filtered through a relation")
+
+		// A membership change holds its pairs to the targets the same policy
+		// admits, once the owner statement has returned the group, and so
+		// writes nothing.
+		groups := parsetest.NewAccessGroups(provider)
+		groups.MustRelate("accounts", parse.ManyToMany(accounts, parse.Through("account_groups", "group_id", "account_id"), parse.Writable(), parse.PolicyScoped()))
+		p, err := groups.ParseMergePatch([]byte(`{"accounts":[1]}`))
+		require.NoError(t, err)
+		_, err = groups.Update(t.Context(), p, parse.ByID(20), scope)
+		require.ErrorContains(t, err, "field member_count is not a column of accounts and cannot be filtered through a relation")
+		assert.Equal(t, []string{"1:10", "1:20", "2:20", "3:30"}, dbtest.QueryRows[string](t, db, `SELECT account_id || ':' || group_id FROM account_groups ORDER BY 1`))
+	})
+}
+
+// An update reads its owners again only when its relation statements may
+// have changed what a computed column reads: after them, in its
+// transaction, held to the update's tenant. The update runs in the
+// application's transaction, whose statements every engine reports.
+func readExprUpdateRereadsAfterRelationChanges(t *testing.T, engine Engine) {
+	runOn(t, engine, func(t *testing.T, b sqlBackend) {
+		provider, db := b.open(t)
+		dbtest.Exec(t, db, parsetest.ComputedAccountFixture()...)
+		_, accounts, _, _ := parsetest.NewComputedResources(provider)
+		scope := parse.Scope{Tenant: "t1"}
+		var statements []string
+		record := func(_ context.Context, query string) {
+			if !strings.Contains(query, "SAVEPOINT") {
+				statements = append(statements, query)
+			}
+		}
+		reread := "SELECT " + strings.Join(accounts.Columns(), ", ") + ` FROM "accounts" WHERE `
+		update := func(t *testing.T, body string) parse.UpdateResult[parsetest.ComputedAccount] {
+			t.Helper()
+			statements = nil
+			var res parse.UpdateResult[parsetest.ComputedAccount]
+			callerTx(t, b, db, func(tx *parse.Tx, _ func(string) []string) {
+				scoped, err := accounts.In(tx)
+				require.NoError(t, err)
+				p, err := accounts.ParseMergePatch([]byte(body))
+				require.NoError(t, err)
+				res, err = scoped.Update(dbtest.OnStatement(t.Context(), record), p, parse.ByID(1), scope)
+				require.NoError(t, err)
+			})
+			require.NotEmpty(t, statements)
+			return res
+		}
+
+		update(t, `{"name":"x"}`)
+		for _, query := range statements {
+			assert.False(t, strings.HasPrefix(query, reread), "no relation statements: Owner's rows are current: %s", query)
+		}
+
+		res := update(t, `{"groups":[30]}`)
+		last := statements[len(statements)-1]
+		assert.True(t, strings.HasPrefix(last, reread), "the reread follows the relation statements: %s", last)
+		assert.Contains(t, last, `"accounts"."tenant_id" = `)
+		require.Len(t, res.Unchanged, 1)
+		assert.Equal(t, []int64{30}, res.Unchanged[0].GroupIDs, "the pairs the relation statements left")
+	}, hooked())
 }
 
 func computedInt(t *testing.T, v any) int64 {

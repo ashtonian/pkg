@@ -3,8 +3,6 @@
 package parse_test
 
 import (
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"math"
 	"net/url"
@@ -22,42 +20,8 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/parsetest"
-	"github.com/ashtonian/pkg/parse/internal/providertest"
 )
-
-// widgetStore is the widget resource on a fresh SQLite database: tenant t1
-// holds w1–w5 (w4 deleted; w1–w3 share rank 1), t2 holds x1; tags are pairs
-// in each row's tenant.
-func widgetStore(t *testing.T) (*parse.Resource[widget], *sql.DB) {
-	t.Helper()
-	p, db := providertest.SQLite(t)
-	dbtest.Exec(t, db,
-		`CREATE TABLE widgets (id TEXT PRIMARY KEY, tenant_id TEXT, name TEXT, rank INTEGER, deleted_at TEXT)`,
-		`CREATE TABLE widget_tags (widget_id TEXT, tag_id TEXT, tenant_id TEXT)`,
-		`INSERT INTO widgets VALUES ('w1','t1','alpha',1,NULL), ('w2','t1','beta',1,NULL), ('w3','t1','gamma',1,NULL),
-			('w4','t1','delta',2,'2026-01-01T00:00:00Z'), ('w5','t1','beta',2,NULL), ('x1','t2','alpha',1,NULL)`,
-		`INSERT INTO widget_tags VALUES ('w1','red','t1'), ('w1','blue','t1'), ('w2','red','t1'), ('x1','red','t2'), ('w1','green','t2')`)
-	return widgetsOn(t, p), db
-}
-
-func widgetID(w widget) string { return w.ID }
-
-// list builds query under s and reads the plan's page by hand on r's
-// database, for a test that reads the plan's other statements itself.
-func list(t *testing.T, r *parse.Resource[widget], query string, s parse.Scope) (*filter.Page[widget], *parse.ListPlan) {
-	t.Helper()
-	q, err := url.ParseQuery(query)
-	require.NoError(t, err)
-	req, err := r.ParseList(q)
-	require.NoError(t, err)
-	plan, err := r.BuildList(req, s)
-	require.NoError(t, err)
-	page, err := r.Page(parsetest.ResourceRows(t, r, plan.Page), plan)
-	require.NoError(t, err)
-	return page, plan
-}
 
 func TestParseList_ReadsEveryListParameter(t *testing.T) {
 	r := widgets(t)
@@ -163,62 +127,6 @@ func TestEveryEntryPoint_RefusesAMisspeltFilter(t *testing.T) {
 	}
 }
 
-func TestBuildList_HoldsRowsToTheScope(t *testing.T) {
-	r, _ := widgetStore(t)
-	_, err := r.BuildList(nil, parse.Scope{})
-	require.ErrorIs(t, err, parse.ErrTenantRequired, "a tenant-scoped list needs its tenant")
-
-	for name, tc := range map[string]struct {
-		query string
-		scope parse.Scope
-		want  []string
-	}{
-		"tenant floor and deleted rows masked": {"page_size=3", parse.Scope{Tenant: "t1"}, []string{"w1", "w2", "w3"}},
-		"another tenant":                       {"", parse.Scope{Tenant: "t2"}, []string{"x1"}},
-		"deleted rows when the server says so": {"rank=2", parse.Scope{Tenant: "t1", IncludeDeleted: true}, []string{"w4", "w5"}},
-		"a request cannot ask for them alone":  {"rank=2&include_deleted=true", parse.Scope{Tenant: "t1"}, []string{"w5"}},
-		"policy ANDed with the request": {"page_size=3", parse.Scope{Tenant: "t1", Policy: &filter.PolicyConstraints{
-			Constraints: []*filter.PolicyConstraint{{Field: "name", Operator: filter.OpIn, Value: []any{"alpha", "gamma", "beta"}}},
-		}}, []string{"w1", "w2", "w3"}},
-		"policy excludes": {"name=beta", parse.Scope{Tenant: "t1", Policy: &filter.PolicyConstraints{
-			Constraints: []*filter.PolicyConstraint{{Field: "id", Operator: filter.OpNe, Value: "w2"}},
-		}}, []string{"w5"}},
-		"search": {"search=gam", parse.Scope{Tenant: "t1"}, []string{"w3"}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			page, _ := list(t, r, tc.query, tc.scope)
-			assert.Equal(t, tc.want, parsetest.ItemIDs(page.Items, widgetID))
-		})
-	}
-}
-
-// The key is the final keyset column: rows tied on the sort are neither
-// skipped nor repeated across pages, walking forward or back.
-func TestBuildList_WalksTiedSortValuesExactly(t *testing.T) {
-	r, db := widgetStore(t)
-	scope := parse.Scope{Tenant: "t1"}
-	var seen []string
-	query := "sort=rank&include_total=true"
-	var last *filter.Page[widget]
-	for range 5 {
-		page, plan := list(t, r, query, scope)
-		require.NotNil(t, plan.Count)
-		var total int64
-		require.NoError(t, db.QueryRowContext(t.Context(), plan.Count.SQL, plan.Count.Args...).Scan(&total))
-		assert.Equal(t, int64(4), total, "the total counts the population, not the page")
-		seen = append(seen, parsetest.ItemIDs(page.Items, widgetID)...)
-		last = page
-		if !page.PageInfo.HasNextPage {
-			break
-		}
-		query = "sort=rank&include_total=true&cursor=" + url.QueryEscape(string(page.PageInfo.EndCursor))
-	}
-	assert.Equal(t, []string{"w1", "w2", "w3", "w5"}, seen)
-
-	back, _ := list(t, r, "sort=rank&cursor="+url.QueryEscape(string(last.PageInfo.StartCursor)), scope)
-	assert.Equal(t, []string{"w1", "w2"}, parsetest.ItemIDs(back.Items, widgetID), "the page before the last, in presentation order")
-}
-
 func TestBuildList_UsesTheDeclaredKeyOnRequestViews(t *testing.T) {
 	type entry struct {
 		Code string         `json:"code" db:"code"`
@@ -241,108 +149,6 @@ func TestBuildList_UsesTheDeclaredKeyOnRequestViews(t *testing.T) {
 	require.Len(t, plan.Keyset.Keys, 2)
 	assert.Equal(t, "data.rank", plan.Keyset.Keys[0].Name)
 	assert.Equal(t, "code", plan.Keyset.Keys[1].Name)
-}
-
-func TestBuildList_FacetsCountThePopulation(t *testing.T) {
-	r, db := widgetStore(t)
-	_, plan := list(t, r, "facets=name&rank=1", parse.Scope{Tenant: "t1"})
-	require.NotNil(t, plan.Facets)
-	rows, err := db.QueryContext(t.Context(), plan.Facets.SQL, plan.Facets.Args...)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, rows.Close()) }()
-	results, err := filter.ScanFacetUnion(rows)
-	require.NoError(t, err)
-	require.NoError(t, rows.Err())
-	require.Len(t, results, 1)
-	counts := map[string]int64{}
-	for _, b := range results[0].Buckets {
-		counts[b.Key] = b.Count
-	}
-	assert.Equal(t, map[string]int64{"alpha": 1, "beta": 1, "gamma": 1}, counts)
-}
-
-func TestIncludeQueries_ReadThePagesRelationsInItsTenant(t *testing.T) {
-	r, db := widgetStore(t)
-	page, plan := list(t, r, "include=tags&page_size=3", parse.Scope{Tenant: "t1"})
-	keys := make([]parse.Key, len(page.Items))
-	for i, w := range page.Items {
-		var err error
-		keys[i], err = r.Key(w)
-		require.NoError(t, err)
-	}
-	queries, err := r.IncludeQueries(plan, keys)
-	require.NoError(t, err)
-	require.Len(t, queries, 1)
-	rows, err := db.QueryContext(t.Context(), queries[0].SQL, queries[0].Args...)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, rows.Close()) }()
-	res, err := queries[0].Scan(rows)
-	require.NoError(t, err)
-	require.NoError(t, rows.Err())
-	grouped := res.IDs
-	for k := range grouped {
-		slices.Sort(grouped[k])
-	}
-	assert.Equal(t, map[string][]string{"w1": {"blue", "red"}, "w2": {"red"}}, grouped, "w1's t2 pair is not t1's")
-
-	none, err := r.IncludeQueries(plan, nil)
-	require.NoError(t, err)
-	assert.Empty(t, none)
-}
-
-func TestPagePointers(t *testing.T) {
-	r, _ := widgetStore(t)
-	q := url.Values{"page_size": {"2"}}
-	req, err := r.ParseList(q)
-	require.NoError(t, err)
-	plan, err := r.BuildList(req, parse.Scope{Tenant: "t1"})
-	require.NoError(t, err)
-	var ptrs []*widget
-	for _, w := range parsetest.ResourceRows(t, r, plan.Page) {
-		ptrs = append(ptrs, &w)
-	}
-	page, err := r.PagePointers(ptrs, plan)
-	require.NoError(t, err)
-	require.Len(t, page.Items, 2)
-	assert.True(t, page.PageInfo.HasNextPage)
-	assert.NotEmpty(t, page.PageInfo.EndCursor)
-}
-
-// A list that matches nothing reads no rows, nil as a scan loop leaves
-// them; its page encodes "items":[] whichever form the rows take.
-func TestPage_OfNoRowsEncodesItemsAsAnArray(t *testing.T) {
-	r, _ := widgetStore(t)
-	req, err := r.ParseList(url.Values{"name": {"no such widget"}})
-	require.NoError(t, err)
-	plan, err := r.BuildList(req, parse.Scope{Tenant: "t1"})
-	require.NoError(t, err)
-	scanned := parsetest.ResourceRows(t, r, plan.Page)
-	require.Empty(t, scanned)
-
-	rows := func(items []widget) func() (any, error) {
-		return func() (any, error) { return r.Page(items, plan) }
-	}
-	pointers := func(items []*widget) func() (any, error) {
-		return func() (any, error) { return r.PagePointers(items, plan) }
-	}
-	for _, tt := range []struct {
-		name string
-		page func() (any, error)
-	}{
-		{"the scanned rows", rows(scanned)},
-		{"nil rows", rows(nil)},
-		{"no rows", rows([]widget{})},
-		{"nil pointers", pointers(nil)},
-		{"no pointers", pointers([]*widget{})},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			page, err := tt.page()
-			require.NoError(t, err)
-			got, err := json.Marshal(page)
-			require.NoError(t, err)
-			assert.JSONEq(t, `{"items":[],"page_info":{"has_next_page":false,"has_prev_page":false}}`, string(got))
-		})
-	}
 }
 
 func TestResource_ParseFilter(t *testing.T) {

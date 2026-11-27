@@ -23,11 +23,29 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/parsetest"
-	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
 var errStopScan = errors.New("stop")
+
+type storedSettings struct {
+	Theme string `json:"theme"`
+}
+
+// storedRow holds every kind of value SQLite stores as text: timestamps
+// and, as JSON, documents and arrays.
+type storedRow struct {
+	ID       string          `json:"id"       db:"id"`
+	At       time.Time       `json:"at"       db:"at"`
+	Until    *time.Time      `json:"until"    db:"until"`
+	Counts   map[string]int  `json:"counts"   db:"counts"`
+	Settings *storedSettings `json:"settings" db:"settings"`
+	Tags     []string        `json:"tags"     db:"tags"`
+	Spans    []core.Interval `json:"spans"    db:"spans"`
+	Raw      json.RawMessage `json:"raw"      db:"raw"`
+	Dynamic  any             `json:"dynamic"  db:"dynamic"`
+	Every    core.Interval   `json:"every"    db:"every"`
+}
 
 // TestRowScanner_DecodesWhatTheDialectStoresAsText: a row scan decodes a
 // column itself, rather than scanning it into its field through the
@@ -235,111 +253,9 @@ func TestRowScanner_RefusesScanJSONOnADocumentItCannotDecode(t *testing.T) {
 	}
 }
 
-// byValueDoc embeds an unexported struct by value: encoding/json decodes the
-// members it promotes.
-type byValueDoc struct {
-	hiddenMembers
-	Y string `json:"y"`
-}
-
-// byValueRow embeds an unexported struct by value, whose promoted fields
-// reflection sets, as encoding/json does.
-type byValueRow struct {
-	ID string `json:"id" db:"id"`
-	hiddenColumns
-	Doc byValueDoc `json:"doc" db:"doc"`
-}
-
-func TestRowScanner_ScansFieldsAnUnexportedStructEmbeddedByValuePromotes(t *testing.T) {
-	p, db := providertest.SQLite(t)
-	_, err := db.ExecContext(t.Context(), `CREATE TABLE "by_value" ("id" TEXT PRIMARY KEY, "extra" TEXT NOT NULL, "doc" TEXT NOT NULL)`)
-	require.NoError(t, err)
-	_, err = db.ExecContext(t.Context(), `INSERT INTO "by_value" VALUES ('a', 'promoted', '{"x":"member","y":"own"}')`)
-	require.NoError(t, err)
-	r, err := parse.NewResource[byValueRow](p, "by_value")
-	require.NoError(t, err)
-	rows := parsetest.ResourceRows(t, r, parse.Statement{SQL: `SELECT ` + parsetest.JoinColumns(r.Columns()) + ` FROM "by_value"`})
-	want := byValueRow{ID: "a", hiddenColumns: hiddenColumns{Extra: "promoted"}, Doc: byValueDoc{hiddenMembers: hiddenMembers{X: "member"}, Y: "own"}}
-	assert.Equal(t, []byValueRow{want}, rows)
-}
-
-func TestRowScanner_LeavesAnUnreadColumnBehindAnUnexportedEmbeddedPointer(t *testing.T) {
-	p, db := providertest.SQLite(t)
-	_, err := db.ExecContext(t.Context(), `CREATE TABLE "rows" ("id" TEXT PRIMARY KEY, "extra" TEXT)`)
-	require.NoError(t, err)
-	_, err = db.ExecContext(t.Context(), `INSERT INTO "rows" VALUES ('a', 'unread')`)
-	require.NoError(t, err)
-	r, err := parse.NewResource[hiddenColumnRow](p, "rows", parse.ReadColumns("id"))
-	require.NoError(t, err, "a column the resource does not read is never scanned")
-	rows := parsetest.ResourceRows(t, r, parse.Statement{SQL: `SELECT ` + parsetest.JoinColumns(r.Columns()) + ` FROM "rows"`})
-	assert.Equal(t, []hiddenColumnRow{{ID: "a"}}, rows)
-}
-
-type storedSettings struct {
-	Theme string `json:"theme"`
-}
-
-// storedRow holds every kind of value SQLite stores as text: timestamps
-// and, as JSON, documents and arrays.
-type storedRow struct {
-	ID       string          `json:"id"       db:"id"`
-	At       time.Time       `json:"at"       db:"at"`
-	Until    *time.Time      `json:"until"    db:"until"`
-	Counts   map[string]int  `json:"counts"   db:"counts"`
-	Settings *storedSettings `json:"settings" db:"settings"`
-	Tags     []string        `json:"tags"     db:"tags"`
-	Spans    []core.Interval `json:"spans"    db:"spans"`
-	Raw      json.RawMessage `json:"raw"      db:"raw"`
-	Dynamic  any             `json:"dynamic"  db:"dynamic"`
-	Every    core.Interval   `json:"every"    db:"every"`
-}
-
-func TestRowScanner_SQLiteStorage(t *testing.T) {
-	p, db := providertest.SQLite(t)
-	_, err := db.ExecContext(t.Context(), `CREATE TABLE "stored" ("id" TEXT PRIMARY KEY, "at" TEXT NOT NULL, "until" TEXT, "counts" TEXT, "settings" TEXT,
-		"tags" TEXT, "spans" TEXT, "raw" TEXT, "dynamic" TEXT, "every" TEXT)`)
-	require.NoError(t, err)
-	at := time.Date(2026, 1, 2, 3, 4, 5, 6, time.UTC)
-	_, err = db.ExecContext(t.Context(), `INSERT INTO "stored" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?)`,
-		"a", core.FormatTimestamp(at), core.FormatTimestamp(at.Add(time.Hour)), `{"x":1}`, `{"theme":"dark"}`, `["p","q"]`, `["P1D"]`, `null`, `[1,"two"]`, "PT1H",
-		"b", core.FormatTimestamp(at), "P1M")
-	require.NoError(t, err)
-	r := parse.MustResource[storedRow](p, "stored")
-	rows := parsetest.ResourceRows(t, r, parse.Statement{SQL: `SELECT ` + parsetest.JoinColumns(r.Columns()) + ` FROM "stored" ORDER BY "id"`})
-	require.Len(t, rows, 2)
-	until := at.Add(time.Hour)
-	assert.Equal(t, storedRow{
-		ID: "a", At: at, Until: &until, Counts: map[string]int{"x": 1}, Settings: &storedSettings{Theme: "dark"},
-		Tags: []string{"p", "q"}, Spans: []core.Interval{{Days: 1}}, Raw: json.RawMessage(`null`), Dynamic: []any{float64(1), "two"},
-		Every: core.Interval{Microseconds: 3_600_000_000},
-	}, rows[0])
-	assert.Equal(t, storedRow{ID: "b", At: at, Every: core.Interval{Months: 1}}, rows[1], "NULL leaves a field zero")
-}
-
-func TestRowScanner_RefusesWhatTheRowCannotHold(t *testing.T) {
-	p, db := providertest.SQLite(t)
-	_, err := db.ExecContext(t.Context(), `CREATE TABLE "stored" ("id" TEXT PRIMARY KEY, "at" TEXT, "until" TEXT, "counts" TEXT, "settings" TEXT,
-		"tags" TEXT, "spans" TEXT, "raw" TEXT, "dynamic" TEXT, "every" TEXT)`)
-	require.NoError(t, err)
-	r := parse.MustResource[storedRow](p, "stored")
-	read := parse.Statement{SQL: `SELECT ` + parsetest.JoinColumns(r.Columns()) + ` FROM "stored"`}
-	for name, values := range map[string]string{
-		"NULL into a time.Time":               `('a', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'PT1H')`,
-		"a member spelt in another case":      `('a', '2026-01-02T03:04:05.000000000Z', NULL, NULL, '{"Theme":"dark"}', NULL, NULL, NULL, NULL, 'PT1H')`,
-		"JSON null for a map":                 `('a', '2026-01-02T03:04:05.000000000Z', NULL, 'null', NULL, NULL, NULL, NULL, NULL, 'PT1H')`,
-		"timestamp text that is no timestamp": `('a', 'yesterday', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'PT1H')`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, err := db.ExecContext(t.Context(), `DELETE FROM "stored"`)
-			require.NoError(t, err)
-			_, err = db.ExecContext(t.Context(), `INSERT INTO "stored" VALUES `+values)
-			require.NoError(t, err)
-			_, err = r.Query(t.Context(), read)
-			assert.Error(t, err)
-		})
-	}
-
-	_, err = r.RowScanner(parse.ScanJSON("nope"))
+func TestRowScanner_RefusesScanJSONOfAColumnItDoesNotRead(t *testing.T) {
+	r := parse.MustResource[scannedHiddenDocRow](onSQLite, "rows")
+	_, err := r.RowScanner(parse.ScanJSON("nope"))
 	assert.ErrorContains(t, err, `ScanJSON names "nope", which the resource does not read`)
 }
 

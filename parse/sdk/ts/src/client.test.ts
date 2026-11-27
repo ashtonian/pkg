@@ -1,8 +1,8 @@
 // Client ⇔ server wire contract. testdata/sdk_wire.json records requests
 // as the Go client builds them and the answers parse's handlers gave them
-// (parse/wire_test.go). replay serves those answers only to a
-// request equal to the recorded one, so these tests hold the SDK to the
-// server's requests and shapes rather than to its own types.
+// on every engine (parse/internal/corpus/wire.go). replay serves those
+// answers only to a request equal to the recorded one, so these tests hold
+// the SDK to the server's requests and shapes rather than to its own types.
 
 import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";

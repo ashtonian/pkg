@@ -157,10 +157,10 @@ jobs:
               "gitx/README.md": ["./gitx/cmd/mergeinserts"],
               "parse/testdata/filter_conformance.json": ["./parse/filter", "./parse/client"],
               "parse/testdata/patch_conformance.json": ["./parse/client"],
-              "parse/testdata/sdk_wire.json": ["./parse/client"],
+              "parse/testdata/sdk_wire.json": ["./parse/client", "./parse/parsesql", "./parse/parsepgx"],
               "parse/testdata/error_codes.json": ["./parse/client"],
               "parse/testdata/schema_document.json": ["./parse/client"],
-              "parse/testdata/client_requests.json": ["./parse/client"],
+              "parse/testdata/client_requests.json": ["./parse/client", "./parse/parsesql", "./parse/parsepgx"],
               "parse/core/code.go": ["./parse/client"],
               "parse/docs/*.md": ["./parse"]
             }

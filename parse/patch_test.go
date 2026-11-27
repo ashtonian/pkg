@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +16,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	_ "modernc.org/sqlite"
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
@@ -1202,77 +1200,6 @@ func TestPatch_AppliesExactIntegers(t *testing.T) {
 	})
 }
 
-// The SQL backends bind the normalized value; SQLite must store exactly what
-// the client sent.
-func TestPatch_SQLStoresExactIntegers(t *testing.T) {
-	p := numericParser(t)
-	parsed, err := p.ParseMergePatch([]byte(`{"big": 9007199254740993}`))
-	require.NoError(t, err)
-	res, err := patch.BuildPatchSQL(parsed, filter.SQLiteDialect{})
-	require.NoError(t, err)
-	require.Equal(t, []any{int64(9007199254740993)}, res.Args)
-
-	db := openNumericDB(t)
-	_, err = db.ExecContext(t.Context(), "UPDATE numeric_entities SET "+res.SetClause+" WHERE id = 1", res.Args...)
-	require.NoError(t, err)
-	var stored int64
-	require.NoError(t, db.QueryRowContext(t.Context(), "SELECT big FROM numeric_entities WHERE id = 1").Scan(&stored))
-	assert.Equal(t, int64(9007199254740993), stored)
-}
-
-// A filter on 2^53+1 must select that row, not its float64 neighbour, on
-// every ingress.
-func TestFilter_SelectsExactIntegerRow(t *testing.T) {
-	p := numericParser(t)
-	db := openNumericDB(t)
-
-	cases := map[string]func() (*filter.FilterAST, error){
-		"json eq": func() (*filter.FilterAST, error) {
-			f, err := p.ParseFilter(`{"big": 9007199254740993}`)
-			if err != nil {
-				return nil, err
-			}
-			return f.AST(), nil
-		},
-		"json in": func() (*filter.FilterAST, error) {
-			f, err := p.ParseFilter(`{"big": {"$in": [9007199254740993]}}`)
-			if err != nil {
-				return nil, err
-			}
-			return f.AST(), nil
-		},
-		"typed map": func() (*filter.FilterAST, error) {
-			f, err := p.ParseFilterMap(map[string]any{"big": map[string]any{"$in": []int64{9007199254740993}}})
-			if err != nil {
-				return nil, err
-			}
-			return f.AST(), nil
-		},
-		"query params": func() (*filter.FilterAST, error) {
-			return queryParams(t, p.FilterSchema()).Parse(map[string][]string{"big": {"9007199254740993"}})
-		},
-	}
-	for name, parseFn := range cases {
-		t.Run(name, func(t *testing.T) {
-			ast, err := parseFn()
-			require.NoError(t, err)
-			res, err := filter.NewSQLBuilder(p.FilterSchema(), filter.SQLiteDialect{}).Build(ast)
-			require.NoError(t, err)
-			rows, err := db.QueryContext(t.Context(), "SELECT id FROM numeric_entities WHERE "+res.Where, res.Args...)
-			require.NoError(t, err)
-			defer func() { require.NoError(t, rows.Close()) }()
-			var ids []int64
-			for rows.Next() {
-				var id int64
-				require.NoError(t, rows.Scan(&id))
-				ids = append(ids, id)
-			}
-			require.NoError(t, rows.Err())
-			assert.Equal(t, []int64{2}, ids)
-		})
-	}
-}
-
 func TestFilter_RejectsOutOfDomainNumbers(t *testing.T) {
 	p := numericParser(t)
 	for name, q := range map[string]string{
@@ -1294,17 +1221,6 @@ func TestFilter_RejectsOutOfDomainNumbers(t *testing.T) {
 	}
 	_, err := queryParams(t, p.FilterSchema()).Parse(map[string][]string{"small": {"128"}})
 	requireCode(t, err, filter.ECodeValueTypeMismatch.String())
-}
-
-func openNumericDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	_, err = db.ExecContext(t.Context(), `CREATE TABLE numeric_entities (id INTEGER PRIMARY KEY, small INTEGER, u8 INTEGER, big INTEGER);
-		INSERT INTO numeric_entities (id, big) VALUES (1, 9007199254740992), (2, 9007199254740993), (3, 9007199254740994);`)
-	require.NoError(t, err)
-	return db
 }
 
 // A patch that fails part-way must not leave a pointer target half-written.

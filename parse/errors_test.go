@@ -18,8 +18,6 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
-	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -72,14 +70,10 @@ func TestRootSentinels_OnePrefixShape(t *testing.T) {
 	tenant := parse.Scope{Tenant: "1"}
 	reg := parse.NewSchemaRegistry()
 	parse.MustRegisterResource(reg, devices)
-	run := func(build func() error) error { return build() }
 	// A batch's targets are judged against the rows its Current reads, so
-	// ErrUpdateBatchTargets comes from a database: an empty table here.
-	sp, db := providertest.SQLite(t)
-	dbtest.Exec(t, db, `CREATE TABLE devices (id TEXT PRIMARY KEY, tenant_id INTEGER NOT NULL, name TEXT NOT NULL)`)
-	stored := parse.MustResource[device](sp, "devices", parse.TenantColumn("tenant_id"))
-	storedRename, err := stored.ParseMergePatch([]byte(`{"name":"x"}`))
-	require.NoError(t, err)
+	// ErrUpdateBatchTargets comes from a database: the corpus holds it to
+	// this shape (UpdateBatch_MissingTargetNamesItsResourceOnce).
+	run := func(build func() error) error { return build() }
 
 	for _, tt := range []struct {
 		name string
@@ -107,10 +101,6 @@ func TestRootSentinels_OnePrefixShape(t *testing.T) {
 			return err
 		}), parse.ErrUpdateScope},
 		{"another resource's patch", run(func() error { _, err := devices.BuildUpdate(foreign, parse.ByID("a"), tenant); return err }), parse.ErrForeign},
-		{"a batch target that is not there", run(func() error {
-			_, err := stored.UpdateBatch(t.Context(), []parse.RowUpdate{{Key: parse.Key{"a"}, Patch: storedRename}}, tenant, parse.UpdateBatchLimits{})
-			return err
-		}), parse.ErrUpdateBatchTargets},
 		{"a taken name", parse.RegisterResource(reg, other), parse.ErrRegistered},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

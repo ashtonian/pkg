@@ -231,3 +231,45 @@ func normalizeInts(t *testing.T, rows [][]any) [][]any {
 	}
 	return rows
 }
+
+type int32TenantDevice struct {
+	ID       int    `json:"id"   db:"id"   parse:"filter,sort"`
+	TenantID int32  `json:"-"    db:"tenant_id"`
+	Name     string `json:"name" db:"name" parse:"filter,sort,patch"`
+}
+
+// A pair table's membership statements bind the tenant as the owner's
+// tenant column holds it, an integer: on SQLite a pair table that declares
+// no column types holds what was bound, and a tenant bound as text would
+// delete no pair it replaces.
+func integerTenantKeysPairsHoldTheBoundKey(t *testing.T, engine Engine) {
+	runOn(t, engine, func(t *testing.T, b sqlBackend) {
+		provider, db := b.open(t)
+		pairs := "device_id, command_id, tenant_id"
+		if b.engine == Postgres {
+			pairs = "device_id BIGINT, command_id BIGINT, tenant_id BIGINT"
+		}
+		dbtest.Exec(t, db,
+			`CREATE TABLE devices (id BIGINT PRIMARY KEY, tenant_id BIGINT NOT NULL, name TEXT NOT NULL)`,
+			`CREATE TABLE commands (id BIGINT PRIMARY KEY, tenant_id BIGINT NOT NULL, device_id BIGINT NOT NULL, status TEXT NOT NULL)`,
+			`CREATE TABLE device_commands (`+pairs+`)`,
+			`INSERT INTO devices VALUES (1, 44, 'alpha')`,
+			`INSERT INTO commands VALUES (7, 44, 1, 'sent'), (8, 44, 1, 'sent')`,
+			`INSERT INTO device_commands VALUES (1, 8, 44)`,
+		)
+		junction := parse.Junction{Table: "device_commands", Source: []string{"device_id"}, Target: []string{"command_id"}, Tenant: "tenant_id"}
+		devices := parse.MustResource[int32TenantDevice](provider, "devices", parse.TenantColumn("tenant_id"))
+		devices.MustRelate("commands", parse.ManyToMany(parse.MustResource[parsetest.TenantKeyCommand](provider, "commands", parse.TenantColumn("tenant_id")),
+			junction, parse.Includable(), parse.Writable()))
+		p, err := devices.ParseMergePatch([]byte(`{"commands":[7]}`))
+		require.NoError(t, err)
+		res, err := devices.Update(t.Context(), p, parse.ByID(1), parse.Scope{Tenant: "44"})
+		require.NoError(t, err)
+		assert.Equal(t, int64(2), res.RelationRows, "the pair to 8 removed, the pair to 7 added")
+		assert.Equal(t, [][]any{{int64(1), int64(7), int64(44)}},
+			normalizeInts(t, dbtest.QueryRows[[]any](t, db, `SELECT device_id, command_id, tenant_id FROM device_commands`)))
+		if b.engine == SQLite {
+			assert.Equal(t, []string{"integer"}, dbtest.QueryRows[string](t, db, `SELECT typeof(tenant_id) FROM device_commands`))
+		}
+	})
+}
