@@ -27,7 +27,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestCorpus(t *testing.T) {
-	corpus.RunSQL(t, corpus.Engine{Kind: corpus.SQLite, Open: openCorpusDB, CallerTx: callerTx})
+	corpus.Run(t, corpus.Engine{Kind: corpus.SQLite, Open: openCorpusDB, CallerTx: callerTx})
 }
 
 // openCorpusDB opens a fresh in-memory SQLite database as v asks, and the

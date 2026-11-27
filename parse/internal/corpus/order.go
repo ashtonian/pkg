@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"reflect"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -22,6 +23,10 @@ import (
 // names for the engine, order, seek and facet in the case's order.
 func canonicalOrder(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
+		if b.engine == Memory {
+			runCanonicalOrderMemory(t, b, ordertest.Cases())
+			return
+		}
 		columnType := func(c ordertest.Case) string { return c.Postgres }
 		if b.engine == SQLite {
 			columnType = func(c ordertest.Case) string { return c.SQLite }
@@ -119,6 +124,121 @@ func runCanonicalOrderSQL(t *testing.T, db *sql.DB, d filter.Dialect, cases []or
 				}
 				assert.Equal(t, want, results[0].Buckets, "the statement's facet")
 				assert.Equal(t, want, filter.FacetBuckets(field, counts, len(c.Values)), "the facet counted in Go")
+			}
+		})
+	}
+}
+
+// runCanonicalOrderMemory holds the Memory engine to each case's order as
+// runCanonicalOrderSQL holds a database: a table keyed by the value holds
+// its rows in the case's order; each row's value, read as a resource reads
+// it, mints a cursor holding the value stored; a sort key walks the rows
+// in that order, NULL last, and seeks past each row's cursor forwards and
+// backwards, with the id tiebreaker too; and a terms facet keys each value
+// by its canonical text, ties in the type's order.
+func runCanonicalOrderMemory(t *testing.T, b sqlBackend, cases []ordertest.Case) {
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			db := b.db(t)
+			table := "ordered_" + c.Name
+			v := sqlColumn{name: "v", kind: c.Type}
+			id := column[int64]("id").required()
+			null := len(c.Values) // the NULL row's id
+			stored := make([]any, null)
+			// Stored last to first, so no order is the insertion order.
+			rows := [][]any{{null, nil}}
+			var keyed [][]any
+			ascending := make([]int, null)
+			for i := null - 1; i >= 0; i-- {
+				s, err := c.Stored(c.Values[i])
+				require.NoError(t, err)
+				stored[i], ascending[i] = s, i
+				rows = append(rows, []any{i, s})
+				keyed = append(keyed, []any{s, i})
+			}
+			b.load(t, db, sqlTable{name: table, key: []string{"id"}, columns: []sqlColumn{id, v}}, rows)
+			b.load(t, db, sqlTable{name: table + "_by_v", key: []string{"v"}, columns: []sqlColumn{v.required(), id}}, keyed)
+			var byKey []int
+			for _, row := range b.tableRows(t, db, table+"_by_v", "id") {
+				byKey = append(byKey, int(asInt64(t, row[0])))
+			}
+			assert.Equal(t, ascending, byKey, "a key column's order")
+
+			key := filter.CursorKey{Name: "v", Table: table, Column: "v", DataType: c.Type.Type, NumberKind: c.Type.NumberKind, Nullable: true, Direction: filter.SortAsc}
+			scanned := map[int]any{}
+			for _, row := range b.tableRows(t, db, table, "id", "v") {
+				scanned[int(asInt64(t, row[0]))] = row[1]
+			}
+			held := make([]any, null)
+			for i, s := range stored {
+				var err error
+				held[i], err = filter.KeyValue(key, s)
+				require.NoError(t, err, "%#v", s)
+				resumed := parsetest.ResumeKeyValue(t, key, scanned[i])
+				got, err := filter.CompareKeyValues(key, resumed, held[i])
+				require.NoError(t, err, "%#v resumed as %#v", scanned[i], resumed)
+				assert.Zero(t, got, "%#v resumed as %#v", scanned[i], resumed)
+			}
+
+			field := &filter.FieldSchema{ExternalName: "v", Table: table, Column: "v", DataType: c.Type.Type, NumberKind: c.Type.NumberKind, Facetable: true}
+			schema := &filter.ResourceSchema{Name: table, Fields: map[string]*filter.FieldSchema{"v": field}}
+			store := storeOf(t, db)
+			walk := func(t *testing.T, f *filter.ParsedFilter, keys []filter.CursorKey, token *filter.PageToken) []int {
+				t.Helper()
+				texts, err := store.Walk(t.Context(), schema, f, keys, token)
+				require.NoError(t, err)
+				var ids []int
+				for _, text := range texts {
+					n, err := strconv.Atoi(text)
+					require.NoError(t, err)
+					ids = append(ids, n)
+				}
+				return ids
+			}
+			if c.Sortable {
+				assert.Equal(t, append(slices.Clone(ascending), null), walk(t, nil, []filter.CursorKey{key}, nil), "a sort key's order, NULL last")
+				present := filter.NewParsedFilter(&filter.FilterAST{Root: &filter.FilterNode{Field: field, Op: filter.OpNotNull}})
+				nonNull := key
+				nonNull.Nullable = false
+				rowID := filter.CursorKey{Name: "id", Table: table, Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64, Direction: filter.SortAsc}
+				for _, reverse := range []bool{false, true} {
+					for i := 0; i <= null; i++ {
+						resumed := parsetest.ResumeKeyValue(t, key, scanned[i])
+						got := walk(t, nil, []filter.CursorKey{key}, &filter.PageToken{
+							Fields:  []filter.CursorField{{Name: key.Name, Value: resumed, Direction: key.Direction}},
+							Reverse: reverse,
+						})
+						assert.Equal(t, idsAfter(i, null, reverse), got, "the rows after %#v, reverse %t", resumed, reverse)
+						if i == null {
+							continue
+						}
+						got = walk(t, present, []filter.CursorKey{nonNull, rowID}, &filter.PageToken{
+							Fields:  []filter.CursorField{{Name: key.Name, Value: resumed, Direction: key.Direction}, {Name: "id", Value: int64(i), Direction: filter.SortAsc}},
+							Reverse: reverse,
+						})
+						assert.Equal(t, idsAfter(i, null-1, reverse), got, "the rows after (%#v, %d), reverse %t", resumed, i, reverse)
+					}
+				}
+			}
+
+			if c.Faceted {
+				results, err := store.Facets(t.Context(), schema, nil, []filter.FacetRequest{{Field: "v", Limit: null}}, filter.RelationScope{})
+				require.NoError(t, err)
+				require.Len(t, results, 1)
+				counts := map[string]int64{}
+				want := make([]filter.FacetBucket, null)
+				for i, v := range held {
+					text, err := core.CanonicalText(c.Type, v)
+					require.NoError(t, err)
+					want[i] = filter.FacetBucket{Key: text, Count: 1}
+					keys, err := filter.FacetKeys(v, field)
+					require.NoError(t, err)
+					for _, k := range keys {
+						counts[k]++
+					}
+				}
+				assert.Equal(t, want, results[0].Buckets, "the list's facet")
+				assert.Equal(t, want, filter.FacetBuckets(field, counts, null), "the facet counted in Go")
 			}
 		})
 	}

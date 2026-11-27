@@ -53,13 +53,18 @@ func widgetStore(t *testing.T, b sqlBackend) (*parse.Resource[pagedWidget], *sql
 }
 
 // widgetList builds query under s and reads the plan's page by hand on r's
-// database, for a case that reads the plan's other statements itself.
-func widgetList(t *testing.T, r *parse.Resource[pagedWidget], query string, s parse.Scope) (*filter.Page[pagedWidget], *parse.ListPlan) {
+// database, for a case that reads the plan's other statements itself. The
+// Memory engine, which plans no statement, lists query (Resource.List) and
+// returns no plan.
+func widgetList(t *testing.T, b sqlBackend, r *parse.Resource[pagedWidget], query string, s parse.Scope) (*filter.Page[pagedWidget], *parse.ListPlan) {
 	t.Helper()
 	q, err := url.ParseQuery(query)
 	require.NoError(t, err)
 	req, err := r.ParseList(q)
 	require.NoError(t, err)
+	if b.engine == Memory {
+		return listPage(t, r, req, s), nil
+	}
 	plan, err := r.BuildList(req, s)
 	require.NoError(t, err)
 	page, err := r.Page(parsetest.ResourceRows(t, r, plan.Page), plan)
@@ -70,7 +75,8 @@ func widgetList(t *testing.T, r *parse.Resource[pagedWidget], query string, s pa
 // A list plan's statements, each read by hand, hold its rows to the scope,
 // walk tied sort values exactly, count and facet the population and include
 // the page's relations in its tenant; a page of the rows read, or of none,
-// encodes as the handlers write it.
+// encodes as the handlers write it. The Memory engine's lists hold to the
+// same, and refuse the search it does not run.
 func widgetLists(t *testing.T, engine Engine) {
 	runOn(t, engine, runWidgetLists)
 }
@@ -78,7 +84,12 @@ func widgetLists(t *testing.T, engine Engine) {
 func runWidgetLists(t *testing.T, b sqlBackend) {
 	t.Run("rows are held to the scope", func(t *testing.T) {
 		r, _ := widgetStore(t, b)
-		_, err := r.BuildList(nil, parse.Scope{})
+		var err error
+		if b.engine == Memory {
+			_, err = r.List(t.Context(), nil, parse.Scope{})
+		} else {
+			_, err = r.BuildList(nil, parse.Scope{})
+		}
 		require.ErrorIs(t, err, parse.ErrTenantRequired, "a tenant-scoped list needs its tenant")
 
 		for name, tc := range map[string]struct {
@@ -101,7 +112,14 @@ func runWidgetLists(t *testing.T, b sqlBackend) {
 			"search": {"search=gamma", parse.Scope{Tenant: "t1"}, []string{"w3"}},
 		} {
 			t.Run(name, func(t *testing.T) {
-				page, _ := widgetList(t, r, tc.query, tc.scope)
+				if b.engine == Memory && name == "search" {
+					req, err := r.ParseList(url.Values{"search": {"gamma"}})
+					require.NoError(t, err)
+					_, err = r.List(t.Context(), req, tc.scope)
+					require.ErrorIs(t, err, parse.ErrUnsupported, "the memory provider runs no search")
+					return
+				}
+				page, _ := widgetList(t, b, r, tc.query, tc.scope)
 				assert.Equal(t, tc.want, parsetest.ItemIDs(page.Items, widgetID))
 			})
 		}
@@ -116,10 +134,15 @@ func runWidgetLists(t *testing.T, b sqlBackend) {
 		query := "sort=rank&include_total=true"
 		var last *filter.Page[pagedWidget]
 		for range 5 {
-			page, plan := widgetList(t, r, query, scope)
-			require.NotNil(t, plan.Count)
+			page, plan := widgetList(t, b, r, query, scope)
 			var total int64
-			require.NoError(t, db.QueryRowContext(t.Context(), plan.Count.SQL, plan.Count.Args...).Scan(&total))
+			if b.engine == Memory {
+				require.NotNil(t, page.PageInfo.TotalCount)
+				total = *page.PageInfo.TotalCount
+			} else {
+				require.NotNil(t, plan.Count)
+				require.NoError(t, db.QueryRowContext(t.Context(), plan.Count.SQL, plan.Count.Args...).Scan(&total))
+			}
 			assert.Equal(t, int64(4), total, "the total counts the population, not the page")
 			seen = append(seen, parsetest.ItemIDs(page.Items, widgetID)...)
 			last = page
@@ -130,23 +153,27 @@ func runWidgetLists(t *testing.T, b sqlBackend) {
 		}
 		assert.Equal(t, []string{"w1", "w2", "w3", "w5"}, seen)
 
-		back, _ := widgetList(t, r, "sort=rank&cursor="+url.QueryEscape(string(last.PageInfo.StartCursor)), scope)
+		back, _ := widgetList(t, b, r, "sort=rank&cursor="+url.QueryEscape(string(last.PageInfo.StartCursor)), scope)
 		assert.Equal(t, []string{"w1", "w2"}, parsetest.ItemIDs(back.Items, widgetID), "the page before the last, in presentation order")
 	})
 
 	t.Run("facets count the population", func(t *testing.T) {
 		r, db := widgetStore(t, b)
-		_, plan := widgetList(t, r, "facets=name&rank=1", parse.Scope{Tenant: "t1"})
-		require.NotNil(t, plan.Facets)
-		rows, err := db.QueryContext(t.Context(), plan.Facets.SQL, plan.Facets.Args...)
-		require.NoError(t, err)
-		defer func() { require.NoError(t, rows.Close()) }()
-		results, err := filter.ScanFacetUnion(rows)
-		require.NoError(t, err)
-		require.NoError(t, rows.Err())
-		require.Len(t, results, 1)
+		page, plan := widgetList(t, b, r, "facets=name&rank=1", parse.Scope{Tenant: "t1"})
+		buckets := page.Facets["name"]
+		if b.engine != Memory {
+			require.NotNil(t, plan.Facets)
+			rows, err := db.QueryContext(t.Context(), plan.Facets.SQL, plan.Facets.Args...)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, rows.Close()) }()
+			results, err := filter.ScanFacetUnion(rows)
+			require.NoError(t, err)
+			require.NoError(t, rows.Err())
+			require.Len(t, results, 1)
+			buckets = results[0].Buckets
+		}
 		counts := map[string]int64{}
-		for _, bucket := range results[0].Buckets {
+		for _, bucket := range buckets {
 			counts[bucket.Key] = bucket.Count
 		}
 		assert.Equal(t, map[string]int64{"alpha": 1, "beta": 1, "gamma": 1}, counts)
@@ -154,7 +181,11 @@ func runWidgetLists(t *testing.T, b sqlBackend) {
 
 	t.Run("includes read the page's relations in its tenant", func(t *testing.T) {
 		r, db := widgetStore(t, b)
-		page, plan := widgetList(t, r, "include=tags&page_size=3", parse.Scope{Tenant: "t1"})
+		page, plan := widgetList(t, b, r, "include=tags&page_size=3", parse.Scope{Tenant: "t1"})
+		if b.engine == Memory {
+			assert.Equal(t, map[string][]string{"w1": {"blue", "red"}, "w2": {"red"}}, page.Relations["tags"], "w1's t2 pair is not t1's")
+			return
+		}
 		keys := make([]parse.Key, len(page.Items))
 		for i, w := range page.Items {
 			var err error
@@ -182,6 +213,7 @@ func runWidgetLists(t *testing.T, b sqlBackend) {
 	})
 
 	t.Run("a page of pointers", func(t *testing.T) {
+		b.sqlOnly(t, "pages rows scanned from a plan's statement (Resource.PagePointers)")
 		r, _ := widgetStore(t, b)
 		req, err := r.ParseList(url.Values{"page_size": {"2"}})
 		require.NoError(t, err)
@@ -202,6 +234,12 @@ func runWidgetLists(t *testing.T, b sqlBackend) {
 		r, _ := widgetStore(t, b)
 		req, err := r.ParseList(url.Values{"name": {"no such widget"}})
 		require.NoError(t, err)
+		if b.engine == Memory {
+			got, err := json.Marshal(listPage(t, r, req, parse.Scope{Tenant: "t1"}))
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"items":[],"page_info":{"has_next_page":false,"has_prev_page":false}}`, string(got))
+			return
+		}
 		plan, err := r.BuildList(req, parse.Scope{Tenant: "t1"})
 		require.NoError(t, err)
 		scanned := parsetest.ResourceRows(t, r, plan.Page)
@@ -260,8 +298,11 @@ func runRequestViewPaths(t *testing.T, b sqlBackend) {
 
 	req, err := view.ParseList(q)
 	require.NoError(t, err)
-	plan, err := view.BuildList(req, parse.Scope{})
-	require.NoError(t, err)
+	if b.engine != Memory {
+		plan, err := view.BuildList(req, parse.Scope{})
+		require.NoError(t, err)
+		require.NotNil(t, plan.Facets, "the view's path facets in a statement")
+	}
 
 	b.load(t, db, sqlTable{name: "custom_items", key: []string{"id"}, columns: []sqlColumn{column[string]("id"), column[json.RawMessage]("custom")}},
 		[][]any{{"a", `{"tier":"gold"}`}, {"b", `{"tier":"silver"}`}, {"c", `{"tier":"bronze"}`}, {"d", `{}`}, {"e", nil}})
@@ -269,7 +310,6 @@ func runRequestViewPaths(t *testing.T, b sqlBackend) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"b", "a"}, parsetest.ItemIDs(page.Items, func(it customItem) string { return it.ID }), "silver then gold; bronze filtered out, absent tiers never match $ne")
 
-	require.NotNil(t, plan.Facets)
 	require.Len(t, page.Facets, 1)
 	assert.ElementsMatch(t, []filter.FacetBucket{{Key: "gold", Count: 1}, {Key: "silver", Count: 1}}, page.Facets["custom.tier"])
 

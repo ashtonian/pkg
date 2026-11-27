@@ -91,7 +91,7 @@ func loadGoverned(t *testing.T, b sqlBackend) *parse.Resource[parsetest.GovDocum
 // tenant, on each backend.
 func governedLists(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
-		runGovernedLists(t, loadGoverned(t, b))
+		runGovernedLists(t, b, loadGoverned(t, b))
 	})
 }
 
@@ -100,7 +100,7 @@ func governedListsMemory(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		r := loadGoverned(t, b)
 		runGovernedMemory(t, r, func(t *testing.T, filterJSON string) governedResult {
-			return listGoverned(t, r, filterJSON, parse.Scope{Governance: parsetest.GovernanceA()})
+			return listGoverned(t, b, r, filterJSON, parse.Scope{Governance: parsetest.GovernanceA()})
 		})
 	})
 }
@@ -153,14 +153,15 @@ func governedIncludes() []string {
 	return relations
 }
 
-func listGoverned(t *testing.T, r *parse.Resource[parsetest.GovDocument], filterJSON string, scope parse.Scope) governedResult {
+func listGoverned(t *testing.T, b sqlBackend, r *parse.Resource[parsetest.GovDocument], filterJSON string, scope parse.Scope) governedResult {
 	t.Helper()
-	return listRelated(t, r, filterJSON, scope, governedIncludes())
+	return listRelated(t, b, r, filterJSON, scope, governedIncludes())
 }
 
-// listRelated lists filterJSON under scope on r's provider, including and
-// faceting relations.
-func listRelated[T any](t *testing.T, r *parse.Resource[T], filterJSON string, scope parse.Scope, relations []string) governedResult {
+// listRelated lists filterJSON under scope on r's provider, b's, including
+// and faceting relations; on a SQL engine its plan counts and facets in
+// statements of their own.
+func listRelated[T any](t *testing.T, b sqlBackend, r *parse.Resource[T], filterJSON string, scope parse.Scope, relations []string) governedResult {
 	t.Helper()
 	q := url.Values{
 		filter.ParamPageSize: {"50"}, filter.ParamIncludeTotal: {"true"},
@@ -171,10 +172,12 @@ func listRelated[T any](t *testing.T, r *parse.Resource[T], filterJSON string, s
 	}
 	req, err := r.ParseList(q)
 	require.NoError(t, err)
-	plan, err := r.BuildList(req, scope)
-	require.NoError(t, err)
-	require.NotNil(t, plan.Count)
-	require.NotNil(t, plan.Facets)
+	if b.engine != Memory {
+		plan, err := r.BuildList(req, scope)
+		require.NoError(t, err)
+		require.NotNil(t, plan.Count)
+		require.NotNil(t, plan.Facets)
+	}
 	page := listPage(t, r, req, scope)
 
 	res := governedResult{includes: map[string]map[string][]string{}, facets: map[string]map[string]int64{}}
@@ -189,8 +192,8 @@ func listRelated[T any](t *testing.T, r *parse.Resource[T], filterJSON string, s
 	maps.Copy(res.includes, page.Relations)
 	for field, buckets := range page.Facets {
 		res.facets[field] = map[string]int64{}
-		for _, b := range buckets {
-			res.facets[field][b.Key] = b.Count
+		for _, bucket := range buckets {
+			res.facets[field][bucket.Key] = bucket.Count
 		}
 	}
 	return res
@@ -198,18 +201,18 @@ func listRelated[T any](t *testing.T, r *parse.Resource[T], filterJSON string, s
 
 // runGovernedLists holds a governed list of r to its rows and each row's
 // relations to the row's tenant, on r's database.
-func runGovernedLists(t *testing.T, r *parse.Resource[parsetest.GovDocument]) {
+func runGovernedLists(t *testing.T, b sqlBackend, r *parse.Resource[parsetest.GovDocument]) {
 	t.Helper()
 	for _, tc := range governedCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			got := listGoverned(t, r, tc.filter, parse.Scope{Governance: parsetest.GovernanceA()})
+			got := listGoverned(t, b, r, tc.filter, parse.Scope{Governance: parsetest.GovernanceA()})
 			assert.Equal(t, tc.want, got.ids)
 			assert.Equal(t, int64(len(got.ids)), got.count, "the count is the page's")
 			assert.Equal(t, facetsOfIncludes(got.ids, got.includes, governedIncludes()), got.facets, "the facets count the page's related rows")
 
 			// A's rows are what the tenant floor lists: governance only
 			// adds the grant.
-			floor := listGoverned(t, r, tc.filter, parse.Scope{Tenant: "A"})
+			floor := listGoverned(t, b, r, tc.filter, parse.Scope{Tenant: "A"})
 			var own []string
 			for _, id := range got.ids {
 				if id != "b1" {
@@ -219,13 +222,13 @@ func runGovernedLists(t *testing.T, r *parse.Resource[parsetest.GovDocument]) {
 			assert.Equal(t, own, floor.ids)
 
 			// Governance that grants nothing beyond the tenant is the floor.
-			ungranted := listGoverned(t, r, tc.filter, parse.Scope{Governance: parsetest.GovEq("tenant_id", "A")})
+			ungranted := listGoverned(t, b, r, tc.filter, parse.Scope{Governance: parsetest.GovEq("tenant_id", "A")})
 			assert.Equal(t, floor, ungranted)
 		})
 	}
 
 	t.Run("includes and facets of a granted row are its own tenant's", func(t *testing.T) {
-		got := listGoverned(t, r, ``, parse.Scope{Governance: parsetest.GovernanceA()})
+		got := listGoverned(t, b, r, ``, parse.Scope{Governance: parsetest.GovernanceA()})
 		assert.Equal(t, map[string]map[string][]string{
 			"notes":  {"a1": {"n1"}, "b1": {"n2"}},       // not A's n3 or the deleted n5
 			"labels": {"a1": {"la"}, "b1": {"lb", "lc"}}, // not A's pair to la, or B's on a2
@@ -547,14 +550,14 @@ func runGovernedMixedTypes(t *testing.T, b sqlBackend) {
 		loadMixed[uuid.UUID, string](t, b, db, "u_")
 		r := mixedDevices[uuid.UUID, string](p, "u_")
 		check(t, func(f string) governedResult {
-			return listRelated(t, r, f, parse.Scope{Governance: governance}, mixRelations())
+			return listRelated(t, b, r, f, parse.Scope{Governance: governance}, mixRelations())
 		})
 	})
 	t.Run("string owner, uuid related tables", func(t *testing.T) {
 		loadMixed[string, uuid.UUID](t, b, db, "s_")
 		r := mixedDevices[string, uuid.UUID](p, "s_")
 		check(t, func(f string) governedResult {
-			return listRelated(t, r, f, parse.Scope{Governance: governance}, mixRelations())
+			return listRelated(t, b, r, f, parse.Scope{Governance: governance}, mixRelations())
 		})
 	})
 }
@@ -565,12 +568,14 @@ type gizmo struct {
 	Rank int    `json:"rank" db:"rank" parse:"filter,sort"`
 }
 
-func gizmoFixture() []string {
-	stmts := []string{
-		`CREATE TABLE gizmos (id INTEGER PRIMARY KEY, name TEXT NOT NULL, rank INTEGER NOT NULL)`,
-		`INSERT INTO gizmos VALUES (1, 'b', 3), (2, 'a', 1), (3, 'b', 2), (4, 'c', 5), (5, 'a', 4), (6, 'b', 9), (7, 'z', 0)`,
-	}
-	return stmts
+// loadGizmos writes the gizmos into db.
+func loadGizmos(t *testing.T, b sqlBackend, db *sql.DB) {
+	t.Helper()
+	table := sqlTable{name: "gizmos", key: []string{"id"}, columns: []sqlColumn{column[int64]("id"), column[string]("name").required(), column[int64]("rank").required()}}
+	b.load(t, db, table, [][]any{
+		{int64(1), "b", int64(3)}, {int64(2), "a", int64(1)}, {int64(3), "b", int64(2)}, {int64(4), "c", int64(5)},
+		{int64(5), "a", int64(4)}, {int64(6), "b", int64(9)}, {int64(7), "z", int64(0)},
+	})
 }
 
 func listBodyTransport(t *testing.T, engine Engine) {
@@ -579,7 +584,7 @@ func listBodyTransport(t *testing.T, engine Engine) {
 
 func runListBodyTransport(t *testing.T, b sqlBackend) {
 	p, db := b.open(t)
-	dbtest.Exec(t, db, gizmoFixture()...)
+	loadGizmos(t, b, db)
 	gizmos := parse.MustResource[gizmo](p, "gizmos", parse.PageSize(2, 10))
 	const doc = `{"name":{"$in":["a","b","c"]}}`
 

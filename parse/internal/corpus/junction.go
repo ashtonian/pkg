@@ -4,6 +4,7 @@ package corpus
 
 import (
 	"database/sql"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -42,31 +43,13 @@ type widget struct {
 func widgetDB(t *testing.T, b sqlBackend) *sql.DB {
 	t.Helper()
 	db := b.db(t)
-	dbtest.Exec(t, db,
-		`CREATE TABLE widgets (
-			id TEXT PRIMARY KEY,
-			tenant_id TEXT NOT NULL,
-			name TEXT NOT NULL,
-			color TEXT NOT NULL
-		)`,
-		`CREATE TABLE tags (
-			id TEXT PRIMARY KEY,
-			tenant_id TEXT NOT NULL,
-			label TEXT NOT NULL
-		)`,
-		`CREATE TABLE widget_tags (
-			widget_id TEXT NOT NULL,
-			tag_id TEXT NOT NULL,
-			tenant_id TEXT NOT NULL,
-			PRIMARY KEY (widget_id, tag_id)
-		)`,
-		`INSERT INTO widgets (id, tenant_id, name, color) VALUES
-			('w1', 't1', 'alpha', 'red'), ('w2', 't1', 'bravo', 'blue'), ('w3', 't1', 'charlie', 'red'), ('w9', 't2', 'secret', 'red')`,
-		`INSERT INTO tags (id, tenant_id, label) VALUES
-			('tag-foo', 't1', 'foo'), ('tag-bar', 't1', 'bar'), ('tag-baz', 't1', 'baz'), ('tag-other', 't2', 'other')`,
-		`INSERT INTO widget_tags (widget_id, tag_id, tenant_id) VALUES
-			('w1', 'tag-foo', 't1'), ('w1', 'tag-bar', 't1'), ('w2', 'tag-bar', 't1'), ('w2', 'tag-baz', 't1'),
-			('w9', 'tag-other', 't2')`)
+	text := func(name string) sqlColumn { return column[string](name).required() }
+	b.load(t, db, sqlTable{name: "widgets", key: []string{"id"}, columns: []sqlColumn{text("id"), text("tenant_id"), text("name"), text("color")}},
+		[][]any{{"w1", "t1", "alpha", "red"}, {"w2", "t1", "bravo", "blue"}, {"w3", "t1", "charlie", "red"}, {"w9", "t2", "secret", "red"}})
+	b.load(t, db, sqlTable{name: "tags", key: []string{"id"}, columns: []sqlColumn{text("id"), text("tenant_id"), text("label")}},
+		[][]any{{"tag-foo", "t1", "foo"}, {"tag-bar", "t1", "bar"}, {"tag-baz", "t1", "baz"}, {"tag-other", "t2", "other"}})
+	b.load(t, db, sqlTable{name: "widget_tags", key: []string{"widget_id", "tag_id"}, columns: []sqlColumn{text("widget_id"), text("tag_id"), text("tenant_id")}},
+		[][]any{{"w1", "tag-foo", "t1"}, {"w1", "tag-bar", "t1"}, {"w2", "tag-bar", "t1"}, {"w2", "tag-baz", "t1"}, {"w9", "tag-other", "t2"}})
 	return db
 }
 
@@ -110,9 +93,10 @@ func relationE2EFilterTenantScopedJunction(t *testing.T, engine Engine) {
 		ast := &filter.FilterAST{Root: &filter.FilterNode{
 			Field: rs.Fields["tags"], Op: filter.OpIn, Value: []any{"tag-foo", "tag-bar"},
 		}}
-		res, err := filter.NewSQLBuilder(rs, b.dialect, filter.WithRelationScope(filter.RelationScope{Tenant: "t1"})).Build(ast)
+		got, err := b.scopedIDs(db, rs, filter.RelationScope{Tenant: "t1"})(t, filter.NewParsedFilter(ast))
 		require.NoError(t, err)
-		assert.Equal(t, []string{"w1", "w2"}, dbtest.QueryRows[string](t, db, "SELECT id FROM widgets WHERE "+res.Where+" ORDER BY id", res.Args...))
+		slices.Sort(got)
+		assert.Equal(t, []string{"w1", "w2"}, got)
 	})
 }
 
@@ -126,10 +110,9 @@ func relationE2EFilterCrossTenantBlocked(t *testing.T, engine Engine) {
 		ast := &filter.FilterAST{Root: &filter.FilterNode{
 			Field: rs.Fields["tags"], Op: filter.OpEq, Value: "tag-other",
 		}}
-		res, err := filter.NewSQLBuilder(rs, b.dialect, filter.WithRelationScope(filter.RelationScope{Tenant: "t1"})).Build(ast)
+		got, err := b.scopedIDs(db, rs, filter.RelationScope{Tenant: "t1"})(t, filter.NewParsedFilter(ast))
 		require.NoError(t, err)
-		assert.Empty(t, dbtest.QueryRows[string](t, db, "SELECT id FROM widgets WHERE "+res.Where, res.Args...),
-			"junction tenant scope leaked across tenants")
+		assert.Empty(t, got, "junction tenant scope leaked across tenants")
 	})
 }
 
@@ -183,12 +166,7 @@ func relationE2EFacetTenantScoped(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		db := widgetDB(t, b)
 		rs, _ := widgetSchema(t)
-		q, err := filter.BuildFacetQuery(rs, b.dialect,
-			"widgets.tenant_id = "+b.dialect.Placeholder(1), []any{"t1"},
-			[]filter.FacetRequest{{Field: "tags"}},
-			filter.WithFacetRelationScope(filter.RelationScope{Tenant: "t1"}))
-		require.NoError(t, err)
-		results := queryFacets(t, db, q.SQL, q.Args...)
+		results := facetsOfTenant(t, b, db, rs, "t1", filter.RelationScope{Tenant: "t1"}, filter.FacetRequest{Field: "tags"})
 		require.Len(t, results, 1)
 		assert.Equal(t, map[string]map[string]int64{"tags": {"tag-foo": 1, "tag-bar": 2, "tag-baz": 1}}, bucketCounts(results))
 	})
@@ -200,23 +178,19 @@ func relationE2EIncludeTenantScoped(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		db := widgetDB(t, b)
 		rs, _ := widgetSchema(t)
-		q, err := filter.BuildIncludeQuery(rs.Fields["tags"], b.dialect, []core.Key{{"w1"}, {"w2"}, {"w3"}},
+		res := b.includeOf(t, db, rs.Fields["tags"], []core.Key{{"w1"}, {"w2"}, {"w3"}},
 			filter.WithIncludeRelationScope(filter.RelationScope{Tenant: "t1"}))
-		require.NoError(t, err)
-		res := includeRows(t, db, q)
 		assert.Equal(t, map[string][]string{"w1": {"tag-bar", "tag-foo"}, "w2": {"tag-bar", "tag-baz"}}, res.IDs)
 	})
 }
 
-// The per-owner cap is applied by the database, lowest target IDs first.
+// The per-owner cap keeps each owner's lowest target IDs.
 func relationE2EIncludeCapPerOwner(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		db := widgetDB(t, b)
 		rs, _ := widgetSchema(t)
-		q, err := filter.BuildIncludeQuery(rs.Fields["tags"], b.dialect, []core.Key{{"w1"}, {"w2"}},
+		res := b.includeOf(t, db, rs.Fields["tags"], []core.Key{{"w1"}, {"w2"}},
 			filter.WithIncludeRelationScope(filter.RelationScope{Tenant: "t1"}), filter.WithMaxIncludePerRelation(1))
-		require.NoError(t, err)
-		res := includeRows(t, db, q)
 		assert.Equal(t, map[string][]string{"w1": {"tag-bar"}, "w2": {"tag-bar"}}, res.IDs)
 		assert.Equal(t, []string{"w1", "w2"}, res.Truncated, "both owners")
 	})
@@ -244,18 +218,14 @@ type widgetEdges struct {
 func relationTypedEdgesCountOnce(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		db := b.db(t)
-		dbtest.Exec(t, db,
-			`CREATE TABLE widgets (id TEXT PRIMARY KEY)`,
-			`CREATE TABLE widget_edges (from_id TEXT, to_id TEXT, kind TEXT)`,
-			`INSERT INTO widgets VALUES ('w1')`,
-			`INSERT INTO widget_edges VALUES ('w1','t1','feeds'), ('w1','t1','powers'), ('w1','t2','feeds')`)
+		b.load(t, db, sqlTable{name: "widgets", key: []string{"id"}, columns: []sqlColumn{column[string]("id")}}, [][]any{{"w1"}})
+		b.load(t, db, sqlTable{name: "widget_edges", columns: []sqlColumn{column[string]("from_id"), column[string]("to_id"), column[string]("kind")}},
+			[][]any{{"w1", "t1", "feeds"}, {"w1", "t1", "powers"}, {"w1", "t2", "feeds"}})
 		schema, err := filter.GenerateFilterSchema[widgetEdges](core.NewSchemaGenerator(core.WithSQLTableName("widgets")))
 		require.NoError(t, err)
 		withOwnerKeys(schema)
 
-		q, err := filter.BuildIncludeQuery(schema.Fields["targets"], b.dialect, []core.Key{{"w1"}})
-		require.NoError(t, err)
-		assert.Equal(t, []string{"t1", "t2"}, includeRows(t, db, q).IDs["w1"])
+		assert.Equal(t, []string{"t1", "t2"}, b.includeOf(t, db, schema.Fields["targets"], []core.Key{{"w1"}}).IDs["w1"])
 
 		facets := facetCounts(t, db, b.dialect, schema, "targets")
 		assert.Equal(t, map[string]int64{"t1": 1, "t2": 1}, facets["targets"], "one owner per target")
@@ -264,7 +234,7 @@ func relationTypedEdgesCountOnce(t *testing.T, engine Engine) {
 
 // caseInsensitiveText is a text column type comparing case-insensitively on
 // b: NOCASE on SQLite, a nondeterministic ICU collation PostgreSQL creates
-// in db's schema.
+// in db's schema. The Memory engine compares by code point alone.
 func caseInsensitiveText(t *testing.T, b sqlBackend, db *sql.DB) string {
 	t.Helper()
 	if b.engine == SQLite {
@@ -280,17 +250,18 @@ func caseInsensitiveText(t *testing.T, b sqlBackend, db *sql.DB) string {
 func buildIncludeQueryTextKeysUseCodePointOrder(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		db := b.db(t)
-		dbtest.Exec(t, db,
-			`CREATE TABLE pairs (owner TEXT, target `+caseInsensitiveText(t, b, db)+`)`,
-			`INSERT INTO pairs VALUES ('owner', 'a'), ('owner', 'Z'), ('owner', 'B'), ('owner', 'b')`)
+		target := column[string]("target")
+		if b.engine != Memory {
+			target = target.holding(b.engine, caseInsensitiveText(t, b, db))
+		}
+		b.load(t, db, sqlTable{name: "pairs", columns: []sqlColumn{column[string]("owner"), target}},
+			[][]any{{"owner", "a"}, {"owner", "Z"}, {"owner", "B"}, {"owner", "b"}})
 		field := &filter.FieldSchema{
 			ExternalName: "tags", DataType: core.FieldTypeString, Includable: true,
 			Relation:  &core.RelationSchema{JoinTable: "pairs", SourceColumns: []string{"owner"}, TargetColumns: []string{"target"}, SourceTypes: textKey(), TargetTypes: textKey()},
 			RelatedBy: []*filter.FieldSchema{{ExternalName: "id", Table: "owners", Column: "id", DataType: core.FieldTypeString}},
 		}
-		q, err := filter.BuildIncludeQuery(field, b.dialect, []core.Key{{"owner"}}, filter.WithMaxIncludePerRelation(3))
-		require.NoError(t, err)
-		got := includeRows(t, db, q)
+		got := b.includeOf(t, db, field, []core.Key{{"owner"}}, filter.WithMaxIncludePerRelation(3))
 		require.Equal(t, map[string][]string{"owner": {"B", "Z", "a"}}, got.IDs)
 		require.Equal(t, []string{"owner"}, got.Truncated)
 	})

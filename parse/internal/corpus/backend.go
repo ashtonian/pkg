@@ -7,9 +7,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,7 +27,7 @@ import (
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
-// Kind is the SQL database an Engine is.
+// Kind is the database an Engine is.
 type Kind string
 
 const (
@@ -33,11 +35,15 @@ const (
 	SQLite Kind = "sqlite"
 	// Postgres is a fresh schema of the PostgreSQL test server.
 	Postgres Kind = "postgres"
+	// Memory is a database of the memory provider, which holds its own
+	// tables and runs no SQL.
+	Memory Kind = "memory"
 )
 
-// Engine is a SQL database a provider package runs the corpus on: what kind
-// of database it is, and how a case opens one. The corpus imports no
-// provider and no driver; the provider's TestCorpus supplies both functions.
+// Engine is a database a provider package runs the corpus on: what kind of
+// database it is, and how a case opens one. The corpus imports no provider
+// and no driver; the provider's TestCorpus supplies the functions, Open and
+// CallerTx on a SQL engine, OpenStore on Memory.
 type Engine struct {
 	Kind Kind
 	// Open opens a fresh database for one case, as v asks: the provider
@@ -51,6 +57,10 @@ type Engine struct {
 	// transaction is rolled back after fn unless fn settled it, and fn's
 	// error is returned.
 	CallerTx func(ctx context.Context, conn *sql.Conn, fn func(tx *parse.Tx, query func(stmt string) ([]string, error)) error) error
+	// OpenStore opens a fresh Memory database for one case: the provider
+	// resources run on there, and the database's own tables, which the
+	// case's fixtures are written to.
+	OpenStore func(t *testing.T) (*parse.Provider, Store)
 }
 
 // Variant is what one case asks of the database an Engine opens.
@@ -86,11 +96,14 @@ type sqlDialect interface {
 	MarshalValue(value any, t core.TypeInfo) (any, error)
 }
 
-// sqlBackend is one database every SQL family runs on: the engine that
-// opens it, the dialect that compiles for it, what a case asks of it, and
-// how a table there declares, binds and holds each kind of value, following
+// sqlBackend is one database every family runs on: the engine that opens
+// it, the dialect that compiles for it, what a case asks of it, and how a
+// table there declares, binds and holds each kind of value, following
 // core.TypeOf's storage model. A family's own variants (a collation, the
 // PostGIS server, another column type for a kind) are sqlBackendOptions.
+// The Memory engine has no dialect: its resources and fixtures declare its
+// tables, and its fixtures are written through its Store, which a case
+// reaches through the same calls.
 type sqlBackend struct {
 	engine  Kind
 	opener  Engine
@@ -111,6 +124,7 @@ func sqlBackendOf(engine Engine, opts ...sqlBackendOption) sqlBackend {
 		b.dialect = filter.SQLiteDialect{}
 	case Postgres:
 		b.dialect = filter.PostgresDialect{}
+	case Memory:
 	default:
 		panic("corpus: no engine " + string(engine.Kind))
 	}
@@ -134,6 +148,11 @@ func (b sqlBackend) open(t *testing.T) (*parse.Provider, *sql.DB) {
 // by settle (parsesql.SettleTimeout, parsepgx.SettleTimeout).
 func (b sqlBackend) openSettling(t *testing.T, settle time.Duration) (*parse.Provider, *sql.DB) {
 	t.Helper()
+	if b.engine == Memory {
+		require.False(t, b.variant.PostGIS || len(b.variant.SessionParams) > 0, "the memory engine has no PostGIS server or session parameters")
+		p, store := b.opener.OpenStore(t)
+		return p, storeDB(t, store)
+	}
 	v := b.variant
 	v.Settle = settle
 	pg, isPostgres := b.dialect.(filter.PostgresDialect)
@@ -444,35 +463,56 @@ func (b sqlBackend) placeholder(n int, c sqlColumn) string {
 	return ph
 }
 
-// create creates tables in db.
+// create creates tables in db: on the Memory engine, declares each no
+// resource has declared to its store.
 func (b sqlBackend) create(t testing.TB, db *sql.DB, tables ...sqlTable) {
 	t.Helper()
+	if b.engine == Memory {
+		for _, table := range tables {
+			require.NoError(t, storeOf(t, db).Declare(table.name, storeColumns(table), table.key), "declaring %s", table.name)
+		}
+		return
+	}
 	for _, table := range tables {
 		defs := make([]string, 0, len(table.columns)+1)
 		for _, c := range table.columns {
-			def := c.name + " " + b.declared(c)
+			def := b.dialect.QuoteIdent(c.name) + " " + b.declared(c)
 			if c.notNull {
 				def += " NOT NULL"
 			}
 			defs = append(defs, def)
 		}
 		if len(table.key) > 0 {
-			defs = append(defs, "PRIMARY KEY ("+strings.Join(table.key, ", ")+")")
+			defs = append(defs, "PRIMARY KEY ("+b.quoteIdents(table.key)+")")
 		}
-		dbtest.Exec(t, db, "CREATE TABLE "+table.name+" ("+strings.Join(defs, ", ")+")")
+		dbtest.Exec(t, db, "CREATE TABLE "+b.dialect.QuoteIdent(table.name)+" ("+strings.Join(defs, ", ")+")")
 	}
 }
 
-// insert writes rows into table, each a value per column in table's order.
+// quoteIdents is names, each quoted, separated by commas.
+func (b sqlBackend) quoteIdents(names []string) string {
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = b.dialect.QuoteIdent(name)
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// insert writes rows into table, each a value per column in table's order:
+// on the Memory engine, through its store.
 func (b sqlBackend) insert(t testing.TB, db *sql.DB, table sqlTable, rows ...[]any) {
 	t.Helper()
+	if b.engine == Memory {
+		require.NoError(t, storeOf(t, db).Put(t.Context(), table.name, storeRows(t, table, rows)...), "writing %s", table.name)
+		return
+	}
 	names := make([]string, len(table.columns))
 	phs := make([]string, len(table.columns))
 	for i, c := range table.columns {
 		names[i] = c.name
 		phs[i] = b.placeholder(i+1, c)
 	}
-	insert := "INSERT INTO " + table.name + " (" + strings.Join(names, ", ") + ") VALUES (" + strings.Join(phs, ", ") + ")"
+	insert := "INSERT INTO " + b.dialect.QuoteIdent(table.name) + " (" + b.quoteIdents(names) + ") VALUES (" + strings.Join(phs, ", ") + ")"
 	for _, row := range rows {
 		require.Len(t, row, len(table.columns), "a row of %s", table.name)
 		args := make([]any, len(row))
@@ -487,6 +527,11 @@ func (b sqlBackend) insert(t testing.TB, db *sql.DB, table sqlTable, rows ...[]a
 // filterIDs is a filtertest backend over schema's table in db: the ids of
 // the rows each filter's WHERE selects there.
 func (b sqlBackend) filterIDs(db *sql.DB, schema *filter.ResourceSchema) filtertest.Backend {
+	if b.engine == Memory {
+		return func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
+			return storeOf(t, db).Select(t.Context(), schema, f, filter.RelationScope{}, "id")
+		}
+	}
 	return func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
 		res, err := filter.NewSQLBuilder(schema, b.dialect).Build(f.AST())
 		if err != nil {
@@ -494,6 +539,90 @@ func (b sqlBackend) filterIDs(db *sql.DB, schema *filter.ResourceSchema) filtert
 		}
 		return dbtest.QueryRows[string](t, db, "SELECT id FROM "+schema.Name+" WHERE "+res.Where, res.Args...), nil
 	}
+}
+
+// scopedIDs is filterIDs with schema's relations held to scope.
+func (b sqlBackend) scopedIDs(db *sql.DB, schema *filter.ResourceSchema, scope filter.RelationScope) filtertest.Backend {
+	if b.engine == Memory {
+		return func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
+			return storeOf(t, db).Select(t.Context(), schema, f, scope, "id")
+		}
+	}
+	return func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
+		res, err := filter.NewSQLBuilder(schema, b.dialect, filter.WithRelationScope(scope)).Build(f.AST())
+		if err != nil {
+			return nil, err
+		}
+		return dbtest.QueryRows[string](t, db, "SELECT id FROM "+schema.Name+" WHERE "+res.Where, res.Args...), nil
+	}
+}
+
+// selectedInts is the integer column of each row of schema's table ast
+// selects in db, in ascending order, nil for none: on a SQL engine, under
+// the WHERE the SQL builder compiles from it; on the Memory engine, as its
+// lists select rows.
+func (b sqlBackend) selectedInts(t *testing.T, db *sql.DB, schema *filter.ResourceSchema, ast *filter.FilterAST, column string) []int64 {
+	t.Helper()
+	if b.engine != Memory {
+		res, err := filter.NewSQLBuilder(schema, b.dialect).Build(ast)
+		require.NoError(t, err)
+		return dbtest.QueryRows[int64](t, db, "SELECT "+column+" FROM "+schema.Name+" WHERE "+res.Where+" ORDER BY "+column, res.Args...)
+	}
+	texts, err := storeOf(t, db).Select(t.Context(), schema, filter.NewParsedFilter(ast), filter.RelationScope{}, column)
+	require.NoError(t, err)
+	var out []int64
+	for _, text := range texts {
+		n, err := strconv.ParseInt(text, 10, 64)
+		require.NoError(t, err, "column %s holds %q", column, text)
+		out = append(out, n)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// includeOf is the targets field's relation pairs owners with on db: the
+// rows of the include statement on a SQL engine, as the Memory engine's
+// lists include them on that engine.
+func (b sqlBackend) includeOf(t *testing.T, db *sql.DB, field *filter.FieldSchema, owners []core.Key, opts ...filter.IncludeQueryOption) filter.IncludeRows {
+	t.Helper()
+	if b.engine == Memory {
+		rows, err := storeOf(t, db).Include(t.Context(), field, owners, opts...)
+		require.NoError(t, err)
+		return rows
+	}
+	q, err := filter.BuildIncludeQuery(field, b.dialect, owners, opts...)
+	require.NoError(t, err)
+	return includeRows(t, db, q)
+}
+
+// columnOf is column, as text, of table's rows whose by column holds key
+// on db, in text order.
+func columnOf(t *testing.T, b sqlBackend, db *sql.DB, table, column, by, key string) []string {
+	t.Helper()
+	var out []string
+	for _, row := range b.tableRows(t, db, table, by, column) {
+		if columnText(t, row[0]) == key {
+			out = append(out, columnText(t, row[1]))
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// columnText is a text or integer column's value, as a driver or the Memory
+// engine's store returns it, as text.
+func columnText(t *testing.T, v any) string {
+	t.Helper()
+	switch s := v.(type) {
+	case string:
+		return s
+	case []byte:
+		return string(s)
+	case int64:
+		return strconv.FormatInt(s, 10)
+	}
+	require.Fail(t, fmt.Sprintf("not text: %T %v", v, v))
+	return ""
 }
 
 // rowIDs is each row's first column, the id a statement selects first,

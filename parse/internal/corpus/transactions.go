@@ -33,7 +33,7 @@ func inTransactionsOfItsProvider(t *testing.T, engine Engine) {
 		t.Run("the application's own", func(t *testing.T) {
 			p, db := b.open(t)
 			r := parsetest.ExecItems(p)
-			callerTx(t, b, db, func(tx *parse.Tx, _ func(string) []string) {
+			callerTx(t, b, db, func(tx *parse.Tx, _ inTx) {
 				scoped, err := r.In(tx)
 				require.NoError(t, err)
 				assert.Same(t, p, scoped.Provider())

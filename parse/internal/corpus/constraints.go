@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,9 +24,9 @@ import (
 func buildBaseConstraintsFailClosedWithoutATenant(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		db := b.db(t)
-		dbtest.Exec(t, db,
-			`CREATE TABLE items (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, deleted_at `+b.columnType(core.TypeInfo{Type: core.FieldTypeTimestamp})+`)`,
-			`INSERT INTO items VALUES (1, 44, NULL), (2, 45, NULL), (3, 44, '2026-01-01T00:00:00Z')`)
+		deleted := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		b.load(t, db, sqlTable{name: "items", key: []string{"id"}, columns: []sqlColumn{column[int64]("id").required(), column[int64]("tenant_id").required(), column[time.Time]("deleted_at")}},
+			[][]any{{1, 44, nil}, {2, 45, nil}, {3, 44, deleted}})
 		schema := func(tenant core.FieldType, kind reflect.Kind) *filter.ResourceSchema {
 			s := &filter.ResourceSchema{
 				Name:       "items",
@@ -56,9 +57,7 @@ func buildBaseConstraintsFailClosedWithoutATenant(t *testing.T, engine Engine) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				pc := filter.BuildBaseConstraints(tt.tenantCol, tt.tenantID, "deleted_at", false)
-				res, err := mustListQuery(t, tt.schema, nil, b.dialect).Build(filter.ListPolicy(pc))
-				require.NoError(t, err, "a missing tenant is never a request error")
-				assert.Equal(t, tt.want, dbtest.QueryRows[int64](t, db, "SELECT items.id FROM items "+res.Fragment, res.Args...))
+				assert.Equal(t, tt.want, policyIDs(t, b, db, tt.schema, pc))
 			})
 		}
 	})
@@ -70,11 +69,11 @@ func buildBaseConstraintsFailClosedWithoutATenant(t *testing.T, engine Engine) {
 func composeConstraints(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		db := b.db(t)
-		dbtest.Exec(t, db,
-			`CREATE TABLE items (id INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL, owner TEXT NOT NULL, deleted_at `+b.columnType(core.TypeInfo{Type: core.FieldTypeTimestamp})+`)`,
-			// 1-3 are t1's (3 deleted), 4-6 t2's (6 deleted).
-			`INSERT INTO items VALUES (1,'t1','ann',NULL), (2,'t1','bob',NULL), (3,'t1','ann','2026-01-01T00:00:00Z'),
-				(4,'t2','ann',NULL), (5,'t2','bob',NULL), (6,'t2','ann','2026-01-01T00:00:00Z')`)
+		deleted := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		text := func(name string) sqlColumn { return column[string](name).required() }
+		// 1-3 are t1's (3 deleted), 4-6 t2's (6 deleted).
+		b.load(t, db, sqlTable{name: "items", key: []string{"id"}, columns: []sqlColumn{column[int64]("id").required(), text("tenant_id"), text("owner"), column[time.Time]("deleted_at")}},
+			[][]any{{1, "t1", "ann", nil}, {2, "t1", "bob", nil}, {3, "t1", "ann", deleted}, {4, "t2", "ann", nil}, {5, "t2", "bob", nil}, {6, "t2", "ann", deleted}})
 		schema := &filter.ResourceSchema{
 			Name:       "items",
 			PrimaryKey: []string{"id"},
@@ -99,9 +98,7 @@ func composeConstraints(t *testing.T, engine Engine) {
 		floor := filter.RepositoryScope{TenantColumn: "tenant_id", TenantID: "t1", DeleteColumn: "deleted_at"}
 		ids := func(t *testing.T, pc *filter.PolicyConstraints) []int64 {
 			t.Helper()
-			res, err := mustListQuery(t, schema, nil, b.dialect).Build(filter.ListPolicy(pc))
-			require.NoError(t, err)
-			return dbtest.QueryRows[int64](t, db, "SELECT items.id FROM items "+res.Fragment, res.Args...)
+			return policyIDs(t, b, db, schema, pc)
 		}
 		tests := []struct {
 			name       string
@@ -138,6 +135,21 @@ func composeConstraints(t *testing.T, engine Engine) {
 			assert.Equal(t, []int64{2, 5}, ids(t, second))
 		})
 	})
+}
+
+// policyIDs are the ids of the items pc admits on db: through a list
+// query's statement on a SQL engine, as the Memory engine's lists evaluate
+// the policy on that engine. A missing tenant is never a request error.
+func policyIDs(t *testing.T, b sqlBackend, db *sql.DB, schema *filter.ResourceSchema, pc *filter.PolicyConstraints) []int64 {
+	t.Helper()
+	if b.engine == Memory {
+		ast, err := filter.ApplyPolicyConstraints(schema, nil, pc)
+		require.NoError(t, err)
+		return b.selectedInts(t, db, schema, ast, "id")
+	}
+	res, err := mustListQuery(t, schema, nil, b.dialect).Build(filter.ListPolicy(pc))
+	require.NoError(t, err)
+	return dbtest.QueryRows[int64](t, db, "SELECT items.id FROM items "+res.Fragment, res.Args...)
 }
 
 func withDeleted(s filter.RepositoryScope) filter.RepositoryScope {
@@ -183,6 +195,14 @@ func keyWhere(t *testing.T, d filter.Dialect, c *filter.PolicyConstraint) (*filt
 	return filter.NewSQLBuilder(stockSchema(), d).Build(ast)
 }
 
+// keyQuantities is the qty of each stock item c admits on db, ascending.
+func keyQuantities(t *testing.T, b sqlBackend, db *sql.DB, c *filter.PolicyConstraint) []int64 {
+	t.Helper()
+	ast, err := filter.ApplyPolicyConstraints(stockSchema(), nil, &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{c}})
+	require.NoError(t, err)
+	return b.selectedInts(t, db, stockSchema(), ast, "qty")
+}
+
 // A key set selects the rows whose columns together equal one key, not the
 // rows matching each column alone, in SQL and in memory alike.
 func keyConstraintSelectsWholeKeys(t *testing.T, engine Engine) {
@@ -191,9 +211,7 @@ func keyConstraintSelectsWholeKeys(t *testing.T, engine Engine) {
 		rows := []stockItem{{"w1", "a", 1}, {"w1", "b", 2}, {"w2", "a", 3}, {"w2", "b", 4}}
 		b.load(t, db, stockTable(), recordRows(t, stockTable(), rows))
 		c := &filter.PolicyConstraint{Fields: []string{"warehouse_id", "sku"}, Operator: filter.OpIn, Value: []core.Key{{"w1", "b"}, {"w2", "a"}, {"w9", "a"}}}
-		res, err := keyWhere(t, b.dialect, c)
-		require.NoError(t, err)
-		assert.Equal(t, []int64{2, 3}, dbtest.QueryRows[int64](t, db, "SELECT qty FROM stock_items WHERE "+res.Where+" ORDER BY qty", res.Args...))
+		assert.Equal(t, []int64{2, 3}, keyQuantities(t, b, db, c))
 
 		ast, err := filter.ApplyPolicyConstraints(stockSchema(), nil, &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{c}})
 		require.NoError(t, err)
@@ -226,9 +244,7 @@ func keyConstraintEmptySetAdmitsNoRow(t *testing.T, engine Engine) {
 					_, err := keyWhere(t, d, c)
 					require.NoError(t, err, d.Name())
 				}
-				res, err := keyWhere(t, b.dialect, c)
-				require.NoError(t, err)
-				assert.Equal(t, []int64{0}, dbtest.QueryRows[int64](t, db, "SELECT count(*) FROM stock_items WHERE "+res.Where, res.Args...))
+				assert.Empty(t, keyQuantities(t, b, db, c))
 
 				ast, err := filter.ApplyPolicyConstraints(stockSchema(), nil, &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{c}})
 				require.NoError(t, err)
@@ -278,10 +294,7 @@ func policyStoredValues(t *testing.T, engine Engine) {
 			t.Run(tc.name, func(t *testing.T) {
 				ast, err := filter.ApplyPolicyConstraints(stockSchema(), nil, &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{tc.c}})
 				require.NoError(t, err)
-				res, err := filter.NewSQLBuilder(stockSchema(), b.dialect).Build(ast)
-				require.NoError(t, err)
-				selected := dbtest.QueryRows[int64](t, db, "SELECT qty FROM stock_items WHERE "+res.Where+" ORDER BY qty", res.Args...)
-				assert.Equal(t, tc.want, selected, "SQL")
+				assert.Equal(t, tc.want, b.selectedInts(t, db, stockSchema(), ast, "qty"), b.engine)
 
 				var evaluated []int64
 				for _, r := range rows {

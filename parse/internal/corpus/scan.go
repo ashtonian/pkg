@@ -54,16 +54,16 @@ func rowScannerEmbeddedStructs(t *testing.T, engine Engine) {
 			}, key: []string{"id"}}, [][]any{{"a", "promoted", `{"x":"member","y":"own"}`}})
 			r, err := parse.NewResource[byValueRow](p, "by_value")
 			require.NoError(t, err)
-			rows := parsetest.ResourceRows(t, r, parse.Statement{SQL: `SELECT ` + parsetest.JoinColumns(r.Columns()) + ` FROM "by_value"`})
+			rows := readRows(t, b, r, "by_value")
 			want := byValueRow{ID: "a", hiddenColumns: hiddenColumns{Extra: "promoted"}, Doc: byValueDoc{hiddenMembers: hiddenMembers{X: "member"}, Y: "own"}}
 			assert.Equal(t, []byValueRow{want}, rows)
 		})
 		t.Run("an unread column behind a pointer", func(t *testing.T) {
 			p, db := b.open(t)
-			dbtest.Exec(t, db, `CREATE TABLE "hidden_rows" ("id" TEXT PRIMARY KEY, "extra" TEXT)`, `INSERT INTO "hidden_rows" VALUES ('a', 'unread')`)
+			b.load(t, db, sqlTable{name: "hidden_rows", key: []string{"id"}, columns: []sqlColumn{column[string]("id"), column[string]("extra")}}, [][]any{{"a", "unread"}})
 			r, err := parse.NewResource[hiddenColumnRow](p, "hidden_rows", parse.ReadColumns("id"))
 			require.NoError(t, err, "a column the resource does not read is never scanned")
-			rows := parsetest.ResourceRows(t, r, parse.Statement{SQL: `SELECT ` + parsetest.JoinColumns(r.Columns()) + ` FROM "hidden_rows"`})
+			rows := readRows(t, b, r, "hidden_rows")
 			assert.Equal(t, []hiddenColumnRow{{ID: "a"}}, rows)
 		})
 	})
@@ -117,7 +117,7 @@ func rowScannerStorage(t *testing.T, engine Engine) {
 			{"b", at, nil, nil, nil, nil, nil, nil, nil, core.Interval{Months: 1}},
 		})
 		r := parse.MustResource[storedRow](p, "stored")
-		rows := parsetest.ResourceRows(t, r, parse.Statement{SQL: `SELECT ` + parsetest.JoinColumns(r.Columns()) + ` FROM "stored" ORDER BY "id"`})
+		rows := readRows(t, b, r, "stored")
 		require.Len(t, rows, 2)
 		// A timestamp is the instant stored, in the location its driver
 		// reads it in: pgx reads timestamptz in the local zone.
@@ -139,29 +139,57 @@ func rowScannerStorage(t *testing.T, engine Engine) {
 
 // A row that cannot hold what a column stores fails the read. A timestamp
 // column holding text that is no timestamp is SQLite's alone: PostgreSQL's
-// column refuses it.
+// column refuses it, and the Memory engine's Put.
 func rowScannerRefusesWhatTheRowCannotHold(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
-		p, db := b.open(t)
-		b.create(t, db, storedTable())
-		r := parse.MustResource[storedRow](p, "stored")
-		read := parse.Statement{SQL: `SELECT ` + parsetest.JoinColumns(r.Columns()) + ` FROM "stored"`}
-		values := map[string]string{
-			"NULL into a time.Time":          `('a', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'PT1H')`,
-			"a member spelt in another case": `('a', '2026-01-02T03:04:05.000000Z', NULL, NULL, '{"Theme":"dark"}', NULL, NULL, NULL, NULL, 'PT1H')`,
-			"JSON null for a map":            `('a', '2026-01-02T03:04:05.000000Z', NULL, 'null', NULL, NULL, NULL, NULL, NULL, 'PT1H')`,
-		}
-		if b.engine == SQLite {
-			values["timestamp text that is no timestamp"] = `('a', 'yesterday', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'PT1H')`
-		}
-		for name, row := range values {
+		at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+		hour := core.Interval{Microseconds: 3_600_000_000}
+		for name, row := range map[string][]any{
+			"NULL into a time.Time":          {"a", nil, nil, nil, nil, nil, nil, nil, nil, hour},
+			"a member spelt in another case": {"a", at, nil, nil, `{"Theme":"dark"}`, nil, nil, nil, nil, hour},
+			"JSON null for a map":            {"a", at, nil, json.RawMessage(`null`), nil, nil, nil, nil, nil, hour},
+		} {
 			t.Run(name, func(t *testing.T) {
-				dbtest.Exec(t, db, `DELETE FROM "stored"`, `INSERT INTO "stored" VALUES `+row)
-				_, err := r.Query(t.Context(), read)
+				p, db := b.open(t)
+				b.load(t, db, storedTable(), [][]any{row})
+				_, err := readAll(t, b, parse.MustResource[storedRow](p, "stored"), "stored")
 				assert.Error(t, err)
 			})
 		}
+		t.Run("timestamp text that is no timestamp", func(t *testing.T) {
+			if b.engine != SQLite {
+				t.Skip("only SQLite's timestamp column holds text that is no timestamp")
+			}
+			p, db := b.open(t)
+			b.create(t, db, storedTable())
+			dbtest.Exec(t, db, `INSERT INTO "stored" VALUES ('a', 'yesterday', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'PT1H')`)
+			_, err := readAll(t, b, parse.MustResource[storedRow](p, "stored"), "stored")
+			assert.Error(t, err)
+		})
 	})
+}
+
+// readRows is every row of r's table, keyed by id, in key order: on the
+// Memory engine, as its lists page them; on a SQL engine, as a SELECT of
+// r's columns scans them.
+func readRows[T any](t *testing.T, b sqlBackend, r *parse.Resource[T], table string) []T {
+	t.Helper()
+	rows, err := readAll(t, b, r, table)
+	require.NoError(t, err)
+	return rows
+}
+
+// readAll is readRows with the read's error.
+func readAll[T any](t *testing.T, b sqlBackend, r *parse.Resource[T], table string) ([]T, error) {
+	t.Helper()
+	if b.engine == Memory {
+		page, err := r.List(t.Context(), nil, parse.Scope{})
+		if err != nil {
+			return nil, err
+		}
+		return page.Items, nil
+	}
+	return r.Query(t.Context(), parse.Statement{SQL: `SELECT ` + parsetest.JoinColumns(r.Columns()) + ` FROM ` + b.dialect.QuoteIdent(table) + ` ORDER BY "id"`})
 }
 
 type countedRow struct {

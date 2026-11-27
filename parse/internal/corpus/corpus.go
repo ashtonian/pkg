@@ -1,13 +1,16 @@
 //go:build integration
 
-// Package corpus is the database-backed suite parse's SQL providers run:
-// every case runs parse over a fresh database, through resources on a
-// provider or through filter's and patch's builders on the database
-// itself, and asserts the rows that come back, the rows stored and the
-// statements sent. parsesql's tests run it on SQLite and parsepgx's on
-// PostgreSQL (RunSQL), so each provider and dialect is held to the same
-// cases. The fixtures the root package's and filter's own tests also use
-// live in internal/parsetest.
+// Package corpus is the database-backed suite parse's providers run: every
+// case runs parse over a fresh database, through resources on a provider
+// or through filter's and patch's builders on the database itself, and
+// asserts the rows that come back, the rows stored and the statements
+// sent. parsesql's tests run it on SQLite, parsepgx's on PostgreSQL and
+// parsememory's on the memory provider (Run), so each provider and dialect
+// is held to the same cases. A case that asks a SQL database for what the
+// memory provider does not hold (statements of its own, the SQL builders,
+// constraints, query plans) names why (sqlCase.sqlOnly), and the Memory
+// engine skips it. The fixtures the root package's and filter's own tests
+// also use live in internal/parsetest.
 package corpus
 
 import (
@@ -15,13 +18,16 @@ import (
 	"testing"
 )
 
-// sqlCase is one case of the corpus: a subtest of RunSQL.
+// sqlCase is one case of the corpus: a subtest of Run.
 type sqlCase struct {
 	name string
 	// only is the one kind of engine the case runs on, for a feature of
 	// that engine alone; empty runs it on every engine.
 	only Kind
-	run  func(t *testing.T, engine Engine)
+	// sqlOnly is why the case needs a SQL database, which the Memory
+	// engine skips it for; empty runs it there too.
+	sqlOnly string
+	run     func(t *testing.T, engine Engine)
 }
 
 // sqlCases are the corpus's cases, grouped by the file that holds them
@@ -42,7 +48,7 @@ func sqlCases() []sqlCase {
 		{name: "BuildFacetQuery_RelationFacet_TargetKeyOfSeveralColumns", run: buildFacetQueryRelationFacetTargetKeyOfSeveralColumns},
 		{name: "BuildFacetQuery_RelationFacets_OwnKeyEach", run: buildFacetQueryRelationFacetsOwnKeyEach},
 		{name: "BuildFacetQuery_RoundTrip_BooleanKeysAreJSONLiterals", run: buildFacetQueryRoundTripBooleanKeysAreJSONLiterals},
-		{name: "BuildFacetQuery_RoundTrip_FacetFrom", run: buildFacetQueryRoundTripFacetFrom},
+		{name: "BuildFacetQuery_RoundTrip_FacetFrom", sqlOnly: "facets the rows of a caller's FROM clause (filter.WithFacetFrom)", run: buildFacetQueryRoundTripFacetFrom},
 		{name: "BuildFacetQuery_RoundTrip_ListElements", run: buildFacetQueryRoundTripListElements},
 		{name: "BuildFacetQuery_RoundTrip_NumbersTieByValue", run: buildFacetQueryRoundTripNumbersTieByValue},
 		{name: "BuildFacetQuery_RoundTrip_Order", run: buildFacetQueryRoundTripOrder},
@@ -78,7 +84,7 @@ func sqlCases() []sqlCase {
 		{name: "RelationE2E_Filter_TenantScopedJunction", run: relationE2EFilterTenantScopedJunction},
 		{name: "RelationE2E_Include_CapPerOwner", run: relationE2EIncludeCapPerOwner},
 		{name: "RelationE2E_Include_TenantScoped", run: relationE2EIncludeTenantScoped},
-		{name: "RelationE2E_Patch_Replace_Add_Remove_Atomic", run: relationE2EPatchReplaceAddRemoveAtomic},
+		{name: "RelationE2E_Patch_Replace_Add_Remove_Atomic", sqlOnly: "runs the statements patch.RenderRelationOp writes", run: relationE2EPatchReplaceAddRemoveAtomic},
 		{name: "Relation_TypedEdgesCountOnce", run: relationTypedEdgesCountOnce},
 
 		{name: "CompositeKeyPaging", run: compositeKeyPaging},
@@ -88,7 +94,7 @@ func sqlCases() []sqlCase {
 		{name: "ValuerKeys", run: valuerKeys},
 
 		{name: "Integration_CursorWalkNoLossNoDup", run: integrationCursorWalkNoLossNoDup},
-		{name: "KeysetRender", run: keysetRender},
+		{name: "KeysetRender", sqlOnly: "orders and seeks a statement of its own by a computed key (filter.OrderByKeys, filter.SeekPredicate)", run: keysetRender},
 		// NOCASE and an expression's own COLLATE are SQLite's; PostgreSQL's
 		// counterpart is KeysetWalk_LinguisticCollationWalksByCodePoint.
 		{name: "KeysetSeek_SQLiteCollatedExpressionWalksByCodePoint", only: SQLite, run: keysetSeekSQLiteCollatedExpressionWalksByCodePoint},
@@ -103,24 +109,24 @@ func sqlCases() []sqlCase {
 		{name: "GovernedLists_Memory", run: governedListsMemory},
 		{name: "GovernedMixedTypes", run: governedMixedTypes},
 		{name: "ListBodyTransport", run: listBodyTransport},
-		{name: "ListOffsetDoesNotOffsetStandaloneQueries", run: listOffsetDoesNotOffsetStandaloneQueries},
+		{name: "ListOffsetDoesNotOffsetStandaloneQueries", sqlOnly: "numbers the parameters of a list's statements", run: listOffsetDoesNotOffsetStandaloneQueries},
 
-		{name: "QuoteLiteral_ReadsAsItself", run: quoteLiteralReadsAsItself},
+		{name: "QuoteLiteral_ReadsAsItself", sqlOnly: "selects each literal a SQL dialect quotes (Dialect.QuoteLiteral)", run: quoteLiteralReadsAsItself},
 
 		{name: "ArrayAppendKeepsElementTypes", only: SQLite, run: arrayAppendKeepsElementTypes},
-		{name: "BuildPatchSQL_ChangePredicate", run: buildPatchSQLChangePredicate},
-		{name: "BuildPatchSQL_FoldsOrderedOps", run: buildPatchSQLFoldsOrderedOps},
-		{name: "BuildPatchSQL_Members", run: buildPatchSQLMembers},
-		{name: "BuildPatchSQL_Merge", run: buildPatchSQLMerge},
+		{name: "BuildPatchSQL_ChangePredicate", sqlOnly: "runs the statements patch.BuildPatchSQL writes", run: buildPatchSQLChangePredicate},
+		{name: "BuildPatchSQL_FoldsOrderedOps", sqlOnly: "runs the statements patch.BuildPatchSQL writes", run: buildPatchSQLFoldsOrderedOps},
+		{name: "BuildPatchSQL_Members", sqlOnly: "runs the statements patch.BuildPatchSQL writes", run: buildPatchSQLMembers},
+		{name: "BuildPatchSQL_Merge", sqlOnly: "runs the statements patch.BuildPatchSQL writes", run: buildPatchSQLMerge},
 		{name: "BuildPatchSQL_SQLiteWritesAQuoteOrBackslashInAMember", only: SQLite, run: buildPatchSQLSQLiteWritesAQuoteOrBackslashInAMember},
 		{name: "Patch_NullableWrapperColumns", run: patchNullableWrapperColumns},
-		{name: "PathLabels_ReachTheMemberEncodingJSONNames", run: pathLabelsReachTheMemberEncodingJSONNames},
+		{name: "PathLabels_ReachTheMemberEncodingJSONNames", sqlOnly: "escapes a member's label into the SQL a filter and patch.BuildPatchSQL write", run: pathLabelsReachTheMemberEncodingJSONNames},
 
-		{name: "Applier_AgreesWithTheDatabase", run: applierAgreesWithTheDatabase},
-		{name: "Applier_FailingMemberOperationAgreesWithTheDatabase", run: applierFailingMemberOperationAgreesWithTheDatabase},
-		{name: "Applier_MergesIntoARawMessageMember", run: applierMergesIntoARawMessageMember},
+		{name: "Applier_AgreesWithTheDatabase", sqlOnly: "holds the Applier to the statements patch.BuildPatchSQL writes", run: applierAgreesWithTheDatabase},
+		{name: "Applier_FailingMemberOperationAgreesWithTheDatabase", sqlOnly: "holds the Applier to the precondition SQL patch.RenderPreconditions writes", run: applierFailingMemberOperationAgreesWithTheDatabase},
+		{name: "Applier_MergesIntoARawMessageMember", sqlOnly: "holds the Applier to the statements patch.BuildPatchSQL writes", run: applierMergesIntoARawMessageMember},
 
-		{name: "RenderRelationOp_Executes", run: renderRelationOpExecutes},
+		{name: "RenderRelationOp_Executes", sqlOnly: "runs the statements patch.RenderRelationOp writes", run: renderRelationOpExecutes},
 
 		{name: "CanonicalOrder", run: canonicalOrder},
 		{name: "CanonicalOrder_SQLiteTimeColumns", only: SQLite, run: canonicalOrderSQLiteTimeColumns},
@@ -145,7 +151,7 @@ func sqlCases() []sqlCase {
 		{name: "Integration_NotOperator", run: integrationNotOperator},
 		{name: "Integration_OrOperator", run: integrationOrOperator},
 		{name: "Integration_SimpleEq", run: integrationSimpleEq},
-		{name: "Integration_WithStartParam", run: integrationWithStartParam},
+		{name: "Integration_WithStartParam", sqlOnly: "numbers a WHERE after an UPDATE's SET parameters (filter.WithStartParam)", run: integrationWithStartParam},
 
 		{name: "ReadExpr", run: readExpr},
 		{name: "ReadExpr_RelationIncludesCompileTheTargetsPolicy", run: readExprRelationIncludesCompileTheTargetsPolicy},
@@ -155,7 +161,7 @@ func sqlCases() []sqlCase {
 		{name: "DeclaredRelations", run: declaredRelations},
 		{name: "DeclaredRelations_Facets", run: declaredRelationsFacets},
 		{name: "DeclaredRelations_Includes", run: declaredRelationsIncludes},
-		{name: "DeclaredRelations_Memberships", run: declaredRelationsMemberships},
+		{name: "DeclaredRelations_Memberships", sqlOnly: "answers memberships with the subqueries SQL renders for them (sqlMembershipLookup)", run: declaredRelationsMemberships},
 		{name: "DeclaredRelations_UnknownPolicy", run: declaredRelationsUnknownPolicy},
 		{name: "DeclaredRelations_Writes", run: declaredRelationsWrites},
 		{name: "RelationAlgebra", run: relationAlgebra},
@@ -225,20 +231,28 @@ func sqlCases() []sqlCase {
 	return cases
 }
 
-// RunSQL runs every case of the corpus on engine, each a subtest named for
-// the case.
-func RunSQL(t *testing.T, engine Engine) {
+// Run runs every case of the corpus on engine, each a subtest named for
+// the case; on the Memory engine a case that needs SQL is skipped, naming
+// why.
+func Run(t *testing.T, engine Engine) {
 	t.Helper()
-	if !slices.Contains([]Kind{SQLite, Postgres}, engine.Kind) {
+	switch {
+	case !slices.Contains([]Kind{SQLite, Postgres, Memory}, engine.Kind):
 		t.Fatalf("corpus: no engine %q", engine.Kind)
-	}
-	if engine.Open == nil || engine.CallerTx == nil {
+	case engine.Kind == Memory && engine.OpenStore == nil:
+		t.Fatalf("corpus: the memory engine has no OpenStore")
+	case engine.Kind != Memory && (engine.Open == nil || engine.CallerTx == nil):
 		t.Fatalf("corpus: the %s engine has no Open or no CallerTx", engine.Kind)
 	}
 	for _, c := range sqlCases() {
 		if c.only != "" && c.only != engine.Kind {
 			continue
 		}
-		t.Run(c.name, func(t *testing.T) { c.run(t, engine) })
+		t.Run(c.name, func(t *testing.T) {
+			if engine.Kind == Memory && c.sqlOnly != "" {
+				t.Skip("needs SQL: " + c.sqlOnly)
+			}
+			c.run(t, engine)
+		})
 	}
 }

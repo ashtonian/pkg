@@ -11,20 +11,38 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/parsetest"
 )
 
-// The products fixture runs the builders end to end on each engine: a
-// filter parsed, compiled and executed, and a list's page, count and facets.
+// The products fixture runs the builders end to end on each SQL engine: a
+// filter parsed, compiled and executed, and a list's page, count and
+// facets. The Memory engine, which compiles nothing, lists the same
+// requests through a resource of the same fields (product), and must
+// select, order, count and facet the same rows.
+
+// product is a row of the products, its fields productSchema's.
+type product struct {
+	ID       int64   `json:"id"       db:"id"`
+	Name     string  `json:"name"     db:"name"     parse:"filter,sort" filter_ops:"eq,like,ilike"`
+	Category string  `json:"category" db:"category" parse:"filter,facet" filter_ops:"eq,in"`
+	Price    float64 `json:"price"    db:"price"    parse:"filter,sort" filter_ops:"eq,gt,gte,lt,lte"`
+	Status   string  `json:"status"   db:"status"   parse:"filter" filter_ops:"eq,ne,in"`
+}
 
 // productsDB is a fresh database of b holding the products: three
 // electronics (Keyboard inactive), two clothing (Jacket inactive) and two
-// books.
-func productsDB(t *testing.T, b sqlBackend) *sql.DB {
+// books. On the Memory engine, products is the resource listing them; on a
+// SQL engine it is nil.
+func productsDB(t *testing.T, b sqlBackend) (products *parse.Resource[product], db *sql.DB) {
 	t.Helper()
-	db := b.db(t)
+	p, db := b.open(t)
+	if b.engine == Memory {
+		products = parse.MustResource[product](p, "products")
+	}
 	table := sqlTable{name: "products", key: []string{"id"}, columns: []sqlColumn{
 		column[int64]("id"), column[string]("name").required(), column[string]("category").required(),
 		column[float64]("price").required(), column[string]("status").required(),
@@ -38,7 +56,20 @@ func productsDB(t *testing.T, b sqlBackend) *sql.DB {
 		{int64(6), "Go Book", "books", 39.99, "active"},
 		{int64(7), "Clean Code", "books", 32.00, "active"},
 	})
-	return db
+	return products, db
+}
+
+// productPage lists in under s through products.
+func productPage(t *testing.T, products *parse.Resource[product], in parse.ListInput, s parse.Scope) *filter.Page[product] {
+	t.Helper()
+	req, err := products.ParseListInput(in)
+	require.NoError(t, err)
+	return listPage(t, products, req, s)
+}
+
+// productNames is the names of page's products, in order.
+func productNames(page *filter.Page[product]) []string {
+	return parsetest.ItemIDs(page.Items, func(p product) string { return p.Name })
 }
 
 func productSchema() *filter.ResourceSchema {
@@ -74,7 +105,10 @@ func productSortSchema() *filter.SortSchema {
 // on a fresh database of b.
 func filteredProducts(t *testing.T, b sqlBackend, input string) []string {
 	t.Helper()
-	db := productsDB(t, b)
+	products, db := productsDB(t, b)
+	if b.engine == Memory {
+		return productNames(productPage(t, products, parse.ListInput{Filter: input, PageSize: 100}, parse.Scope{}))
+	}
 	schema := productSchema()
 	ast, err := filter.NewFilterParser(schema, nil).Parse(input)
 	require.NoError(t, err)
@@ -117,7 +151,13 @@ func integrationNotOperator(t *testing.T, engine Engine) {
 // than the page for has-more detection.
 func integrationListQuerySortAndLimit(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
-		db := productsDB(t, b)
+		products, db := productsDB(t, b)
+		if b.engine == Memory {
+			page := productPage(t, products, parse.ListInput{Filter: `{"status":"active"}`, Sort: "price", PageSize: 3}, parse.Scope{})
+			assert.Equal(t, []string{"T-Shirt", "Mouse", "Clean Code"}, productNames(page), "cheapest first")
+			assert.True(t, page.PageInfo.HasNextPage, "two active products more")
+			return
+		}
 		lq := mustListQuery(t, productSchema(), productSortSchema(), b.dialect)
 		result, err := lq.Build(
 			filter.ListFilter(`{"status":"active"}`),
@@ -136,11 +176,16 @@ func integrationListQuerySortAndLimit(t *testing.T, engine Engine) {
 // active ones.
 func integrationListQueryPolicyConstraints(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
-		db := productsDB(t, b)
+		products, db := productsDB(t, b)
 		pc := &filter.PolicyConstraints{
 			Constraints: []*filter.PolicyConstraint{
 				{Field: "status", Operator: filter.OpEq, Value: "active"},
 			},
+		}
+		if b.engine == Memory {
+			page := productPage(t, products, parse.ListInput{Filter: `{"category":"electronics"}`, PageSize: 100}, parse.Scope{Policy: pc})
+			assert.ElementsMatch(t, []string{"Laptop", "Mouse"}, productNames(page), "Keyboard is inactive")
+			return
 		}
 		result, err := mustListQuery(t, productSchema(), nil, b.dialect).Build(
 			filter.ListFilter(`{"category":"electronics"}`),
@@ -157,7 +202,13 @@ func integrationListQueryPolicyConstraints(t *testing.T, engine Engine) {
 // the page's limit.
 func integrationListQueryWithCount(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
-		db := productsDB(t, b)
+		products, db := productsDB(t, b)
+		if b.engine == Memory {
+			page := productPage(t, products, parse.ListInput{Filter: `{"status":"active"}`, IncludeTotal: true, PageSize: 2}, parse.Scope{})
+			require.NotNil(t, page.PageInfo.TotalCount)
+			assert.Equal(t, int64(5), *page.PageInfo.TotalCount)
+			return
+		}
 		result, err := mustListQuery(t, productSchema(), nil, b.dialect).Build(
 			filter.ListFilter(`{"status":"active"}`),
 			filter.ListWithCount(true),
@@ -172,7 +223,7 @@ func integrationListQueryWithCount(t *testing.T, engine Engine) {
 // after them: the electronics are renamed and no other row.
 func integrationWithStartParam(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
-		db := productsDB(t, b)
+		_, db := productsDB(t, b)
 		schema := productSchema()
 		setArgs := []any{"updated_name", "active"}
 		ast, err := filter.NewFilterParser(schema, nil).Parse(`{"category":"electronics"}`)
@@ -188,7 +239,12 @@ func integrationWithStartParam(t *testing.T, engine Engine) {
 // A list's facet statement counts the rows its filter selects by category.
 func integrationFacets(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
-		db := productsDB(t, b)
+		products, db := productsDB(t, b)
+		if b.engine == Memory {
+			page := productPage(t, products, parse.ListInput{Filter: `{"status":"active"}`, Facets: []string{"category"}, PageSize: 100}, parse.Scope{})
+			assert.Equal(t, map[string][]filter.FacetBucket{"category": {{Key: "books", Count: 2}, {Key: "electronics", Count: 2}, {Key: "clothing", Count: 1}}}, page.Facets)
+			return
+		}
 		result, err := mustListQuery(t, productSchema(), nil, b.dialect).Build(
 			filter.ListFilter(`{"status":"active"}`),
 			filter.ListFacets("category"),

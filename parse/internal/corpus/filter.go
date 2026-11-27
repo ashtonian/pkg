@@ -59,6 +59,7 @@ func runDecimalMatrix(t *testing.T, b sqlBackend) {
 		assertFacetOrders(t, db, b.dialect, schema, filtertest.DecimalFacetOrders, filtertest.DecimalFacets)
 	})
 	t.Run("values match PathValue", func(t *testing.T) {
+		b.sqlOnly(t, "reads each price through its SQL expression (filter.FieldExpr)")
 		f := schema.Fields["doc.price"]
 		for _, row := range dbtest.QueryRows[[]any](t, db, "SELECT id, doc, "+filter.FieldExpr(b.dialect, f)+" FROM "+schema.Name+" ORDER BY id") {
 			id, doc, got := row[0], row[1], row[2]
@@ -88,16 +89,17 @@ func elementRelationCases() []parsetest.ElementCase {
 // SQLite, jsonb on PostgreSQL.
 func elementPredicates(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
-		p, db := loadOrders(t, b)
-		runElementCases(t, parsetest.OrderResource(t, p), db)
+		p, db := b.open(t)
+		orders := parsetest.OrderResource(t, p)
+		loadOrders(t, b, db)
+		runElementCases(t, b, orders, db)
 	})
 }
 
-// loadOrders writes parsetest.OrderRows into orders on a fresh database of b: its id
-// and parent_id text, its other columns documents.
-func loadOrders(t *testing.T, b sqlBackend) (*parse.Provider, *sql.DB) {
+// loadOrders writes parsetest.OrderRows into orders on db: its id and
+// parent_id text, its other columns documents.
+func loadOrders(t *testing.T, b sqlBackend, db *sql.DB) {
 	t.Helper()
-	p, db := b.open(t)
 	table := sqlTable{name: "orders", key: []string{"id"}}
 	for _, name := range parsetest.OrderColumns() {
 		c := column[json.RawMessage](name)
@@ -111,15 +113,26 @@ func loadOrders(t *testing.T, b sqlBackend) (*parse.Provider, *sql.DB) {
 		rows[i] = r[:]
 	}
 	b.load(t, db, table, rows)
-	return p, db
 }
 
-// runElementCases runs each case's list SQL, compiled by orders, on db.
-func runElementCases(t *testing.T, orders *parse.Resource[parsetest.Order], db *sql.DB) {
+// runElementCases selects each case's orders on db: through the list SQL
+// orders compiles on a SQL engine, as the provider's lists evaluate the
+// filter on the Memory engine. The fixture's documents take shapes an
+// Order does not decode, so the cases read ids alone.
+func runElementCases(t *testing.T, b sqlBackend, orders *parse.Resource[parsetest.Order], db *sql.DB) {
 	t.Helper()
 	for _, tc := range slices.Concat(parsetest.ElementCases(), elementRelationCases()) {
 		t.Run(tc.Name, func(t *testing.T) {
-			req, err := orders.ParseList(url.Values{filter.ParamFilter: {tc.Filter}})
+			q := url.Values{filter.ParamFilter: {tc.Filter}}
+			if b.engine == Memory {
+				f, err := orders.ParseRequestFilter(q)
+				require.NoError(t, err)
+				got, err := b.filterIDs(db, orders.FilterSchema())(t, f)
+				require.NoError(t, err)
+				assert.Equal(t, tc.Want, sortedIDs(got, func(id string) string { return id }), tc.Filter)
+				return
+			}
+			req, err := orders.ParseList(q)
 			require.NoError(t, err)
 			plan, err := orders.BuildList(req, parse.Scope{})
 			require.NoError(t, err)
@@ -247,22 +260,39 @@ func runLookupSets(t *testing.T, b sqlBackend) {
 				{Field: "id", Member: &filter.Lookup{Table: "set_links", Project: "owner_id", Where: tc.where}},
 			}})
 			require.NoError(t, err)
-			res, err := filter.NewSQLBuilder(schema, b.dialect).Build(ast)
+			if b.engine != Memory {
+				res, err := filter.NewSQLBuilder(schema, b.dialect).Build(ast)
+				require.NoError(t, err)
+				assert.Equal(t, 1, res.ParamCount, "one set parameter")
+			}
+			got, err := b.filterIDs(db, schema)(t, filter.NewParsedFilter(ast))
 			require.NoError(t, err)
-			assert.Equal(t, 1, res.ParamCount, "one set parameter")
-			assert.Equal(t, tc.want, dbtest.QueryRows[string](t, db, "SELECT id FROM set_owners WHERE "+res.Where+" ORDER BY id", res.Args...))
+			assert.Equal(t, tc.want, sortedIDs(got, func(id string) string { return id }))
 		})
 	}
 }
 
 // runPolicyMatrix runs the policy cases as lists: each walks its pages two
 // rows at a time, so every case's WHERE also carries a cursor's seek, and
-// its count must agree with the rows walked.
+// its count must agree with the rows walked. The Memory engine evaluates
+// each case's policy over the table, as its lists do, except a raw SQL
+// fragment and a search (filtertest.PolicyCase.SQLOnly), which it refuses.
 func runPolicyMatrix(t *testing.T, b sqlBackend) {
 	t.Helper()
 	db, schema := loadRecords(t, b)
 	loadLookupTables(t, b, db)
 	schema.PrimaryKey = []string{"id"}
+	if b.engine == Memory {
+		selected := b.filterIDs(db, schema)
+		filtertest.RunPolicy(t, false, func(t *testing.T, q filtertest.PolicyQuery) ([]string, error) {
+			ast, err := filter.ApplyPolicyConstraints(schema, q.Filter, q.Policy)
+			if err != nil {
+				return nil, err
+			}
+			return selected(t, filter.NewParsedFilter(ast))
+		})
+		return
+	}
 	lq, err := filter.NewListQuery(schema, nil, b.dialect)
 	require.NoError(t, err)
 	lq = lq.WithSearchSchema(filtertest.SearchSchema())
@@ -340,23 +370,33 @@ func jsonIntegerEdgesSameRowsOnEveryBackend(t *testing.T, engine Engine) {
 			rows[i] = []any{i + 1, doc}
 		}
 		b.load(t, db, sqlTable{name: "docs", columns: []sqlColumn{column[int]("id"), column[json.RawMessage]("doc")}}, rows)
+		selected := b.filterIDs(db, schema)
 		for q, want := range queries {
 			ast, err := filter.NewFilterParser(schema, nil).Parse(q)
 			require.NoError(t, err, q)
-			res, err := filter.NewSQLBuilder(schema, b.dialect).Build(ast)
+			got, err := selected(t, filter.NewParsedFilter(ast))
 			require.NoError(t, err, q)
-			assert.Equal(t, want, dbtest.QueryRows[int](t, db, "SELECT id FROM docs WHERE "+res.Where+" ORDER BY id", res.Args...), q)
+			ids := make([]string, len(want))
+			for i, id := range want {
+				ids[i] = strconv.Itoa(id)
+			}
+			assert.Equal(t, ids, got, q)
 		}
 	})
 }
 
 // `$ilike` case on each backend. SQLite lower-cases ASCII letters only. On
 // PostgreSQL a pg_c_utf8 column lower-cases every letter, as the reference
-// evaluator does, and a C column ASCII letters only.
+// evaluator, and so the memory provider, does, and a C column ASCII letters
+// only.
 func foldMatrix(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
-		if b.engine == SQLite {
+		switch b.engine {
+		case SQLite:
 			runFoldMatrix(t, b, false)
+			return
+		case Memory:
+			runFoldMatrix(t, b, true)
 			return
 		}
 		t.Run("pg_c_utf8", func(t *testing.T) { runFoldMatrix(t, b.with(collation(filter.CollationPgCUTF8)), true) })
@@ -440,9 +480,7 @@ func hasKey(t *testing.T, engine Engine) {
 		for _, key := range []string{"color", "x"} {
 			ast, err := filter.NewFilterParser(schema, nil).Parse(`{"doc":{"$has_key":"` + key + `"}}`)
 			require.NoError(t, err)
-			res, err := filter.NewSQLBuilder(schema, b.dialect).Build(ast)
-			require.NoError(t, err)
-			got := dbtest.QueryRows[sql.NullBool](t, db, "SELECT ("+res.Where+") FROM has_key_docs ORDER BY id", res.Args...)
+			got := hasKeyAnswers(t, b, db, schema, ast, rows)
 			require.Len(t, got, len(docs))
 			for i, c := range docs {
 				want := c.color
@@ -464,11 +502,41 @@ func hasKey(t *testing.T, engine Engine) {
 	})
 }
 
+// hasKeyAnswers is ast's answer for each of rows, in order: the
+// statement's value on a SQL engine; on the Memory engine, true for the
+// rows its filter selects, false for those its negation selects, and NULL
+// for the rest.
+func hasKeyAnswers(t *testing.T, b sqlBackend, db *sql.DB, schema *filter.ResourceSchema, ast *filter.FilterAST, rows [][]any) []sql.NullBool {
+	t.Helper()
+	if b.engine != Memory {
+		res, err := filter.NewSQLBuilder(schema, b.dialect).Build(ast)
+		require.NoError(t, err)
+		return dbtest.QueryRows[sql.NullBool](t, db, "SELECT ("+res.Where+") FROM has_key_docs ORDER BY id", res.Args...)
+	}
+	selected := b.filterIDs(db, schema)
+	holds, err := selected(t, filter.NewParsedFilter(ast))
+	require.NoError(t, err)
+	fails, err := selected(t, filter.NewParsedFilter(&filter.FilterAST{Root: &filter.FilterNode{Op: filter.OpNot, Children: []*filter.FilterNode{ast.Root}}}))
+	require.NoError(t, err)
+	answers := make([]sql.NullBool, len(rows))
+	for i, row := range rows {
+		id, ok := row[0].(string)
+		require.True(t, ok)
+		switch {
+		case slices.Contains(holds, id):
+			answers[i] = sql.NullBool{Bool: true, Valid: true}
+		case slices.Contains(fails, id):
+			answers[i] = sql.NullBool{Valid: true}
+		}
+	}
+	return answers
+}
+
 // Typed JSON paths on each backend: SQLite's documents are JSON text, and
 // PostgreSQL's are each storage a document column can declare.
 func pathMatrix(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
-		if b.engine == SQLite {
+		if b.engine != Postgres {
 			runPathMatrix(t, b, "")
 			return
 		}
@@ -513,6 +581,7 @@ func runPathMatrix(t *testing.T, b sqlBackend, storage filter.JSONStorage) {
 	t.Run("cases", func(t *testing.T) { filtertest.RunPaths(t, schema, query) })
 	t.Run("sets", func(t *testing.T) { filtertest.RunPathSets(t, schema, query) })
 	t.Run("values match PathValue", func(t *testing.T) {
+		b.sqlOnly(t, "reads each path through its SQL expression (filter.FieldExpr)")
 		names := slices.Sorted(func(yield func(string) bool) {
 			for n, f := range schema.Fields {
 				if f.Path != nil && !yield(n) {
@@ -679,20 +748,17 @@ func runNullOperands(t *testing.T, b sqlBackend) {
 	for name, c := range columns {
 		t.Run(name, func(t *testing.T) {
 			table := "null_operands_" + name
-			_, err := db.ExecContext(t.Context(), "CREATE TABLE "+table+" (id INTEGER PRIMARY KEY, v "+b.columnType(core.TypeInfo{Type: c.field})+")")
-			require.NoError(t, err)
-			_, err = db.ExecContext(t.Context(), "INSERT INTO "+table+" (id, v) VALUES (1, "+b.dialect.Placeholder(1)+")", c.held)
-			require.NoError(t, err)
+			b.load(t, db, sqlTable{name: table, key: []string{"id"}, columns: []sqlColumn{
+				column[int64]("id"), {name: "v", kind: core.TypeInfo{Type: c.field}},
+			}}, [][]any{{int64(1), c.held}})
 			field := &filter.FieldSchema{ExternalName: "v", Table: table, Column: "v", DataType: c.field}
 			schema := &filter.ResourceSchema{Name: table, Fields: map[string]*filter.FieldSchema{"v": field}}
 			row := filter.ColumnRow(func(column string) (any, bool) { return c.held, column == table+".v" })
 
 			for _, tc := range nullOperandCases(field, c) {
 				n := tc.n
-				res, err := filter.NewSQLBuilder(schema, b.dialect).Build(&filter.FilterAST{Root: n})
-				require.NoError(t, err, "$%s %#v", n.Op, n.Value)
-				answer := dbtest.QueryRows[string](t, db, "SELECT CASE WHEN ("+res.Where+") THEN 'true' WHEN NOT ("+res.Where+") THEN 'false' ELSE 'unknown' END FROM "+table, res.Args...)
-				assert.Equal(t, []string{tc.want.String()}, answer, "the statement: $%s %#v", n.Op, n.Value)
+				answer := nullOperandAnswer(t, b, db, schema, n)
+				assert.Equal(t, tc.want.String(), answer, "the database: $%s %#v", n.Op, n.Value)
 
 				got, err := filter.Evaluate(n, row)
 				require.NoError(t, err, "$%s %#v", n.Op, n.Value)
@@ -700,6 +766,32 @@ func runNullOperands(t *testing.T, b sqlBackend) {
 			}
 		})
 	}
+}
+
+// nullOperandAnswer is n's answer for the one row of schema's table: the
+// statement's on a SQL engine; on the Memory engine true when its filter
+// selects the row, false when its negation does, and unknown otherwise.
+func nullOperandAnswer(t *testing.T, b sqlBackend, db *sql.DB, schema *filter.ResourceSchema, n *filter.FilterNode) string {
+	t.Helper()
+	if b.engine != Memory {
+		res, err := filter.NewSQLBuilder(schema, b.dialect).Build(&filter.FilterAST{Root: n})
+		require.NoError(t, err, "$%s %#v", n.Op, n.Value)
+		answer := dbtest.QueryRows[string](t, db, "SELECT CASE WHEN ("+res.Where+") THEN 'true' WHEN NOT ("+res.Where+") THEN 'false' ELSE 'unknown' END FROM "+schema.Name, res.Args...)
+		require.Len(t, answer, 1)
+		return answer[0]
+	}
+	selected := b.filterIDs(db, schema)
+	holds, err := selected(t, filter.NewParsedFilter(&filter.FilterAST{Root: n}))
+	require.NoError(t, err)
+	fails, err := selected(t, filter.NewParsedFilter(&filter.FilterAST{Root: &filter.FilterNode{Op: filter.OpNot, Children: []*filter.FilterNode{n}}}))
+	require.NoError(t, err)
+	switch {
+	case len(holds) > 0:
+		return filter.True.String()
+	case len(fails) > 0:
+		return filter.False.String()
+	}
+	return filter.Unknown.String()
 }
 
 type nullOperandCase struct {

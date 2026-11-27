@@ -151,26 +151,23 @@ const wireTagsPerOwner = filter.DefaultMaxIncludePerRelation + 1
 func wireDB(t *testing.T, b sqlBackend) *parse.Provider {
 	t.Helper()
 	p, db := b.open(t)
-	labels := b.columnType(core.TypeInfo{Type: core.FieldTypeJSON})
-	dbtest.Exec(t, db,
-		`CREATE TABLE wire_items (id TEXT PRIMARY KEY, name TEXT NOT NULL, labels `+labels+` NOT NULL, unit TEXT)`,
-		`CREATE TABLE wire_parts (id TEXT PRIMARY KEY, item_id TEXT NOT NULL, state TEXT NOT NULL)`,
-		`CREATE TABLE wire_item_tags (item_id TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (item_id, tag_id))`,
-		`CREATE TABLE wire_stock (warehouse_id TEXT NOT NULL, sku TEXT NOT NULL, qty INTEGER NOT NULL, PRIMARY KEY (warehouse_id, sku))`,
-		// Each column alone, and the SKU's text up to its slash, names
-		// another row than the pair does.
-		`INSERT INTO wire_stock VALUES ('w1', 'a/b', 0), ('w1', 'a', 0), ('w2', 'a/b', 0)`,
-	)
-	d := b.dialect
+	text := func(name string) sqlColumn { return column[string](name).required() }
+	var items [][]any
 	for i, name := range []string{"echo", "alpha", "delta", "bravo", "charlie"} {
-		_, err := db.ExecContext(t.Context(), `INSERT INTO wire_items (id, name, labels) VALUES (`+d.Placeholder(1)+`, `+d.Placeholder(2)+`, '{}')`, string(rune('a'+i)), name)
-		require.NoError(t, err)
+		items = append(items, []any{string(rune('a' + i)), name, "{}", nil})
 	}
+	b.load(t, db, sqlTable{name: "wire_items", key: []string{"id"}, columns: []sqlColumn{text("id"), text("name"), column[map[string]any]("labels").required(), column[string]("unit")}}, items)
+	b.create(t, db, sqlTable{name: "wire_parts", key: []string{"id"}, columns: []sqlColumn{text("id"), text("item_id"), text("state")}})
+	var tags [][]any
 	for i := range wireTagsPerOwner {
-		_, err := db.ExecContext(t.Context(), `INSERT INTO wire_item_tags VALUES ('b', `+d.Placeholder(1)+`)`, fmt.Sprintf("t%03d", i+1))
-		require.NoError(t, err)
+		tags = append(tags, []any{"b", fmt.Sprintf("t%03d", i+1)})
 	}
-	dbtest.Exec(t, db, `INSERT INTO wire_item_tags VALUES ('d', 't001'), ('d', 't002')`)
+	tags = append(tags, []any{"d", "t001"}, []any{"d", "t002"})
+	b.load(t, db, sqlTable{name: "wire_item_tags", key: []string{"item_id", "tag_id"}, columns: []sqlColumn{text("item_id"), text("tag_id")}}, tags)
+	// Each column alone, and the SKU's text up to its slash, names another
+	// row than the pair does.
+	b.load(t, db, sqlTable{name: "wire_stock", key: []string{"warehouse_id", "sku"}, columns: []sqlColumn{text("warehouse_id"), text("sku"), column[int64]("qty").required()}},
+		[][]any{{"w1", "a/b", 0}, {"w1", "a", 0}, {"w2", "a/b", 0}})
 	return p
 }
 
@@ -453,24 +450,10 @@ func facetExternalName(t *testing.T, engine Engine) {
 		}
 		s, err := filter.GenerateFilterSchema[labelled](core.NewSchemaGenerator())
 		require.NoError(t, err)
-		fq, err := filter.BuildFacetQuery(s, b.dialect, "1=1", nil, []filter.FacetRequest{{Field: "display-name"}})
-		require.NoError(t, err)
-
 		db := b.db(t)
-		dbtest.Exec(t, db, `CREATE TABLE labelleds (label TEXT)`, `INSERT INTO labelleds VALUES ('a'), ('a'), ('b')`)
-		rows, err := db.QueryContext(t.Context(), fq.SQL, fq.Args...)
-		require.NoError(t, err)
-		defer func() { require.NoError(t, rows.Close()) }()
-		counts := map[string]int{}
-		for rows.Next() {
-			var field, key string
-			var count int
-			require.NoError(t, rows.Scan(&field, &key, &count))
-			assert.Equal(t, "display-name", field)
-			counts[key] = count
-		}
-		require.NoError(t, rows.Err())
-		assert.Equal(t, map[string]int{"a": 2, "b": 1}, counts)
+		b.load(t, db, sqlTable{name: "labelleds", columns: []sqlColumn{column[string]("label")}}, [][]any{{"a"}, {"a"}, {"b"}})
+		got := facetQuery(t, db, b.dialect, s, []filter.FacetRequest{{Field: "display-name"}})
+		assert.Equal(t, []filter.FacetResult{{Field: "display-name", Buckets: []filter.FacetBucket{{Key: "a", Count: 2}, {Key: "b", Count: 1}}}}, got)
 	})
 }
 
@@ -517,25 +500,27 @@ func quotedRelationKeys(t *testing.T, engine Engine) {
 	require.NoError(t, json.Unmarshal(data, &sent))
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		provider, db := b.open(t)
-		pair := "post_id, tag_id"
-		labelPair := "post_id, label_id"
-		if b.engine == Postgres {
-			pair, labelPair = "post_id BIGINT, tag_id BIGINT", "post_id BIGINT, label_id BIGINT"
-		}
-		dbtest.Exec(t, db,
-			`CREATE TABLE posts (id BIGINT PRIMARY KEY)`, `INSERT INTO posts VALUES (1)`,
-			`CREATE TABLE tags (id BIGINT PRIMARY KEY, name TEXT)`, `INSERT INTO tags VALUES (5, 'five'), (6, 'six')`,
-			`CREATE TABLE labels (id BIGINT PRIMARY KEY)`,
-			`CREATE TABLE post_tags (`+pair+`)`, `INSERT INTO post_tags VALUES (1, 6)`,
-			`CREATE TABLE post_labels (`+labelPair+`)`)
+		id := column[int64]("id").required()
+		// pair is a pair column SQLite declares no type for.
+		pair := func(name string) sqlColumn { return column[int64](name).holding(SQLite, "") }
+		b.load(t, db, sqlTable{name: "posts", key: []string{"id"}, columns: []sqlColumn{id}}, [][]any{{1}})
+		b.load(t, db, sqlTable{name: "tags", key: []string{"id"}, columns: []sqlColumn{id, column[string]("name")}}, [][]any{{5, "five"}, {6, "six"}})
+		b.create(t, db, sqlTable{name: "labels", key: []string{"id"}, columns: []sqlColumn{id}})
+		b.load(t, db, sqlTable{name: "post_tags", columns: []sqlColumn{pair("post_id"), pair("tag_id")}}, [][]any{{1, 6}})
+		b.create(t, db, sqlTable{name: "post_labels", columns: []sqlColumn{pair("post_id"), pair("label_id")}})
 		posts := wirePosts(t, provider)
 		parsed, err := posts.ParseMergePatch(sent.QuotedRelation.MergePatch)
 		require.NoError(t, err, "%s", sent.QuotedRelation.MergePatch)
 		res, err := posts.Update(t.Context(), parsed, parse.ByID(int64(1)), parse.Scope{})
 		require.NoError(t, err)
 		assert.Positive(t, res.RelationRows)
-		pairs := dbtest.QueryRows[[]any](t, db, `SELECT tag_id FROM post_tags WHERE post_id = 1`)
-		assert.Equal(t, [][]any{{int64(5)}}, normalizeInts(t, pairs))
+		var pairs [][]any
+		for _, row := range normalizeInts(t, b.tableRows(t, db, "post_tags", "post_id", "tag_id")) {
+			if row[0] == int64(1) {
+				pairs = append(pairs, row[1:])
+			}
+		}
+		assert.Equal(t, [][]any{{int64(5)}}, pairs)
 		if b.engine == SQLite {
 			assert.Equal(t, []string{"integer"}, dbtest.QueryRows[string](t, db, `SELECT typeof(tag_id) FROM post_tags WHERE post_id = 1`))
 		}

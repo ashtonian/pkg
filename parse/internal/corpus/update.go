@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,7 +26,6 @@ import (
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/parsetest"
-	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/parsehttp"
 	"github.com/ashtonian/pkg/parse/patch"
 )
@@ -38,24 +38,22 @@ func mergePatchMapKeys(t *testing.T, engine Engine) {
 // what encoding/json makes of the same members over the row, the in-memory
 // application's result too.
 func runMapKeyMerges(t *testing.T, b sqlBackend) {
-	docType := b.columnType(core.TypeInfo{Type: core.FieldTypeJSON})
+	document := column[map[string]any]
+	table := sqlTable{name: "keyed_maps", key: []string{"id"}, columns: []sqlColumn{
+		column[int64]("id").required(), document("by_int").required(), document("by_uint").required(), document("by_addr").required(),
+	}}
 	for _, tc := range parsetest.KeyedMapMerges() {
 		t.Run(tc.Name, func(t *testing.T) {
 			provider, db := b.open(t)
 			r := parse.MustResource[parsetest.KeyedMaps](provider, "keyed_maps")
-			_, err := db.ExecContext(t.Context(), `CREATE TABLE keyed_maps (id BIGINT PRIMARY KEY, by_int `+docType+` NOT NULL, by_uint `+docType+` NOT NULL, by_addr `+docType+` NOT NULL)`)
-			require.NoError(t, err)
 			row := parsetest.KeyedMapsRow()
-			docs := make([]any, 0, 3)
+			stored := []any{int64(1)}
 			for _, m := range []any{row.ByInt, row.ByUint, row.ByAddr} {
 				raw, err := json.Marshal(m)
 				require.NoError(t, err)
-				docs = append(docs, string(raw))
+				stored = append(stored, string(raw))
 			}
-			d := b.dialect
-			insert := `INSERT INTO keyed_maps VALUES (1, ` + d.Placeholder(1) + `, ` + d.Placeholder(2) + `, ` + d.Placeholder(3) + `)`
-			_, err = db.ExecContext(t.Context(), insert, docs...)
-			require.NoError(t, err)
+			b.load(t, db, table, [][]any{stored})
 
 			parsed, err := r.ParseMergePatch([]byte(tc.Body))
 			require.NoError(t, err)
@@ -81,7 +79,6 @@ func updateMembers(t *testing.T, engine Engine) {
 // ApplyValidatedPatch makes of them, and a patch a target row's document
 // does not take fails as ApplyValidatedPatch fails it, writing no row.
 func runMemberUpdates(t *testing.T, b sqlBackend) {
-	docType := b.columnType(core.TypeInfo{Type: core.FieldTypeJSON})
 	rows := []parsetest.GadgetAttrs{
 		{ID: 1, Attrs: map[string]any{"color": "blue", "old": true, "n": map[string]any{"k": "v"}}},
 		{ID: 2, Attrs: map[string]any{"color": "green"}},
@@ -91,16 +88,17 @@ func runMemberUpdates(t *testing.T, b sqlBackend) {
 	setup := func(t *testing.T) *parse.Resource[parsetest.GadgetAttrs] {
 		t.Helper()
 		provider, db := b.open(t)
-		_, err := db.ExecContext(t.Context(), `CREATE TABLE gadget_attrs (id BIGINT PRIMARY KEY, attrs `+docType+` NOT NULL)`)
-		require.NoError(t, err)
-		insert := `INSERT INTO gadget_attrs VALUES (` + b.dialect.Placeholder(1) + `, ` + b.dialect.Placeholder(2) + `)`
-		for _, row := range rows {
+		r := parsetest.GadgetAttrsResource(t, provider)
+		stored := make([][]any, len(rows))
+		for i, row := range rows {
 			raw, err := json.Marshal(row.Attrs)
 			require.NoError(t, err)
-			_, err = db.ExecContext(t.Context(), insert, row.ID, string(raw))
-			require.NoError(t, err)
+			stored[i] = []any{row.ID, string(raw)}
 		}
-		return parsetest.GadgetAttrsResource(t, provider)
+		b.load(t, db, sqlTable{name: "gadget_attrs", key: []string{"id"}, columns: []sqlColumn{
+			column[int64]("id").required(), column[map[string]any]("attrs").required(),
+		}}, stored)
+		return r
 	}
 	stored := func(t *testing.T, r *parse.Resource[parsetest.GadgetAttrs]) []parsetest.GadgetAttrs {
 		t.Helper()
@@ -201,17 +199,13 @@ func runPathPatches(t *testing.T, b sqlBackend) {
 	ids := func(f string) []string {
 		req, err := r.ParseList(url.Values{"filter": {f}})
 		require.NoError(t, err)
-		plan, err := r.BuildList(req, parse.Scope{})
-		require.NoError(t, err)
-		return parsetest.ItemIDs(parsetest.ResourceRows(t, r, plan.Page), func(it tunedItem) string { return it.ID })
+		return parsetest.ItemIDs(listPage(t, r, req, parse.Scope{}).Items, func(it tunedItem) string { return it.ID })
 	}
 
 	p, err := r.ParseMergePatch([]byte(`{"settings":{"level":9}}`))
 	require.NoError(t, err)
-	plan, err := r.BuildUpdate(p, parse.ByID("a"), parse.Scope{})
+	_, err = applyUpdate(t, r, false, p, parse.ByID("a"), parse.Scope{})
 	require.NoError(t, err)
-	_, err = db.ExecContext(t.Context(), plan.Owner.SQL, plan.Owner.Args...)
-	require.NoError(t, err, plan.Owner.SQL)
 
 	assert.Equal(t, []string{"a"}, ids(`{"settings.level":9}`), "the patched member reads back through its path")
 	assert.Equal(t, []string{"a"}, ids(`{"settings.mode":"auto"}`), "its sibling survives the merge")
@@ -250,8 +244,6 @@ func typedMergePatchPreservesSiblings(t *testing.T, engine Engine) {
 // leave out and is refused on one its type always writes, which is the
 // rule the SDK's MergeDocument type states.
 func runTypedMergePatch(t *testing.T, b sqlBackend) {
-	d := b.dialect
-	docType := b.columnType(core.TypeInfo{Type: core.FieldTypeJSON})
 	resource := func(t *testing.T, p *parse.Provider) *parse.Resource[mergePrefsRow] {
 		t.Helper()
 		r, err := parse.NewResource[mergePrefsRow](p, "merge_prefs")
@@ -272,13 +264,11 @@ func runTypedMergePatch(t *testing.T, b sqlBackend) {
 		t.Run(tc.name, func(t *testing.T) {
 			provider, db := b.open(t)
 			r := resource(t, provider)
-			_, err := db.ExecContext(t.Context(), `CREATE TABLE merge_prefs (id TEXT PRIMARY KEY, prefs `+docType+` NOT NULL)`)
-			require.NoError(t, err)
-			insert := `INSERT INTO merge_prefs VALUES (` + d.Placeholder(1) + `, ` + d.Placeholder(2) + `)`
 			stored, err := json.Marshal(initial.Prefs)
 			require.NoError(t, err)
-			_, err = db.ExecContext(t.Context(), insert, initial.ID, string(stored))
-			require.NoError(t, err)
+			b.load(t, db, sqlTable{name: "merge_prefs", key: []string{"id"}, columns: []sqlColumn{
+				column[string]("id").required(), column[mergePrefs]("prefs").required(),
+			}}, [][]any{{initial.ID, string(stored)}})
 
 			parsed, err := parsehttp.ParsePatch(sdkPatchRequest(t, tc.body), r)
 			require.NoError(t, err)
@@ -302,7 +292,8 @@ func runTypedMergePatch(t *testing.T, b sqlBackend) {
 		{"nor does one it writes as null", `{"prefs":{"note":null}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parsehttp.ParsePatch(sdkPatchRequest(t, tc.body), resource(t, providertest.Compile(d)))
+			provider, _ := b.open(t)
+			_, err := parsehttp.ParsePatch(sdkPatchRequest(t, tc.body), resource(t, provider))
 			pe, ok := errors.AsType[*core.ParseError](err)
 			require.True(t, ok, "%v is no ParseError", err)
 			assert.Equal(t, core.CodePatchValueInvalid.String(), pe.Code)
@@ -326,11 +317,16 @@ func updateBatchDatabase(t *testing.T, engine Engine) {
 func testUpdateBatchDatabase(t *testing.T, b sqlBackend) {
 	t.Helper()
 	provider, db := b.open(t)
-	d := b.dialect
 	r := parsetest.UpdateBatchResource(t, provider)
-	jsonType := b.columnType(core.TypeInfo{Type: core.FieldTypeJSON})
-	_, err := db.ExecContext(t.Context(), `CREATE TABLE batch_rows (id BIGINT PRIMARY KEY,tenant_id TEXT NOT NULL,reference TEXT CHECK(reference <> 'refused'),version BIGINT NOT NULL,meta `+jsonType+` NOT NULL,updated_at TEXT NOT NULL,deleted_at TEXT)`)
-	require.NoError(t, err)
+	if b.engine != Memory {
+		jsonType := b.columnType(core.TypeInfo{Type: core.FieldTypeJSON})
+		dbtest.Exec(t, db, `CREATE TABLE batch_rows (id BIGINT PRIMARY KEY,tenant_id TEXT NOT NULL,reference TEXT CHECK(reference <> 'refused'),version BIGINT NOT NULL,meta `+jsonType+` NOT NULL,updated_at TEXT NOT NULL,deleted_at TEXT)`)
+	}
+	table := sqlTable{name: "batch_rows", key: []string{"id"}, columns: []sqlColumn{
+		column[int64]("id").required(), column[string]("tenant_id").required(), column[*string]("reference"), column[int64]("version").required(),
+		column[map[string]any]("meta").required(), column[string]("updated_at").required(), column[*string]("deleted_at"),
+	}}
+	var seeds [][]any
 	for id := int64(1); id <= 42; id++ {
 		tenant := "t1"
 		var deleted *string
@@ -340,9 +336,9 @@ func testUpdateBatchDatabase(t *testing.T, b sqlBackend) {
 		if id == 42 {
 			deleted = new("deleted")
 		}
-		_, err := db.ExecContext(t.Context(), `INSERT INTO batch_rows VALUES(`+d.Placeholder(1)+`,`+d.Placeholder(2)+`,`+d.Placeholder(3)+`,`+d.Placeholder(4)+`,`+d.Placeholder(5)+`,`+d.Placeholder(6)+`,`+d.Placeholder(7)+`)`, id, tenant, fmt.Sprintf("old-%d", id), int64(3), `{"value":"old","count":9}`, "old", deleted)
-		require.NoError(t, err)
+		seeds = append(seeds, []any{id, tenant, fmt.Sprintf("old-%d", id), int64(3), `{"value":"old","count":9}`, "old", deleted})
 	}
+	b.insert(t, db, table, seeds...)
 	stamp := time.Date(2026, time.November, 8, 17, 0, 0, 0, time.UTC)
 	var requests []parse.RowUpdate
 	for id := int64(40); id >= 1; id-- {
@@ -360,10 +356,12 @@ func testUpdateBatchDatabase(t *testing.T, b sqlBackend) {
 	}
 	opts := []parse.UpdateOption{parse.SkipUnchanged(), parse.Stamp("updated_at", stamp), parse.Increment("version")}
 	limits := parse.UpdateBatchLimits{MaxParameters: 40}
-	plan, err := r.BuildUpdateBatch(requests, parse.Scope{Tenant: "t1"}, limits, opts...)
-	require.NoError(t, err)
-	require.Greater(t, len(plan.Chunks), 1)
-	require.Less(t, len(plan.Chunks), len(requests))
+	if b.engine != Memory {
+		plan, err := r.BuildUpdateBatch(requests, parse.Scope{Tenant: "t1"}, limits, opts...)
+		require.NoError(t, err)
+		require.Greater(t, len(plan.Chunks), 1)
+		require.Less(t, len(plan.Chunks), len(requests))
+	}
 	res, err := r.UpdateBatch(t.Context(), requests, parse.Scope{Tenant: "t1"}, limits, opts...)
 	require.NoError(t, err)
 	require.Len(t, res.Changed, 38)
@@ -387,12 +385,12 @@ func testUpdateBatchDatabase(t *testing.T, b sqlBackend) {
 	}
 	assert.ElementsMatch(t, []int64{3, 4}, unchanged, "3 already holds its patch; 4's patch is empty")
 	assert.Zero(t, res.RelationRows)
-	for _, id := range []int64{3, 4, 41, 42} {
-		var version int64
-		var updated string
-		require.NoError(t, db.QueryRowContext(t.Context(), "SELECT version,updated_at FROM batch_rows WHERE id="+d.Placeholder(1), id).Scan(&version, &updated))
-		assert.Equal(t, int64(3), version)
-		assert.Equal(t, "old", updated)
+	for _, row := range b.tableRows(t, db, "batch_rows", "id", "version", "updated_at") {
+		id := asInt64(t, row[0])
+		if slices.Contains([]int64{3, 4, 41, 42}, id) {
+			assert.Equal(t, int64(3), asInt64(t, row[1]), "row %d's version", id)
+			assert.Equal(t, "old", columnText(t, row[2]), "row %d's stamp", id)
+		}
 	}
 	for _, test := range []struct {
 		name, raw, reference string
@@ -404,6 +402,10 @@ func testUpdateBatchDatabase(t *testing.T, b sqlBackend) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			res, err := r.UpdateBatch(t.Context(), []parse.RowUpdate{{Key: parse.Key{test.key}, Patch: parsetest.UpdateBatchPatch(t, r, test.raw)}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, test.opt)
+			if b.engine == Memory && test.name == "server-stamp-owns-value" {
+				require.ErrorIs(t, err, parse.ErrUnsupported, "the memory provider evaluates no StampSQL")
+				return
+			}
 			require.NoError(t, err)
 			require.Len(t, res.Changed, 1)
 			assert.Empty(t, res.Unchanged)
@@ -426,10 +428,11 @@ func testUpdateBatchDatabase(t *testing.T, b sqlBackend) {
 			}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxParameters: 4}, parse.SkipUnchanged())
 			require.ErrorIs(t, err, parse.ErrUpdateBatchTargets)
 			assert.Zero(t, res)
-			assert.Equal(t, "new-1", storedReference(t, db, d, 1), "no chunk wrote")
+			assert.Equal(t, "new-1", storedReference(t, b, db, 1), "no chunk wrote")
 		})
 	}
 	t.Run("late-constraint-rolls-back-earlier-chunk", func(t *testing.T) {
+		b.sqlOnly(t, "refuses the second owner's write by a CHECK constraint, which a memory table does not hold")
 		res, err := r.UpdateBatch(t.Context(), []parse.RowUpdate{
 			{Key: parse.Key{int64(1)}, Patch: parsetest.UpdateBatchPatch(t, r, `{"reference":"must-not-write"}`), Policy: updateBatchVersion(4)},
 			{Key: parse.Key{int64(2)}, Patch: parsetest.UpdateBatchPatch(t, r, `{"reference":"refused"}`), Policy: updateBatchVersion(4)},
@@ -437,15 +440,15 @@ func testUpdateBatchDatabase(t *testing.T, b sqlBackend) {
 		require.Error(t, err)
 		require.NotErrorIs(t, err, parse.ErrUpdateBatchTargets, "every target was found; the second owner failed")
 		assert.Zero(t, res)
-		assert.Equal(t, "new-1", storedReference(t, db, d, 1), "the first chunk's write is undone")
+		assert.Equal(t, "new-1", storedReference(t, b, db, 1), "the first chunk's write is undone")
 	})
 }
 
-func storedReference(t *testing.T, db *sql.DB, d filter.Dialect, id int64) string {
+func storedReference(t *testing.T, b sqlBackend, db *sql.DB, id int64) string {
 	t.Helper()
-	var reference string
-	require.NoError(t, db.QueryRowContext(t.Context(), "SELECT reference FROM batch_rows WHERE id="+d.Placeholder(1), id).Scan(&reference))
-	return reference
+	references := columnOf(t, b, db, "batch_rows", "reference", "id", strconv.FormatInt(id, 10))
+	require.Len(t, references, 1)
+	return references[0]
 }
 
 func updateBatchVersion(version int64) *filter.PolicyConstraints {
@@ -486,21 +489,40 @@ func loadGadgets(t *testing.T, b sqlBackend) (*parse.Provider, *sql.DB) {
 
 func gadgetID(g parsetest.Gadget) string { return g.ID }
 
-func gadgetNames(t *testing.T, db *sql.DB) map[string]string {
+func gadgetNames(t *testing.T, b sqlBackend, db *sql.DB) map[string]string {
 	t.Helper()
 	out := map[string]string{}
-	for _, row := range dbtest.QueryRows[[]any](t, db, `SELECT id, name FROM gadgets`) {
-		id, idOK := row[0].(string)
-		name, nameOK := row[1].(string)
-		require.True(t, idOK && nameOK, "row %v", row)
-		out[id] = name
+	for _, row := range b.tableRows(t, db, "gadgets", "id", "name") {
+		out[columnText(t, row[0])] = columnText(t, row[1])
 	}
 	return out
 }
 
-func tagPairs(t *testing.T, db *sql.DB) []string {
+func tagPairs(t *testing.T, b sqlBackend, db *sql.DB) []string {
 	t.Helper()
-	return dbtest.QueryRows[string](t, db, `SELECT gadget_id || ':' || tag_id || '@' || tenant_id FROM gadget_tags ORDER BY 1`)
+	var pairs []string
+	for _, row := range b.tableRows(t, db, "gadget_tags", "gadget_id", "tag_id", "tenant_id") {
+		pairs = append(pairs, columnText(t, row[0])+":"+columnText(t, row[1])+"@"+columnText(t, row[2]))
+	}
+	slices.Sort(pairs)
+	return pairs
+}
+
+// ownerRows are the rows an update of target with p reports: on a SQL
+// engine, those its plan's owner statement returns, run alone
+// (BuildUpdate); on the Memory engine, which compiles no statement, those
+// the update itself reports, changed and unchanged.
+func ownerRows(t *testing.T, b sqlBackend, r *parse.Resource[parsetest.Gadget], p *patch.ParsedPatch, target parse.Target, scope parse.Scope, opts ...parse.UpdateOption) []parsetest.Gadget {
+	t.Helper()
+	if b.engine == Memory {
+		res, err := r.Update(t.Context(), p, target, scope, opts...)
+		require.NoError(t, err)
+		return append(res.Changed, res.Unchanged...)
+	}
+	plan, err := r.BuildUpdate(p, target, scope, opts...)
+	require.NoError(t, err)
+	require.True(t, plan.Writes)
+	return parsetest.ResourceRows(t, r, plan.Owner)
 }
 
 func byFilter(t *testing.T, r *parse.Resource[parsetest.Gadget], f string) parse.Target {
@@ -534,16 +556,13 @@ func buildUpdateChangesOnlyTheScopedTargetRows(t *testing.T, engine Engine) {
 				r := parsetest.Gadgets(t, provider)
 				p, err := r.ParseMergePatch([]byte(`{"name":"renamed","rank":7}`))
 				require.NoError(t, err)
-				plan, err := r.BuildUpdate(p, tc.target(r), tc.scope)
-				require.NoError(t, err)
-				require.True(t, plan.Writes)
-				got := parsetest.ResourceRows(t, r, plan.Owner)
-				assert.Equal(t, tc.want, sortedIDs(got, gadgetID), "the rows RETURNING reports")
+				got := ownerRows(t, b, r, p, tc.target(r), tc.scope)
+				assert.Equal(t, tc.want, sortedIDs(got, gadgetID), "the rows the update reports")
 				for _, g := range got {
 					assert.Equal(t, "renamed", g.Name)
 					assert.Equal(t, int64(7), g.Rank)
 				}
-				for id, name := range gadgetNames(t, db) {
+				for id, name := range gadgetNames(t, b, db) {
 					if slices.Contains(tc.want, id) {
 						assert.Equal(t, "renamed", name, id)
 					} else {
@@ -556,7 +575,7 @@ func buildUpdateChangesOnlyTheScopedTargetRows(t *testing.T, engine Engine) {
 }
 
 // A stamp is the time given, or an expression the database evaluates: its
-// clock here.
+// clock here. The memory provider evaluates no expression.
 func buildUpdateStamps(t *testing.T, engine Engine) {
 	at := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
@@ -564,25 +583,24 @@ func buildUpdateStamps(t *testing.T, engine Engine) {
 		r := parsetest.Gadgets(t, provider)
 		p, err := r.ParseMergePatch([]byte(`{"name":"x"}`))
 		require.NoError(t, err)
-		plan, err := r.BuildUpdate(p, parse.ByID("g1"), parse.Scope{Tenant: "t1"}, parse.Stamp("updated_at", at))
-		require.NoError(t, err)
-		got := parsetest.ResourceRows(t, r, plan.Owner)
+		got := ownerRows(t, b, r, p, parse.ByID("g1"), parse.Scope{Tenant: "t1"}, parse.Stamp("updated_at", at))
 		require.Len(t, got, 1)
 		require.NotNil(t, got[0].UpdatedAt)
 		assert.True(t, at.Equal(*got[0].UpdatedAt), "stamped %v", *got[0].UpdatedAt)
 
-		plan, err = r.BuildUpdate(p, parse.ByIDs("g2", "h1"), parse.Scope{Tenant: "t1"}, parse.StampSQL("updated_at", b.clock()))
-		require.NoError(t, err)
-		got = parsetest.ResourceRows(t, r, plan.Owner)
-		require.Len(t, got, 1, "h1 is t2's")
-		require.NotNil(t, got[0].UpdatedAt)
-		assert.WithinDuration(t, time.Now(), *got[0].UpdatedAt, time.Minute, "the database clock")
+		if b.engine == Memory {
+			_, err := r.Update(t.Context(), p, parse.ByIDs("g2", "h1"), parse.Scope{Tenant: "t1"}, parse.StampSQL("updated_at", "CURRENT_TIMESTAMP"))
+			require.ErrorIs(t, err, parse.ErrUnsupported)
+		} else {
+			got = ownerRows(t, b, r, p, parse.ByIDs("g2", "h1"), parse.Scope{Tenant: "t1"}, parse.StampSQL("updated_at", b.clock()))
+			require.Len(t, got, 1, "h1 is t2's")
+			require.NotNil(t, got[0].UpdatedAt)
+			assert.WithinDuration(t, time.Now(), *got[0].UpdatedAt, time.Minute, "the database clock")
+		}
 
 		rel, err := r.ParseMergePatch([]byte(`{"tags":["blue"]}`))
 		require.NoError(t, err)
-		plan, err = r.BuildUpdate(rel, parse.ByID("g1"), parse.Scope{Tenant: "t1"}, parse.Stamp("updated_at", at.Add(time.Hour)))
-		require.NoError(t, err)
-		got = parsetest.ResourceRows(t, r, plan.Owner)
+		got = ownerRows(t, b, r, rel, parse.ByID("g1"), parse.Scope{Tenant: "t1"}, parse.Stamp("updated_at", at.Add(time.Hour)))
 		require.Len(t, got, 1)
 		require.NotNil(t, got[0].UpdatedAt)
 		assert.True(t, at.Equal(*got[0].UpdatedAt), "a relation change alone writes no column, so it stamps none")
@@ -645,25 +663,27 @@ func buildUpdateRelationsChangeOnlyTheRowsTheOwnerMatched(t *testing.T, engine E
 		r := parsetest.Gadgets(t, provider)
 		p, err := r.ParseMergePatch([]byte(`{"tags":["blue","green"]}`))
 		require.NoError(t, err)
-		plan, err := r.BuildUpdate(p, parse.ByIDs("g1", "h1", "g3"), parse.Scope{Tenant: "t1"})
-		require.NoError(t, err)
-		assert.True(t, plan.Writes)
-		assert.True(t, plan.HasRelations())
-		assert.True(t, strings.HasPrefix(plan.Owner.SQL, "SELECT "), "a relation-only patch selects its owners")
+		if b.engine != Memory {
+			plan, err := r.BuildUpdate(p, parse.ByIDs("g1", "h1", "g3"), parse.Scope{Tenant: "t1"})
+			require.NoError(t, err)
+			assert.True(t, plan.Writes)
+			assert.True(t, plan.HasRelations())
+			assert.True(t, strings.HasPrefix(plan.Owner.SQL, "SELECT "), "a relation-only patch selects its owners")
+		}
 
 		res, err := applyUpdate(t, r, false, p, parse.ByIDs("g1", "h1", "g3"), parse.Scope{Tenant: "t1"})
 		require.NoError(t, err)
 		assert.Empty(t, res.Changed)
 		assert.Equal(t, []string{"g1"}, sortedIDs(res.Unchanged, gadgetID), "h1 is t2's, g3 is deleted")
 		assert.Equal(t, int64(3), res.RelationRows, "red out of g1, blue and green in")
-		assert.Equal(t, []string{"g1:blue@t1", "g1:green@t1", "h1:red@t2"}, tagPairs(t, db), "the requested h1 is not the matched one")
+		assert.Equal(t, []string{"g1:blue@t1", "g1:green@t1", "h1:red@t2"}, tagPairs(t, b, db), "the requested h1 is not the matched one")
 
 		none, err := applyUpdate(t, r, false, p, parse.ByIDs("h1", "g3"), parse.Scope{Tenant: "t1"})
 		require.NoError(t, err)
 		assert.Empty(t, none.Changed)
 		assert.Empty(t, none.Unchanged)
 		assert.Zero(t, none.RelationRows, "no matched owners, no junction writes")
-		assert.Equal(t, []string{"g1:blue@t1", "g1:green@t1", "h1:red@t2"}, tagPairs(t, db))
+		assert.Equal(t, []string{"g1:blue@t1", "g1:green@t1", "h1:red@t2"}, tagPairs(t, b, db))
 	})
 }
 
@@ -673,16 +693,18 @@ func buildUpdateColumnsAndRelationsTogether(t *testing.T, engine Engine) {
 		r := parsetest.Gadgets(t, provider)
 		p, err := r.ParseMergePatch([]byte(`{"name":"both","tags":["blue"]}`))
 		require.NoError(t, err)
-		plan, err := r.BuildUpdate(p, parse.ByID("g1"), parse.Scope{Tenant: "t1"})
-		require.NoError(t, err)
-		assert.True(t, strings.HasPrefix(plan.Owner.SQL, `UPDATE "gadgets" SET `))
-		assert.True(t, plan.HasRelations())
+		if b.engine != Memory {
+			plan, err := r.BuildUpdate(p, parse.ByID("g1"), parse.Scope{Tenant: "t1"})
+			require.NoError(t, err)
+			assert.True(t, strings.HasPrefix(plan.Owner.SQL, `UPDATE "gadgets" SET `))
+			assert.True(t, plan.HasRelations())
+		}
 		res, err := applyUpdate(t, r, false, p, parse.ByID("g1"), parse.Scope{Tenant: "t1"})
 		require.NoError(t, err)
 		require.Len(t, res.Changed, 1)
 		assert.Equal(t, "both", res.Changed[0].Name)
-		assert.Equal(t, "both", gadgetNames(t, db)["g1"])
-		assert.Equal(t, []string{"g1:blue@t1", "h1:red@t2"}, tagPairs(t, db))
+		assert.Equal(t, "both", gadgetNames(t, b, db)["g1"])
+		assert.Equal(t, []string{"g1:blue@t1", "h1:red@t2"}, tagPairs(t, b, db))
 	})
 }
 
@@ -692,10 +714,12 @@ func buildUpdateAnEmptyPatchIsAScopedRead(t *testing.T, engine Engine) {
 		r := parsetest.Gadgets(t, provider)
 		p, err := r.ParseMergePatch([]byte(`{}`))
 		require.NoError(t, err)
-		plan, err := r.BuildUpdate(p, parse.ByIDs("g1", "h1"), parse.Scope{Tenant: "t1"})
-		require.NoError(t, err)
-		assert.False(t, plan.Writes)
-		assert.False(t, plan.HasRelations())
+		if b.engine != Memory {
+			plan, err := r.BuildUpdate(p, parse.ByIDs("g1", "h1"), parse.Scope{Tenant: "t1"})
+			require.NoError(t, err)
+			assert.False(t, plan.Writes)
+			assert.False(t, plan.HasRelations())
+		}
 		res, err := applyUpdate(t, r, false, p, parse.ByIDs("g1", "h1"), parse.Scope{Tenant: "t1"})
 		require.NoError(t, err)
 		assert.Empty(t, res.Changed)
@@ -741,7 +765,7 @@ func buildUpdateRelationChangeLocksItsOwners(t *testing.T, engine Engine) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"g1"}, sortedIDs(res.Unchanged, gadgetID))
 	require.NoError(t, tx.Commit(ctx))
-	assert.Equal(t, []string{"g1:blue@t1", "h1:red@t2"}, tagPairs(t, db))
+	assert.Equal(t, []string{"g1:blue@t1", "h1:red@t2"}, tagPairs(t, b, db))
 }
 
 func noteTable() sqlTable {
@@ -795,19 +819,59 @@ func skipApply(t *testing.T, r *parse.Resource[parsetest.Note], body string, tar
 }
 
 // applied applies a guarded update (skipApply), whose plan reads its
-// targets first, and splits the target rows.
-func applied(t *testing.T, r *parse.Resource[parsetest.Note], body string, target parse.Target, opts ...parse.UpdateOption) (changed, unchanged []parsetest.Note) {
+// targets first on a SQL engine, and splits the target rows.
+func applied(t *testing.T, b sqlBackend, r *parse.Resource[parsetest.Note], body string, target parse.Target, opts ...parse.UpdateOption) (changed, unchanged []parsetest.Note) {
 	t.Helper()
-	require.NotNil(t, parsetest.SkipUpdate(t, r, body, target, opts...).Current)
+	if b.engine != Memory {
+		require.NotNil(t, parsetest.SkipUpdate(t, r, body, target, opts...).Current)
+	}
 	res := skipApply(t, r, body, target, opts...)
 	return res.Changed, res.Unchanged
 }
 
-func storedNote(t *testing.T, b sqlBackend, r *parse.Resource[parsetest.Note], id string) parsetest.Note {
+// storedNote is the note of id as the table holds it, whatever its tenant
+// or deletion: on the Memory engine, read from the store, a value per
+// column as the resource scans them.
+func storedNote(t *testing.T, b sqlBackend, db *sql.DB, r *parse.Resource[parsetest.Note], id string) parsetest.Note {
 	t.Helper()
+	if b.engine == Memory {
+		rows, err := storeOf(t, db).Rows(t.Context(), "notes")
+		require.NoError(t, err)
+		for _, row := range rows {
+			if row["id"] == id {
+				return scannedNote(t, row)
+			}
+		}
+		require.Fail(t, "no note "+id)
+	}
 	got := parsetest.ResourceRows(t, r, parse.Statement{SQL: `SELECT ` + parsetest.JoinColumns(r.Columns()) + ` FROM notes WHERE id = ` + b.dialect.Placeholder(1), Args: []any{id}})
 	require.Len(t, got, 1)
 	return got[0]
+}
+
+// scannedNote is a note's stored row as its resource scans it: the columns
+// parsetest.Note reads, each through database/sql's conversion, a document
+// or an array from its JSON.
+func scannedNote(t *testing.T, row map[string]any) parsetest.Note {
+	t.Helper()
+	var n parsetest.Note
+	n.ID, n.TenantID = columnText(t, row["id"]), columnText(t, row["tenant_id"])
+	if row["title"] != nil {
+		n.Title = new(columnText(t, row["title"]))
+	}
+	n.Rank, n.Version = asInt64(t, row["rank"]), asInt64(t, row["version"])
+	for column, into := range map[string]any{"labels": &n.Labels, "attrs": &n.Attrs} {
+		require.NoError(t, json.Unmarshal([]byte(columnText(t, row[column])), into), column)
+	}
+	for column, into := range map[string]**time.Time{"updated_at": &n.UpdatedAt, "deleted_at": &n.DeletedAt} {
+		if row[column] == nil {
+			continue
+		}
+		at, ok := row[column].(time.Time)
+		require.True(t, ok, "%s reads as a time.Time: %T", column, row[column])
+		*into = &at
+	}
+	return n
 }
 
 func byNoteFilter(t *testing.T, r *parse.Resource[parsetest.Note], f string) parse.Target {
@@ -817,9 +881,14 @@ func byNoteFilter(t *testing.T, r *parse.Resource[parsetest.Note], f string) par
 	return parse.ByFilter(pf)
 }
 
-func noteTags(t *testing.T, db *sql.DB) []string {
+func noteTags(t *testing.T, b sqlBackend, db *sql.DB) []string {
 	t.Helper()
-	return dbtest.QueryRows[string](t, db, `SELECT note_id || ':' || tag_id FROM note_tags ORDER BY 1`)
+	var pairs []string
+	for _, row := range b.tableRows(t, db, "note_tags", "note_id", "tag_id") {
+		pairs = append(pairs, columnText(t, row[0])+":"+columnText(t, row[1]))
+	}
+	slices.Sort(pairs)
+	return pairs
 }
 
 // SkipUnchanged writes the rows a patch changes, on each backend: columns,
@@ -827,11 +896,11 @@ func noteTags(t *testing.T, db *sql.DB) []string {
 func skipUnchangedWritesOnlyRowsThePatchChanges(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		t.Run("a patch of what the row holds writes nothing", func(t *testing.T) {
-			r, _ := loadNotes(t, b)
-			changed, unchanged := applied(t, r, `{"title":"one","rank":1,"labels":["a","b"],"attrs":{"a":1,"b":[2]}}`, parse.ByID("n1"))
+			r, db := loadNotes(t, b)
+			changed, unchanged := applied(t, b, r, `{"title":"one","rank":1,"labels":["a","b"],"attrs":{"a":1,"b":[2]}}`, parse.ByID("n1"))
 			assert.Empty(t, changed, "no row is updated")
 			assert.Equal(t, []string{"n1"}, sortedIDs(unchanged, noteID), "the read-back finds the row")
-			n1 := storedNote(t, b, r, "n1")
+			n1 := storedNote(t, b, db, r, "n1")
 			assert.Equal(t, int64(1), n1.Version, "the version stays")
 			assert.Nil(t, n1.UpdatedAt, "the stamp stays")
 			assert.Equal(t, unchanged[0], n1)
@@ -852,14 +921,14 @@ func skipUnchangedWritesOnlyRowsThePatchChanges(t *testing.T, engine Engine) {
 				{`{"labels":["a","b"]}`, false},
 				{`{"labels":["b","a"]}`, true},
 			} {
-				changed, _ := applied(t, r, tc.body, parse.ByID("n1"))
+				changed, _ := applied(t, b, r, tc.body, parse.ByID("n1"))
 				assert.Equal(t, tc.changed, len(changed) == 1, tc.body)
 			}
 		})
 
 		t.Run("a patch changing one column of two writes, stamps and counts", func(t *testing.T) {
 			r, _ := loadNotes(t, b)
-			changed, unchanged := applied(t, r, `{"title":"one","rank":5}`, parse.ByID("n1"))
+			changed, unchanged := applied(t, b, r, `{"title":"one","rank":5}`, parse.ByID("n1"))
 			require.Equal(t, []string{"n1"}, sortedIDs(changed, noteID))
 			assert.Empty(t, unchanged)
 			assert.Equal(t, int64(5), changed[0].Rank)
@@ -869,7 +938,8 @@ func skipUnchangedWritesOnlyRowsThePatchChanges(t *testing.T, engine Engine) {
 		})
 
 		t.Run("a stamp the database clock sets moves with the rows that change", func(t *testing.T) {
-			r, _ := loadNotes(t, b)
+			b.sqlOnly(t, "stamps the rows by the database's clock (StampSQL), an expression the memory provider does not evaluate")
+			r, db := loadNotes(t, b)
 			for _, tc := range []struct {
 				body    string
 				changed bool
@@ -877,12 +947,12 @@ func skipUnchangedWritesOnlyRowsThePatchChanges(t *testing.T, engine Engine) {
 				{`{"rank":1}`, false},
 				{`{"rank":2}`, true},
 			} {
-				changed, unchanged := applied(t, r, tc.body, parse.ByID("n1"),
+				changed, unchanged := applied(t, b, r, tc.body, parse.ByID("n1"),
 					parse.StampSQL("updated_at", b.clock()), parse.Increment("version"), parse.SkipUnchanged())
 				assert.Equal(t, tc.changed, len(changed) == 1, tc.body)
 				assert.Equal(t, !tc.changed, len(unchanged) == 1, tc.body)
 			}
-			n1 := storedNote(t, b, r, "n1")
+			n1 := storedNote(t, b, db, r, "n1")
 			assert.Equal(t, int64(2), n1.Version)
 			require.NotNil(t, n1.UpdatedAt)
 			assert.WithinDuration(t, time.Now(), *n1.UpdatedAt, time.Minute)
@@ -890,32 +960,32 @@ func skipUnchangedWritesOnlyRowsThePatchChanges(t *testing.T, engine Engine) {
 
 		t.Run("a value to NULL, then NULL to NULL", func(t *testing.T) {
 			r, _ := loadNotes(t, b)
-			changed, _ := applied(t, r, `{"title":null}`, parse.ByID("n1"))
+			changed, _ := applied(t, b, r, `{"title":null}`, parse.ByID("n1"))
 			require.Equal(t, []string{"n1"}, sortedIDs(changed, noteID))
 			assert.Nil(t, changed[0].Title)
-			changed, unchanged := applied(t, r, `{"title":null}`, parse.ByID("n1"))
+			changed, unchanged := applied(t, b, r, `{"title":null}`, parse.ByID("n1"))
 			assert.Empty(t, changed)
 			assert.Equal(t, []string{"n1"}, sortedIDs(unchanged, noteID))
-			changed, _ = applied(t, r, `{"title":"back"}`, parse.ByID("n1"))
+			changed, _ = applied(t, b, r, `{"title":"back"}`, parse.ByID("n1"))
 			require.Equal(t, []string{"n1"}, sortedIDs(changed, noteID), "NULL to a value")
 			assert.Equal(t, int64(3), changed[0].Version)
 		})
 
 		t.Run("a batch writes the rows that change, within the scope", func(t *testing.T) {
-			r, _ := loadNotes(t, b)
-			changed, unchanged := applied(t, r, `{"title":"two","attrs":{"a":1}}`, parse.ByIDs("n1", "n2", "n3", "m1"))
+			r, db := loadNotes(t, b)
+			changed, unchanged := applied(t, b, r, `{"title":"two","attrs":{"a":1}}`, parse.ByIDs("n1", "n2", "n3", "m1"))
 			assert.Equal(t, []string{"n1"}, sortedIDs(changed, noteID))
 			assert.Equal(t, []string{"n2"}, sortedIDs(unchanged, noteID), "n3 is deleted, m1 is t2's")
-			assert.Equal(t, int64(1), storedNote(t, b, r, "n2").Version)
-			assert.Equal(t, int64(1), storedNote(t, b, r, "m1").Version)
+			assert.Equal(t, int64(1), storedNote(t, b, db, r, "n2").Version)
+			assert.Equal(t, int64(1), storedNote(t, b, db, r, "m1").Version)
 		})
 
 		t.Run("a filter the patch moves rows out of", func(t *testing.T) {
 			r, _ := loadNotes(t, b)
-			changed, unchanged := applied(t, r, `{"rank":7}`, byNoteFilter(t, r, `{"rank":1}`))
+			changed, unchanged := applied(t, b, r, `{"rank":7}`, byNoteFilter(t, r, `{"rank":1}`))
 			assert.Equal(t, []string{"n1", "n2"}, sortedIDs(changed, noteID))
 			assert.Empty(t, unchanged, "the rows the patch moved out of the filter are changed ones")
-			changed, unchanged = applied(t, r, `{"rank":7}`, byNoteFilter(t, r, `{"rank":7}`))
+			changed, unchanged = applied(t, b, r, `{"rank":7}`, byNoteFilter(t, r, `{"rank":7}`))
 			assert.Empty(t, changed)
 			assert.Equal(t, []string{"n1", "n2"}, sortedIDs(unchanged, noteID))
 		})
@@ -923,7 +993,7 @@ func skipUnchangedWritesOnlyRowsThePatchChanges(t *testing.T, engine Engine) {
 		t.Run("a target outside the scope is not found", func(t *testing.T) {
 			r, _ := loadNotes(t, b)
 			for _, id := range []string{"m1", "n3", "zz"} {
-				changed, unchanged := applied(t, r, `{"title":"x"}`, parse.ByID(id))
+				changed, unchanged := applied(t, b, r, `{"title":"x"}`, parse.ByID(id))
 				assert.Empty(t, changed, id)
 				assert.Empty(t, unchanged, id)
 			}
@@ -945,36 +1015,42 @@ func skipUnchangedRelations(t *testing.T, engine Engine) {
 				{`{"tags":["red"]}`, 0, []string{"n1:red"}},
 				{`{"tags":["blue"]}`, 2, []string{"n1:blue"}},
 			} {
-				plan := parsetest.SkipUpdate(t, r, tc.body, parse.ByID("n1"))
-				assert.Nil(t, plan.Current, "Owner returns every target row")
-				assert.True(t, plan.Writes)
+				if b.engine != Memory {
+					plan := parsetest.SkipUpdate(t, r, tc.body, parse.ByID("n1"))
+					assert.Nil(t, plan.Current, "Owner returns every target row")
+					assert.True(t, plan.Writes)
+				}
 				res := skipApply(t, r, tc.body, parse.ByID("n1"))
 				assert.Empty(t, res.Changed, "a relation change moves no column")
 				require.Equal(t, []string{"n1"}, sortedIDs(res.Unchanged, noteID))
 				assert.Equal(t, tc.changes, res.RelationRows, tc.body)
-				assert.Equal(t, tc.tags, noteTags(t, db))
-				assert.Equal(t, int64(1), storedNote(t, b, r, "n1").Version, "a relation change moves no column")
+				assert.Equal(t, tc.tags, noteTags(t, b, db))
+				assert.Equal(t, int64(1), storedNote(t, b, db, r, "n1").Version, "a relation change moves no column")
 			}
 		})
 
 		t.Run("unchanged columns still change relations, for the rows Current reads", func(t *testing.T) {
 			r, db := loadNotes(t, b)
-			plan := parsetest.SkipUpdate(t, r, `{"title":"one","tags":["blue"]}`, parse.ByIDs("n1", "n2"))
-			require.NotNil(t, plan.Current)
+			if b.engine != Memory {
+				plan := parsetest.SkipUpdate(t, r, `{"title":"one","tags":["blue"]}`, parse.ByIDs("n1", "n2"))
+				require.NotNil(t, plan.Current)
+			}
 			res := skipApply(t, r, `{"title":"one","tags":["blue"]}`, parse.ByIDs("n1", "n2"))
 			assert.Equal(t, []string{"n2"}, sortedIDs(res.Changed, noteID), "n1 already reads one")
 			assert.Equal(t, []string{"n1"}, sortedIDs(res.Unchanged, noteID))
 			assert.Equal(t, int64(3), res.RelationRows, "red out of n1, blue into both")
-			assert.Equal(t, []string{"n1:blue", "n2:blue"}, noteTags(t, db))
-			assert.Equal(t, int64(1), storedNote(t, b, r, "n1").Version)
-			assert.Equal(t, int64(2), storedNote(t, b, r, "n2").Version)
+			assert.Equal(t, []string{"n1:blue", "n2:blue"}, noteTags(t, b, db))
+			assert.Equal(t, int64(1), storedNote(t, b, db, r, "n1").Version)
+			assert.Equal(t, int64(2), storedNote(t, b, db, r, "n2").Version)
 		})
 
 		t.Run("an empty patch is a scoped read", func(t *testing.T) {
 			r, _ := loadNotes(t, b)
-			plan := parsetest.SkipUpdate(t, r, `{}`, parse.ByID("n1"))
-			assert.False(t, plan.Writes)
-			assert.Nil(t, plan.Current)
+			if b.engine != Memory {
+				plan := parsetest.SkipUpdate(t, r, `{}`, parse.ByID("n1"))
+				assert.False(t, plan.Writes)
+				assert.Nil(t, plan.Current)
+			}
 			res := skipApply(t, r, `{}`, parse.ByID("n1"))
 			assert.Empty(t, res.Changed)
 			assert.Equal(t, []string{"n1"}, sortedIDs(res.Unchanged, noteID))
@@ -1005,7 +1081,12 @@ func updateBatchCanonicalKeys(t *testing.T, engine Engine) {
 		assert.Equal(t, []uuidRow{{ID: id, Name: "new"}}, res.Changed)
 		_, err = r.UpdateBatch(t.Context(), []parse.RowUpdate{{Key: parse.Key{uuid.MustParse("018c018c-0123-7123-8123-0123456789ac")}, Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
 		require.ErrorIs(t, err, parse.ErrUpdateBatchTargets)
-		_, err = r.BuildUpdateBatch([]parse.RowUpdate{{Key: parse.Key{id}, Patch: p}, {Key: parse.Key{strings.ToUpper(id.String())}, Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
+		twice := []parse.RowUpdate{{Key: parse.Key{id}, Patch: p}, {Key: parse.Key{strings.ToUpper(id.String())}, Patch: p}}
+		if b.engine == Memory {
+			_, err = r.UpdateBatch(t.Context(), twice, parse.Scope{}, parse.UpdateBatchLimits{})
+		} else {
+			_, err = r.BuildUpdateBatch(twice, parse.Scope{}, parse.UpdateBatchLimits{})
+		}
 		require.Error(t, err)
 	})
 }
@@ -1022,8 +1103,10 @@ type batchDevice struct {
 func updateBatchMissingTargetNamesItsResourceOnce(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		p, db := b.open(t)
-		dbtest.Exec(t, db, `CREATE TABLE devices (id TEXT PRIMARY KEY, tenant_id BIGINT NOT NULL, name TEXT NOT NULL)`)
 		devices := parse.MustResource[batchDevice](p, "devices", parse.TenantColumn("tenant_id"))
+		b.create(t, db, sqlTable{name: "devices", key: []string{"id"}, columns: []sqlColumn{
+			column[string]("id").required(), column[int64]("tenant_id").required(), column[string]("name").required(),
+		}})
 		rename, err := devices.ParseMergePatch([]byte(`{"name":"x"}`))
 		require.NoError(t, err)
 		_, err = devices.UpdateBatch(t.Context(), []parse.RowUpdate{{Key: parse.Key{"a"}, Patch: rename}}, parse.Scope{Tenant: "1"}, parse.UpdateBatchLimits{})
@@ -1070,14 +1153,35 @@ type valuerKeyed struct {
 	Name string       `json:"name" db:"name" parse:"filter,patch"`
 }
 
-// keyedTable holds rows a and b, both named new, on a fresh database of b.
-// Its id column is no primary key, so it can hold NULL.
-func keyedTable(t *testing.T, b sqlBackend) (*parse.Provider, *sql.DB) {
+// keyedTable holds rows a, named old, and b, named new, on a fresh
+// database of b, and the resource of T on it. On a SQL engine its id
+// column is no primary key, so it can hold NULL.
+func keyedTable[T any](t *testing.T, b sqlBackend) (*parse.Resource[T], *sql.DB) {
 	t.Helper()
 	p, db := b.open(t)
+	r, err := parse.NewResource[T](p, "keyed")
+	require.NoError(t, err)
+	if b.engine == Memory {
+		require.NoError(t, storeOf(t, db).Put(t.Context(), "keyed", map[string]any{"id": "a", "name": "old"}, map[string]any{"id": "b", "name": "new"}))
+		return r, db
+	}
 	dbtest.Exec(t, db, `CREATE TABLE keyed (id TEXT UNIQUE, name TEXT NOT NULL)`,
 		`INSERT INTO keyed VALUES ('a', 'old'), ('b', 'new')`)
-	return p, db
+	return r, db
+}
+
+// keylessRow writes a row whose key is NULL to the keyed table: on the
+// Memory engine, whose table refuses a row without its key as it is
+// written, it requires the refusal and reports false.
+func keylessRow(t *testing.T, b sqlBackend, db *sql.DB) bool {
+	t.Helper()
+	if b.engine == Memory {
+		err := storeOf(t, db).Put(t.Context(), "keyed", map[string]any{"id": nil, "name": "new"})
+		require.ErrorContains(t, err, "key column id: NULL")
+		return false
+	}
+	dbtest.Exec(t, db, `INSERT INTO keyed VALUES (NULL, 'new')`)
+	return true
 }
 
 // renameSkipping applies {"name":"new"} to target under SkipUnchanged.
@@ -1103,9 +1207,7 @@ func byName[T any](t *testing.T) func(*parse.Resource[T]) parse.Target {
 func skipUnchangedRowKeys(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		t.Run("pointer keys compare by value", func(t *testing.T) {
-			p, db := keyedTable(t, b)
-			r, err := parse.NewResource[pointerKeyed](p, "keyed")
-			require.NoError(t, err)
+			r, db := keyedTable[pointerKeyed](t, b)
 			res, err := renameSkipping(t, r, func(*parse.Resource[pointerKeyed]) parse.Target { return parse.ByIDs("a", "b") })
 			require.NoError(t, err)
 			require.Len(t, res.Changed, 1)
@@ -1113,22 +1215,22 @@ func skipUnchangedRowKeys(t *testing.T, engine Engine) {
 			require.Len(t, res.Unchanged, 1)
 			assert.Equal(t, "b", *res.Unchanged[0].ID)
 
-			dbtest.Exec(t, db, `INSERT INTO keyed VALUES (NULL, 'new')`)
-			_, err = renameSkipping(t, r, byName[pointerKeyed](t))
-			assert.ErrorContains(t, err, "has no key")
+			if keylessRow(t, b, db) {
+				_, err = renameSkipping(t, r, byName[pointerKeyed](t))
+				assert.ErrorContains(t, err, "has no key")
+			}
 		})
 		t.Run("a row whose key is NULL is refused", func(t *testing.T) {
-			p, db := keyedTable(t, b)
-			r, err := parse.NewResource[valuerKeyed](p, "keyed")
-			require.NoError(t, err)
+			r, db := keyedTable[valuerKeyed](t, b)
 			res, err := renameSkipping(t, r, func(*parse.Resource[valuerKeyed]) parse.Target { return parse.ByIDs("a", "b") })
 			require.NoError(t, err)
 			assert.Equal(t, []valuerKeyed{{ID: "a", Name: "new"}}, res.Changed)
 			assert.Equal(t, []valuerKeyed{{ID: "b", Name: "new"}}, res.Unchanged)
 
-			dbtest.Exec(t, db, `INSERT INTO keyed VALUES (NULL, 'new')`)
-			_, err = renameSkipping(t, r, byName[valuerKeyed](t))
-			require.ErrorContains(t, err, "keyed: a row has no key: key column id holds no value")
+			if keylessRow(t, b, db) {
+				_, err = renameSkipping(t, r, byName[valuerKeyed](t))
+				require.ErrorContains(t, err, "keyed: a row has no key: key column id holds no value")
+			}
 		})
 	})
 }
@@ -1183,7 +1285,10 @@ func updateClockMembershipAtThePlansInstant(t *testing.T, engine Engine) {
 		require.NoError(t, err)
 		assert.Equal(t, instant, at, "the update read the clock once")
 		assert.Equal(t, int64(1), res.RelationRows)
-		assert.Equal(t, []string{"i1:k0"}, dbtest.QueryRows[string](t, db, `SELECT item_id || ':' || type_id FROM clock_item_types ORDER BY 1`),
-			"a membership change admits the related rows at the plan's instant")
+		var pairs []string
+		for _, row := range b.tableRows(t, db, "clock_item_types", "item_id", "type_id") {
+			pairs = append(pairs, columnText(t, row[0])+":"+columnText(t, row[1]))
+		}
+		assert.Equal(t, []string{"i1:k0"}, pairs, "a membership change admits the related rows at the plan's instant")
 	})
 }

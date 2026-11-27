@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
@@ -877,11 +878,47 @@ func wrapperTableOn(engine Kind) wrapperTable {
 	return table
 }
 
+// wrapperCase is a patch of a seeded RankedVisit and the row it leaves.
+type wrapperCase struct {
+	name  string
+	body  string
+	merge bool
+	want  patchtest.RankedVisit
+}
+
+// rankedSeed is the RankedVisit each wrapperCase patches.
+func rankedSeed() patchtest.RankedVisit {
+	seeded := patchtest.RankedVisit{ID: 1, Score: sql.NullInt64{Int64: 3, Valid: true}, SeenAt: sql.NullTime{Time: patchtest.RankedSeen(), Valid: true}}
+	return seeded
+}
+
+func wrapperCases() []wrapperCase {
+	seeded := rankedSeed()
+	cases := []wrapperCase{
+		{"replace a score", `[{"op":"replace","path":"/score","value":7}]`, false,
+			patchtest.RankedVisit{ID: 1, Score: sql.NullInt64{Int64: 7, Valid: true}, SeenAt: seeded.SeenAt}},
+		{"remove a score", `[{"op":"remove","path":"/score"}]`, false,
+			patchtest.RankedVisit{ID: 1, SeenAt: seeded.SeenAt}},
+		{"replace a time", `[{"op":"replace","path":"/seen_at","value":"2026-05-06T07:08:09Z"}]`, false,
+			patchtest.RankedVisit{ID: 1, Score: seeded.Score, SeenAt: sql.NullTime{Time: time.Date(2026, 5, 6, 7, 8, 9, 0, time.UTC), Valid: true}}},
+		{"remove a time", `[{"op":"remove","path":"/seen_at"}]`, false,
+			patchtest.RankedVisit{ID: 1, Score: seeded.Score}},
+		{"merge a score and a null time", `{"score":9,"seen_at":null}`, true,
+			patchtest.RankedVisit{ID: 1, Score: sql.NullInt64{Int64: 9, Valid: true}}},
+	}
+	return cases
+}
+
 // A nullable wrapper column's patch has one result in the database and in
 // Go: a replace stores the value, Valid, and a remove or a null stores
-// NULL, the wrapper's zero value.
+// NULL, the wrapper's zero value. The Memory engine's database is its
+// store, which a resource's update writes.
 func patchNullableWrapperColumns(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
+		if b.engine == Memory {
+			runWrapperUpdates(t, b)
+			return
+		}
 		db, d, table := b.db(t), patchDialectOf(t, b), wrapperTableOn(b.engine)
 		ctx := t.Context()
 		_, err := db.ExecContext(ctx, "CREATE TABLE ranked_visits (id BIGINT PRIMARY KEY, score BIGINT, seen_at "+table.timestampType+")")
@@ -891,25 +928,9 @@ func patchNullableWrapperColumns(t *testing.T, engine Engine) {
 		require.NoError(t, err)
 		applier, err := patch.NewApplier[patchtest.RankedVisit](gen, nil)
 		require.NoError(t, err)
-		seeded := patchtest.RankedVisit{ID: 1, Score: sql.NullInt64{Int64: 3, Valid: true}, SeenAt: sql.NullTime{Time: patchtest.RankedSeen(), Valid: true}}
+		seeded := rankedSeed()
 
-		for _, tt := range []struct {
-			name  string
-			body  string
-			merge bool
-			want  patchtest.RankedVisit
-		}{
-			{"replace a score", `[{"op":"replace","path":"/score","value":7}]`, false,
-				patchtest.RankedVisit{ID: 1, Score: sql.NullInt64{Int64: 7, Valid: true}, SeenAt: seeded.SeenAt}},
-			{"remove a score", `[{"op":"remove","path":"/score"}]`, false,
-				patchtest.RankedVisit{ID: 1, SeenAt: seeded.SeenAt}},
-			{"replace a time", `[{"op":"replace","path":"/seen_at","value":"2026-05-06T07:08:09Z"}]`, false,
-				patchtest.RankedVisit{ID: 1, Score: seeded.Score, SeenAt: sql.NullTime{Time: time.Date(2026, 5, 6, 7, 8, 9, 0, time.UTC), Valid: true}}},
-			{"remove a time", `[{"op":"remove","path":"/seen_at"}]`, false,
-				patchtest.RankedVisit{ID: 1, Score: seeded.Score}},
-			{"merge a score and a null time", `{"score":9,"seen_at":null}`, true,
-				patchtest.RankedVisit{ID: 1, Score: sql.NullInt64{Int64: 9, Valid: true}}},
-		} {
+		for _, tt := range wrapperCases() {
 			t.Run(tt.name, func(t *testing.T) {
 				ctx := t.Context()
 				_, err := db.ExecContext(ctx, "DELETE FROM ranked_visits")
@@ -940,6 +961,48 @@ func patchNullableWrapperColumns(t *testing.T, engine Engine) {
 			})
 		}
 	})
+}
+
+// runWrapperUpdates applies each wrapperCase through a resource's update on
+// a Memory store holding the seed, holding the row it returns and the row
+// the store keeps to the case's.
+func runWrapperUpdates(t *testing.T, b sqlBackend) {
+	seeded := rankedSeed()
+	table := sqlTable{name: "ranked_visits", key: []string{"id"}, columns: []sqlColumn{
+		column[int64]("id").required(), column[sql.NullInt64]("score"), column[sql.NullTime]("seen_at"),
+	}}
+	for _, tt := range wrapperCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			p, db := b.open(t)
+			visits := parse.MustResource[patchtest.RankedVisit](p, "ranked_visits")
+			b.load(t, db, table, [][]any{{seeded.ID, seeded.Score.Int64, seeded.SeenAt.Time}})
+			var parsed *patch.ParsedPatch
+			var err error
+			if tt.merge {
+				parsed, err = visits.ParseMergePatch([]byte(tt.body))
+			} else {
+				parsed, err = visits.ParsePatch([]byte(tt.body))
+			}
+			require.NoError(t, err)
+			res, err := visits.Update(t.Context(), parsed, parse.ByID(seeded.ID), parse.Scope{})
+			require.NoError(t, err)
+			require.Len(t, res.Changed, 1)
+			assertRankedVisit(t, tt.want, res.Changed[0], "returned")
+
+			rows := b.tableRows(t, db, "ranked_visits", "id", "score", "seen_at")
+			require.Len(t, rows, 1)
+			stored := patchtest.RankedVisit{ID: asInt64(t, rows[0][0])}
+			if rows[0][1] != nil {
+				stored.Score = sql.NullInt64{Int64: asInt64(t, rows[0][1]), Valid: true}
+			}
+			if rows[0][2] != nil {
+				at, ok := rows[0][2].(time.Time)
+				require.True(t, ok, "seen_at reads as a time.Time: %T", rows[0][2])
+				stored.SeenAt = sql.NullTime{Time: at, Valid: true}
+			}
+			assertRankedVisit(t, tt.want, stored, "stored")
+		})
+	}
 }
 
 // assertRankedVisit compares times as instants: a driver reads them back in
