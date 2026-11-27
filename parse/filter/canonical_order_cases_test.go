@@ -4,6 +4,7 @@ package filter_test
 
 import (
 	"database/sql"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -17,9 +18,10 @@ import (
 
 // runCanonicalOrderSQL stores each case's values in a column of its type
 // (columnType) and holds the database to the case's order: a key column's ORDER BY
-// (filter.KeyOrder), a sort key's (filter.OrderByKeys), NULL last, and a
-// terms facet's keys, which are the values' canonical texts, ties in the
-// type's order, as Go counts them (filter.FacetKeys, filter.FacetBuckets).
+// (filter.KeyOrder), a sort key's (filter.OrderByKeys), NULL last, its
+// seeks (filter.SeekPredicate, runSeeks), and a terms facet's keys, which
+// are the values' canonical texts, ties in the type's order, as Go counts
+// them (filter.FacetKeys, filter.FacetBuckets).
 func runCanonicalOrderSQL(t *testing.T, db *sql.DB, d filter.Dialect, cases []ordertest.Case, columnType func(ordertest.Case) string) {
 	for _, c := range cases {
 		t.Run(c.Name, func(t *testing.T) {
@@ -58,6 +60,7 @@ func runCanonicalOrderSQL(t *testing.T, db *sql.DB, d filter.Dialect, cases []or
 			if c.Sortable {
 				got = orderedIDs(t, db, "SELECT id FROM "+table+" "+filter.OrderByKeys(d, []filter.CursorKey{key}, false))
 				assert.Equal(t, append(slices.Clone(ascending), len(c.Values)), got, "a sort key's order, NULL last")
+				runSeeks(t, db, d, table, c, key)
 			}
 
 			if c.Faceted {
@@ -89,6 +92,81 @@ func runCanonicalOrderSQL(t *testing.T, db *sql.DB, d filter.Dialect, cases []or
 			}
 		})
 	}
+}
+
+// runSeeks holds every row's cursor to the rows after it in the walk order:
+// SeekPredicate, from the value the row's cursor resumes from, selects
+// exactly the rows ORDER BY puts after it, forwards and backwards. The
+// nullable key alone seeks from every row, the NULL row's included; the key
+// with the id tiebreaker seeks over the rows that hold a value, as a native
+// row-value comparison where the dialect has one.
+func runSeeks(t *testing.T, db *sql.DB, d filter.Dialect, table string, c ordertest.Case, key filter.CursorKey) {
+	t.Helper()
+	column := d.QuoteIdent(table) + "." + d.QuoteIdent("v")
+	scanned := scannedValues(t, db, "SELECT id, "+d.ReadColumn(column, readType(c.Type))+" FROM "+table)
+	null := len(c.Values) // the NULL row's id
+	held := key
+	held.Nullable = false
+	id := filter.CursorKey{Name: "id", Table: table, Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64, Direction: filter.SortAsc}
+	for _, reverse := range []bool{false, true} {
+		for i := 0; i <= null; i++ {
+			v := resumeKeyValue(t, key, scanned[i])
+			got := seekIDs(t, db, d, table, "", []filter.CursorKey{key}, &filter.PageToken{
+				Fields:  []filter.CursorField{{Name: key.Name, Value: v, Direction: key.Direction}},
+				Reverse: reverse,
+			})
+			assert.Equal(t, idsAfter(i, null, reverse), got, "the rows after %#v, reverse %t", v, reverse)
+			if i == null {
+				continue
+			}
+			got = seekIDs(t, db, d, table, column+" IS NOT NULL AND ", []filter.CursorKey{held, id}, &filter.PageToken{
+				Fields:  []filter.CursorField{{Name: key.Name, Value: v, Direction: key.Direction}, {Name: "id", Value: int64(i), Direction: filter.SortAsc}},
+				Reverse: reverse,
+			})
+			assert.Equal(t, idsAfter(i, null-1, reverse), got, "the rows after (%#v, %d), reverse %t", v, i, reverse)
+		}
+	}
+}
+
+// idsAfter is the ids 0 to last after i in ascending order, or before it
+// in descending order when reverse is set.
+func idsAfter(i, last int, reverse bool) []int {
+	var ids []int
+	if reverse {
+		for j := i - 1; j >= 0; j-- {
+			ids = append(ids, j)
+		}
+		return ids
+	}
+	for j := i + 1; j <= last; j++ {
+		ids = append(ids, j)
+	}
+	return ids
+}
+
+// seekIDs is the ids of table's rows strictly after token in the walk
+// order of keys, filtered by where (a condition ending in AND, or "").
+func seekIDs(t *testing.T, db *sql.DB, d filter.Dialect, table, where string, keys []filter.CursorKey, token *filter.PageToken) []int {
+	t.Helper()
+	var args []any
+	bind := func(v any) string {
+		args = append(args, v)
+		return d.Placeholder(len(args))
+	}
+	seek, err := filter.SeekPredicate(d, keys, token, bind)
+	require.NoError(t, err)
+	query := "SELECT id FROM " + table + " WHERE " + where + seek + " " + filter.OrderByKeys(d, keys, token.Reverse)
+	rows, err := db.QueryContext(t.Context(), query, args...)
+	require.NoError(t, err, query)
+	defer func() { _ = rows.Close() }()
+	var ids []int
+	for rows.Next() {
+		var id int
+		require.NoError(t, rows.Scan(&id))
+		ids = append(ids, id)
+	}
+	require.NoError(t, rows.Err())
+	return ids
 }
 
 func orderedIDs(t *testing.T, db *sql.DB, query string) []int {
