@@ -14,6 +14,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/patch"
 )
 
 type clockDevice struct {
@@ -105,4 +106,73 @@ func timestamps(t *testing.T, args []any) []time.Time {
 	}
 	slices.SortFunc(out, time.Time.Compare)
 	return out
+}
+
+type clockItem struct {
+	ID        string    `json:"id"         db:"id"         parse:"filter,sort"`
+	Name      string    `json:"name"       db:"name"       parse:"filter,patch"`
+	CreatedAt time.Time `json:"created_at" db:"created_at" parse:"filter"`
+}
+
+// An update plan reads the resource clock once: its Owner, its Current and
+// the relation statements that admit the related rows resolve `now` to one
+// instant, so the rows Current locks are the rows Owner compares and the
+// targets a membership change may name are the ones the policy admits at
+// that instant. A batch reads it once for every row.
+func TestClock_OneInstantPerUpdatePlan(t *testing.T) {
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	stepping := func() time.Time {
+		at = at.Add(time.Hour)
+		return at
+	}
+	types := parse.MustResource[clockType]("clock_types")
+	items, err := parse.NewResource[clockItem]("clock_items", parse.ParserOptions(core.WithClock(stepping)))
+	require.NoError(t, err)
+	items.MustRelate("shared_types", parse.ManyToMany(types, parse.Through("clock_item_types", "item_id", "type_id"), parse.PolicyScoped(), parse.Writable()))
+	scope := parse.Scope{
+		Policy: &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: "created_at", Operator: filter.OpLt, Value: "now+1h"}}},
+		Related: map[string]*filter.PolicyConstraints{
+			"clock_types": {Constraints: []*filter.PolicyConstraint{{Field: "created_at", Operator: filter.OpLt, Value: "now+2h"}}},
+		},
+	}
+	d := filter.PostgresDialect{}
+
+	t.Run("update", func(t *testing.T) {
+		p, err := items.ParseMergePatch([]byte(`{"name":"x","shared_types":["k1"]}`))
+		require.NoError(t, err)
+		plan, err := items.BuildUpdate(d, p, parse.ByID("i1"), scope, parse.SkipUnchanged())
+		require.NoError(t, err)
+		read := at
+		require.NotNil(t, plan.Current)
+		assert.Equal(t, []time.Time{read.Add(time.Hour)}, timestamps(t, plan.Owner.Args), "the policy's now is the clock's one reading")
+		assert.Equal(t, []time.Time{read.Add(time.Hour)}, timestamps(t, plan.Current.Args), "Current admits the rows Owner does")
+
+		stmts, err := items.RelationStatements(plan, []parse.Key{{"i1"}})
+		require.NoError(t, err)
+		var related []time.Time
+		for _, s := range stmts {
+			related = append(related, timestamps(t, s.Args)...)
+		}
+		require.NotEmpty(t, related)
+		for _, ts := range related {
+			assert.Equal(t, read.Add(2*time.Hour), ts, "a membership change admits the related rows at the plan's instant")
+		}
+	})
+	t.Run("batch", func(t *testing.T) {
+		rename := func(name string) *patch.ParsedPatch {
+			p, err := items.ParseMergePatch([]byte(`{"name":"` + name + `"}`))
+			require.NoError(t, err)
+			return p
+		}
+		rows := []parse.RowUpdate{{Key: parse.Key{"i1"}, Patch: rename("x")}, {Key: parse.Key{"i2"}, Patch: rename("y")}}
+		plan, err := items.BuildUpdateBatch(d, rows, scope, parse.UpdateBatchLimits{}, parse.SkipUnchanged())
+		require.NoError(t, err)
+		read := at
+		require.Len(t, plan.Chunks, 1)
+		chunk := plan.Chunks[0]
+		require.NotNil(t, chunk.Owner)
+		policy := []time.Time{read.Add(time.Hour), read.Add(time.Hour)}
+		assert.Equal(t, policy, timestamps(t, chunk.Current.Args), "every row's Current at the batch's one instant")
+		assert.Equal(t, policy, timestamps(t, chunk.Owner.Args), "every row's Owner at the batch's one instant")
+	})
 }

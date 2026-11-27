@@ -50,7 +50,14 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 	if raw == nil {
 		return nil, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodeInvalidJSON.String(), Message: "resource merge patch must be an object"}
 	}
-	raw, _ = jsonNulls(raw)
+	raw, _, err := jsonNulls(raw, config.MaxDepth)
+	if err != nil {
+		tooDeep := &core.ParseError{
+			Kind: core.ParseErrorKindPatch, Code: ECodePathTooDeep.String(),
+			Message: fmt.Sprintf("merge patch nests more than %d levels deep", config.MaxDepth), Cause: err,
+		}
+		return nil, tooDeep
+	}
 	codec := config.GetCodec()
 
 	// Bound the patch like the equivalent JSON Patch: a member nested d
@@ -97,7 +104,11 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 
 func validateMergeMember(schema *PatchSchema, codec core.Codec, key string, value any) (*PatchOperation, error) {
 	path := core.FormatPointer(key)
-	pathSchema, err := matchPath(schema, path)
+	err := core.CheckText(key)
+	var pathSchema *PathSchema
+	if err == nil {
+		pathSchema, err = matchPath(schema, path)
+	}
 	if err != nil {
 		return nil, &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodePatchFieldNotFound.String(),
@@ -139,7 +150,13 @@ func validateMergeMember(schema *PatchSchema, codec core.Codec, key string, valu
 // jsonNulls returns obj with each member encoding/json writes as null — a
 // nil pointer, map or slice — as nil, in nested objects too, and whether it
 // replaced any. obj itself is returned, never modified, when none is there.
-func jsonNulls(obj map[string]any) (map[string]any, bool) {
+// An object nested more than limit levels below obj, as every level of a
+// map that holds itself is, is refused (errNestedTooDeep): mergeShape,
+// which bounds the patch's depth, walks only a patch this one has.
+func jsonNulls(obj map[string]any, limit int) (map[string]any, bool, error) {
+	if limit < 0 {
+		return nil, false, errNestedTooDeep
+	}
 	var out map[string]any
 	for k, v := range obj {
 		var n any
@@ -148,7 +165,10 @@ func jsonNulls(obj map[string]any) (map[string]any, bool) {
 			continue
 		case map[string]any:
 			if tv != nil {
-				nested, changed := jsonNulls(tv)
+				nested, changed, err := jsonNulls(tv, limit-1)
+				if err != nil {
+					return nil, false, err
+				}
 				if !changed {
 					continue
 				}
@@ -171,10 +191,13 @@ func jsonNulls(obj map[string]any) (map[string]any, bool) {
 		out[k] = n
 	}
 	if out == nil {
-		return obj, false
+		return obj, false, nil
 	}
-	return out, true
+	return out, true, nil
 }
+
+// errNestedTooDeep is jsonNulls' refusal of an object nested past its limit.
+var errNestedTooDeep = errors.New("object nested past the depth limit")
 
 // mergeShape returns the operations a merge object at depth costs — each of
 // its members at the top level, and below that each member that is itself

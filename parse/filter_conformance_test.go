@@ -597,10 +597,11 @@ func sortInputs() []sortCase {
 		{Name: "err_filter_field_not_sortable", Input: "status"},
 		{Name: "err_descending_not_sortable", Input: "-price"},
 		{Name: "err_too_many_fields", Input: "name,count,created,id"},
-		{Name: "err_too_many_slots", Input: "name,,,count"},
+		{Name: "blank_slots_count_toward_no_limit", Input: "name,,,count"},
+		{Name: "blank_slots_only", Input: " , "},
 		{Name: "err_sign_alone", Input: "-"},
 		{Name: "err_double_sign", Input: "--name"},
-		{Name: "repeated_field", Input: "name,-name"},
+		{Name: "err_repeated_field", Input: "name,-name"},
 	}
 }
 

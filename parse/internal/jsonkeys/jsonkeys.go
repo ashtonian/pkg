@@ -237,7 +237,7 @@ func buildJSONShape(t reflect.Type, building map[reflect.Type]*jsonShape) (*json
 	if shape, ok := building[t]; ok {
 		return shape, nil
 	}
-	if decodesItself(t) || t == rawJSONType {
+	if core.CustomJSON(t) || t == rawJSONType {
 		return opaqueShape, nil
 	}
 	switch t.Kind() {
@@ -344,23 +344,6 @@ func (s *jsonShape) checkDecodable(seen map[*jsonShape]bool) error {
 		}
 	}
 	return nil
-}
-
-var (
-	jsonUnmarshalerType   = reflect.TypeFor[json.Unmarshaler]()
-	jsonMarshalerToType   = reflect.TypeFor[jsonv2.MarshalerTo]()
-	jsonUnmarshalFromType = reflect.TypeFor[jsonv2.UnmarshalerFrom]()
-)
-
-// decodesItself reports a type with its own JSON methods, on its value or
-// its pointer: what it holds is its own business.
-func decodesItself(t reflect.Type) bool {
-	for _, m := range []reflect.Type{jsonMarshalerType, jsonUnmarshalerType, jsonMarshalerToType, jsonUnmarshalFromType} {
-		if t.Implements(m) || t.Kind() != reflect.Interface && reflect.PointerTo(t).Implements(m) {
-			return true
-		}
-	}
-	return false
 }
 
 // keyValidator is one validation's scratch state, pooled so a validation
@@ -570,5 +553,4 @@ func (v *keyValidator) skip() error {
 var (
 	rawJSONType       = reflect.TypeFor[json.RawMessage]()
 	textMarshalerType = reflect.TypeFor[encoding.TextMarshaler]()
-	jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
 )

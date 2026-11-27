@@ -138,15 +138,20 @@ type searchCondition struct {
 // AndSearch ANDs a free-text search onto a WHERE fragment, numbering the
 // search's placeholders after args (themselves after offset earlier
 // placeholders). The fragment is parenthesized, so one whose top level is an
-// OR stays one operand. An empty query, or a schema with no searchable
-// fields, returns the fragment unchanged. Count, list and facet queries fold
-// search through it, so all three describe the same population.
+// OR stays one operand; an empty fragment, no condition, leaves the search
+// alone. An empty query, or a schema with no searchable fields, returns the
+// fragment unchanged. Count, list and facet queries fold search through
+// it, so all three describe the same population.
 func AndSearch(schema *SearchSchema, d Dialect, where string, args []any, offset int, query string) (string, []any, error) {
 	sc, err := buildSearchCondition(schema, d, query, offset+len(args))
 	if err != nil || sc == nil {
 		return where, args, err
 	}
-	return "((" + where + ") AND " + sc.Where + ")", append(slices.Clone(args), sc.Args...), nil
+	combined := append(slices.Clone(args), sc.Args...)
+	if strings.TrimSpace(where) == "" {
+		return sc.Where, combined, nil
+	}
+	return "((" + where + ") AND " + sc.Where + ")", combined, nil
 }
 
 // buildSearchCondition generates dialect-specific full-text search SQL. It
@@ -157,7 +162,8 @@ func buildSearchCondition(schema *SearchSchema, dialect Dialect, query string, s
 	if schema == nil || query == "" || len(schema.Fields) == 0 {
 		return nil, nil
 	}
-	if err := core.CheckNUL(query); err != nil {
+	err := core.CheckText(query)
+	if err != nil {
 		param := cmp.Or(schema.Param, ParamSearch)
 		return nil, &core.ParseError{
 			Kind:    core.ParseErrorKindFilter,

@@ -1,8 +1,6 @@
 package patch
 
 import (
-	"bytes"
-	"encoding/json"
 	"maps"
 	"slices"
 	"strconv"
@@ -189,27 +187,6 @@ func documentMembers(value any) []docMember {
 		return out
 	}
 	return nil
-}
-
-// asDocument is value as a decoded JSON document holds it: a
-// json.RawMessage decoded, a Go slice as []any, anything else as it is.
-func asDocument(value any) any {
-	switch v := value.(type) {
-	case map[string]any, []any, nil, string, bool:
-		return v
-	case json.RawMessage:
-		var doc any
-		dec := json.NewDecoder(bytes.NewReader(v))
-		dec.UseNumber()
-		if dec.Decode(&doc) != nil {
-			return value
-		}
-		return doc
-	}
-	if items, ok := core.AnySlice(value); ok {
-		return items
-	}
-	return value
 }
 
 // pathValue is a value a write leaves at a path below its own.

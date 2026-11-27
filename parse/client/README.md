@@ -126,13 +126,13 @@ The answer types mirror the JSON the server writes, member for member, so each d
 
 `T` is the caller's row type: a narrower struct for a field mask (`ListParams.Fields`), whose items hold the masked members only, or `json.RawMessage` to keep each item as sent. `Page`, `PatchAnswer` and `FacetsAnswer` encode a nil `Items`, `Updated` or `Facets` as `[]` or `{}`, as the server does, so a test server built on them answers what a real one does.
 
-`DecodeError(status, body)` reads any non-2xx answer: a body in parse's shape (a JSON object whose `code` and `message` are strings) fills the `*Error`; anything else (a proxy's page, an empty body) leaves it the status alone, with no `Code`. Match it with `errors.As`, and its code with `errors.Is`: a `Code` is an `errors.Is` target. The `Code*` constants are the codes parse answers ([error catalog](../docs/http-errors.md#error-codes)), named as parse's core package names them; an application answers codes of its own beside them, which arrive as a `Code` with no constant (`PatchFailure.Code` is always the application's).
+`DecodeError(status, body)` reads any non-2xx answer: a body in parse's shape (a JSON object whose `code` and `message` are strings) fills the `*Error`; anything else (a proxy's page, an empty body) leaves it the status alone, with no `Code`. `path`, `index` and `details` are read one by one: a member of another JSON type is left out, and the code and message are kept, as the TypeScript SDK reads the same body. Match it with `errors.As`, and its code with `errors.Is`: a `Code` is an `errors.Is` target. The `Code*` constants are the codes parse answers ([error catalog](../docs/http-errors.md#error-codes)), named as parse's core package names them; an application answers codes of its own beside them, which arrive as a `Code` with no constant (`PatchFailure.Code` is always the application's).
 
 Decoding a `Schema`, alone or in a `SchemaList`, refuses a document whose `version` is not `SchemaVersion` with a `*SchemaVersionError`: the server raises the version when a member is removed, renamed or redefined, so a client that reads another version would misread it.
 
 ## Errors
 
-The client refuses only what the grammar cannot express; the server judges everything else (an operator a field does not allow, a value out of bounds, a distance past the Earth's circumference). A filter is refused where it is built: it carries its error (`Filter.Err`) from then on, and encoding it, `ListParams.Values` or `ListParams.Body` returns it. Operands are encoded when their condition is built, by encoding/json with their own `MarshalJSON` and tag options, so a built filter's wire value is fixed: changing a document, a slice, a pointer's target, raw JSON or the state a marshaler reads changes neither `ListParams.Values` nor `Body` afterwards, in a filter alone or shared by several, and a number keeps the text it was encoded with.
+The client refuses only what the grammar cannot express; the server judges everything else (an operator a field does not allow, a value out of bounds, a distance past the Earth's circumference). A filter is refused where it is built: it carries its error (`Filter.Err`) from then on, and encoding it, `ListParams.Values` or `ListParams.Body` returns it. Operands are encoded when their condition is built, by encoding/json with their own `MarshalJSON` and tag options, so a built filter's wire value is fixed: changing a document, a slice, a pointer's target, raw JSON or the state a marshaler reads changes neither `ListParams.Values` nor `Body` afterwards, in a filter alone or shared by several, and a number keeps the text it was encoded with. A patch `Operation` is held to the same rule: its value is encoded when the operation is built (`Add`, `Replace`, `Test`, `Append`, an `Array`'s or a `Relation`'s methods), it carries `ErrOperand` for a value encoding/json refuses (`Operation.Err`), and marshaling a document holding it returns that error.
 
 | Sentinel or type | When |
 |----------|------|
@@ -142,7 +142,7 @@ The client refuses only what the grammar cannot express; the server judges every
 | `ErrSubSecond` | A relative `Moment` that is not a whole number of seconds; in a filter, wrapped by `ErrOperand` |
 | `ErrElementCondition` | A comparison of an array's `Element()` outside that array's `Some` or `None` (carried when nested in another `Some`, `None`, `Is` or `IsNot`; returned when encoded at the top), or a field's condition inside them |
 | `ErrAbsentMember` | An absent `Nullable` encoded: its struct member is not tagged `omitzero` |
-| `ErrKeyValue` | A key `ItemPath` cannot write: no value, a value of a type with no text (a struct, a pointer, nil), a non-finite float, or a value whose text is `""`, `.` or `..`, which URL parsing drops from a path. It wraps the cause |
+| `ErrKeyValue` | A key `ItemPath` cannot write: no value, a value of a type with no text (a struct, nil), a pointer (nil or not, whatever it points to: pass the value), a non-finite float, or a value whose text is `""`, `.` or `..`, which URL parsing drops from a path. It wraps the cause |
 | `*Error` | The server refused the request: its status and parse's error body (`DecodeError`) |
 | `*SchemaVersionError` | A schema document in a format version this client does not read |
 
@@ -169,7 +169,7 @@ The module versions apart from parse. What holds them together is the wire, whic
 - `ListParams.Values` — a list request's query parameters
 - `ListParams.Body` — the same request as a POST body
 - `Nullable[T]`, `Null[T]`, `Set` — merge-patch members; `ErrAbsentMember`
-- `Operation`, `Add`, `Remove`, `Replace`, `Move`, `Copy`, `Test`, `Append`, `Pointer` — JSON Patch
+- `Operation` (`Err`), `Add`, `Remove`, `Replace`, `Move`, `Copy`, `Test`, `Append`, `Pointer` — JSON Patch
 - `ItemPath`, `ErrKeyValue` — the path of one row, a segment per key value
 - `ErrEmptyOr`, `ErrNegatedEmpty`, `ErrElementCondition`, `ErrOperand`, `ErrSubSecond` — what the grammar cannot express
 - `Page[T]`, `PageInfo`, `FacetBucket`, `FacetsAnswer`, `PatchAnswer[T]`, `PatchFailure` — the answers

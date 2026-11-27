@@ -2,6 +2,7 @@ package filter
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
@@ -9,7 +10,10 @@ import (
 
 // --- Sort Parser ---
 
-// ParseSort parses a sort parameter string.
+// ParseSort parses a sort parameter: comma-separated fields, each optionally
+// prefixed "-" (descending) or "+". Blank items name no field and count
+// toward no limit; a parameter naming none is the schema's default sort. A
+// field named twice is refused, since only its first mention can order.
 func ParseSort(schema *SortSchema, sortParam string) (*SortResult, error) {
 	if schema == nil {
 		return nil, newSortError(ECodeSortFieldNotAllowed, "no sort schema provided")
@@ -20,7 +24,14 @@ func ParseSort(schema *SortSchema, sortParam string) (*SortResult, error) {
 		maxFields = 3
 	}
 
-	if sortParam == "" {
+	var parts []string
+	for part := range strings.SplitSeq(sortParam, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	if len(parts) == 0 {
 		if schema.DefaultField == "" {
 			return &SortResult{}, nil
 		}
@@ -37,7 +48,6 @@ func ParseSort(schema *SortSchema, sortParam string) (*SortResult, error) {
 		}, nil
 	}
 
-	parts := strings.Split(sortParam, ",")
 	if len(parts) > maxFields {
 		return nil, &core.ParseError{
 			Kind:    core.ParseErrorKindSort,
@@ -48,10 +58,6 @@ func ParseSort(schema *SortSchema, sortParam string) (*SortResult, error) {
 
 	fields := make([]SortField, 0, len(parts))
 	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
 		dir := SortAsc
 		name := part
 		if strings.HasPrefix(part, "-") {
@@ -68,6 +74,16 @@ func ParseSort(schema *SortSchema, sortParam string) (*SortResult, error) {
 				Message: fmt.Sprintf("sort field '%s' is not allowed", name),
 				Details: map[string]any{core.DetailField: name},
 			}
+		}
+		named := slices.ContainsFunc(fields, func(f SortField) bool { return f.Name == name })
+		if named {
+			twice := &core.ParseError{
+				Kind:    core.ParseErrorKindSort,
+				Code:    ECodeSortFieldNotAllowed.String(),
+				Message: fmt.Sprintf("sort field '%s' is named more than once", name),
+				Details: map[string]any{core.DetailField: name},
+			}
+			return nil, twice
 		}
 		fields = append(fields, SortField{Name: name, Schema: fieldSchema, Direction: dir})
 	}

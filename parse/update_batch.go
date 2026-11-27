@@ -35,6 +35,7 @@ type UpdateBatchPlan struct {
 	Chunks []UpdateBatchChunk
 
 	dialect Dialect
+	table   string
 }
 
 // Dialect is the dialect the plan's statements are written for.
@@ -86,14 +87,11 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 	if err != nil {
 		return nil, err
 	}
-	if scope.Governance != nil || scope.IncludeDeleted {
-		return nil, fmt.Errorf("parse: %s: %w", r.table, ErrUpdateScope)
-	}
-	tenant, err := r.bindTenant(scope.Tenant)
+	// One scope, and one instant, for every row's statements.
+	common, err := r.bindUpdateScope(scope)
 	if err != nil {
 		return nil, err
 	}
-	common := updateScope{tenant: tenant, policy: scope.Policy, related: scope.Related}
 	limits, err = updateBatchLimits(d, limits)
 	if err != nil {
 		return nil, err
@@ -114,7 +112,7 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 		}
 		// As the database holds the key, so the rows Current returns check
 		// against it and two keys it holds equal are one row's.
-		normalized, err := key.normalize(row.Key)
+		normalized, err := key.requested(row.Key)
 		if err == nil {
 			normalized, err = key.stored(d, normalized)
 		}
@@ -134,7 +132,7 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 	// Rows lock in key order, as Current's ORDER BY reads them, so two
 	// batches over the same rows cannot each hold a lock the other waits on.
 	slices.SortFunc(ordered, func(a, b RowUpdate) int { return key.compare(a.Key, b.Key) })
-	plan := &UpdateBatchPlan{Chunks: []UpdateBatchChunk{}, dialect: d}
+	plan := &UpdateBatchPlan{Chunks: []UpdateBatchChunk{}, dialect: d, table: r.table}
 	var compiled []compiledRowUpdate
 	var offset int
 	for _, row := range ordered {

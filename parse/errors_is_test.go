@@ -79,6 +79,12 @@ func TestRootSentinels_OnePrefixShape(t *testing.T) {
 		{"no target", run(func() error { _, err := devices.BuildUpdate(d, rename, parse.Target{}, tenant); return err }), parse.ErrNoTarget},
 		{"a key of another type", run(func() error { _, err := devices.BuildUpdate(d, rename, parse.ByID(7), tenant); return err }), parse.ErrKeyInvalid},
 		{"one of several keys of another type", run(func() error { _, err := devices.BuildUpdate(d, rename, parse.ByIDs("a", 7), tenant); return err }), parse.ErrKeyInvalid},
+		{"a key holding U+0000", run(func() error { _, err := devices.BuildUpdate(d, rename, parse.ByID("a\x00b"), tenant); return err }), parse.ErrKeyInvalid},
+		{"a key of invalid UTF-8", run(func() error { _, err := devices.BuildUpdate(d, rename, parse.ByIDs("a", "\xff"), tenant); return err }), parse.ErrKeyInvalid},
+		{"a batch key holding U+0000", run(func() error {
+			_, err := devices.BuildUpdateBatch(d, []parse.RowUpdate{{Key: parse.Key{"a\x00"}, Patch: rename}}, tenant, parse.UpdateBatchLimits{})
+			return err
+		}), parse.ErrKeyInvalid},
 		{"a batch key of another type", run(func() error {
 			_, err := devices.BuildUpdateBatch(d, []parse.RowUpdate{{Key: parse.Key{7}, Patch: rename}}, tenant, parse.UpdateBatchLimits{})
 			return err

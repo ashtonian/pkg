@@ -156,12 +156,16 @@ func ApplyPatchPolicyConstraints(patch *ParsedPatch, pc *PatchPolicyConstraints,
 	if pc == nil {
 		return nil
 	}
-	j := policyJudge{pc}
+	j := policyJudge{pc: pc, schema: patch.schema}
 	for i, op := range patch.Operations {
 		if err := j.checkForbidden(op, i); err != nil {
 			return err
 		}
 		for _, w := range op.writes() {
+			err := j.checkElementWrite(op, w, i)
+			if err != nil {
+				return err
+			}
 			if err := j.checkValues(w, i); err != nil {
 				return err
 			}
@@ -180,9 +184,11 @@ func ApplyPatchPolicyConstraints(patch *ParsedPatch, pc *PatchPolicyConstraints,
 	return nil
 }
 
-// policyJudge applies one policy to one patch.
+// policyJudge applies one policy to one patch, reading the schema the patch
+// was parsed against for which paths are arrays.
 type policyJudge struct {
-	pc *PatchPolicyConstraints
+	pc     *PatchPolicyConstraints
+	schema *PatchSchema
 }
 
 // checkForbidden refuses an operation that writes or reads a forbidden path:
@@ -277,16 +283,14 @@ func (j policyJudge) checkValues(w write, index int) error {
 		return nil
 	case writeElements:
 		items, _ := w.value.([]any)
-		if vc := j.selectConstraint(w.path); vc != nil {
-			for _, item := range items {
-				if err := vc.check(w.path, item, isDecimal(w.schema), index); err != nil {
-					return err
-				}
-			}
+		err := j.judgeElements(w.path, items, w.schema, index)
+		if err != nil {
+			return err
 		}
 		// A new element's own path is the append token.
 		for _, item := range items {
-			if err := j.checkWhole(w.path+"/-", item, nil, index); err != nil {
+			err = j.checkWhole(w.path+"/-", item, nil, index)
+			if err != nil {
 				return err
 			}
 		}
@@ -297,20 +301,9 @@ func (j policyJudge) checkValues(w write, index int) error {
 
 // checkWhole judges value written whole at path, and every path below it.
 func (j policyJudge) checkWhole(path string, value any, schema *PathSchema, index int) error {
-	if vc := j.selectConstraint(path); vc != nil {
-		decimal := isDecimal(schema)
-		if schema != nil && schema.DataType == core.FieldTypeArray {
-			// An array path's constraint judges each element, as its
-			// validators do.
-			items, _ := core.AnySlice(value)
-			for _, item := range items {
-				if err := vc.check(path, item, decimal, index); err != nil {
-					return err
-				}
-			}
-		} else if err := vc.check(path, value, decimal, index); err != nil {
-			return err
-		}
+	err := j.judge(path, value, schema, index)
+	if err != nil {
+		return err
 	}
 	if len(j.pc.patterns) == 0 {
 		return nil
@@ -318,10 +311,9 @@ func (j policyJudge) checkWhole(path string, value any, schema *PathSchema, inde
 	checked := map[string]bool{}
 	for _, member := range presentPaths(path, value) {
 		checked[member.path] = true
-		if vc := j.selectConstraint(member.path); vc != nil {
-			if err := vc.check(member.path, member.value, false, index); err != nil {
-				return err
-			}
+		err = j.judge(member.path, member.value, nil, index)
+		if err != nil {
+			return err
 		}
 	}
 	base := pointerTokens(path)
@@ -331,14 +323,96 @@ func (j policyJudge) checkWhole(path string, value any, schema *PathSchema, inde
 				continue
 			}
 			checked[absent] = true
-			if vc := j.selectConstraint(absent); vc != nil {
-				if err := vc.check(absent, nil, false, index); err != nil {
-					return err
-				}
+			err = j.judge(absent, nil, nil, index)
+			if err != nil {
+				return err
 			}
 		}
 	}
 	return nil
+}
+
+// judge holds value, written whole at path, to the constraint path selects.
+// On an array path the constraint judges each element, as the path's
+// validators do, whichever operation writes them: this is the one place
+// that rule is read, so a whole array, a member of a document and an
+// appended element are held to it alike. schema is path's schema when the
+// caller has it; otherwise it is looked up.
+func (j policyJudge) judge(path string, value any, schema *PathSchema, index int) error {
+	vc := j.selectConstraint(path)
+	if vc == nil {
+		return nil
+	}
+	if schema == nil {
+		schema = j.pathSchema(path)
+	}
+	if isArray(schema) {
+		items, _ := core.AnySlice(value)
+		return j.judgeElements(path, items, schema, index)
+	}
+	return vc.check(path, value, isDecimal(schema), index)
+}
+
+// judgeElements holds items, elements written into the array at path, to the
+// constraint path selects.
+func (j policyJudge) judgeElements(path string, items []any, schema *PathSchema, index int) error {
+	vc := j.selectConstraint(path)
+	if vc == nil {
+		return nil
+	}
+	for _, item := range items {
+		err := vc.check(path, item, isDecimal(schema), index)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkElementWrite holds a write below an array path to the constraint on
+// that array, which judges its elements whole: an element added or replaced
+// (`/tags/-`, `/tags/0`) is judged as the element it is, and a removed one
+// writes nothing. A write the parser cannot judge as an element — a move or
+// copy into one, whose value is read as the patch applies, or a write inside
+// an element — is refused, as a merge into a constrained path is.
+func (j policyJudge) checkElementWrite(op *PatchOperation, w write, index int) error {
+	tokens := pointerTokens(w.path)
+	for n := len(tokens) - 1; n > 0; n-- {
+		array := joinPointer(tokens[:n])
+		schema := j.pathSchema(array)
+		if !isArray(schema) || j.selectConstraint(array) == nil {
+			continue
+		}
+		if n < len(tokens)-1 || w.kind == writeCopy || w.kind == writeMerge {
+			refused := &core.ParseError{
+				Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
+				Message: fmt.Sprintf("path '%s' is inside an element of '%s', whose value constraint judges each element whole; write the element with add or replace (index %d)", w.path, array, index),
+				Path:    w.path, Index: new(index),
+			}
+			return refused
+		}
+		if w.kind == writeClear && (op.Op == PatchOpRemove || op.Op == PatchOpMove) {
+			continue // the element is removed, not written
+		}
+		err := j.judgeElements(array, []any{w.value}, schema, index)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pathSchema is the schema the patch's schema resolves path to, or nil.
+func (j policyJudge) pathSchema(path string) *PathSchema {
+	if j.schema == nil {
+		return nil
+	}
+	ps, _ := j.schema.pathSet().resolve(path)
+	return ps
+}
+
+func isArray(schema *PathSchema) bool {
+	return schema != nil && schema.DataType == core.FieldTypeArray
 }
 
 // selectConstraint is the constraint that judges path: its exact key, else

@@ -65,7 +65,7 @@ type NameConflict struct {
 }
 
 func (e *NameConflict) Error() string {
-	first, second, owner := fieldLabel(e.First), fieldLabel(e.Second), TypeText(e.Owner)
+	first, second, owner := e.First.GoSelector(), e.Second.GoSelector(), TypeText(e.Owner)
 	switch {
 	case !e.firstAlias && !e.secondAlias:
 		return fmt.Sprintf("fields %s and %s of %s both use the name %q", first, second, owner, e.Name)
@@ -107,18 +107,6 @@ func TypeText(t reflect.Type) string {
 		}
 		b.WriteByte(text[i])
 	}
-	return b.String()
-}
-
-// fieldLabel is a field's Go name, prefixed by the embedded fields it was
-// promoted through, so two promoted ID fields read as Audit.ID and Base.ID.
-func fieldLabel(f *Field) string {
-	var b strings.Builder
-	for _, parent := range f.parents {
-		b.WriteString(parent.Name)
-		b.WriteByte('.')
-	}
-	b.WriteString(f.goField.Name)
 	return b.String()
 }
 

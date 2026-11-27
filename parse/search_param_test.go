@@ -156,6 +156,43 @@ func TestSearchParam_CollisionsAreRefusedAtConstruction(t *testing.T) {
 	require.ErrorContains(t, err, `search parameter "labels.env" is a flat filter on field "labels.env"`)
 }
 
+// A parameter the endpoint reads itself that a list request already gives
+// another meaning is refused where it would be: ParseList would skip a flat
+// filter the schema document advertises and list every row, or read a list
+// parameter the endpoint reads too.
+func TestAcceptParams_CollisionsAreRefusedAtConstruction(t *testing.T) {
+	for _, tt := range []struct {
+		name, param, want string
+	}{
+		{"a list parameter", "sort", `accepted parameter "sort" (AcceptParams) is the list parameter sort`},
+		{"a field", "category", `accepted parameter "category" (AcceptParams) is a flat filter on field "category"`},
+		{"a field's operator", "name_like", `accepted parameter "name_like" (AcceptParams) is a flat filter on field "name"`},
+		{"the key", "id", `accepted parameter "id" (AcceptParams) is a flat filter on field "id"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := searchedPumps(t, "", parse.AcceptParams(tt.param))
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+
+	res, err := searchedPumps(t, "", parse.AcceptParams("view"))
+	require.NoError(t, err)
+	parts, err := parse.NewResource[searchedPart]("pump_parts")
+	require.NoError(t, err)
+	err = res.Relate("view", parse.HasMany(parts, "pump_id"))
+	require.ErrorContains(t, err, `relation "view": accepted parameter "view" (AcceptParams) would be a flat filter on it`)
+	require.NoError(t, res.Relate("parts", parse.HasMany(parts, "pump_id")), "another name relates")
+
+	dotted, err := searchedPumps(t, "", parse.AcceptParams("labels.env"))
+	require.NoError(t, err)
+	_, err = dotted.WithPaths(filter.PathDecl{Path: "labels.env", Type: core.FieldTypeString})
+	require.ErrorContains(t, err, `accepted parameter "labels.env" (AcceptParams) is a flat filter on field "labels.env"`)
+
+	req, err := res.ParseList(url.Values{"view": {"grid"}, "category": {"pump"}})
+	require.NoError(t, err)
+	assert.NotNil(t, req.Filter(), "a field beside an accepted parameter still filters")
+}
+
 func requireParseError(t *testing.T, err error, code string) *core.ParseError {
 	t.Helper()
 	pe, ok := errors.AsType[*core.ParseError](err)

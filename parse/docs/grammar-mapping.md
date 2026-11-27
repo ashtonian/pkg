@@ -104,7 +104,7 @@ What parse does with each, where it differs:
 
 ## Sorting
 
-`sort=-price,name`: comma-separated fields, `-` for descending, `+` or nothing for ascending. A field must be tagged `parse:"sort"` (E2079 otherwise), and a sort names at most `SortSchema.MaxFields` fields, 3 by default (E2081). Without `sort` the field tagged `sort_default` orders the list. The key's columns the sort does not name are appended, so every sort is a total order a cursor can resume.
+`sort=-price,name`: comma-separated fields, `-` for descending, `+` or nothing for ascending. A field must be tagged `parse:"sort"` (E2079 otherwise) and named once (E2079 for a second mention), and a sort names at most `SortSchema.MaxFields` fields, 3 by default (E2081); blank items (`sort=a,,b`) name nothing and count toward no limit. Without `sort`, or with one naming no field (`sort=,`), the field tagged `sort_default` orders the list. The key's columns the sort does not name are appended, so every sort is a total order a cursor can resume.
 
 | | parse | PostgREST | DRF / django-filter | ent |
 |---|---|---|---|---|

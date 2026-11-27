@@ -85,7 +85,8 @@ type pathSet struct {
 // ** for zero or more), MaxOperations DefaultMaxOperations and
 // MaxRelationValues DefaultMaxRelationValues. It refuses a
 // key whose token holds * among other characters, a nil path schema and an
-// unknown operation.
+// unknown operation. The schema keeps copies of paths' path schemas, so
+// changing one after the call changes nothing the schema parses.
 func NewPatchSchema(resource string, paths map[string]*PathSchema) (*PatchSchema, error) {
 	s := &PatchSchema{Resource: resource, MaxOperations: DefaultMaxOperations, MaxRelationValues: DefaultMaxRelationValues}
 	set := &pathSet{byKey: make(map[string]*PathSchema, len(paths))}
@@ -103,9 +104,9 @@ func NewPatchSchema(resource string, paths map[string]*PathSchema) (*PatchSchema
 	return s, nil
 }
 
-// AddPath adds a path to the schema, checked as NewPatchSchema checks one;
-// a key the schema already has is refused. Parses that start after it see
-// the path, and none sees a partial change.
+// AddPath adds a copy of ps to the schema under key, checked as
+// NewPatchSchema checks a path; a key the schema already has is refused.
+// Parses that start after it see the path, and none sees a partial change.
 func (s *PatchSchema) AddPath(key string, ps *PathSchema) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -125,30 +126,71 @@ func (s *PatchSchema) AddPath(key string, ps *PathSchema) error {
 	return nil
 }
 
-// Path returns the path schema declared under key, a JSON Pointer or
-// pattern as given to NewPatchSchema; it does not match patterns.
-func (s *PatchSchema) Path(key string) (*PathSchema, bool) {
-	ps, ok := s.pathSet().byKey[key]
-	return ps, ok
+// UpdatePath changes the path schema declared under key: update changes a
+// copy, which is checked as NewPatchSchema checks a path and replaces the
+// declared one. Parses that start after it see the change, and none sees a
+// partial one. A key the schema does not declare is refused.
+func (s *PatchSchema) UpdatePath(key string, update func(*PathSchema)) error {
+	if update == nil {
+		return fmt.Errorf("patch schema %s: path %q: UpdatePath needs an update", s.Resource, key)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.pathSet()
+	declared, ok := current.byKey[key]
+	if !ok {
+		return fmt.Errorf("patch schema %s: path %q is not declared", s.Resource, key)
+	}
+	changed := declared.clone()
+	update(changed)
+	err := checkPathSchema(key, changed)
+	if err != nil {
+		return fmt.Errorf("patch schema %s: %w", s.Resource, err)
+	}
+	// The key, and so the patterns, are unchanged; a published pathSet is
+	// never changed, so the next one shares them.
+	next := &pathSet{byKey: maps.Clone(current.byKey), patterns: current.patterns}
+	// Published as a copy of its own, so a pointer update kept changes nothing.
+	next.byKey[key] = changed.clone()
+	s.paths.Store(next)
+	return nil
 }
 
-// Paths yields the schema's keys and path schemas in key order.
+// Path returns a copy of the path schema declared under key, a JSON
+// Pointer or pattern as given to NewPatchSchema; it does not match
+// patterns. Changing the copy changes nothing the schema parses: AddPath
+// and UpdatePath change a schema.
+func (s *PatchSchema) Path(key string) (*PathSchema, bool) {
+	ps, ok := s.pathSet().byKey[key]
+	if !ok {
+		return nil, false
+	}
+	return ps.clone(), true
+}
+
+// Paths yields the schema's keys and copies of their path schemas, as Path
+// returns them, in key order.
 func (s *PatchSchema) Paths() iter.Seq2[string, *PathSchema] {
 	set := s.pathSet()
 	return func(yield func(string, *PathSchema) bool) {
 		for _, key := range slices.Sorted(maps.Keys(set.byKey)) {
-			if !yield(key, set.byKey[key]) {
+			if !yield(key, set.byKey[key].clone()) {
 				return
 			}
 		}
 	}
 }
 
+// keys yields the schema's keys in key order.
+func (s *PatchSchema) keys() iter.Seq[string] {
+	return slices.Values(slices.Sorted(maps.Keys(s.pathSet().byKey)))
+}
+
 // reaching returns the first key, in key order, that admits pointer or a
 // path below it.
 func (s *PatchSchema) reaching(pointer string) (string, bool) {
 	tokens := pointerTokens(pointer)
-	for key := range s.Paths() {
+	for key := range s.keys() {
 		pattern := pathPattern{text: key, tokens: pointerTokens(key)}
 		if pattern.reaches(tokens) {
 			return key, true
@@ -213,6 +255,21 @@ func (set *pathSet) add(key string, ps *PathSchema) error {
 	if err != nil {
 		return fmt.Errorf("path: %w", err)
 	}
+	err = checkPathSchema(key, ps)
+	if err != nil {
+		return err
+	}
+	// The schema is safe for concurrent use only while nothing outside it
+	// can change what it parses with.
+	set.byKey[key] = ps.clone()
+	if pattern.isWildcard() {
+		set.patterns = append(set.patterns, pattern)
+	}
+	return nil
+}
+
+// checkPathSchema refuses a missing path schema and an unknown operation.
+func checkPathSchema(key string, ps *PathSchema) error {
 	if ps == nil {
 		return fmt.Errorf("path %q has no path schema", key)
 	}
@@ -220,10 +277,6 @@ func (set *pathSet) add(key string, ps *PathSchema) error {
 		if !IsValidOp(op) {
 			return fmt.Errorf("path %q: unknown patch operation %q", key, op)
 		}
-	}
-	set.byKey[key] = ps
-	if pattern.isWildcard() {
-		set.patterns = append(set.patterns, pattern)
 	}
 	return nil
 }
@@ -301,6 +354,18 @@ func (p *PathSchema) clearedValue() any {
 	return nil
 }
 
+// wholeValue is what op, an add, replace or remove of its whole field,
+// leaves there, and whether op cleared the field: op's value, or for a
+// remove or a null the path's clearedValue, nil where it clears to SQL
+// NULL. Apply and every SQL path start from it, so members written after a
+// clear, or a clear after members, leave one value on every backend.
+func wholeValue(op *PatchOperation) (value any, cleared bool) {
+	if op.Op == PatchOpRemove || op.Value == nil {
+		return op.Schema.clearedValue(), true
+	}
+	return op.Value, false
+}
+
 // clearsToEmptySlice reports a slice type a clear empties; []byte and
 // json.RawMessage clear to NULL.
 func clearsToEmptySlice(t reflect.Type) bool {
@@ -333,7 +398,10 @@ type PatchOperation struct {
 	// for a move or copy, whose value is read from the document as the patch
 	// applies. A relation's remove holds the members it removes, and a test
 	// the document it compares.
-	Value  any
+	Value any
+	// Schema is the path schema the operation was validated against: the
+	// schema's own, shared with every parse of the path, so it is read,
+	// never changed. PatchSchema.Path returns a copy to change.
 	Schema *PathSchema
 	// fromSchema is a move's or copy's source path schema.
 	fromSchema *PathSchema

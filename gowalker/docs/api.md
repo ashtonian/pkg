@@ -117,7 +117,13 @@ included, which compilation has already read and checked: an `iter.Seq[string]`
 over metadata the schema keeps, which cannot change it (`slices.Collect` copies
 it); ranging over it allocates nothing, while keeping the iterator, or passing
 it to a function that is not inlined, allocates its closure. A copied `Declaration` yields the same keys; one a
-caller builds yields none. `TagKeys(tag)` returns a `*TagError` for a tag
+caller builds yields none. `shape.MisspeltTagKeys(known)` runs that check over
+every field `Declarations` lists, skipped and private ones included, and
+returns each misspelling as a `TagMisspelling`: the `Declaration` that carries
+it, the key `Written` and the key `Meant`, in declaration and then tag order,
+copying only the declarations it returns. It words no error. Which states to
+hold to your keys, and which keys to leave alone because another library reads
+them, stay yours: filter by `State`, `DeclaringType` or `Written`. `TagKeys(tag)` returns a `*TagError` for a tag
 that `reflect.StructTag` stops reading early, such as `parse: "filter"` with a
 space after the colon (`Lookup` then reports that key and every later one
 absent), or that repeats a key (`Lookup` returns only the first). Compiling a
@@ -286,6 +292,17 @@ Leaves retain raw type structure and its compilation-budget cost.
 `Shape.Fields()` returns visible handles in declaration/inline order. Each field
 provides its declared `Type`, raw `Tags`, Go `StructField`, declared `Shape`, copied physical `Index`,
 original `DeclaringType`, and copied `InlineParents` for inherited consumer metadata.
+`Field.GoSelector()` is the Go selector from the listing's struct, through
+those parents: `Audit.ID` for an `ID` promoted from an embedded `Audit`, the
+label every gowalker error gives a field, for an adapter's own diagnostics.
+`Field.UnallocatableParent()` (and `Declaration.UnallocatableParent()`) returns
+the first of those parents that is an unexported pointer: reflection can
+neither allocate it nor point it at a copy, so a write cannot reach the field
+where the pointer is nil, as in a fresh value a decoder or row scanner fills,
+nor in a copy that must not share it, as a copy-on-write patch needs.
+`WithPointerAllocation` fails there with ErrAccess at run time; the method lets
+a library refuse the field when it builds its metadata. An unexported struct
+embedded by value is no obstacle, since its exported fields are settable.
 `Shape.DeclaredView()` returns selected declarations before inline expansion;
 `Field.Inline()` identifies inline owners, including empty ones whose tags a
 consumer still needs to validate. Skipped fields and fields kept without a name
@@ -319,7 +336,8 @@ tag option applies it to exported fields a tag hides with `"-"`, under
 
 Schema collisions wrap `*NameConflict`, available with `errors.As`. Its owner,
 conflicting name and two field handles let adapters build their own diagnostics.
-Default error text omits those names.
+Its text names both fields by `GoSelector`, the owner by `TypeText` and the
+name, all from the type's declaration; it holds no caller value or tag value.
 
 `Shape.DeclaredFields()` preserves raw fields, including private fields. Pointer,
 collection and key relationships remain inspectable through `Elem()` and `Key()`.

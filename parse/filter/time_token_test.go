@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 )
@@ -147,6 +150,37 @@ func TestFilterParser_ResolvesRelativeTokens(t *testing.T) {
 			t.Errorf("error message should mention relative token; got: %v", err)
 		}
 	})
+}
+
+// A policy's relative-time token resolves against the instant given, and a
+// zero instant is the wall clock, never the year 1.
+func TestApplyPolicyConstraintsAt_ResolvesTokensAgainstNow(t *testing.T) {
+	schema := &filter.ResourceSchema{
+		Name: "events",
+		Fields: map[string]*filter.FieldSchema{
+			"created_at": {
+				ExternalName: "created_at", Table: "events", Column: "created_at",
+				DataType:         core.FieldTypeTimestamp,
+				AllowedOperators: []filter.FilterOperator{filter.OpGte},
+			},
+		},
+	}
+	policy := &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: "created_at", Operator: filter.OpGte, Value: "now-7d"}}}
+	week := 7 * 24 * time.Hour
+
+	frozen := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	ast, err := filter.ApplyPolicyConstraintsAt(schema, nil, policy, frozen)
+	require.NoError(t, err)
+	assert.Equal(t, core.FormatTimestamp(frozen.Add(-week)), findValue(t, ast.Root))
+
+	before := time.Now().UTC()
+	ast, err = filter.ApplyPolicyConstraintsAt(schema, nil, policy, time.Time{})
+	after := time.Now().UTC()
+	require.NoError(t, err)
+	resolved, err := time.Parse(core.TimestampLayout, findValue(t, ast.Root))
+	require.NoError(t, err)
+	assert.False(t, resolved.Before(before.Add(-week).Truncate(time.Microsecond)), "resolved %s, before %s", resolved, before.Add(-week))
+	assert.False(t, resolved.After(after.Add(-week)), "resolved %s, after %s", resolved, after.Add(-week))
 }
 
 func findValue(t *testing.T, n *filter.FilterNode) string {

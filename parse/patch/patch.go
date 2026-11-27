@@ -236,10 +236,15 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 	return &PatchOperation{Op: op, Path: raw.Path, From: raw.From, Value: value, Schema: pathSchema, fromSchema: fromSchema}, nil
 }
 
-// resolvePath validates a JSON Pointer (RFC 6901 syntax, depth within
-// ParserConfig.MaxDepth) and returns its schema entry and token count.
+// resolvePath validates a JSON Pointer (RFC 6901 syntax, valid UTF-8
+// without U+0000, depth within ParserConfig.MaxDepth) and returns its
+// schema entry and token count.
 func (p *Parser) resolvePath(path string, index int) (*PathSchema, int, error) {
 	tokens, err := core.ParsePointer(path)
+	if err == nil {
+		// SQL binds a member's tokens as text (a jsonb path).
+		err = core.CheckText(path)
+	}
 	if err != nil {
 		return nil, 0, &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodeInvalidPatchOp.String(),
@@ -438,11 +443,13 @@ func checkItems(ps *PathSchema, op PatchOp, value any, depth int) error {
 //   - arrays of scalars normalize element-wise (array_append's value is one element);
 //   - other composite values (structs, maps) must decode into GoType.
 //
-// Nested paths address members inside a JSON value and pass through.
-// Relation paths carry arrays of target IDs, normalized element-wise.
+// Nested paths address members inside a JSON value, and a path with no Go
+// type to shape its document holds one: their values are documents
+// (documentValue). Relation paths carry arrays of target IDs, normalized
+// element-wise.
 func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.Codec) (any, error) {
 	if depth != 1 {
-		return v, nil
+		return documentValue(v)
 	}
 	if v == nil && op != PatchOpArrayAppend {
 		return nil, nil
@@ -460,11 +467,13 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 		target = target.Elem()
 	}
 	if op == PatchOpArrayAppend {
-		if target == nil || target.Kind() != reflect.Slice {
-			if target != nil && target.Kind() == reflect.Array {
-				return nil, fmt.Errorf("array_append cannot grow a fixed-size array (%s)", gowalker.TypeText(target))
-			}
-			return v, nil
+		switch {
+		case target == nil:
+			return untypedElement(v)
+		case target.Kind() == reflect.Array:
+			return nil, fmt.Errorf("array_append cannot grow a fixed-size array (%s)", gowalker.TypeText(target))
+		case target.Kind() != reflect.Slice:
+			return documentValue(v)
 		}
 		return normalizeTyped(target.Elem(), v, codec)
 	}
@@ -474,11 +483,17 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 			err = checkNullability(ps, op, normalized, depth)
 		}
 		if err == nil && op == PatchOpTest && normalized != nil {
-			return v, nil
+			return documentValue(v)
 		}
 		return normalized, err
 	}
 	if target == nil {
+		switch {
+		case documentType(ps.DataType):
+			return documentValue(v)
+		case ps.DataType == core.FieldTypeArray:
+			return untypedElements(v)
+		}
 		return core.NormalizeScalar(ps.DataType, reflect.Invalid, v)
 	}
 	normalized, err := normalizeTyped(target, v, codec)
@@ -487,7 +502,7 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 		// with missing struct members filled or omitted by Go encoding. A
 		// quoted field's test compares its canonical wire text instead, so
 		// "5.0" tests equal to a stored 5 as it replaces one.
-		return supplied, nil
+		return documentValue(supplied)
 	}
 	return normalized, err
 }
@@ -597,7 +612,10 @@ func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
 		}
 		return out, nil
 	case reflect.Interface:
-		return v, nil
+		if t.NumMethod() > 0 {
+			return v, nil // no document decodes into it; the decoder decides
+		}
+		return documentValue(v)
 	}
 	data, err := codec.Encode(v)
 	if err != nil {

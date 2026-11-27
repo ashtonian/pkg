@@ -76,23 +76,42 @@ type Error struct {
 // DecodeError reads the answer to a refused request: its HTTP status and
 // body. A body in parse's shape, a JSON object whose code and message are
 // strings, fills the Error. Any other body (a proxy's HTML page, an empty
-// one, another JSON document) leaves it the status alone, with no Code.
+// one, another JSON document) leaves it the status alone, with no Code. The
+// optional members are read one by one, so a path, index or details of
+// another JSON type is left out rather than losing the code.
 func DecodeError(status int, body []byte) *Error {
 	refused := &Error{Status: status}
-	var answer struct {
-		Code    *Code          `json:"code"`
-		Message *string        `json:"message"`
-		Path    string         `json:"path"`
-		Index   *int           `json:"index"`
-		Details map[string]any `json:"details"`
-	}
-	err := json.Unmarshal(body, &answer)
-	if err != nil || answer.Code == nil || answer.Message == nil {
+	var members map[string]json.RawMessage
+	if json.Unmarshal(body, &members) != nil {
 		return refused
 	}
-	refused.Code, refused.Message = *answer.Code, *answer.Message
-	refused.Path, refused.Index, refused.Details = answer.Path, answer.Index, answer.Details
+	var code, message string
+	if !decodeMember(members, "code", &code) || !decodeMember(members, "message", &message) {
+		return refused
+	}
+	refused.Code, refused.Message = Code(code), message
+	decodeMember(members, "path", &refused.Path)
+	decodeMember(members, "details", &refused.Details)
+	var index int
+	if decodeMember(members, "index", &index) {
+		refused.Index = &index
+	}
 	return refused
+}
+
+// decodeMember decodes the member name of an object into v, reporting
+// whether it is there, not null and of v's type; v is unchanged otherwise.
+func decodeMember[T any](members map[string]json.RawMessage, name string, v *T) bool {
+	raw, ok := members[name]
+	if !ok || string(raw) == "null" {
+		return false
+	}
+	var decoded T
+	if json.Unmarshal(raw, &decoded) != nil {
+		return false
+	}
+	*v = decoded
+	return true
 }
 
 // Error names the code, the status, the message and the patch member or

@@ -152,6 +152,14 @@ type UpdatePlan struct {
 	// (Unchanged); neither returning a row means the target is not found.
 	// Nil when Owner returns every target row.
 	Current *Statement
+	// Lock, set when Owner's UPDATE can write several target rows on a
+	// dialect with row locks and no Current locks them first, locks every
+	// target row the scope admits in key order and returns nothing an
+	// executor reads. Run it just before Owner, in one transaction: an
+	// UPDATE locks rows in the order its plan reads them, and two updates of
+	// overlapping rows whose plans read them in opposite orders would each
+	// hold a row the other waits for (40P01).
+	Lock *Statement
 	// Conflict, set when the patch writes members of a JSON document (an
 	// add, replace or remove below a field), selects the index of the first
 	// operation RFC 6902 cannot apply to a target row's stored document:
@@ -179,6 +187,10 @@ type UpdatePlan struct {
 	// tenant is Scope.Tenant in the tenant key's type; nil without one.
 	tenant  any
 	related map[string]*filter.PolicyConstraints
+	// now is the instant the plan's policies' relative-time tokens resolve
+	// against, read once when it was built: its relation statements admit
+	// the targets its Owner and Current did.
+	now time.Time
 }
 
 // Dialect is the dialect the plan's statements are written for.
@@ -197,15 +209,15 @@ func (p *UpdatePlan) ConflictError(op int64) error {
 }
 
 // HasRelations reports whether the patch changes relation memberships:
-// run Current and Conflict when set, Owner, RelationStatements, then Reread
-// when it returns a statement, in one transaction.
+// run Current, Conflict and Lock when set, Owner, RelationStatements, then
+// Reread when it returns a statement, in one transaction.
 func (p *UpdatePlan) HasRelations() bool { return len(p.relations) > 0 }
 
 // BuildUpdate compiles a patch into the statement that applies it to target
-// under scope s: the patch's SET clause, then a WHERE of the target, the
-// tenant floor, live rows only and s.Policy, then RETURNING the resource's
-// Columns; SkipUnchanged also ANDs the patch's change predicate into the
-// WHERE. A patch that writes members of a JSON document ANDs in the
+// under scope s: the patch's SET clause, then a WHERE of the floor a list in
+// s reads (the tenant, live rows only, s.Policy) and the target, then
+// RETURNING the resource's Columns; SkipUnchanged also ANDs the patch's
+// change predicate into the WHERE. A patch that writes members of a JSON document ANDs in the
 // precondition RFC 6902 sets those operations as well, and is planned with
 // Current and Conflict, so a target row it does not apply to fails the
 // update, as ApplyValidatedPatch fails it, rather than being skipped. A
@@ -232,12 +244,9 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 	if target.keys, err = r.targetKeys(target.keys); err != nil {
 		return nil, err
 	}
-	tenant, err := r.bindTenant(s.Tenant)
+	scope, err := r.bindUpdateScope(s)
 	if err != nil {
 		return nil, err
-	}
-	if s.Governance != nil || s.IncludeDeleted {
-		return nil, fmt.Errorf("parse: %s: %w", r.table, ErrUpdateScope)
 	}
 	cfg, patchOpts, err := r.updateOptions(opts)
 	if err != nil {
@@ -251,12 +260,20 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		return nil, err
 	}
 
-	scope := updateScope{tenant: tenant, policy: s.Policy, related: s.Related}
 	where, args, err := r.updateWhere(d, target, scope, set.ParamCount)
 	if err != nil {
 		return nil, err
 	}
 	columns := strings.Join(r.columns(d, exprs), ", ")
+	// A statement that locks rows of a target that can hold several takes
+	// them in key order, as a batch's Current does, so two updates over
+	// overlapping rows lock in one order and neither holds a row the other
+	// waits for while it waits for one the other holds. A dialect without
+	// row locks serializes writers in their transaction instead.
+	locked := d.RowLock()
+	if locked != "" && len(target.keys) != 1 {
+		locked = " ORDER BY " + r.keyColumns().order(d, r.table) + locked
+	}
 	// The membership changes hold pairs to targets the request may see,
 	// compiled with the targets' schemas for d.
 	changed := make([]string, len(set.RelationOps))
@@ -266,7 +283,7 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 	if err := r.checkTargets(d, changed...); err != nil {
 		return nil, err
 	}
-	plan := &UpdatePlan{relations: set.RelationOps, dialect: d, fields: r.filterSchema, table: r.table, tenant: tenant, related: s.Related}
+	plan := &UpdatePlan{relations: set.RelationOps, dialect: d, fields: r.filterSchema, table: r.table, tenant: scope.tenant, related: scope.related, now: scope.now}
 	switch {
 	case set.SetClause != "":
 		// where's root is a group, which renders parenthesized, or one
@@ -278,12 +295,20 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		if cfg.skipUnchanged {
 			guarded += " AND " + set.ChangePredicate
 		}
-		if cfg.skipUnchanged || set.Precondition != "" {
-			current, currentArgs, err := r.updateWhere(d, target, scope, 0)
+		guardedByCurrent := cfg.skipUnchanged || set.Precondition != ""
+		// Without Current, the UPDATE would take its own locks in the order
+		// its plan reads the rows, so Lock takes them in key order first.
+		ordersLocks := d.RowLock() != "" && len(target.keys) != 1
+		if guardedByCurrent || ordersLocks {
+			bare, bareArgs, err := r.updateWhere(d, target, scope, 0)
 			if err != nil {
 				return nil, err
 			}
-			plan.Current = &Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + current + d.RowLock(), Args: currentArgs}
+			if guardedByCurrent {
+				plan.Current = &Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + bare + locked, Args: bareArgs}
+			} else {
+				plan.Lock = &Statement{SQL: "SELECT 1 FROM " + d.QuoteIdent(r.table) + " WHERE " + bare + locked, Args: bareArgs}
+			}
 		}
 		if set.Precondition != "" {
 			plan.Conflict, err = r.conflictStatement(d, target, scope, set.Preconditions)
@@ -300,7 +325,7 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 	case len(set.RelationOps) > 0:
 		// No column changes: lock the owners so concurrent replacements of
 		// one relation cannot interleave their DELETE and INSERT.
-		plan.Owner = Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + where + d.RowLock(), Args: args}
+		plan.Owner = Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + where + locked, Args: args}
 		plan.Writes = true
 	default:
 		plan.Owner = Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + where, Args: args}
@@ -399,7 +424,7 @@ func (r *Resource[T]) targetKeys(keys []Key) ([]Key, error) {
 	}
 	out := make([]Key, len(keys))
 	for i, key := range keys {
-		v, err := r.normalizeKey(key)
+		v, err := r.keyColumns().requested(key)
 		if err != nil {
 			if len(keys) == 1 {
 				return nil, fmt.Errorf("parse: %s: target key: %w", r.table, err)
@@ -409,11 +434,6 @@ func (r *Resource[T]) targetKeys(keys []Key) ([]Key, error) {
 		out[i] = v
 	}
 	return out, nil
-}
-
-// normalizeKey is key in the key columns' canonical forms (keyColumns.normalize).
-func (r *Resource[T]) normalizeKey(key Key) (Key, error) {
-	return r.keyColumns().normalize(key)
 }
 
 // rowKey is row's key as a map key (keyColumns.identity), so rows scanned
@@ -440,36 +460,62 @@ func (r *Resource[T]) rowKey(row T) (any, error) {
 }
 
 // updateScope is what an update statement's WHERE binds: the scope's
-// tenant as bindTenant returned it, and its policies.
+// tenant as bindTenant returned it, its policies, and the instant their
+// relative-time tokens resolve against (the resource clock, read once per
+// plan).
 type updateScope struct {
 	tenant  any
 	policy  *filter.PolicyConstraints
 	related map[string]*filter.PolicyConstraints
+	now     time.Time
+}
+
+// bindUpdateScope is the updateScope every statement of one plan binds,
+// BuildUpdate's and BuildUpdateBatch's alike. An update writes live rows of
+// one tenant, so Governance or IncludeDeleted is ErrUpdateScope; the tenant
+// is bound as bindTenant binds it. The clock is read once: Owner and
+// Current split one set of rows, so a policy token (`now-1h`) must admit
+// the same rows in each.
+func (r *Resource[T]) bindUpdateScope(s Scope) (updateScope, error) {
+	if s.Governance != nil || s.IncludeDeleted {
+		return updateScope{}, fmt.Errorf("parse: %s: %w", r.table, ErrUpdateScope)
+	}
+	tenant, err := r.bindTenant(s.Tenant)
+	if err != nil {
+		return updateScope{}, err
+	}
+	scope := updateScope{tenant: tenant, policy: s.Policy, related: s.Related, now: r.cfg.Now()}
+	return scope, nil
 }
 
 // updateWhere is the WHERE every update statement carries, its placeholders
-// after the SET clause's offset ones, compiled for d.
+// after the SET clause's offset ones, compiled for d: the floor a list in
+// the same scope reads (filter.ComposeConstraints: the tenant, live rows,
+// the policy), ANDed with the target.
 func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s updateScope, offset int) (string, []any, error) {
-	pc := filter.BuildBaseConstraints(r.tenant, s.tenant, r.deleted, false)
+	pc := filter.ComposeConstraints(filter.RepositoryScope{TenantColumn: r.tenant, TenantID: s.tenant, DeleteColumn: r.deleted}, nil, s.policy)
+	var key *filter.PolicyConstraint
 	switch {
 	case len(target.keys) == 1:
-		pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Fields: r.pk, Operator: filter.OpEq, Value: target.keys[0]})
+		key = &filter.PolicyConstraint{Fields: r.pk, Operator: filter.OpEq, Value: target.keys[0]}
 	case len(target.keys) > 1:
-		pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Fields: r.pk, Operator: filter.OpIn, Value: target.keys})
+		key = &filter.PolicyConstraint{Fields: r.pk, Operator: filter.OpIn, Value: target.keys}
 	}
-	if s.policy != nil && !s.policy.IsEmpty() {
-		pc.And = append(pc.And, s.policy)
+	if key != nil {
+		// ComposeConstraints returns a new root, so the target extends no
+		// caller's policy tree.
+		pc.And = append(pc.And, &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{key}})
 	}
 	var userAST *filter.FilterAST
 	if len(target.keys) == 0 {
 		userAST = target.filter.AST()
 	}
-	ast, err := filter.ApplyPolicyConstraints(r.filterSchema, userAST, pc)
+	ast, err := filter.ApplyPolicyConstraintsAt(r.filterSchema, userAST, pc, s.now)
 	if err != nil {
 		return "", nil, err
 	}
 	res, err := filter.NewSQLBuilder(r.filterSchema, d, filter.WithStartParam(offset),
-		filter.WithRelationScope(filter.RelationScope{Tenant: s.tenant, Related: s.related})).Build(ast)
+		filter.WithRelationScope(filter.RelationScope{Tenant: s.tenant, Related: s.related, Now: s.now})).Build(ast)
 	if err != nil {
 		return "", nil, err
 	}
@@ -503,7 +549,7 @@ func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []Key) ([]p
 		if op.Schema.TargetTable != "" {
 			field := plan.fields.Fields[op.Field]
 			opts.TargetVisible = func(alias string, bind func(any) string) (string, error) {
-				return filter.VisibleRelated(field, plan.dialect, alias, plan.tenant, plan.related, bind)
+				return filter.VisibleRelated(field, plan.dialect, alias, filter.RelationScope{Tenant: plan.tenant, Related: plan.related, Now: plan.now}, bind)
 			}
 		}
 		stmts, err := patch.RenderRelationOp(op, plan.dialect, owners, opts)
@@ -555,15 +601,7 @@ func (r *Resource[T]) Reread(plan *UpdatePlan, ownerKeys []Key) (*Statement, err
 
 // ownsUpdatePlan refuses a plan r did not build: its relation changes name
 // another table's fields.
-func (r *Resource[T]) ownsUpdatePlan(plan *UpdatePlan) error {
-	if plan == nil {
-		return fmt.Errorf("parse: %s: nil update plan", r.table)
-	}
-	if plan.table != r.table {
-		return fmt.Errorf("parse: %s: update plan built for %q", r.table, plan.table)
-	}
-	return nil
-}
+func (r *Resource[T]) ownsUpdatePlan(plan *UpdatePlan) error { return r.owns(plan.header()) }
 
 func (r *Resource[T]) updateOptions(opts []UpdateOption) (updateConfig, []patch.PatchSQLOption, error) {
 	var cfg updateConfig

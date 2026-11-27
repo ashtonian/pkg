@@ -62,17 +62,22 @@ describe("time, interval and network values are text the server parses", () => {
 });
 
 describe("sort validation matches Go ParseSort bounds", () => {
-  const fields = { name: {} };
-  it("counts empty comma slots before skipping them", () => {
-    expectCode(() => { validateSort("name,,,", { fields, max_fields: 3 }); }, "E2081");
-    expect(() => { validateSort("name,,", { fields, max_fields: 3 }); }).not.toThrow();
+  const fields = { name: {}, count: {}, id: {}, created: {} };
+  it("counts only the fields named, never blank slots", () => {
+    expect(() => { validateSort("name,,,", { fields, max_fields: 1 }); }).not.toThrow();
+    expect(() => { validateSort(" , ", { fields, max_fields: 1 }); }).not.toThrow();
+    expectCode(() => { validateSort("name,,count", { fields, max_fields: 1 }); }, "E2081");
   });
   it("uses the server default of three fields when max_fields is zero", () => {
-    expectCode(() => { validateSort("name,name,name,name", { fields, max_fields: 0 }); }, "E2081");
-    expect(() => { validateSort("name,name,name", { fields, max_fields: 0 }); }).not.toThrow();
+    expectCode(() => { validateSort("name,count,id,created", { fields, max_fields: 0 }); }, "E2081");
+    expect(() => { validateSort("name,count,id", { fields, max_fields: 0 }); }).not.toThrow();
+  });
+  it("refuses a field named twice, in either direction", () => {
+    expectCode(() => { validateSort(" +name, -name, ", { fields, max_fields: 3 }); }, "E2079");
+    expectCode(() => { validateSort("name,name", { fields, max_fields: 3 }); }, "E2079");
   });
   it("preserves signs and whitespace handling", () => {
-    expect(() => { validateSort(" +name, -name, ", { fields, max_fields: 3 }); }).not.toThrow();
+    expect(() => { validateSort(" +name, -count, ", { fields, max_fields: 3 }); }).not.toThrow();
     expectCode(() => { validateSort("+missing", { fields, max_fields: 3 }); }, "E2079");
   });
 });
@@ -125,6 +130,32 @@ describe("filter builder", () => {
     const built = narrowed.build();
     (built as Record<string, unknown>)["name"] = "changed";
     expect(narrowed.build()).toEqual({ name: "a", price: { $lt: 5 } });
+  });
+  it("copies operands when added and the expression when built", () => {
+    interface Row { name: string; labels: Record<string, unknown>; seen: Date }
+    const names = ["a"];
+    const labels = { env: { tier: "prod" } };
+    const seen = new Date(0);
+    const b = filter<Row>().where("name", { $in: names }).where("labels", { $contains: labels }).where("seen", { $gte: seen });
+    names.push("b");
+    labels.env.tier = "dev";
+    seen.setTime(1);
+    const want = { name: { $in: ["a"] }, labels: { $contains: { env: { tier: "prod" } } }, seen: { $gte: new Date(0) } };
+    expect(b.build()).toEqual(want);
+    const built = b.build() as unknown as { name: { $in: string[] }; seen: { $gte: Date } };
+    built.name.$in.push("c");
+    built.seen.$gte.setTime(2);
+    expect(b.build()).toEqual(want);
+  });
+  it("keeps an operand that is no plain data as the caller's value", () => {
+    class Amount {
+      constructor(readonly text: string) {}
+      toJSON(): string { return this.text; }
+    }
+    const amount = new Amount("1.50");
+    const built = filter<{ price: Amount }>().where("price", { $gte: amount }).build() as { price: { $gte: Amount } };
+    expect(built.price.$gte).toBe(amount);
+    expect(JSON.stringify(built)).toBe('{"price":{"$gte":"1.50"}}');
   });
   it("has no logical methods: and, or and not are combinators", () => {
     const b = filter<{ name: string }>() as unknown as Record<string, unknown>;

@@ -45,7 +45,7 @@ func hasRelation(n *FilterNode) bool {
 func (r *memberResolver) relation(ctx context.Context, n *FilterNode) (*FilterNode, error) {
 	f := n.Field
 	if r.lookup == nil {
-		return nil, invalidRelation(f, "needs a membership lookup to be evaluated outside SQL")
+		return nil, unresolvableRelation(f, "needs a membership lookup to be evaluated outside SQL")
 	}
 	err := checkResolvable(f)
 	if err != nil {
@@ -53,7 +53,7 @@ func (r *memberResolver) relation(ctx context.Context, n *FilterNode) (*FilterNo
 	}
 	by := f.RelatedBy
 	if len(by) != len(f.Relation.SourceColumns) {
-		return nil, invalidRelation(f, "has no owner correlation field for each key column to evaluate outside SQL")
+		return nil, unresolvableRelation(f, "has no owner correlation field for each key column to evaluate outside SQL")
 	}
 	if f.Related != nil && n.Op != OpSome && n.Op != OpNone {
 		sh, err := relatedShorthand(n)
@@ -109,7 +109,7 @@ func (r *memberResolver) correlated(ctx context.Context, by []*FieldSchema, l *L
 func checkResolvable(f *FieldSchema) error {
 	err := f.Relation.Check()
 	if err != nil {
-		return invalidRelation(f, err.Error())
+		return unresolvableRelation(f, err.Error())
 	}
 	return nil
 }
@@ -146,7 +146,7 @@ func (r *memberResolver) relationLookup(ctx context.Context, n *FilterNode) (*Lo
 	var err error
 	if f.Related == nil {
 		if rel.Policy {
-			return nil, false, fmt.Errorf("policy-scoped relation has no target schema")
+			return nil, false, unresolvableRelation(f, "is policy-scoped without a target schema to hold its policy")
 		}
 		// A pair table compared by key: the predicate's comparison is on
 		// the pair's target column.
@@ -203,10 +203,11 @@ func (r *memberResolver) scoped(table string, project []string, tenant, deleted 
 	for _, column := range project {
 		conds = append(conds, WhereNotNull(column))
 	}
+	err := r.cfg.scope.tenantMissing(table, tenant)
+	if err != nil {
+		return nil, err
+	}
 	if tenant != "" && !r.cfg.scope.unscoped {
-		if r.cfg.scope.tenant == nil {
-			return nil, fmt.Errorf("relation table %s is tenant-scoped (%s): bind a tenant or opt out explicitly with an unscoped-relations option", table, tenant)
-		}
 		conds = append(conds, WhereEq(tenant, r.cfg.scope.tenant))
 	}
 	if deleted != "" {
@@ -245,5 +246,5 @@ func keyCondition(f *FieldSchema, n *FilterNode) (*LookupCond, bool, error) {
 	case OpNull:
 		return nil, false, nil
 	}
-	return nil, false, invalidRelation(f, fmt.Sprintf("compares its key with $%s, which only SQL evaluates", n.Op))
+	return nil, false, unresolvableRelation(f, fmt.Sprintf("compares its key with $%s, which only SQL evaluates", n.Op))
 }

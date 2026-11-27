@@ -60,14 +60,14 @@ func TestPatchTransferDestinationValidation(t *testing.T) {
 func TestPatchTransferUsesCurrentValueAndCustomValidator(t *testing.T) {
 	sentinel := errors.New("destination validator")
 	p, err := parse.NewResource[transferRow]("transfer_rows", parse.CustomizeSchemas(func(s parse.Schemas) error {
-		status := pathOf(s.Patch, "/status")
-		status.Validators = append(status.Validators, func(value any) error {
-			if value == "offline" {
-				return sentinel
-			}
-			return nil
+		return s.Patch.UpdatePath("/status", func(status *patch.PathSchema) {
+			status.Validators = append(status.Validators, func(value any) error {
+				if value == "offline" {
+					return sentinel
+				}
+				return nil
+			})
 		})
-		return nil
 	}))
 	require.NoError(t, err)
 	for _, tc := range []struct {
@@ -113,7 +113,7 @@ func TestPatchEmptyObjectKeys(t *testing.T) {
  {"op":"move","from":"/meta/copied","path":"/meta//moved"},
  {"op":"remove","path":"/meta//x"},
  {"op":"add","path":"/meta/array/0//z","value":"new"},
- {"op":"add","path":"/meta//payload","value":{"":{"a/b":"ok"},"\u0000":"keep"}},
+ {"op":"add","path":"/meta//payload","value":{"":{"a/b":"ok"},"\u0001":"keep"}},
  {"op":"test","path":"/meta//moved","value":"new"},
  {"op":"test","path":"/meta/array/0//z","value":"new"},
  {"op":"test","path":"/meta//payload//a~1b","value":"ok"}
@@ -127,7 +127,7 @@ func TestPatchEmptyObjectKeys(t *testing.T) {
 	require.NotContains(t, nested, "x")
 	payload, payloadOK := nested["payload"].(map[string]any)
 	require.True(t, payloadOK)
-	require.Equal(t, "keep", payload["\x00"])
+	require.Equal(t, "keep", payload["\x01"])
 	original, originalOK := target.Meta[""].(map[string]any)
 	require.True(t, originalOK)
 	require.Equal(t, "old", original["x"])

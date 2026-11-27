@@ -455,6 +455,43 @@ func TestOperation_EncodesTheMembersItsOpTakes(t *testing.T) {
 	}
 }
 
+// An operation's value is encoded when it is built, as a filter's operand
+// is: changing what it was built from changes nothing it sends.
+func TestOperation_EncodingIsFixedWhenBuilt(t *testing.T) {
+	doc := map[string]any{"color": "red"}
+	tags := []string{"a", "b"}
+	ops := []Operation{Add("/attrs", doc), Replace("/tags", tags), Test("/attrs", doc), Append("/log", doc)}
+	before := encode(t, ops)
+	doc["color"] = "blue"
+	tags[0] = "z"
+	checkJSON(t, before, encode(t, ops))
+	checkJSON(t, `[{"op":"add","path":"/attrs","value":{"color":"red"}},{"op":"replace","path":"/tags","value":["a","b"]},`+
+		`{"op":"test","path":"/attrs","value":{"color":"red"}},{"op":"array_append","path":"/log","value":{"color":"red"}}]`, before)
+}
+
+// A value encoding/json refuses is ErrOperand where the operation is built,
+// as an operand is in a filter, and marshaling a document holding it fails.
+func TestOperation_RefusedValueIsErrOperandWhenBuilt(t *testing.T) {
+	for name, op := range map[string]Operation{
+		"NaN":             Replace("/score", math.NaN()),
+		"infinity":        Append("/scores", math.Inf(-1)),
+		"channel":         Add("/x", make(chan int)),
+		"marshaler error": Test("/at", failingJSON{}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			checkErrorIs(t, op.Err(), ErrOperand)
+			_, err := json.Marshal([]Operation{Remove("/a"), op})
+			checkErrorIs(t, err, ErrOperand)
+		})
+	}
+	check[error](t, nil, Add("/a", 1).Err())
+}
+
+// failingJSON is a value whose MarshalJSON fails.
+type failingJSON struct{}
+
+func (failingJSON) MarshalJSON() ([]byte, error) { return nil, errors.New("no JSON") }
+
 func TestPointer_EscapesMemberNames(t *testing.T) {
 	check(t, "/unit~1si~0v", Pointer("unit/si~v"))
 	check(t, "/labels/env", Pointer("labels", "env"))

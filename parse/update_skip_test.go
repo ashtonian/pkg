@@ -5,6 +5,7 @@ package parse_test
 import (
 	"database/sql"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -246,17 +247,17 @@ func TestSkipUnchanged_SQL(t *testing.T) {
 	}{
 		{filter.PostgresDialect{},
 			`UPDATE "notes" SET "rank" = $1, "title" = $2, "updated_at" = $3, "version" = "version" + 1 ` +
-				`WHERE ("notes"."tenant_id" = $4 AND "notes"."deleted_at" IS NULL AND "notes"."id" = $5) ` +
+				`WHERE (("notes"."tenant_id" = $4 AND "notes"."deleted_at" IS NULL) AND "notes"."id" = $5) ` +
 				`AND ("rank" IS DISTINCT FROM $1 OR "rank"::text COLLATE "C" IS DISTINCT FROM ($1)::text ` +
 				`OR "title" IS DISTINCT FROM $2 OR "title"::text COLLATE "C" IS DISTINCT FROM ($2)::text) ` +
 				`RETURNING ` + columns,
-			`SELECT ` + columns + ` FROM "notes" WHERE ("notes"."tenant_id" = $1 AND "notes"."deleted_at" IS NULL AND "notes"."id" = $2) FOR UPDATE`},
+			`SELECT ` + columns + ` FROM "notes" WHERE (("notes"."tenant_id" = $1 AND "notes"."deleted_at" IS NULL) AND "notes"."id" = $2) FOR UPDATE`},
 		{filter.SQLiteDialect{},
 			`UPDATE "notes" SET "rank" = ?1, "title" = ?2, "updated_at" = ?3, "version" = "version" + 1 ` +
-				`WHERE ("notes"."tenant_id" = ?4 AND "notes"."deleted_at" IS NULL AND "notes"."id" = ?5) ` +
+				`WHERE (("notes"."tenant_id" = ?4 AND "notes"."deleted_at" IS NULL) AND "notes"."id" = ?5) ` +
 				`AND ("rank" COLLATE BINARY IS NOT ?1 OR "title" COLLATE BINARY IS NOT ?2) ` +
 				`RETURNING ` + columns,
-			`SELECT ` + columns + ` FROM "notes" WHERE ("notes"."tenant_id" = ?1 AND "notes"."deleted_at" IS NULL AND "notes"."id" = ?2)`},
+			`SELECT ` + columns + ` FROM "notes" WHERE (("notes"."tenant_id" = ?1 AND "notes"."deleted_at" IS NULL) AND "notes"."id" = ?2)`},
 	} {
 		t.Run(tc.dialect.Name(), func(t *testing.T) {
 			plan := skipUpdate(t, r, tc.dialect, `{"title":"n","rank":2}`, parse.ByID("n1"))
@@ -267,6 +268,63 @@ func TestSkipUnchanged_SQL(t *testing.T) {
 			assert.Equal(t, []any{"t1", "n1"}, plan.Current.Args)
 		})
 	}
+}
+
+// A statement that locks the rows of a target that can hold several takes
+// them in key order, so two updates over overlapping rows lock in one order
+// and cannot deadlock on each other: Current, a relation-only patch's Owner,
+// and Lock, which an unguarded UPDATE of several rows runs first, since the
+// UPDATE takes its own locks in the order its plan reads the rows. One row
+// needs no order, and SQLite locks no rows. TestExecutorContract_Postgres
+// runs the deadlock itself.
+func TestBuildUpdate_LocksSeveralRowsInKeyOrder(t *testing.T) {
+	r := notes(t)
+	byTitle, err := r.ParseFilterMap(map[string]any{"title": "one"})
+	require.NoError(t, err)
+	const ordered = ` ORDER BY "notes"."id" COLLATE pg_c_utf8 FOR UPDATE`
+	build := func(t *testing.T, d parse.Dialect, body string, target parse.Target, opts ...parse.UpdateOption) *parse.UpdatePlan {
+		t.Helper()
+		p, err := r.ParseMergePatch([]byte(body))
+		require.NoError(t, err)
+		plan, err := r.BuildUpdate(d, p, target, parse.Scope{Tenant: "t1"}, opts...)
+		require.NoError(t, err)
+		return plan
+	}
+	pg := filter.PostgresDialect{}
+	for _, tc := range []struct {
+		name   string
+		target parse.Target
+		suffix string
+	}{
+		{"several keys", parse.ByIDs("n2", "n1"), ordered},
+		{"a filter", parse.ByFilter(byTitle), ordered},
+		{"one key", parse.ByID("n1"), ") FOR UPDATE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := build(t, pg, `{"title":"x"}`, tc.target, parse.SkipUnchanged()).Current
+			require.NotNil(t, current)
+			assert.True(t, strings.HasSuffix(current.SQL, tc.suffix), current.SQL)
+			owner := build(t, pg, `{"tags":["blue"]}`, tc.target).Owner
+			assert.True(t, strings.HasSuffix(owner.SQL, tc.suffix), owner.SQL)
+
+			unguarded := build(t, pg, `{"title":"x"}`, tc.target)
+			assert.Nil(t, unguarded.Current)
+			if tc.suffix != ordered {
+				assert.Nil(t, unguarded.Lock, "one row's UPDATE locks it alone")
+				return
+			}
+			require.NotNil(t, unguarded.Lock)
+			assert.True(t, strings.HasPrefix(unguarded.Lock.SQL, `SELECT 1 FROM "notes" WHERE `), unguarded.Lock.SQL)
+			assert.True(t, strings.HasSuffix(unguarded.Lock.SQL, tc.suffix), unguarded.Lock.SQL)
+			assert.Nil(t, build(t, pg, `{"title":"x"}`, tc.target, parse.SkipUnchanged()).Lock, "Current locks the rows of a guarded update")
+		})
+	}
+	t.Run("sqlite", func(t *testing.T) {
+		current := build(t, filter.SQLiteDialect{}, `{"title":"x"}`, parse.ByIDs("n2", "n1"), parse.SkipUnchanged()).Current
+		require.NotNil(t, current)
+		assert.NotContains(t, current.SQL, "ORDER BY")
+		assert.Nil(t, build(t, filter.SQLiteDialect{}, `{"title":"x"}`, parse.ByIDs("n2", "n1")).Lock)
+	})
 }
 
 func TestSkipUnchanged_LeavesTheDefaultAlone(t *testing.T) {

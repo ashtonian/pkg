@@ -21,7 +21,7 @@ It keeps no fetch wrapper, URL joining, query-string encoding, key escaping, mer
 | List, facets, patch one, patch many, schema | A handle's `list`, `facets`, `patch`, `patchMany` and `schema` ([server contract](../README.md#server-contract)) | List and patch functions; the encoding of filters, sorts, `id[]` and key segments |
 | Create, get, replace, delete, actions on a row | `request` on a handle or on the client ([other routes](../README.md#other-routes)) | A fetch call per operation |
 | Filters and sorts | `filter`, `and`, `or`, `not`, `sort` and the typed `ListOptions` ([filtering](../README.md#filtering)) | Filter builders |
-| Errors | `ApiError`, which reads parse's error body and RFC 9457 problems alike; `ResponseError`, `NonFiniteNumberError` and the schema errors ([errors](../README.md#errors)) | Error classes and response decoding |
+| Errors | `ApiError`, which reads parse's error body and RFC 9457 problems alike; `ResponseError`, `UnencodableValueError` (and its `NonFiniteNumberError`) and the schema errors ([errors](../README.md#errors)) | Error classes and response decoding |
 | Iteration | `listAll`, a lazy async iterator over the pages by cursor | Cursor loops |
 | Validation | `validateBeforeSend`, `validator()` and `SchemaValidator`, which read the server's schema document ([schema discovery and validation](../README.md#schema-discovery--validation)) | Generated validators of filters, sorts and patches |
 | Merge-patch input | `PatchInput<T>`, `MergeDocument<T>` ([patching](../README.md#patching)) | Partial and nullable patch types |

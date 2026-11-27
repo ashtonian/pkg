@@ -19,7 +19,9 @@ const (
 	DetailParameter = "parameter"
 )
 
-// ParseError is the single error type for all parse operations.
+// ParseError is the error a request is refused with, its Kind naming the
+// subsystem that refused it. Configuration errors are plain errors (see the
+// package documentation).
 type ParseError struct {
 	Code    string         `json:"code"`
 	Message string         `json:"message"`

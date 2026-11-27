@@ -6,7 +6,7 @@
  * @module
  */
 
-import { ApiError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaVersionError } from "./core/errors.js";
+import { ApiError, type Payload, ResponseError, SchemaResourceError, SchemaValidationError, SchemaVersionError } from "./core/errors.js";
 import { encodeJSON, type JSONText } from "./core/json.js";
 import { hasProblemMembers, isProblemMediaType, isRecord, PROBLEM_MEDIA_TYPE, type Problem, readProblem } from "./core/problem.js";
 import type { ErrorBody, KeyValue, ListRequestOptions, RequestOptions, ResourceKey, ResourceSendOptions, SendOptions } from "./core/types.js";
@@ -22,11 +22,45 @@ import { SchemaValidator } from "./validate.js";
 
 // A document in another format could rename or redefine a member the
 // validators read, so it would validate requests wrongly rather than fail.
+// The document the cache keeps is frozen: every caller and validator reads
+// the same one, so none can change what the others see.
 function checkVersion(schema: ResourceSchema): ResourceSchema {
   if (schema.version !== SCHEMA_VERSION) {
     throw new SchemaVersionError(schema.resource, schema.version, SCHEMA_VERSION);
   }
-  return schema;
+  return deepFreeze(schema);
+}
+
+function deepFreeze<V>(value: V): V {
+  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const member of Object.values(value)) deepFreeze(member);
+  }
+  return value;
+}
+
+// A payload as it travels: its JSON text and the value that text parses
+// to. Validation reads the value, so it judges the JSON the server will
+// read (a Date as its text, no undefined members), and the transports send
+// the text.
+interface Encoded<V> {
+  readonly text: JSONText;
+  readonly value: V;
+}
+
+function encode(value: unknown, payload: Payload): Encoded<unknown> {
+  const text = encodeJSON(value, payload);
+  return { text, value: JSON.parse(text) as unknown };
+}
+
+// A list's or a facet request's filter as it travels, or undefined for one
+// whose JSON has no member (`{}`, `{ name: undefined }`): the server reads no
+// filter as matching every row.
+function encodeFilter(f: object | undefined): Encoded<Record<string, unknown>> | undefined {
+  if (f === undefined) return undefined;
+  const encoded = encode(f, "filter");
+  if (!isRecord(encoded.value) || Object.keys(encoded.value).length === 0) return undefined;
+  return { text: encoded.text, value: encoded.value };
 }
 
 function encodeSort<T>(sort: SortField<T>[] | string): string {
@@ -36,17 +70,13 @@ function encodeSort<T>(sort: SortField<T>[] | string): string {
     .join(",");
 }
 
-function hasFilter(f: object | undefined): f is Record<string, unknown> {
-  return f !== undefined && Object.keys(f).length > 0;
-}
-
 // Query parameters the server's list handler reads (filter.Param*). Zero
 // members (an empty sort or name list, page size 0) are left out, so the
 // server applies its defaults, as the Go client does.
-function buildListQuery<T>(opts: ListOptions<T>): string {
+function buildListQuery<T>(opts: ListOptions<T>, filter: Encoded<unknown> | undefined): string {
   const params = new URLSearchParams();
-  if (hasFilter(opts.filter)) {
-    params.set("filter", encodeJSON(opts.filter, "filter"));
+  if (filter) {
+    params.set("filter", filter.text);
   }
   const sort = opts.sort === undefined ? "" : encodeSort(opts.sort);
   if (sort) {
@@ -82,9 +112,9 @@ function buildListQuery<T>(opts: ListOptions<T>): string {
 // The same request as one JSON document, a POST body the server reads with
 // Resource.ParseListBody: the query parameters as members, the filter as a
 // document and the name lists as arrays; zero members are left out.
-function buildListBody<T>(opts: ListOptions<T>): Record<string, unknown> {
+function buildListBody<T>(opts: ListOptions<T>, filter: Encoded<unknown> | undefined): Record<string, unknown> {
   const body: Record<string, unknown> = {};
-  if (hasFilter(opts.filter)) body["filter"] = opts.filter;
+  if (filter) body["filter"] = filter.value;
   const sort = opts.sort === undefined ? "" : encodeSort(opts.sort);
   if (sort) body["sort"] = sort;
   if (opts.cursor) body["cursor"] = opts.cursor;
@@ -217,9 +247,39 @@ async function readApiError(res: Response): Promise<ApiError> {
   return new ApiError(res.status, { code: "", message: statusMessage });
 }
 
-// A 2xx is read as text once, so a body that is empty or not JSON is a
-// ResponseError carrying the status, never a bare SyntaxError.
-async function parseResponse<R>(res: Response, url: string): Promise<R> {
+// An answer's shape: what a 2xx body lacks that the call reads, or
+// undefined when it has it. The members checked are the ones a call or its
+// caller dereferences; the rest of the document is the server's to fill.
+type Shape = (doc: unknown) => string | undefined;
+
+const pageShape: Shape = (doc) => {
+  if (!isRecord(doc)) return "the page is not a JSON object";
+  if (!Array.isArray(doc["items"])) return "the page has no items array";
+  const info = doc["page_info"];
+  if (!isRecord(info) || typeof info["has_next_page"] !== "boolean") return "the page has no page_info with has_next_page";
+  const end = info["end_cursor"];
+  if (end !== undefined && typeof end !== "string") return "page_info.end_cursor is not a string";
+  return undefined;
+};
+
+const patchShape: Shape = (doc) =>
+  isRecord(doc) && Array.isArray(doc["updated"]) ? undefined : "the patch answer has no updated array";
+
+const facetsShape: Shape = (doc) =>
+  isRecord(doc) && (doc["facets"] === undefined || isRecord(doc["facets"])) ? undefined : "the facets answer is not an object of facets";
+
+const schemaShape: Shape = (doc) =>
+  isRecord(doc) && typeof doc["resource"] === "string" ? undefined : "the schema document is not an object naming its resource";
+
+const schemaListShape: Shape = (doc) =>
+  isRecord(doc) && Array.isArray(doc["schemas"]) && doc["schemas"].every((s) => schemaShape(s) === undefined)
+    ? undefined
+    : "the schema list has no schemas array of schema documents";
+
+// A 2xx is read as text once, so a body that is empty, not JSON or not of
+// the answer's shape is a ResponseError carrying the status, never a bare
+// SyntaxError or a TypeError where a caller reads a member.
+async function parseResponse<R>(res: Response, url: string, shape?: Shape): Promise<R> {
   if (!res.ok) {
     throw await readApiError(res);
   }
@@ -227,11 +287,17 @@ async function parseResponse<R>(res: Response, url: string): Promise<R> {
   if (text.trim() === "") {
     throw new ResponseError(res.status, url, "the response has no body");
   }
+  let doc: unknown;
   try {
-    return JSON.parse(text) as R;
+    doc = JSON.parse(text);
   } catch {
     throw new ResponseError(res.status, url, `the body is not JSON (Content-Type ${res.headers.get("Content-Type") ?? "unset"})`);
   }
+  const lacks = shape?.(doc);
+  if (lacks !== undefined) {
+    throw new ResponseError(res.status, url, lacks);
+  }
+  return doc as R;
 }
 
 // A call that reads no body takes any 2xx as its answer. The body is
@@ -410,7 +476,7 @@ export interface Client {
    * dynamic segments escaped by the caller) for a route the server serves
    * beside parse's: create, get, delete, or any other a generated SDK binds.
    * The request takes the client's headers, timeout and `fetch`; its body is
-   * encoded as every payload is, refusing a non-finite number before
+   * encoded as every payload is, refusing a value JSON would write as null before
    * anything is sent; a non-2xx is an {@link ApiError} read as the resource
    * methods read one. `R` and `B` are the response and body types the
    * caller states; nothing checks them, and `validateBeforeSend` does not
@@ -487,8 +553,8 @@ export function createClient(cfg: ClientConfig): Client {
     return fetchFn(url, init);
   }
 
-  async function fetchJSON<R>(method: string, url: string, body: JSONText | undefined, reqOpts?: RequestOptions): Promise<R> {
-    return parseResponse<R>(await send(method, url, body, reqOpts), url);
+  async function fetchJSON<R>(method: string, url: string, body: JSONText | undefined, reqOpts: RequestOptions | undefined, shape: Shape): Promise<R> {
+    return parseResponse<R>(await send(method, url, body, reqOpts), url, shape);
   }
 
   // sendRequest is the request methods' call. Its query and body are encoded
@@ -512,6 +578,18 @@ export function createClient(cfg: ClientConfig): Client {
   // Keyed by registry name: a handle's, a relation target's and a listed
   // document's `resource` are the same name.
   const schemaCache = new Map<string, ResourceSchema>();
+  // A validator per cached document, so a document schemas() replaces
+  // takes its validator with it.
+  const validators = new WeakMap<ResourceSchema, SchemaValidator>();
+
+  function validatorFor(doc: ResourceSchema): SchemaValidator {
+    let v = validators.get(doc);
+    if (!v) {
+      v = new SchemaValidator(doc);
+      validators.set(doc, v);
+    }
+    return v;
+  }
 
   // One schema request shared by every concurrent caller for a resource.
   interface SharedSchemaFetch {
@@ -541,7 +619,7 @@ export function createClient(cfg: ClientConfig): Client {
     const cancel = new AbortController();
     const opts: RequestOptions = { signal: cancel.signal };
     if (headers) opts.headers = headers;
-    const fetched = fetchJSON<ResourceSchema>("GET", schemaURL(name), undefined, opts);
+    const fetched = fetchJSON<ResourceSchema>("GET", schemaURL(name), undefined, opts, schemaShape);
     const shared: SharedSchemaFetch = {
       schema: fetched.then((doc) => {
         const schema = checkVersion(doc);
@@ -608,9 +686,9 @@ export function createClient(cfg: ClientConfig): Client {
 
   // validateRequest checks a list's or a facet request's members against the
   // schema, related schemas included, as the server would.
-  async function validateRequest<T>(v: SchemaValidator, opts: ListOptions<T>, reqOpts?: RequestOptions): Promise<void> {
-    if (hasFilter(opts.filter)) {
-      v.validateFilter(opts.filter, await relatedSchemas(v, opts.filter, reqOpts));
+  async function validateRequest<T>(v: SchemaValidator, opts: ListOptions<T>, filter: Encoded<Record<string, unknown>> | undefined, reqOpts?: RequestOptions): Promise<void> {
+    if (filter) {
+      v.validateFilter(filter.value, await relatedSchemas(v, filter.value, reqOpts));
     }
     const sort = opts.sort === undefined ? "" : encodeSort(opts.sort);
     if (sort) {
@@ -640,7 +718,6 @@ export function createClient(cfg: ClientConfig): Client {
         throw new RangeError(`resource schema name must be one non-empty segment, got ${JSON.stringify(name)}`);
       }
       const collectionURL = joinURL(cfg.baseURL, collection);
-      let validatorInstance: SchemaValidator | undefined;
 
       // The operations close over the handle rather than reading `this`, so
       // a destructured method, or one passed as a callback, makes the calls
@@ -649,36 +726,52 @@ export function createClient(cfg: ClientConfig): Client {
         return fetchSchema(name, reqOpts);
       }
 
+      // The validator of the document the cache holds now, so one that
+      // schemas() replaced is never read again.
       async function validator(reqOpts?: RequestOptions): Promise<SchemaValidator> {
-        if (validatorInstance) return validatorInstance;
-        const doc = await fetchSchema(name, reqOpts);
-        validatorInstance = new SchemaValidator(doc);
-        return validatorInstance;
+        return validatorFor(await fetchSchema(name, reqOpts));
       }
 
       // Each operation encodes its payloads before validating, so a value
       // JSON cannot carry is refused alike with validation on or off, and
-      // before the schema is fetched.
-      async function list(opts: ListOptions<T> = {}, reqOpts?: ListRequestOptions): Promise<ListResult<T>> {
-        const target = `${collectionURL}${buildListQuery(opts)}`;
+      // before the schema is fetched; validation reads the encoded JSON.
+      // The answer comes with the URL it answered, which listAll names when
+      // the server's cursors would page forever.
+      async function listPage(opts: ListOptions<T>, reqOpts: ListRequestOptions | undefined): Promise<{ page: ListResult<T>; url: string }> {
+        const filter = encodeFilter(opts.filter);
+        const target = `${collectionURL}${buildListQuery(opts, filter)}`;
         if (validate) {
-          await validateRequest(await validator(reqOpts), opts, reqOpts);
+          await validateRequest(await validator(reqOpts), opts, filter, reqOpts);
         }
         const tooLong = maxURLLength !== undefined && target.length > maxURLLength;
         const method = reqOpts?.method ?? (tooLong ? "POST" : "GET");
         if (method === "POST") {
-          return fetchJSON<ListResult<T>>("POST", collectionURL, encodeJSON(buildListBody(opts), "list body"), reqOpts);
+          const body = encodeJSON(buildListBody(opts, filter), "list body");
+          return { page: await fetchJSON<ListResult<T>>("POST", collectionURL, body, reqOpts, pageShape), url: collectionURL };
         }
-        return fetchJSON<ListResult<T>>("GET", target, undefined, reqOpts);
+        return { page: await fetchJSON<ListResult<T>>("GET", target, undefined, reqOpts, pageShape), url: target };
       }
 
+      async function list(opts: ListOptions<T> = {}, reqOpts?: ListRequestOptions): Promise<ListResult<T>> {
+        return (await listPage(opts, reqOpts)).page;
+      }
+
+      // A page that says there is a next page names its cursor, and never
+      // the one it was asked with: either would end the walk early or page
+      // forever, so it is the server's ResponseError.
       async function* listAll(opts: Omit<ListOptions<T>, "cursor"> = {}, reqOpts?: ListRequestOptions): AsyncIterableIterator<ListResult<T>> {
         let cursor: string | undefined;
         for (;;) {
-          const page = await list(cursor === undefined ? opts : { ...opts, cursor }, reqOpts);
+          const { page, url } = await listPage(cursor === undefined ? opts : { ...opts, cursor }, reqOpts);
           yield page;
+          if (!page.page_info.has_next_page) return;
           const next = page.page_info.end_cursor;
-          if (!page.page_info.has_next_page || !next) return;
+          if (!next) {
+            throw new ResponseError(200, url, "page_info.has_next_page is true without an end_cursor to fetch it with");
+          }
+          if (next === cursor) {
+            throw new ResponseError(200, url, "page_info.end_cursor repeats the cursor the request sent, so the next page would be this one");
+          }
           cursor = next;
         }
       }
@@ -686,13 +779,13 @@ export function createClient(cfg: ClientConfig): Client {
       async function patch(key: K, input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>> {
         const values = keyValues(key);
         const item = itemPath(values);
-        const body = encodeJSON(input, "patch");
+        const body = encode(input, "patch");
         if (validate) {
           const v = await validator(reqOpts);
           checkKeyArity(name, v.keyColumns(), values.length);
-          v.validatePatch(input);
+          v.validatePatch(body.value as Record<string, unknown>);
         }
-        return fetchJSON<PatchResult<T>>("PATCH", `${collectionURL}/${item}`, body, reqOpts);
+        return fetchJSON<PatchResult<T>>("PATCH", `${collectionURL}/${item}`, body.text, reqOpts, patchShape);
       }
 
       async function patchMany(ids: readonly Extract<K, KeyValue>[], input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>> {
@@ -705,22 +798,23 @@ export function createClient(cfg: ClientConfig): Client {
         }
         const params = new URLSearchParams();
         for (const id of ids) params.append("id[]", keyText(id));
-        const body = encodeJSON(input, "patch");
+        const body = encode(input, "patch");
         if (validate) {
           const v = await validator(reqOpts);
           const columns = v.keyColumns();
           if (columns.length > 1) {
             throw new RangeError(`patchMany cannot address ${name}: its key is (${columns.join(", ")}) and id[] holds one value per row; patch each row with patch(key)`);
           }
-          v.validatePatch(input);
+          v.validatePatch(body.value as Record<string, unknown>);
         }
-        return fetchJSON<PatchResult<T>>("PATCH", `${collectionURL}${query(params)}`, body, reqOpts);
+        return fetchJSON<PatchResult<T>>("PATCH", `${collectionURL}${query(params)}`, body.text, reqOpts, patchShape);
       }
 
       async function facets(fields: (keyof T & string)[], opts: FacetOptions<T> = {}, reqOpts?: RequestOptions): Promise<FacetResult> {
         const params = new URLSearchParams({ facets: fields.join(",") });
-        if (hasFilter(opts.filter)) {
-          params.set("filter", encodeJSON(opts.filter, "filter"));
+        const filter = encodeFilter(opts.filter);
+        if (filter) {
+          params.set("filter", filter.text);
         }
         if (opts.search) {
           params.set("search", opts.search);
@@ -730,11 +824,10 @@ export function createClient(cfg: ClientConfig): Client {
         }
         if (validate) {
           const listOpts: ListOptions<T> = { facets: fields };
-          if (opts.filter) listOpts.filter = opts.filter;
           if (opts.search !== undefined) listOpts.search = opts.search;
-          await validateRequest(await validator(reqOpts), listOpts, reqOpts);
+          await validateRequest(await validator(reqOpts), listOpts, filter, reqOpts);
         }
-        const res = await fetchJSON<{ facets?: FacetResult }>("OPTIONS", `${collectionURL}${query(params)}`, undefined, reqOpts);
+        const res = await fetchJSON<{ facets?: FacetResult }>("OPTIONS", `${collectionURL}${query(params)}`, undefined, reqOpts, facetsShape);
         return res.facets ?? {};
       }
 
@@ -749,7 +842,7 @@ export function createClient(cfg: ClientConfig): Client {
     },
 
     async schemas(reqOpts?: RequestOptions): Promise<ResourceSchema[]> {
-      const resp = await fetchJSON<{ schemas: ResourceSchema[] }>("GET", joinURL(cfg.baseURL, schemaPrefix, "schemas"), undefined, reqOpts);
+      const resp = await fetchJSON<{ schemas: ResourceSchema[] }>("GET", joinURL(cfg.baseURL, schemaPrefix, "schemas"), undefined, reqOpts, schemaListShape);
       for (const s of resp.schemas) {
         schemaCache.set(s.resource, checkVersion(s));
       }

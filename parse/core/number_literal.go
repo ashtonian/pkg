@@ -73,9 +73,6 @@ func scanNumber(s string) (numberLiteral, bool) {
 // errNotNumber is the error for text that is not a JSON number literal.
 func errNotNumber(s string) error { return fmt.Errorf("%q is not a number", s) }
 
-// integral reports a literal written without a fraction or an exponent.
-func (l numberLiteral) integral() bool { return l.fracDigits == "" && l.exp == "" }
-
 // maxExponent bounds the exponent arithmetic is done with. A literal whose
 // value it changes needs about 2^40 digits, far more than memory holds.
 const maxExponent = 1 << 40

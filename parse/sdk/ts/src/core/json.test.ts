@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { NonFiniteNumberError } from "./errors.js";
+import { NonFiniteNumberError, UnencodableValueError } from "./errors.js";
 import { encodeJSON } from "./json.js";
 
 describe("encodeJSON", () => {
@@ -38,6 +38,34 @@ describe("encodeJSON", () => {
     expect(caught).toBeInstanceOf(NonFiniteNumberError);
     expect(caught).toBeInstanceOf(RangeError);
     expect(caught).toMatchObject({ name: "NonFiniteNumberError", payload: "filter", pointer, value: number });
+  });
+
+  const invalidDate = new Date(Number.NaN);
+  it.each([
+    { name: "an invalid Date", value: { seen: invalidDate }, pointer: "/seen", original: invalidDate, says: "an invalid Date" },
+    { name: "an invalid Date in an array", value: { at: [new Date(0), invalidDate] }, pointer: "/at/1", original: invalidDate, says: "an invalid Date" },
+    { name: "the payload, an invalid Date", value: invalidDate, pointer: "", original: invalidDate, says: "an invalid Date" },
+    { name: "a toJSON that returns null", value: { v: { toJSON: () => null } }, pointer: "/v", says: "a value whose toJSON() is null" },
+    { name: "undefined in an array", value: { tags: ["a", undefined] }, pointer: "/tags/1", original: undefined, says: "undefined in an array" },
+    { name: "a function in an array", value: { tags: [() => 1] }, pointer: "/tags/0", says: "function in an array" },
+    { name: "a symbol in an array", value: { tags: [Symbol("s")] }, pointer: "/tags/0", says: "symbol in an array" },
+  ])("refuses $name, which JSON.stringify writes as null", ({ value, pointer, says, ...rest }) => {
+    let caught: unknown;
+    try {
+      encodeJSON(value, "patch");
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(UnencodableValueError);
+    expect(caught).toBeInstanceOf(RangeError);
+    expect(caught).not.toBeInstanceOf(NonFiniteNumberError);
+    expect(caught).toMatchObject({ name: "UnencodableValueError", payload: "patch", pointer });
+    if ("original" in rest) expect((caught as UnencodableValueError).value).toBe(rest.original);
+    expect((caught as Error).message).toContain(says);
+  });
+
+  it("refuses a non-finite number as the number case of UnencodableValueError", () => {
+    expect(() => encodeJSON({ n: Number.NaN }, "patch")).toThrow(UnencodableValueError);
   });
 
   it("says which member, in which payload", () => {

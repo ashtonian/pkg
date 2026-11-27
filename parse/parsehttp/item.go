@@ -50,9 +50,9 @@ func ItemPattern(res Keyed) (string, error) {
 // each of ItemPattern's wildcards, which ServeMux unescapes segment by
 // segment, read by Keyed.ParseKey as its column's text. A key column without
 // a value is ErrNoKeyValue, and a text its column cannot hold (letters for
-// an integer column) parse.ErrKeyInvalid; each names the column. No row has
-// a key its columns cannot hold, so answer parse.ErrKeyInvalid as a row not
-// found.
+// an integer column, U+0000 or invalid UTF-8) parse.ErrNoSuchKey; each
+// names the column. No row has a key its columns cannot hold, so answer
+// parse.ErrNoSuchKey as the row not found.
 func ItemKey(r *http.Request, res Keyed) (parse.Key, error) {
 	columns := res.PrimaryKeyColumns()
 	texts := make([]string, len(columns))

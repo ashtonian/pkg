@@ -101,15 +101,23 @@ func Value(v any) (string, bool) {
 // a float32 has more digits than the float32 it holds. ok is false for any
 // other value, a BLOB included, and for one beyond float32's range.
 func Float32Value(v any) (string, bool) {
-	var f float64
+	// database/sql scans a driver's int64 or float64 into a float32 through
+	// its shortest text, parsed at 32 bits: one correct rounding of the
+	// decimal, where float32(f) rounds a REAL at a float32 midpoint to even
+	// and float32(float64(x)) rounds an INTEGER past 2^53 twice.
+	var s string
 	switch x := v.(type) {
 	case int64:
-		f = float64(x)
+		s = strconv.FormatInt(x, 10)
 	case float64:
-		f = x
+		s = strconv.FormatFloat(x, 'g', -1, 64)
 	case string:
 		return float32Text(x)
 	default:
+		return "", false
+	}
+	f, err := strconv.ParseFloat(s, 32)
+	if err != nil {
 		return "", false
 	}
 	text, err := core.DecimalText(float32(f))

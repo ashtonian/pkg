@@ -3,7 +3,9 @@ package patch
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -45,6 +47,17 @@ const (
 	DetailValueLimit = "limit"
 )
 
+// DetailFailureCount is the Details key, on the first error of an
+// operation refused for more than maxOperationFailures reasons, of how many
+// there were: the parsers report the first maxOperationFailures.
+const DetailFailureCount = "failures"
+
+// maxOperationFailures bounds the failures reported for one operation. An
+// array can fail once per element, and a body under the size limit holds
+// thousands of them, each a retained error joined into the text a handler
+// logs.
+const maxOperationFailures = 10
+
 // stepFailure is why a valueChecker refuses an operation, before the parser
 // that asked frames it with the operation's path and, for JSON Patch, its
 // index: ECodeOpNotAllowed, or another code with its cause and details.
@@ -67,8 +80,9 @@ func newValueChecker(schema *PatchSchema, codec core.Codec) valueChecker {
 
 // check is the check both wire formats run on one operation's value: the
 // operation is allowed on the path, a clear is nullable, the value
-// normalizes (a relation's keys once each, within the limit), its validators
-// pass, and an array set whole holds the path's element counts. value is
+// normalizes (a relation's keys once each, within the limit) with every
+// string in it valid UTF-8 without U+0000 (core.CheckValueText), its
+// validators pass, and an array set whole holds the path's element counts. value is
 // what the operation writes, at a path depth tokens deep. It returns the normalized value, or the failures: the first of the
 // first three checks, else every validator's and the count's, in order.
 //
@@ -117,6 +131,9 @@ func (c valueChecker) check(ps *PathSchema, op PatchOp, value any, depth int, me
 		} else {
 			normalized, err = normalizeOpValue(ps, op, value, depth, c.codec)
 		}
+		if err == nil {
+			err = core.CheckValueText(normalized)
+		}
 		if err != nil {
 			return nil, invalid(err)
 		}
@@ -141,9 +158,25 @@ func (c valueChecker) check(ps *PathSchema, op PatchOp, value any, depth int, me
 		failures = append(failures, splitFailures(err)...)
 	}
 	if len(failures) > 0 {
-		return nil, failures
+		return nil, boundFailures(failures)
 	}
 	return value, nil
+}
+
+// boundFailures keeps an operation's first maxOperationFailures failures,
+// the first carrying how many there were (DetailFailureCount).
+func boundFailures(failures []stepFailure) []stepFailure {
+	if len(failures) <= maxOperationFailures {
+		return failures
+	}
+	kept := slices.Clone(failures[:maxOperationFailures])
+	details := maps.Clone(kept[0].details)
+	if details == nil {
+		details = make(map[string]any, 1)
+	}
+	details[DetailFailureCount] = len(failures)
+	kept[0].details = details
+	return kept
 }
 
 // relationValue decides a relation operation's value as it parses, so that

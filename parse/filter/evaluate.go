@@ -252,7 +252,7 @@ func evaluate(n *FilterNode, row Row) (Truth, error) {
 		return False, fmt.Errorf("filter: $%s condition has no field schema", n.Op)
 	}
 	if f.Relation != nil {
-		return False, invalidRelation(f, "is evaluated outside SQL only once resolved (ResolveMemberships)")
+		return False, unresolvableRelation(f, "is evaluated outside SQL only once resolved (ResolveMemberships)")
 	}
 	if n.Op == OpSome || n.Op == OpNone {
 		return evaluateElements(n, row)

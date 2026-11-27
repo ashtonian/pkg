@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -61,42 +60,18 @@ func wireMember(field *FieldSchema, value any) (any, error) {
 // and timestamps (relative tokens resolved), generic documents for JSON fields,
 // typed geo values for geo operators. SQL builders and in-memory evaluators
 // consume this value as-is — nothing downstream re-interprets raw decoder
-// output. No string in it, a document's keys included, holds U+0000
-// (core.CheckNUL).
+// output. Every string in it, a document's member names included, is valid
+// UTF-8 without U+0000 (core.CheckValueText).
 func (p *FilterParser) normalizeValue(field *FieldSchema, op FilterOperator, value any) (any, error) {
 	v, err := p.normalizeOperand(field, op, value)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkNUL(v); err != nil {
+	err = core.CheckValueText(v)
+	if err != nil {
 		return nil, valueMismatch(field, err)
 	}
 	return v, nil
-}
-
-// checkNUL refuses a normalized operand with a string holding U+0000: the
-// value, a set's member, a document's key or member.
-func checkNUL(v any) error {
-	switch x := v.(type) {
-	case string:
-		return core.CheckNUL(x)
-	case []any:
-		for i, e := range x {
-			if err := checkNUL(e); err != nil {
-				return fmt.Errorf("[%d]: %w", i, err)
-			}
-		}
-	case map[string]any:
-		for k, e := range x {
-			if err := core.CheckNUL(k); err != nil {
-				return fmt.Errorf("key %q: %w", k, err)
-			}
-			if err := checkNUL(e); err != nil {
-				return fmt.Errorf("%s: %w", k, err)
-			}
-		}
-	}
-	return nil
 }
 
 func (p *FilterParser) normalizeOperand(field *FieldSchema, op FilterOperator, value any) (any, error) {
@@ -365,7 +340,7 @@ func validateEnum(allowed []string, value any) error {
 	if !ok {
 		return nil
 	}
-	if slices.Contains(allowed, s) {
+	if core.EnumAllows(allowed, s) {
 		return nil
 	}
 	return fmt.Errorf("value '%s' not in allowed values %v", s, allowed)

@@ -7,14 +7,20 @@ import (
 	"github.com/ashtonian/pkg/gowalker"
 )
 
-// parseTagKeys are the struct tag keys parse reads on a walked field
-// (readTags and readBounds), beside the generator's field-name and column
-// tags.
-var parseTagKeys = []string{
-	"parse", "relation", "relation_name", "filter_ops", "patch_ops", "facet", "paths", "elements",
-	"storage", "geo", "geo_srid", "geo_lat", "geo_lon", "indexed", "immutable",
-	"label", "description", "group", "order", "sort_default", "search_weight",
-	ConstraintEnum, ConstraintMinLen, ConstraintMaxLen, ConstraintMin, ConstraintMax, ConstraintMinItems, ConstraintMaxItems,
+// parseTagKeys are the struct tag keys parse reads on a walked field,
+// beside the generator's field-name and column tags: the parse tag, the
+// keys readTags reads (textTags, boolTags) and the constraints
+// readConstraints reads.
+func parseTagKeys() []string {
+	var t Tags
+	keys := []string{"parse"}
+	for _, b := range boolTags(&t) {
+		keys = append(keys, b.key)
+	}
+	for _, s := range textTags(&t) {
+		keys = append(keys, s.key)
+	}
+	return append(keys, constraintTagKeys()...)
 }
 
 // misspeltTagKey is a key on a walked field's tag that parse does not read,
@@ -35,11 +41,13 @@ func (m misspeltTagKey) err() error {
 // character from them, bson beside json.
 func misspeltTagKeys(d gowalker.Declaration, k fieldsKey) []misspeltTagKey {
 	var found []misspeltTagKey
+	known := parseTagKeys()
 	for key := range d.TagKeys() {
 		if key == k.name || key == k.column {
 			continue
 		}
-		if meant, ok := gowalker.MisspeltTagKey(key, parseTagKeys); ok {
+		meant, ok := gowalker.MisspeltTagKey(key, known)
+		if ok {
 			found = append(found, misspeltTagKey{declaring: d.DeclaringType, field: d.GoField.Name, written: key, meant: meant})
 		}
 	}

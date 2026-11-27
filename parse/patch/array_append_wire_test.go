@@ -93,14 +93,20 @@ func TestParser_RejectsUnknownPatchOp(t *testing.T) {
 func TestParser_ArrayAppend_ValidatorFires(t *testing.T) {
 	t.Parallel()
 	schema := arrayAppendSchema()
-	pathOf(schema, "/photo_blob_keys").Validators = []patch.Validator{
-		func(v any) error {
-			s, ok := v.(string)
-			if !ok || !strings.HasPrefix(s, "tenants/") {
-				return &core.ParseError{Code: "E2087", Message: "must start with tenants/"}
-			}
-			return nil
-		},
+	updateErr := schema.UpdatePath("/photo_blob_keys", func(ps *patch.PathSchema) {
+		ps.Validators = []patch.Validator{
+			func(v any) error {
+				s, ok := v.(string)
+				if !ok || !strings.HasPrefix(s, "tenants/") {
+					refused := &core.ParseError{Code: "E2087", Message: "must start with tenants/"}
+					return refused
+				}
+				return nil
+			},
+		}
+	})
+	if updateErr != nil {
+		t.Fatal(updateErr)
 	}
 	p := patch.NewParser(schema, nil)
 	body := `[{"op":"array_append","path":"/photo_blob_keys","value":"naughty/path.jpg"}]`

@@ -13,10 +13,12 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -32,11 +34,15 @@ import (
 	"github.com/ashtonian/pkg/parse/parsesqlite"
 )
 
-// serviceName names the process in its startup entry and its CLI.
-const serviceName = "parse-example"
+const (
+	// serviceName names the process in its startup entry and its CLI.
+	serviceName = "parse-example"
+	// envPrefix prefixes every setting's environment variable.
+	envPrefix = "PARSE_SERVER"
+)
 
 type serverSettings struct {
-	LogLevel          string        `koanf:"log_level" default:"warn" validate:"oneof=debug info warn error" desc:"Minimum log level: debug, info, warn or error"`
+	LogLevel          string        `koanf:"log_level" default:"warn" validate:"oneof=trace debug info warn error" desc:"Minimum log level: trace, debug, info, warn or error; applied live on a reload"`
 	RequestTimeout    time.Duration `koanf:"request_timeout" default:"5s" validate:"gt=0" desc:"Deadline per request; its database work runs under it"`
 	Addr              string        `koanf:"addr" default:"127.0.0.1:8080" validate:"required" desc:"HTTP listen address"`
 	ShutdownGrace     time.Duration `koanf:"shutdown_grace" default:"10s" validate:"gt=0" desc:"Time to drain in-flight requests on shutdown"`
@@ -47,79 +53,143 @@ type serverSettings struct {
 }
 
 func main() {
-	// The level is a LevelVar so it can change without a restart; it is warn
-	// until the settings say otherwise.
+	// The level is warn until the settings load, and a reload changes it
+	// live.
 	level := new(slog.LevelVar)
 	level.Set(slog.LevelWarn)
-	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	log := newLogger(os.Stderr, level)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	settings, err := loadSettings(ctx, os.Args[1:])
-	if err == nil {
-		err = level.UnmarshalText([]byte(settings.LogLevel))
-	}
-	if err == nil {
-		logStart(ctx, log, level.Level(), settings)
-		err = run(ctx, settings, log)
-	}
+	err := run(ctx, stop, os.Args[1:], level, log)
 	if err != nil {
-		log.Error("server exited", slog.Any("error", err))
+		log.ErrorContext(ctx, "server exited", slog.Any("error", err))
 		os.Exit(1)
 	}
+	log.InfoContext(ctx, "stopped")
 }
 
-func loadSettings(ctx context.Context, args []string) (*serverSettings, error) {
+// loadSettings reads the command line and loads the settings from the
+// environment, the --config file when one is named, and the flags given,
+// each above the one before. The reloader re-reads the same sources on every
+// reload: a change to the file, or one of opts' triggers.
+func loadSettings(ctx context.Context, args []string, opts ...config.ReloadOption) (*config.Reloader[serverSettings], error) {
 	var cli struct {
-		Settings serverSettings `embed:""`
+		ConfigFile string         `name:"config" type:"path" help:"Settings file, YAML or JSON, read beneath the environment and flags; a change to it reloads the settings"`
+		Settings   serverSettings `embed:""`
 	}
-	parser, err := kong.New(&cli, kong.Name(serviceName), kongprovider.HelpFromConfig(&cli.Settings, "PARSE_SERVER"))
+	parser, err := kong.New(&cli, kong.Name(serviceName), kongprovider.HelpFromConfig(&cli.Settings, envPrefix))
 	if err != nil {
-		return nil, fmt.Errorf("configure CLI: %w", err)
+		return nil, fmt.Errorf("configuring CLI: %w", err)
 	}
 	parsed, err := parser.Parse(args)
 	if err != nil {
-		return nil, fmt.Errorf("parse CLI: %w", err)
+		return nil, fmt.Errorf("parsing CLI: %w", err)
 	}
-	return config.Load[serverSettings](ctx, config.WithEnvPrefix("PARSE_SERVER"),
-		kongprovider.WithOverridesFromStruct(parsed, &cli.Settings))
+	sources := []config.Option{config.WithEnvPrefix(envPrefix), kongprovider.WithOverridesFromStruct(parsed, &cli.Settings)}
+	if cli.ConfigFile != "" {
+		sources = append(sources, config.WithRequiredFile(cli.ConfigFile))
+		opts = append(opts, config.WithFileWatch(0))
+	}
+	return config.NewReloader[serverSettings](ctx, sources, opts...)
 }
 
-// logStart writes the startup entry straight to the handler, past the level
-// gate, so that at any level the log says what started and how it is set up.
-// The settings are redacted as pkg/config judges secrets.
+// levelApplier applies a reloaded log_level to level. The other settings
+// take a restart, and the reloader logs each change to them as waiting for
+// one.
+func levelApplier(level *slog.LevelVar, log *slog.Logger) config.ReloadOption {
+	applier := config.Applier[serverSettings]{
+		Name:     "log_level",
+		Prefixes: []string{"log_level"},
+		Apply: func(ctx context.Context, ev config.ApplyEvent[serverSettings]) (config.ApplyResult, error) {
+			l, err := parseLevel(ev.Desired.LogLevel)
+			if err != nil {
+				return config.ApplyResult{}, err
+			}
+			level.Set(l)
+			logAlways(ctx, log, "log level changed", slog.String("log_level", levelName(l)))
+			return config.ApplyResult{}, nil
+		},
+	}
+	return config.WithApplier(applier)
+}
+
+// logStart writes the startup entry at any level: what started and how it
+// is set up, with the settings redacted as pkg/config judges secrets.
 func logStart(ctx context.Context, log *slog.Logger, level slog.Level, settings *serverSettings) {
-	r := slog.NewRecord(time.Now(), slog.LevelInfo, "starting", 0)
-	r.AddAttrs(
+	logAlways(ctx, log, "starting",
 		slog.String("service", serviceName),
 		slog.String("version", version()),
-		slog.String("log_level", level.String()),
+		slog.String("log_level", levelName(level)),
 		slog.Any("config", config.RedactedTree(settings)),
 	)
-	// A startup entry that cannot reach stderr has nowhere else to go.
-	_ = log.Handler().Handle(ctx, r)
 }
 
 // version is the main module's version as the build recorded it: a module
 // version when installed with go install, "(devel)" from a checkout.
 func version() string {
-	if info, ok := debug.ReadBuildInfo(); ok {
+	info, ok := debug.ReadBuildInfo()
+	if ok {
 		return info.Main.Version
 	}
 	return "unknown"
 }
 
-func run(ctx context.Context, settings *serverSettings, log *slog.Logger) (err error) {
+// run loads the settings, serves until ctx ends, then drains the requests in
+// flight. It calls stop once ctx has ended, so a second SIGINT or SIGTERM
+// ends the process at once rather than waiting out the drain.
+func run(ctx context.Context, stop context.CancelFunc, args []string, level *slog.LevelVar, log *slog.Logger) (err error) {
+	settings, err := loadSettings(ctx, args,
+		config.WithSignalReload(syscall.SIGHUP), config.WithReloadLogger(log), levelApplier(level, log))
+	if err != nil {
+		return err
+	}
+	startup := settings.Config()
+	initial, err := parseLevel(startup.LogLevel)
+	if err != nil {
+		return err
+	}
+	level.Set(initial)
+	logStart(ctx, log, initial, startup)
+	err = settings.Arm(ctx)
+	if err != nil {
+		return fmt.Errorf("arming settings reload: %w", err)
+	}
+	reloading := make(chan struct{})
+	go func() {
+		defer close(reloading)
+		runErr := settings.Run(ctx)
+		if runErr != nil && !errors.Is(runErr, context.Canceled) {
+			log.ErrorContext(ctx, "reloading settings", slog.Any("error", runErr))
+		}
+	}()
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), startup.ShutdownGrace)
+		defer cancel()
+		err = errors.Join(err, settings.Stop(stopCtx))
+		<-reloading
+	}()
+
 	db, err := openDB(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, db.Close()) }()
-	handler, err := newServer(db, log, settings.RequestTimeout)
+	handler, err := newServer(db, log, startup.RequestTimeout, rand.Text)
 	if err != nil {
 		return err
 	}
+	return serve(ctx, stop, startup, handler, log)
+}
+
+// serve listens on settings.Addr and serves handler until ctx ends, then
+// drains for the shutdown grace and closes what is left.
+func serve(ctx context.Context, stop context.CancelFunc, settings *serverSettings, handler http.Handler, log *slog.Logger) (err error) {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", settings.Addr)
+	if err != nil {
+		return fmt.Errorf("listening on %s: %w", settings.Addr, err)
+	}
 	srv := &http.Server{
-		Addr:              settings.Addr,
 		Handler:           handler,
 		ReadHeaderTimeout: settings.ReadHeaderTimeout,
 		ReadTimeout:       settings.ReadTimeout,
@@ -129,20 +199,24 @@ func run(ctx context.Context, settings *serverSettings, log *slog.Logger) (err e
 	// Close also terminates active connections if graceful shutdown expires.
 	defer func() { err = errors.Join(err, srv.Close()) }()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- srv.ListenAndServe() }()
-	log.Info("listening", slog.String("addr", settings.Addr))
+	go func() { serveErr <- srv.Serve(ln) }()
+	log.InfoContext(ctx, "listening", slog.String("addr", ln.Addr().String()))
 
 	select {
 	case err = <-serveErr:
 		return err
 	case <-ctx.Done():
 	}
+	stop()
+	log.InfoContext(ctx, "shutting down", slog.String("grace", settings.ShutdownGrace.String()))
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settings.ShutdownGrace)
 	defer cancel()
-	if err = srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shutdown: %w", err)
+	err = srv.Shutdown(shutdownCtx)
+	if err != nil {
+		return fmt.Errorf("shutting down: %w", err)
 	}
-	if err = <-serveErr; !errors.Is(err, http.ErrServerClosed) {
+	err = <-serveErr
+	if !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

@@ -230,3 +230,62 @@ func TestKeyConstraint_SelectsWholeKeys(t *testing.T) {
 	}
 	assert.Equal(t, []int64{2, 3}, inMemory)
 }
+
+// An empty key set admits no row, of one column as of several, in SQL and in
+// memory: a subject granted no key reads nothing.
+func TestKeyConstraint_EmptySetAdmitsNoRow(t *testing.T) {
+	db := dbtest.SQLite(t)
+	_, err := db.ExecContext(t.Context(), `CREATE TABLE stock_items (warehouse_id TEXT NOT NULL, sku TEXT NOT NULL, qty INTEGER NOT NULL, PRIMARY KEY (warehouse_id, sku))`)
+	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO stock_items VALUES ('w1', 'a', 1)`)
+	require.NoError(t, err)
+	for name, fields := range map[string][]string{"one column": {"warehouse_id"}, "several columns": {"warehouse_id", "sku"}} {
+		t.Run(name, func(t *testing.T) {
+			c := &filter.PolicyConstraint{Fields: fields, Operator: filter.OpIn, Value: []core.Key{}}
+			for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
+				_, err := keyWhere(t, d, c)
+				require.NoError(t, err, d.Name())
+			}
+			res, err := keyWhere(t, filter.SQLiteDialect{}, c)
+			require.NoError(t, err)
+			var n int
+			require.NoError(t, db.QueryRowContext(t.Context(), "SELECT count(*) FROM stock_items WHERE "+res.Where, res.Args...).Scan(&n))
+			assert.Zero(t, n)
+
+			ast, err := filter.ApplyPolicyConstraints(stockSchema(), nil, &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{c}})
+			require.NoError(t, err)
+			truth, err := filter.Evaluate(ast.Root, filter.RowFunc(func(f *filter.FieldSchema) (any, bool, error) {
+				return map[string]any{"warehouse_id": "w1", "sku": "a"}[f.Column], true, nil
+			}))
+			require.NoError(t, err)
+			assert.Equal(t, filter.False, truth)
+		})
+	}
+}
+
+// A key of several columns compares stored columns: a computed column has no
+// place in the row type the set is typed by, and its stored column, when one
+// shares its name, holds another value than the expression a constraint on
+// the field alone reads. Such a key is refused when the policy compiles,
+// while one column compiles through the expression as Field does.
+func TestKeyConstraint_RefusesAComputedColumnOfSeveral(t *testing.T) {
+	schema := stockSchema()
+	schema.Computed = []filter.ComputedColumn{{Column: "sku", Expr: func(filter.Dialect) (string, error) { return `lower("stock_items"."code")`, nil }}}
+	apply := func(c *filter.PolicyConstraint) (*filter.FilterAST, error) {
+		return filter.ApplyPolicyConstraints(schema, nil, &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{c}})
+	}
+	for _, c := range []*filter.PolicyConstraint{
+		{Fields: []string{"warehouse_id", "sku"}, Operator: filter.OpIn, Value: []core.Key{{"w1", "a"}}},
+		{Fields: []string{"warehouse_id", "sku"}, Operator: filter.OpEq, Value: core.Key{"w1", "a"}},
+	} {
+		_, err := apply(c)
+		require.ErrorIs(t, err, filter.ErrPolicyInvalid)
+		require.ErrorContains(t, err, "sku is a computed column")
+	}
+
+	ast, err := apply(&filter.PolicyConstraint{Fields: []string{"sku"}, Operator: filter.OpIn, Value: []core.Key{{"a"}}})
+	require.NoError(t, err)
+	res, err := filter.NewSQLBuilder(schema, filter.SQLiteDialect{}).Build(ast)
+	require.NoError(t, err)
+	assert.Contains(t, res.Where, `lower("stock_items"."code")`)
+}

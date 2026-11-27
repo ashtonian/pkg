@@ -152,9 +152,9 @@ func ExampleSkipUnchanged_stamped() {
 	fmt.Println(plan.Current.SQL)
 	fmt.Println(plan.Current.Args)
 	// Output:
-	// UPDATE "notes" SET "rank" = $1, "title" = $2, "updated_at" = NOW(), "version" = "version" + 1 WHERE ("notes"."tenant_id" = $3 AND "notes"."deleted_at" IS NULL AND "notes"."id" = $4) AND ("rank" IS DISTINCT FROM $1 OR "rank"::text COLLATE "C" IS DISTINCT FROM ($1)::text OR "title" IS DISTINCT FROM $2 OR "title"::text COLLATE "C" IS DISTINCT FROM ($2)::text) RETURNING "notes"."id", "notes"."tenant_id", "notes"."document_id", "notes"."title", "notes"."body", "notes"."rank", "notes"."version", "notes"."updated_at", "notes"."deleted_at"
+	// UPDATE "notes" SET "rank" = $1, "title" = $2, "updated_at" = NOW(), "version" = "version" + 1 WHERE (("notes"."tenant_id" = $3 AND "notes"."deleted_at" IS NULL) AND "notes"."id" = $4) AND ("rank" IS DISTINCT FROM $1 OR "rank"::text COLLATE "C" IS DISTINCT FROM ($1)::text OR "title" IS DISTINCT FROM $2 OR "title"::text COLLATE "C" IS DISTINCT FROM ($2)::text) RETURNING "notes"."id", "notes"."tenant_id", "notes"."document_id", "notes"."title", "notes"."body", "notes"."rank", "notes"."version", "notes"."updated_at", "notes"."deleted_at"
 	// [2 Agenda t1 n1]
-	// SELECT "notes"."id", "notes"."tenant_id", "notes"."document_id", "notes"."title", "notes"."body", "notes"."rank", "notes"."version", "notes"."updated_at", "notes"."deleted_at" FROM "notes" WHERE ("notes"."tenant_id" = $1 AND "notes"."deleted_at" IS NULL AND "notes"."id" = $2) FOR UPDATE
+	// SELECT "notes"."id", "notes"."tenant_id", "notes"."document_id", "notes"."title", "notes"."body", "notes"."rank", "notes"."version", "notes"."updated_at", "notes"."deleted_at" FROM "notes" WHERE (("notes"."tenant_id" = $1 AND "notes"."deleted_at" IS NULL) AND "notes"."id" = $2) FOR UPDATE
 	// [t1 n1]
 }
 

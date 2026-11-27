@@ -115,7 +115,7 @@ func TestEvaluateRefusals(t *testing.T) {
 		{"geo on a field that is not geo", &FilterNode{Field: name, Op: OpNear, Value: &GeoDistance{Distance: "1km"}}, valueRow(`{"lat":0,"lon":0}`), ""},
 		{"geo within on a document", &FilterNode{Field: doc, Op: OpWithin, Value: &GeoBoundingBox{TopLeft: GeoPoint{Lat: 1, Lon: 0}, BottomRight: GeoPoint{Lat: 0, Lon: 1}}}, valueRow(map[string]any{"lat": 0.5, "lon": 0.5}), ""},
 		{"geo on a point that is not JSON", &FilterNode{Field: point, Op: OpNear, Value: &GeoDistance{Distance: "1km"}}, valueRow("{"), ""},
-		{"unresolved relation", &FilterNode{Field: relation, Op: OpEq, Value: "x"}, valueRow(nil), ECodeInvalidRelation},
+		{"unresolved relation", &FilterNode{Field: relation, Op: OpEq, Value: "x"}, valueRow(nil), ""},
 		{"elements of a document without element paths", &FilterNode{Field: doc, Op: OpSome}, valueRow(nil), ""},
 		{"a scalar array held outside []any", &FilterNode{Field: labels, Op: OpNone}, valueRow([]string{"a"}), ""},
 		{"a document held outside decoded JSON", &FilterNode{Field: items, Op: OpNone}, valueRow(json.RawMessage(`[{}]`)), ""},

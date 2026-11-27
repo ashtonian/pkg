@@ -64,7 +64,15 @@ type server struct {
 	report parsehttp.Option
 }
 
-func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http.Handler, error) {
+// Schema discovery's routes, logged at trace: clients poll them.
+const (
+	schemaRoute  = "GET /api/{resource}/schema"
+	schemasRoute = "GET /api/schemas"
+)
+
+// newServer serves the routes, each request under requestTimeout and logged
+// once; newRequestID mints the ID of a request that arrives without one.
+func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration, newRequestID func() string) (http.Handler, error) {
 	if requestTimeout <= 0 {
 		return nil, fmt.Errorf("request timeout must be positive")
 	}
@@ -85,14 +93,15 @@ func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http
 	s := &server{db: db, products: products, log: log, requestTimeout: requestTimeout}
 	s.report = parsehttp.WithErrorHandler(s.responseFailed)
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/{resource}/schema", parsehttp.SchemaHandler(reg, s.report))
-	mux.HandleFunc("GET /api/schemas", parsehttp.SchemaListHandler(reg, s.report))
+	mux.HandleFunc(schemaRoute, parsehttp.SchemaHandler(reg, s.report))
+	mux.HandleFunc(schemasRoute, parsehttp.SchemaListHandler(reg, s.report))
 	mux.HandleFunc("GET "+productsPath, s.list)
 	mux.HandleFunc("POST "+productsPath, s.list)
 	mux.HandleFunc("OPTIONS "+productsPath, s.facets)
 	mux.HandleFunc("PATCH "+productsPath, s.patchMany)
 	mux.HandleFunc("PATCH "+productsPath+"/"+item, s.patch)
-	return s.withDeadline(mux), nil
+	logged := requestLog{log: log, newID: newRequestID, routes: mux, traceRoutes: map[string]bool{schemaRoute: true, schemasRoute: true}}
+	return logged.wrap(s.withDeadline(mux)), nil
 }
 
 // withDeadline serves each request under the request timeout. The deadline
@@ -181,7 +190,7 @@ func (s *server) patch(w http.ResponseWriter, r *http.Request) {
 	item := strings.TrimPrefix(r.URL.EscapedPath(), productsPath+"/")
 	notFound := parsehttp.Body{Code: codeNotFound, Message: "product " + item + " not found"}
 	key, err := parsehttp.ItemKey(r, s.products)
-	if errors.Is(err, parse.ErrKeyInvalid) {
+	if errors.Is(err, parse.ErrNoSuchKey) {
 		// No product has a key its columns cannot hold.
 		s.writeJSON(w, r, http.StatusNotFound, notFound)
 		return
@@ -203,7 +212,8 @@ func (s *server) patch(w http.ResponseWriter, r *http.Request) {
 }
 
 // patchMany applies one merge patch to the products its id[] keys name. A
-// key with no product is a failed item, not a failed request.
+// key with no product is a failed item, not a failed request, and so is a
+// text the key column cannot hold, which names no product.
 func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
 	q, ok := s.patchQuery(w, r, "id[]")
 	if !ok {
@@ -217,14 +227,28 @@ func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	keys := make([]any, len(ids))
-	for i, id := range ids {
-		keys[i] = id
+	// Each id is read as its column's text, as the item route reads its
+	// segment: request text reaches the plan only through ParseKey.
+	keys := make([]parse.Key, 0, len(ids))
+	for _, id := range ids {
+		key, err := s.products.ParseKey(id)
+		if errors.Is(err, parse.ErrNoSuchKey) {
+			continue // no product has it: a failed item below
+		}
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		keys = append(keys, key)
 	}
-	items, err := s.update(r, parse.ByIDs(keys...))
-	if err != nil {
-		s.fail(w, r, err)
-		return
+	var items []Product
+	if len(keys) > 0 {
+		var err error
+		items, err = s.update(r, parse.ByKeys(keys...))
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
 	}
 	res := parsehttp.PatchAnswer[Product]{Updated: items}
 	updated := make(map[string]bool, len(items))

@@ -17,19 +17,21 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 
 ## API reference
 
-- Schemas: `GeneratePatchSchema[T]`, `GenerateServerPatchSchema[T]` (adds the `parse:"server"` fields, for the server's own writes), `NewPatchSchema`, `PatchSchema` (`AddPath`, `Path`, `Paths`, `MaxOperations`, `Clone`), `DefaultMaxOperations`, `PathSchema` (`AllowsOp`, `Nullable`; `EnumValues` and `Bounds` advertise its value tags), `Validator`, `DefaultPatchOps`, `IsValidOp`, `Ops`
+- Schemas: `GeneratePatchSchema[T]`, `GenerateServerPatchSchema[T]` (adds the `parse:"server"` fields, for the server's own writes), `NewPatchSchema`, `PatchSchema` (`AddPath`, `UpdatePath`, `Path` and `Paths`, which return copies, `MaxOperations`, `Clone`), `DefaultMaxOperations`, `PathSchema` (`AllowsOp`, `Nullable`; `EnumValues` and `Bounds` advertise its value tags), `Validator`, `DefaultPatchOps`, `IsValidOp`, `Ops`
 - Parsing: `NewParser(schema, cfg)` (`Parse`, `ParseOps`), `ParseMergePatch(body, schema, cfg)`, `ParseMergePatchMap`, `ParsedPatch` (`AuditInfo`, `ParsedFor`: whether a parser validated it against a schema), `PatchOperation`, `RawPatchOp`, `PatchOp` (its `PatchOp*` constants, one per RFC 6902 operation and `array_append`); `ErrUnparsed` for a `ParsedPatch` no parser produced
 - Applying to Go values: `NewApplier[T](gen, cfg)` (`Apply`; `CheckSchema`: refuses a schema with a path reaching a field promoted through an unexported embedded pointer, which no patch can write), the in-memory counterpart of `BuildPatchSQL`
 - SQL: `BuildPatchSQL`, `SQLDialect`, `PatchSQLResult` (`Assignments`, `ChangePredicate`), `ColumnAssignment` (`Column`, `Expression`), `PatchSQLOption` (`WithStartParam`, `WithAutoTimestamp`, `WithAutoTimestampSQL`, `WithIncrement`, `WithTimeFunc`, `WithChangePredicate`)
 - Relations: `RelationPatchOp` (`Values`: a target key per value, a `core.Key` for a key of several columns), `RelationVerb` (`RelationVerb*`: add, remove, replace), `RenderRelationOp` (the selected owner keys as `[]core.Key`, written for a `RelationDialect`, which `filter.Dialect` is: owner and target keys bind as one set each, every column compared as a filter compares its type (`RelationSchema.SourceTypes`, `TargetTypes`), and an insert skips a pair the table holds under another spelling, a decimal `"1.50"` in a text column for `1.5`), `RenderRelationOpOptions` (`Owner` / `RelationOwner` and `TargetVisible`: guarded statements for a relation with a target table; `RelationOwner.Key` lists the owner's key columns), `RenderedRelationStatement`, `RelationPath` (a membership path from its relation and the target key's columns), `RelationKey` (a target key column's Go type and wire form; a key of several columns takes each key as an array of a value per column, in key order)
 - Policy: `NewPatchPolicyConstraints` (`ForbidPaths`, `ConstrainValues`, `ValidateWith`: `PolicyOption`), `PatchPolicyConstraints`, `ValueConstraint`, `PatchValidator`, `PolicySubject`, `ApplyPatchPolicyConstraints`, `PatchPolicyFromWritableFields`
-- Errors: `ECode*` (aliases of `core.Code*`, each code's one definition), `Codes`, `ErrSQLColumnMissing` (a schema path with no column, the server's: not a `ParseError`); `ConstraintError` (`Constraint`, `Limit`: a declared constraint's E2077 cause), `NewConstraintError`
+- Errors: `ECode*` (aliases of `core.Code*`, each code's one definition), `Codes`, `ErrSQLColumnMissing` (a schema path with no column, the server's: not a `ParseError`); `ConstraintError` (`Constraint`, `Limit`: a declared constraint's E2077 cause), `NewConstraintError`; the `Details` keys `DetailValueCount` and `DetailValueLimit` (E2119), and `DetailFailureCount` (an operation's failure total, on its first error when it reports only the first 10)
 
 ## Code map
 
 | File | Responsibility |
 |------|----------------|
+| `doc.go` | Package documentation |
 | `patch.go` | `Parser` — RFC 6902 validation and value normalization |
+| `document.go` | The two forms an operation's value is held in (normalized to its Go type, or the decoded JSON document) and their ownership: a value is the operation's own, copied from the caller's and bounded at `maxDocumentDepth`; an untyped array path's elements |
 | `merge.go` | `ParseMergePatch` — RFC 7396 |
 | `apply.go` | `Applier` — a parsed patch applied to a Go value: direct field sets, or T's JSON document, written to a working copy that copies each embedded parent before writing through it; `CheckSchema` refuses a path through an unexported embedded pointer, whose parent the copy can neither allocate nor copy; `ErrUnparsed` |
 | `apply_jsonpatch.go` | RFC 6902 runs through json-patch with one copy budget, and its empty-key escape |

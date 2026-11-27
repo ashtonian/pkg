@@ -29,6 +29,38 @@ func MisspeltTagKey(written string, known []string) (meant string, ok bool) {
 	return "", false
 }
 
+// TagMisspelling is a tag key on a declared field that is not one of a
+// library's keys but most likely misspells one ([MisspeltTagKey]).
+type TagMisspelling struct {
+	// Declaration is the field whose tag holds the key.
+	Declaration
+	// Written is the key the tag holds, and Meant the known key it most
+	// likely means.
+	Written, Meant string
+}
+
+// MisspeltTagKeys holds the tag keys of every field [Shape.Declarations]
+// lists to known, the keys a library reads, and returns each that
+// [MisspeltTagKey] finds misspells one, in declaration and then tag order,
+// with its declaration; nil when there is none. It checks every declaration,
+// skipped and private ones included, and words no error: which states to
+// hold to known, and which keys to leave alone because another library reads
+// them, stay the caller's, who filters the result by State, DeclaringType or
+// Written and words the refusal. It copies only the declarations it returns.
+func (s *Shape) MisspeltTagKeys(known []string) []TagMisspelling {
+	var found []TagMisspelling
+	for i := range s.declarations {
+		d := &s.declarations[i]
+		for _, key := range d.keys {
+			meant, ok := MisspeltTagKey(key, known)
+			if ok {
+				found = append(found, TagMisspelling{Declaration: d.public(), Written: key, Meant: meant})
+			}
+		}
+	}
+	return found
+}
+
 var tagKeySeparators = strings.NewReplacer("-", "", "_", "")
 
 func foldTagKey(key string) string {

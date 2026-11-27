@@ -50,9 +50,9 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 		t = t.Elem()
 	}
 	if untypedDocument(t) {
-		return obj, nil
+		return documentValue(obj)
 	}
-	if customJSONType(t) {
+	if core.CustomJSON(t) {
 		return nil, fmt.Errorf("object merge for custom JSON type %s is not supported; use JSON Patch replace", gowalker.TypeText(t))
 	}
 
@@ -114,7 +114,7 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 			}
 			_, emitted := encoded[name]
 			if value == nil {
-				if emitted {
+				if rewritesRemovedMember(field) {
 					return nil, fmt.Errorf("deleting JSON member %q: %s would re-emit it; use JSON Patch replace", name, gowalker.TypeText(t))
 				}
 				out[name] = nil
@@ -164,14 +164,6 @@ func untypedDocument(t reflect.Type) bool {
 	return t.Kind() == reflect.Interface || t == reflect.TypeFor[json.RawMessage]()
 }
 
-func customJSONType(t reflect.Type) bool {
-	if t == nil {
-		return false
-	}
-	return t.Implements(reflect.TypeFor[json.Marshaler]()) || reflect.PointerTo(t).Implements(reflect.TypeFor[json.Marshaler]()) ||
-		t.Implements(reflect.TypeFor[json.Unmarshaler]()) || reflect.PointerTo(t).Implements(reflect.TypeFor[json.Unmarshaler]())
-}
-
 // Declared JSON uses Go's JSON contract before scalar/driver conversion. The
 // decoded value validates the input and controls ordinary field omission; custom
 // subtrees retain their original representation for the single storage decode.
@@ -210,8 +202,9 @@ func normalizeDeclaredJSON(t reflect.Type, value any) (any, error) {
 // field once the patch applies, would refuse the result: a member a struct
 // does not name exactly, a map key encoding/json does not decode or writes
 // under another name (two names for one key), a member of a value that has
-// none, and a value an add or a replace writes that does not decode as the
-// member. SQL writes a stored document without decoding it, so this is what
+// none, the remove of a struct member the type writes again
+// (rewritesRemovedMember), and a value an add or a replace writes that does
+// not decode as the member. SQL writes a stored document without decoding it, so this is what
 // holds that document to its type. Below an interface, json.RawMessage or a
 // type that decodes itself, the document's shape is its own.
 func checkDocumentMember(schema *PatchSchema, op PatchOp, path string, value any) error {
@@ -228,7 +221,7 @@ func checkDocumentMember(schema *PatchSchema, op PatchOp, path string, value any
 		for t != nil && t.Kind() == reflect.Pointer {
 			t = t.Elem()
 		}
-		if t == nil || untypedDocument(t) || customJSONType(t) {
+		if t == nil || untypedDocument(t) || core.CustomJSON(t) {
 			return nil
 		}
 		parent := t
@@ -246,6 +239,9 @@ func checkDocumentMember(schema *PatchSchema, op PatchOp, path string, value any
 			f := jsonMember(t, token)
 			if f == nil {
 				return fmt.Errorf("%s has no member %q", gowalker.TypeText(t), token)
+			}
+			if op == PatchOpRemove && i == len(tokens)-2 && rewritesRemovedMember(f) {
+				return fmt.Errorf("removing member %q: %s writes it again as its zero value; replace it instead", token, gowalker.TypeText(t))
 			}
 			t = f.Type()
 		case t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8:
@@ -299,12 +295,6 @@ func jsonMember(t reflect.Type, name string) *core.Field {
 	return f
 }
 
-func decodeJSONDocument(raw []byte, dst any) error {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	return dec.Decode(dst)
-}
-
 func jsonNil(v reflect.Value) bool {
 	if !v.IsValid() {
 		return true
@@ -318,7 +308,7 @@ func jsonNil(v reflect.Value) bool {
 
 func canonicalJSONReplacement(value reflect.Value, document any) (any, error) {
 	t := value.Type()
-	if customJSONType(t) || t.Kind() == reflect.Interface {
+	if core.CustomJSON(t) || t.Kind() == reflect.Interface {
 		return document, nil
 	}
 	if value.Kind() == reflect.Pointer {
@@ -523,7 +513,7 @@ func rejectCustomObjectMerge(t reflect.Type, value, normalized any) error {
 	}
 	// A json.RawMessage member is a document like an interface one; a value
 	// of a custom-encoded Go type merges into neither.
-	if (customJSONType(t) && !untypedDocument(t)) || customJSONType(reflect.TypeOf(value)) {
+	if (core.CustomJSON(t) && !untypedDocument(t)) || core.CustomJSON(reflect.TypeOf(value)) {
 		return fmt.Errorf("object merge for custom JSON type %s is not supported; use JSON Patch replace", gowalker.TypeText(t))
 	}
 	return nil
@@ -558,6 +548,15 @@ const (
 	jsonOmitEmpty = "omitempty"
 	jsonOmitZero  = "omitzero"
 )
+
+// rewritesRemovedMember reports whether encoding/json writes struct member
+// f again once a patch deletes it from the stored document: decoded, the
+// member holds its zero value, which only an omitempty or omitzero the
+// zero value satisfies leaves out. SQL deletes the member, so deleting one
+// the type writes again would store a document the type never writes.
+func rewritesRemovedMember(f *core.Field) bool {
+	return !jsonFieldOmitted(f, reflect.Zero(f.Type()))
+}
 
 func fieldOmits(f *core.Field) bool {
 	return f.HasFieldNameOption(jsonOmitEmpty) || f.HasFieldNameOption(jsonOmitZero)

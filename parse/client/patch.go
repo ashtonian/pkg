@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 )
@@ -112,26 +113,40 @@ const (
 // Operation is one JSON Patch (RFC 6902) operation; a []Operation is a JSON
 // Patch document. Build one with Add, Remove, Replace, Move, Copy, Test,
 // Append, an Array's Append or a Relation's membership methods.
+//
+// A value is encoded when its operation is built, as a filter's operand is,
+// so the operation's wire form is fixed: changing the document, slice or map
+// it was built from changes nothing it sends, and operations are safe to
+// marshal from several goroutines. A value encoding/json refuses (NaN, a
+// channel, a marshaler's error) makes the operation carry ErrOperand, which
+// marshaling it returns.
 type Operation struct {
-	op       string
-	path     string
-	from     string
-	value    any
-	hasValue bool
+	op    string
+	path  string
+	from  string
+	value json.RawMessage
+	err   error
+}
+
+// valued is an operation of op that carries value, encoded now.
+func valued(op, path string, value any) Operation {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		refused := Operation{op: op, path: path, err: fmt.Errorf("%w: %s %s: %w", ErrOperand, op, path, err)}
+		return refused
+	}
+	operation := Operation{op: op, path: path, value: raw}
+	return operation
 }
 
 // Add adds value at path.
-func Add(path string, value any) Operation {
-	return Operation{op: patchAdd, path: path, value: value, hasValue: true}
-}
+func Add(path string, value any) Operation { return valued(patchAdd, path, value) }
 
 // Remove removes the value at path.
 func Remove(path string) Operation { return Operation{op: patchRemove, path: path} }
 
 // Replace replaces the value at path with value.
-func Replace(path string, value any) Operation {
-	return Operation{op: patchReplace, path: path, value: value, hasValue: true}
-}
+func Replace(path string, value any) Operation { return valued(patchReplace, path, value) }
 
 // Move moves the value at from to path.
 func Move(from, path string) Operation { return Operation{op: patchMove, path: path, from: from} }
@@ -140,35 +155,31 @@ func Move(from, path string) Operation { return Operation{op: patchMove, path: p
 func Copy(from, path string) Operation { return Operation{op: patchCopy, path: path, from: from} }
 
 // Test checks that the value at path equals value.
-func Test(path string, value any) Operation {
-	return Operation{op: patchTest, path: path, value: value, hasValue: true}
-}
+func Test(path string, value any) Operation { return valued(patchTest, path, value) }
 
 // Append appends element to the array at path, creating the array when it
 // is missing or null: parse's array_append extension, which a server
 // compiles to one atomic SQL expression on an array column.
-func Append(path string, element any) Operation {
-	return Operation{op: patchArrayAppend, path: path, value: element, hasValue: true}
-}
+func Append(path string, element any) Operation { return valued(patchArrayAppend, path, element) }
+
+// Err is the error the operation was built with: ErrOperand for a value
+// encoding/json refuses, nil otherwise.
+func (o Operation) Err() error { return o.err }
 
 // MarshalJSON encodes the operation with the members its op takes: value
 // for add, replace, test and array_append (null included) and for a
-// relation's remove, from for move and copy.
+// relation's remove, from for move and copy. It returns the error the
+// operation was built with.
 func (o Operation) MarshalJSON() ([]byte, error) {
-	w := struct {
+	if o.err != nil {
+		return nil, o.err
+	}
+	return json.Marshal(struct {
 		Op    string          `json:"op"`
 		Path  string          `json:"path"`
 		From  string          `json:"from,omitempty"`
 		Value json.RawMessage `json:"value,omitempty"`
-	}{Op: o.op, Path: o.path, From: o.from}
-	if o.hasValue {
-		v, err := json.Marshal(o.value)
-		if err != nil {
-			return nil, err
-		}
-		w.Value = v
-	}
-	return json.Marshal(w)
+	}{Op: o.op, Path: o.path, From: o.from, Value: o.value})
 }
 
 // Pointer is the JSON Pointer (RFC 6901) to a member: tokens are member

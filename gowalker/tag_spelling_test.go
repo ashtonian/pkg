@@ -1,6 +1,8 @@
 package gowalker_test
 
 import (
+	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/ashtonian/pkg/gowalker"
@@ -43,6 +45,63 @@ func TestMisspeltTagKey(t *testing.T) {
 			t.Errorf("MisspeltTagKey(%q, %q) = %q, %v; want %q", tc.written, tc.known, meant, ok, tc.meant)
 		}
 	}
+}
+
+type spellEmbedded struct {
+	Port int `defualt:"80"`
+}
+
+type spellRow struct {
+	spellEmbedded
+	Name  string `json:"name" defualt:"x" validte:"required"`
+	Notes string `json:"-" defaults:"y"`
+	//lint:ignore U1000 reflection fixture for a private field
+	secret string `defualt:"z"`
+	Clean  string `default:"ok" bson:"ok"`
+}
+
+type spellClean struct {
+	Name string `json:"name" default:"x" validate:"required"`
+}
+
+// The sweep holds every declaration to the known keys, inlined, skipped and
+// private ones included, and leaves choosing among them to the caller.
+func TestShapeMisspeltTagKeys(t *testing.T) {
+	known := []string{"default", "validate"}
+	e := engine(t, gowalker.WithJSONFields("json"))
+	type found struct {
+		field     string
+		state     gowalker.DeclarationState
+		declaring reflect.Type
+		written   string
+		meant     string
+	}
+	var got []found
+	for _, m := range schemaFor[spellRow](t, e).Root().MisspeltTagKeys(known) {
+		got = append(got, found{m.GoField.Name, m.State, m.DeclaringType, m.Written, m.Meant})
+	}
+	embedded, row := reflect.TypeFor[spellEmbedded](), reflect.TypeFor[spellRow]()
+	assert.Equal(t, []found{
+		{"Port", gowalker.Named, embedded, "defualt", "default"},
+		{"Name", gowalker.Named, row, "defualt", "default"},
+		{"Name", gowalker.Named, row, "validte", "validate"},
+		{"Notes", gowalker.Skipped, row, "defaults", "default"},
+		{"secret", gowalker.Skipped, row, "defualt", "default"},
+	}, got)
+
+	assert.Equal(t, []gowalker.TagMisspelling(nil), schemaFor[spellClean](t, e).Root().MisspeltTagKeys(known))
+}
+
+// A returned declaration is the caller's copy, as Declarations returns it.
+func TestShapeMisspeltTagKeysCopies(t *testing.T) {
+	s := schemaFor[spellRow](t, engine(t, gowalker.WithJSONFields("json")))
+	first := s.Root().MisspeltTagKeys([]string{"default"})
+	first[0].Index[0] = 99
+	first[0].InlineParents[0].Name = "changed"
+	again := s.Root().MisspeltTagKeys([]string{"default"})
+	assert.Equal(t, []int{0, 0}, again[0].Index)
+	assert.Equal(t, "spellEmbedded", again[0].InlineParents[0].Name)
+	assert.Equal(t, []string{"defualt"}, slices.Collect(again[0].TagKeys()))
 }
 
 // One edit is symmetric, at either end and in the middle.

@@ -344,11 +344,10 @@ func (r *Resource[T]) searchValue(q url.Values) (string, error) {
 
 // setSearchParam takes the query parameter the search schema advertises
 // (core.WithSearchParam; empty is filter.ParamSearch), which ParseList reads
-// as well as filter.ParamSearch, and refuses one a list request already
-// gives another meaning.
-func (r *Resource[T]) setSearchParam() error {
+// as well as filter.ParamSearch.
+func (r *Resource[T]) setSearchParam() {
 	if r.searchSchema == nil {
-		return nil
+		return
 	}
 	if r.searchSchema.Param == "" {
 		r.searchSchema.Param = filter.ParamSearch
@@ -356,30 +355,70 @@ func (r *Resource[T]) setSearchParam() error {
 	if r.searchSchema.Param != filter.ParamSearch {
 		r.searchParam = r.searchSchema.Param
 	}
-	return r.checkSearchParam(r.filterSchema)
 }
 
-// checkSearchParam refuses a search parameter ParseList would otherwise
-// read as something else: another list parameter, a parameter the endpoint
-// reads itself (AcceptParams), or a flat filter on a request field of fs
-// (filter.FlatParamFields).
-func (r *Resource[T]) checkSearchParam(fs *filter.ResourceSchema) error {
+// checkQueryParams refuses a query parameter ParseList reads other than as
+// a field filter that it would otherwise read as something else: the
+// search parameter, or one the endpoint reads itself (AcceptParams), that
+// is a list parameter or a flat filter on a request field of fs. ParseList
+// would read the one meaning and drop the other: a flat filter it skipped
+// would list every row its schema document says it narrows.
+func (r *Resource[T]) checkQueryParams(fs *filter.ResourceSchema) error {
 	p := r.searchParam
-	switch {
-	case p == "":
-		return nil
-	case filter.IsListParam(p):
-		return fmt.Errorf("search parameter %q is the list parameter %s", p, p)
-	case slices.Contains(r.accepted, p):
+	if p != "" && slices.Contains(r.accepted, p) {
 		return fmt.Errorf("search parameter %q is a parameter the endpoint reads itself (AcceptParams %q)", p, p)
 	}
-	for _, name := range filter.FlatParamFields(p) {
-		_, isField := fs.RequestField(name)
-		if isField {
-			return fmt.Errorf("search parameter %q is a flat filter on field %q", p, name)
+	for _, own := range r.ownParams() {
+		if filter.IsListParam(own.name) {
+			return fmt.Errorf("%s is the list parameter %s", own, own.name)
+		}
+		field, ok := flatFilterField(fs, own.name)
+		if ok {
+			return fmt.Errorf("%s is a flat filter on field %q", own, field)
 		}
 	}
 	return nil
+}
+
+// An ownParam is a query parameter ParseList reads other than as a field
+// filter, named as what declares it.
+type ownParam struct {
+	name string
+	// accepted is an AcceptParams name; otherwise it is the search
+	// parameter.
+	accepted bool
+}
+
+func (p ownParam) String() string {
+	if p.accepted {
+		return fmt.Sprintf("accepted parameter %q (AcceptParams)", p.name)
+	}
+	return fmt.Sprintf("search parameter %q", p.name)
+}
+
+// ownParams are r's search parameter, when its search schema advertises one
+// other than filter.ParamSearch, and its AcceptParams names.
+func (r *Resource[T]) ownParams() []ownParam {
+	params := make([]ownParam, 0, len(r.accepted)+1)
+	if r.searchParam != "" {
+		params = append(params, ownParam{name: r.searchParam})
+	}
+	for _, name := range r.accepted {
+		params = append(params, ownParam{name: name, accepted: true})
+	}
+	return params
+}
+
+// flatFilterField is the request field of fs a flat query parameter
+// filters, if any (filter.FlatParamFields).
+func flatFilterField(fs *filter.ResourceSchema, param string) (string, bool) {
+	for _, name := range filter.FlatParamFields(param) {
+		_, isField := fs.RequestField(name)
+		if isField {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 func boolParam(q url.Values, name string) (bool, error) {
@@ -437,7 +476,8 @@ type Scope struct {
 	// a UUID's canonical text, or an integer's decimal digits ("44"). Text
 	// one of them cannot hold is ErrTenantInvalid.
 	Tenant string
-	// Governance, when set and not empty, replaces the tenant floor: it
+	// Governance, when set and not empty (filter.PolicyConstraints.IsEmpty:
+	// no constraint at any depth), replaces the tenant floor: it
 	// decides which rows of which tenants the list reads, grants included
 	// (filter.ComposeConstraints). A row's relations are its own tenant's:
 	// relation predicates, counts, facets and includes hold every
@@ -652,12 +692,4 @@ func (r *Resource[T]) IncludeQueries(plan *ListPlan, ownerKeys []Key) ([]filter.
 
 // ownsPlan refuses a plan r did not build: its keyset and includes name
 // another table's columns.
-func (r *Resource[T]) ownsPlan(plan *ListPlan) error {
-	if plan == nil {
-		return fmt.Errorf("parse: %s: nil list plan", r.table)
-	}
-	if plan.table != r.table {
-		return fmt.Errorf("parse: %s: list plan built for %q", r.table, plan.table)
-	}
-	return nil
-}
+func (r *Resource[T]) ownsPlan(plan *ListPlan) error { return r.owns(plan.header()) }

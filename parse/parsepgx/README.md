@@ -58,22 +58,34 @@ sequenceDiagram
 
 **Exit points**
 - Include results pass through `filter.Page.SetInclude`: `_relations` and `_truncated` omit empty projections, and cut owners are reported with the retained IDs.
-- Statements to `db` through `SendBatch` (and `Begin` for an update that changes relations). Statement text and arguments come only from the plan.
+- Statements to `db` through `SendBatch`, and for an update through `Begin` (on a pool or connection) or `Exec` of a savepoint (in a `pgx.Tx`). Statement text and arguments come only from the plan.
 - Rows scan through the resource's row contract (`parse.RowScanner`): each column into the field the resource compiled it from — the column tag `core.WithColumnTag` names (default `db`), else the column convention over the field's JSON name, with embedded structs promoted as encoding/json promotes them and nil embedded pointers allocated. Columns omitted by `parse.ReadColumns` stay zero; a `parse.ReadExpr` column scans its expression's value under its column name; declared JSON storage and JSON/JSONB result types (`parse.ScanJSON`, from the result's type OIDs) use the checked JSON decoder described below.
 
 **Failure modes**
-- A plan compiled for another dialect: `ErrDialect`, before any statement runs.
-- A statement error: the pgx/PostgreSQL error, wrapped with the table (`parsepgx: devices: …`); `errors.As(err, &*pgconn.PgError)` reaches it. In pgx's default mode a batch prepares every statement first, so a bad column fails there.
-- Invalid or lossy stored JSON: the decoding or key-validation error, wrapped with the table and read operation. No partial page or returned row slice is exposed.
+- A nil plan, a plan another resource built, or one compiled for another dialect (`parse.ErrDialect`): `Resource.CheckPlan`'s error, before any statement runs.
+- A statement error: a `*parse.StatementError` naming the statement (`page`, `count`, `facets`, `include <field>`, `current`, `conflict`, `owner`, `relations`, `reread`, or the transaction's `begin`, `savepoint`, `release savepoint`, `rollback to savepoint`, `rollback`, `commit`), wrapped once with the table (`parsepgx: devices: owner: …`); `errors.As` reaches it and the pgx/PostgreSQL error under it (`*pgconn.PgError`). In pgx's default mode a batch prepares every statement first, so a bad column fails there.
+- Invalid or lossy stored JSON: the decoding or key-validation error, wrapped with the table and read operation. No partial page or returned row slice is exposed, and an update whose returned row fails to scan is rolled back: an update's error means nothing it wrote is kept, unless it is `parse.ErrCommitUnknown`.
 - A cursor value that cannot be minted from a row: `Resource.Page`'s error.
-- A relation statement that fails inside `Update`: the transaction (or savepoint) rolls back the row change too.
+- Any failure inside `Update` or `UpdateBatch`, a cancellation included: the transaction (or savepoint) rolls back everything the update wrote, and a caller's `pgx.Tx` stays usable.
+- A `COMMIT` sent and never answered — the connection lost, or the settle timeout run out, while it was in flight, or a `FATAL` that ended the session: the error matches `parse.ErrCommitUnknown` (`errors.Is`), and the update may have been applied. Read the rows back before retrying a write that is not idempotent. A `COMMIT` PostgreSQL refused with an `ERROR` (a deferred constraint, a serialization failure), or one pgx never sent, rolled back: an ordinary error.
+- A panic while the update runs — a type's own `UnmarshalJSON` as a row is read: the rest of the batch is read, the transaction (or savepoint) rolls back, and the panic goes on to the caller, leaving the connection idle and a caller's `pgx.Tx` usable.
 - A batch chunk whose targets are not exactly its keys: `parse.ErrUpdateBatchTargets`, before any owner statement; the transaction rolls back.
-- Context cancelled or past its deadline: pgx's context error; nothing is retried.
+- Context cancelled or past its deadline: pgx's context error; nothing is retried. Once every statement of an update has run and its rows have scanned, the update commits (or releases its savepoint) whatever the context does since, and reports success: an update's error never hides an applied one, so a retry never applies it twice. Each settling statement — `COMMIT`, `ROLLBACK`, `RELEASE SAVEPOINT`, `ROLLBACK TO SAVEPOINT` — runs under the context's values without its cancellation, bounded by the settle timeout.
 
 **Dependencies**
 - *Imports*: `parse`, `parse/core`, `parse/filter`, released `pkg/jsonvalue`, `github.com/jackc/pgx/v5`
 - *Imported by*: applications serving parse resources on PostgreSQL
 - *Package boundary*: optional pgx execution; no application imports
+
+## Configuration
+
+`Update` and `UpdateBatch` take `parse.ExecOption`s after the plan:
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `parse.WithSettleTimeout` | `time.Duration` | `10s` (`parse.DefaultSettleTimeout`) | Bounds each statement that settles an update (`COMMIT`, `ROLLBACK`, `RELEASE SAVEPOINT`, `ROLLBACK TO SAVEPOINT`), which runs past the caller's cancellation. A `COMMIT` still in flight when it runs out is `parse.ErrCommitUnknown`. Must be positive; otherwise the call is refused before any statement. |
+
+The pool, its limits and its connections' settings (`MaxConns`, `MaxConnLifetime`, `MaxConnIdleTime`, `ConnConfig.ConnectTimeout`, `DefaultQueryExecMode`) belong to the caller's `pgxpool.Config`.
 
 ## Execution modes
 
@@ -83,10 +95,10 @@ The plans' arguments are typed (`[]string`, `[]uuid.UUID`, `float64`, …), so e
 |---|---|
 | `QueryExecModeCacheStatement` (default) | Recommended: prepared once per connection, binary protocol |
 | `QueryExecModeCacheDescribe` | Behind PgBouncer in transaction mode with statement caching off |
-
-A pooler in statement mode may send each statement of a batch to a different server connection, so a batch is no longer one implicit transaction. `Update` relies on that transaction for a `SkipUnchanged` plan — `Current`'s lock holding every target while the guarded `UPDATE` compares them — so behind a statement-mode pooler the split between `Changed` and `Unchanged` can misreport a row another writer changed between the two (reasoned from the batch protocol, not tested behind a pooler). Pass a `pgx.Tx` there, or use transaction mode.
 | `QueryExecModeDescribeExec` | No cache; one extra round trip per statement |
 | `QueryExecModeExec`, `QueryExecModeSimpleProtocol` | Poolers or proxies that cannot prepare; text encoding |
+
+Every update runs in a transaction, so a pooler must keep a transaction on one server connection: use a direct connection or a pooler in transaction (or session) mode. A pooler in statement mode, which may send each statement to a different server connection, cannot hold one, and `Update` and `UpdateBatch` are not supported behind it. Lists need no transaction and run behind any pooler, each statement in its own snapshot.
 
 `pgx.NamedArgs` rewrites whole statements and cannot compose with the plans' positional placeholders; it is not used.
 
@@ -104,19 +116,21 @@ The page, count and facet statements run in one batch, the includes in a second 
 
 `Update` returns a `parse.UpdateResult`: `Changed`, the target rows whose columns the update wrote, stamped and counted; `Unchanged`, the target rows it left — every row of a plan that assigns no column (an empty patch reads its targets, a relation-only patch locks them) and, under `SkipUnchanged`, the rows the patch already described; and `RelationRows`, the junction rows its membership changes deleted and inserted, zero when none changed. Emit a per-row event for `Changed` and a membership event when `RelationRows` is not zero. No row in either slice means not found.
 
-It changes the relation memberships of the rows the owner statement returned only (changed, then unchanged), never the requested keys. With relation changes it runs in a transaction — a savepoint when `db` is already a `pgx.Tx` — so the caller's own transaction can still roll it back. For a resource with [computed columns](../docs/queries.md#computed-columns) it then reads those rows again (`Resource.Reread`), in the batch that changes the memberships and after the changes, so a column over a relation's pairs returns them as the update left them rather than as the owner statement read them; the changed and the unchanged rows are read again apart, so each keeps its side of the split.
+Every update runs in a transaction of its own on a pool or connection — `BEGIN`, its batches, then `COMMIT` once every returned row has scanned, so an update of columns alone is three round trips — and under a savepoint (`parsepgx_update`) in a caller's `pgx.Tx`, so the caller's own transaction can still roll it back. It changes the relation memberships of the rows the owner statement returned only (changed, then unchanged), never the requested keys. For a resource with [computed columns](../docs/queries.md#computed-columns) it then reads those rows again (`Resource.Reread`), in the batch that changes the memberships and after the changes, so a column over a relation's pairs returns them as the update left them rather than as the owner statement read them; the changed and the unchanged rows are read again apart, so each keeps its side of the split.
 
-A [`SkipUnchanged`](../docs/patches.md#skipping-unchanged-rows) plan sends `plan.Current` and then the guarded `UPDATE` in one batch, so one transaction (the caller's when `db` is a `pgx.Tx`): `Current` locks every target first, the update writes only the rows it changes, and the rows `Current` read and the update did not return are exactly `Unchanged` (`Resource.UpdatedRows`).
+A [`SkipUnchanged`](../docs/patches.md#skipping-unchanged-rows) plan sends `plan.Current` and then the guarded `UPDATE` in one batch of the update's transaction: `Current` locks every target first, the update writes only the rows it changes, and the rows `Current` read and the update did not return are exactly `Unchanged` (`Resource.UpdatedRows`).
 
-`UpdateBatch` runs in one transaction (a savepoint in a caller's `pgx.Tx`): every chunk's `Current` in one batch, locking its targets in key order, each checked against its keys (`UpdateBatchChunk.CheckCurrent`); then every `Owner` in a second batch. `Changed` are the rows the owners wrote, chunk by chunk; `Unchanged` the locked rows a `SkipUnchanged` owner left.
+`UpdateBatch` runs in one transaction (a savepoint in a caller's `pgx.Tx`): every chunk's `Current` in one batch, locking its targets in key order, each checked against its keys (`Resource.CheckBatchCurrent`); then every `Owner` in a second batch. `Changed` are the rows the owners wrote, chunk by chunk; `Unchanged` the locked rows a `SkipUnchanged` owner left (`Resource.BatchResult`).
+
+What runs, in what order, and what the result holds is the root package's, shared with [`parsesql`](../parsesql/README.md): `Resource.CheckPlan` before any statement, `Resource.ListPage` for the page and its include statements, `Resource.FollowUp` for an update's split, relation statements and rereads, `Resource.CheckBatchCurrent` and `Resource.BatchResult` for a batch. This package holds only what is pgx's: the batches the statements are pipelined in, scanning, and the transaction or savepoint.
 
 ## Operations
 
-- *Timeouts*: every statement takes the caller's context; give the request a deadline. Pool limits and lifetimes (`MaxConns`, `MaxConnLifetime`, `MaxConnIdleTime`, `ConnConfig.ConnectTimeout`) belong to the caller's `pgxpool.Config`.
+- *Timeouts*: every statement of a list, and of an update up to its settle, takes the caller's context, as does `Begin`'s wait for a pool's connection; give the request a deadline. The settle runs past the caller's cancellation, each statement bounded by `parse.WithSettleTimeout` (default `10s`). Pool limits and lifetimes (`MaxConns`, `MaxConnLifetime`, `MaxConnIdleTime`, `ConnConfig.ConnectTimeout`) belong to the caller's `pgxpool.Config`.
 - *Cancellation*: a call whose context is cancelled, or whose deadline passes, mid-statement returns an error that `errors.Is` matches to `context.Canceled` or `context.DeadlineExceeded`. Under pgx's default context handling the connection is closed and its statement cancelled on the server, so an update's transaction rolls back and writes none of its rows or memberships; the pool opens a new connection for the next call.
-- *Concurrent updates*: updates of one owner's relations serialize on the owner's row lock, taken by the owner statement before any membership change, so two replacements of one owner's set leave exactly one of them.
-- *Observability*: the package emits no metrics or logs of its own. Instrument the pool with a pgx `QueryTracer` / `BatchTracer` (for example an OpenTelemetry tracer on `ConnConfig.Tracer`); each list is one or two batches, each update one batch, or two and a transaction; a `SkipUnchanged` plan's batch holds two statements; a batch plan is two batches in a transaction.
-- *Troubleshooting*: an `ErrDialect` means the plan was built with another dialect; build it with `filter.PostgresDialect{}`. A `parse.ErrUpdateBatchTargets` means a batch named a key that is missing, deleted, another tenant's, outside the policy or at another revision; nothing was written. A `55P03` or a lock wait on an update is another transaction holding the target rows (`Current` and relation-only owners lock them); keep those transactions short. A `42703` (undefined column) means the table and the columns `T`'s fields compile to (the column tag, else the column convention over the JSON name) disagree. A list whose total looks one off under load is the per-statement snapshot; use a REPEATABLE READ transaction.
+- *Concurrent updates*: updates of one owner's relations serialize on the owner's row lock, taken by the owner statement before any membership change, so two replacements of one owner's set leave exactly one of them. Every update of a target that can hold several rows (`ByIDs`, `ByKeys`, `ByFilter`) locks them in key order before it writes one: `Current` when the plan has one, else `Lock` ahead of a plain `UPDATE`, which would otherwise lock rows in the order its plan reads them; a relation-only patch's owner; and every batch's `Current`. Two updates over overlapping rows therefore cannot deadlock on each other, whatever order they name the keys in or their plans read the rows in. A `40P01` that remains involves another writer of those rows that locks in its own order; PostgreSQL aborts one, and it is safe to retry.
+- *Observability*: the package emits no metrics or logs of its own. Instrument the pool with a pgx `QueryTracer` / `BatchTracer` (for example an OpenTelemetry tracer on `ConnConfig.Tracer`); each list is one or two batches, each update a transaction of one batch, or two; the batch of a `SkipUnchanged` plan, and of a plain update of a target that can hold several rows (`Lock`, then the `UPDATE`), holds two statements; a batch plan is two batches in a transaction.
+- *Troubleshooting*: a `parse.ErrCommitUnknown` means the `COMMIT` went unanswered: look for a dropped connection, a server restart or failover, or a commit slower than the settle timeout (synchronous replication waiting on a standby); the update may have been applied, so read before retrying. A `parse.ErrDialect` means the plan was built with another dialect; build it with `filter.PostgresDialect{}`. `plan built for "…"` means the plan came from another resource than the one passed with it. A `*parse.StatementError`'s `Statement` says which statement failed; log it as an attribute. A `parse.ErrUpdateBatchTargets` means a batch named a key that is missing, deleted, another tenant's, outside the policy or at another revision; nothing was written. A `55P03` or a lock wait on an update is another transaction holding the target rows (`Current`, `Lock` and relation-only owners lock them); keep those transactions short. `no such savepoint` / `25P01` on `parsepgx_update`: the caller's transaction ended under the update (a `COMMIT` or `ROLLBACK` from another goroutine on the same `pgx.Tx`). A `42703` (undefined column) means the table and the columns `T`'s fields compile to (the column tag, else the column convention over the JSON name) disagree. A list whose total looks one off under load is the per-statement snapshot; use a REPEATABLE READ transaction. A `22021` (`invalid byte sequence for encoding "UTF8"`) or `22P05` (`unsupported Unicode escape sequence`) is text holding invalid UTF-8 or U+0000 that parse never read as request text: parse refuses both in request values, keys and patches (`core.CheckText`), so look at the values the server supplies, such as a policy constraint, a stamp or an `AcceptParams` parameter the handler binds itself.
 
 ## Security
 
@@ -136,19 +150,19 @@ PARSE_POSTGRES_DSN=postgres://… go test -tags=integration -count=1 ./parsepgx/
 ## API Reference
 
 - `QueryPage[T](ctx, db Querier, r *parse.Resource[T], plan *parse.ListPlan) (*filter.Page[T], error)` — the page with its total, facets (`Page.Facets`) and includes (`Page.Relations`) as the plan asks.
-- `Update[T](ctx, db DB, r *parse.Resource[T], plan *parse.UpdatePlan) (parse.UpdateResult[T], error)` — the target rows as the update left them, split into `Changed` and `Unchanged`, computed columns read after the membership changes, and `RelationRows`; no row in either when no row in scope is a target.
-- `UpdateBatch[T](ctx, db DB, r *parse.Resource[T], plan *parse.UpdateBatchPlan) (parse.UpdateResult[T], error)` — the batch in one transaction; `parse.ErrUpdateBatchTargets` when a chunk's targets are not exactly its keys.
+- `Update[T](ctx, db DB, r *parse.Resource[T], plan *parse.UpdatePlan, opts ...parse.ExecOption) (parse.UpdateResult[T], error)` — the target rows as the update left them, split into `Changed` and `Unchanged`, computed columns read after the membership changes, and `RelationRows`; no row in either when no row in scope is a target.
+- `UpdateBatch[T](ctx, db DB, r *parse.Resource[T], plan *parse.UpdateBatchPlan, opts ...parse.ExecOption) (parse.UpdateResult[T], error)` — the batch in one transaction; `parse.ErrUpdateBatchTargets` when a chunk's targets are not exactly its keys.
 - `Query[T](ctx, db Querier, r *parse.Resource[T], st parse.Statement) ([]T, error)` — the rows of one statement over `r.Columns`, scanned through the row contract: a repository's own read of the table, or one of a plan's statements run by hand.
 - `Querier` — `SendBatch`: `*pgxpool.Pool`, `*pgx.Conn`, `pgx.Tx`.
 - `DB` — `Querier` plus `Begin`: `*pgxpool.Pool`, `*pgx.Conn`, `pgx.Tx` (a savepoint).
-- `ErrDialect` — a plan not compiled for PostgreSQL.
 
 ## Key Files
 
 | File | Responsibility |
 |------|----------------|
-| `parsepgx.go` | `Querier`, `DB`, `QueryPage`, `Query`, `Update`, `UpdateBatch`, `ErrDialect` |
+| `parsepgx.go` | `Querier`, `DB`, `QueryPage`, `Query`, `Update`, `UpdateBatch`: the root package's executor steps run in pgx batches, each read to its end even past a panic (`sendBatch`); the transaction-or-savepoint wrapper, its settle under `parse.ExecConfig.SettleContext`, and which failed `COMMIT`s are `parse.ErrCommitUnknown` (`commitFailed`) |
 | `json.go` | Rows through `parse.RowScanner`, JSON/JSONB result columns named to it (`parse.ScanJSON`) from the first row's field descriptions |
+| `commit_test.go` | Which failed `COMMIT`s are `parse.ErrCommitUnknown` |
 | `json_integration_test.go` | Typed JSON lists/updates, nulls, projections and failure isolation in every execution mode |
 | `recipe_test.go` | The README recipe: `Device`, list and Merge Patch handlers, `Example` |
 | `recipe_integration_test.go` | `TestRecipe`: the recipe served against PostgreSQL |

@@ -343,7 +343,13 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 				in.WriteString(key)
 				// Owners, not junction rows: two rows pairing one owner with
 				// one target (typed edges) count the owner once.
-				in.WriteString(" AS k, COUNT(DISTINCT " + facetOwnerCount(m.owner, dialect) + ") AS c FROM base INNER JOIN ")
+				in.WriteString(" AS k, COUNT(DISTINCT " + facetOwnerCount(m.owner, dialect) + ") AS c")
+				order := relationValueOrder(rel, dialect)
+				ordered = order != ""
+				if ordered {
+					in.WriteString(", MIN(" + order + ") AS o")
+				}
+				in.WriteString(" FROM base INNER JOIN ")
 				in.WriteString(dialect.QuoteIdent(rel.JoinTable))
 				in.WriteString(" " + junctionAlias + " ON ")
 				for j, alias := range m.owner {
@@ -483,15 +489,36 @@ func facetOwnerCount(owner []string, dialect Dialect) string {
 }
 
 // relationKeyColumns are the junction's target key columns as a relation
-// facet groups them: a string, UUID or integer column itself, any other
-// type's its canonical text (keyValueText), so equal values make one
-// bucket.
+// facet groups them: a UUID or integer column itself, a string column by
+// code point, any other type's its canonical text (keyValueText), so
+// equal values, and only those, make one bucket.
 func relationKeyColumns(rel *core.RelationSchema, dialect Dialect) []string {
 	out := make([]string, len(rel.TargetColumns))
 	for i, c := range rel.TargetColumns {
-		out[i] = includeKey(dialect, qualified(dialect, junctionAlias, c), rel.TargetTypes[i])
+		key := includeKey(dialect, qualified(dialect, junctionAlias, c), rel.TargetTypes[i])
+		if rel.TargetTypes[i].Type == core.FieldTypeString {
+			// Grouped by code point, as an include names the keys: a column
+			// collation that equates two texts must not merge their buckets.
+			// Parenthesized, since the key's text casts it (PostgreSQL's
+			// :: binds tighter than COLLATE).
+			key = "(" + dialect.CodePointOrder(key) + ")"
+		}
+		out[i] = key
 	}
 	return out
+}
+
+// relationValueOrder is the order of a relation facet's keys where their
+// text is not it: a target key of one numeric column, read on the
+// junction as facetValueOrder reads a column. A key of several columns is
+// its text (core.KeyText), and so is ordered by it, as FacetBuckets orders
+// it.
+func relationValueOrder(rel *core.RelationSchema, dialect Dialect) string {
+	if len(rel.TargetColumns) != 1 {
+		return ""
+	}
+	column, t := rel.TargetColumns[0], rel.TargetTypes[0]
+	return facetValueOrder(keyField(column, qualified(dialect, junctionAlias, column), t), dialect)
 }
 
 // relationKeyExpr renders the junction's target key as TEXT so the UNION

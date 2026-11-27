@@ -508,10 +508,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, *Pat
 	}
 
 	base := ops[start]
-	var value any
-	if base.Op != PatchOpRemove {
-		value = base.Value
-	}
+	value, _ := wholeValue(base)
 	for _, op := range later {
 		var elems []any
 		if value != nil {
@@ -524,9 +521,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, *Pat
 		value = append(elems, op.Value)
 	}
 	if value == nil {
-		if value = base.Schema.clearedValue(); value == nil {
-			return "NULL", last, nil
-		}
+		return "NULL", last, nil
 	}
 	val, err := marshalIfComplex(value, base.Schema, b.dialect)
 	if err != nil {

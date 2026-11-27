@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"unsafe"
 
 	"github.com/ashtonian/pkg/gowalker"
@@ -61,6 +62,12 @@ type Applier[T any] struct {
 	// hidden are the patch paths of the server fields the field-name tag
 	// hides, which only the direct path can set.
 	hidden map[string]bool
+	// presented maps each top-level field name whose tag can omit it
+	// (omitempty, omitzero) to a one-field struct of the field's type,
+	// tagged as the field is without those options. The document path
+	// writes an omitted field through it, so test, copy and move read every
+	// field that replace and remove treat as existing (wireOp).
+	presented map[string]reflect.Type
 	// codecNames maps each name in fields to the name the default JSON
 	// codec writes the same field under, when the field-name tag is not
 	// json; nil when the codec names fields as the schemas do.
@@ -91,6 +98,7 @@ func NewApplier[T any](gen *core.SchemaGenerator, cfg *core.ParserConfig) (*Appl
 		hidden:       hiddenServerPaths(gen, walk),
 	}
 	a.unwritable = unwritableFields(a.fields)
+	a.presented = presentedForms[T](a.fieldNameTag, a.fields)
 	if a.fieldNameTag == core.JSONTagKey {
 		return a, nil
 	}
@@ -135,6 +143,113 @@ func unwritableFields(fields map[string]*core.Field) []string {
 	}
 	slices.Sort(names)
 	return names
+}
+
+// presentedForms builds Applier.presented: a form for each visible field
+// whose json or field-name tag can omit it. A codec names fields by one of
+// those tags, so the form carries both, without their omit options.
+func presentedForms[T any](fieldNameTag string, fields map[string]*core.Field) map[string]reflect.Type {
+	root := reflect.TypeFor[T]()
+	for root.Kind() == reflect.Pointer {
+		root = root.Elem()
+	}
+	forms := make(map[string]reflect.Type)
+	for name, f := range fields {
+		if f.Hidden() {
+			continue
+		}
+		tag, omits := presentedTag(root.FieldByIndex(f.Route()).Tag, core.JSONTagKey, fieldNameTag)
+		if !omits {
+			continue
+		}
+		forms[name] = reflect.StructOf([]reflect.StructField{{Name: "V", Type: f.Type(), Tag: tag}})
+	}
+	return forms
+}
+
+// presentedTag is tag's entries for keys with their omitempty and omitzero
+// options dropped, and whether any had one.
+func presentedTag(tag reflect.StructTag, keys ...string) (reflect.StructTag, bool) {
+	var entries []string
+	omits := false
+	for _, key := range slices.Compact(slices.Sorted(slices.Values(keys))) {
+		value, ok := tag.Lookup(key)
+		if !ok {
+			continue
+		}
+		name, options, _ := strings.Cut(value, ",")
+		kept := []string{name}
+		for option := range strings.SplitSeq(options, ",") {
+			switch option {
+			case "":
+			case jsonOmitEmpty, jsonOmitZero:
+				omits = true
+			default:
+				kept = append(kept, option)
+			}
+		}
+		entries = append(entries, key+":"+strconv.Quote(strings.Join(kept, ",")))
+	}
+	return reflect.StructTag(strings.Join(entries, " ")), omits
+}
+
+// presentOmitted writes into doc, the document of target, each top-level
+// field an operation names that the encoding omitted, as its presented
+// form (Applier.presented) encodes the value it holds. A pointer T encodes
+// its form through a pointer too, so a MarshalJSON with a pointer receiver
+// writes the field as it would in T.
+func (a *Applier[T]) presentOmitted(doc map[string]any, target T, ops []*PatchOperation) error {
+	if len(a.presented) == 0 {
+		return nil
+	}
+	root := reflect.ValueOf(&target).Elem()
+	throughPointer := root.Kind() == reflect.Pointer
+	for root.Kind() == reflect.Pointer {
+		if root.IsNil() {
+			return nil
+		}
+		root = root.Elem()
+	}
+	for _, op := range ops {
+		for _, path := range []string{op.Path, op.From} {
+			tokens, err := core.ParsePointer(path)
+			if err != nil || len(tokens) == 0 {
+				continue
+			}
+			name := tokens[0]
+			form, ok := a.presented[name]
+			if !ok {
+				continue
+			}
+			_, exists := doc[name]
+			if exists {
+				continue
+			}
+			value, err := a.fields[name].Value(root)
+			if err != nil {
+				continue // behind a nil embedded pointer, the field is not there
+			}
+			holder := reflect.New(form)
+			holder.Elem().Field(0).Set(value)
+			encoded := holder.Elem().Interface()
+			if throughPointer {
+				encoded = holder.Interface()
+			}
+			data, err := a.codec.Encode(encoded)
+			if err != nil {
+				return fmt.Errorf("patch: encoding field %s: %w", name, err)
+			}
+			var member map[string]any
+			err = a.codec.Decode(data, &member)
+			if err != nil {
+				return fmt.Errorf("patch: decoding field %s: %w", name, err)
+			}
+			for _, v := range member {
+				doc[name] = v
+			}
+		}
+	}
+	return nil
 }
 
 // CheckSchema refuses a schema with a path that would write a field of T
@@ -297,30 +412,30 @@ func (a *Applier[T]) applyDirect(parsed *ParsedPatch, target T) (T, error) {
 		if err != nil {
 			return zero, err
 		}
+		value, cleared := wholeValue(op)
 		if op.Schema.SQLType.IsJSON() {
-			value := op.Value
-			if op.Op == PatchOpRemove || value == nil {
-				value = op.Schema.clearedValue()
-			}
 			if err := assignStoredJSON(fv, value); err != nil {
 				return zero, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("setting JSON field %s: %v", fieldName, err), Path: op.Path, Cause: err}
 			}
 			continue
 		}
-		if op.Op == PatchOpRemove || op.Value == nil {
-			if cleared := op.Schema.clearedValue(); cleared != nil {
-				fv.Set(reflect.ValueOf(cleared))
-			} else {
+		if cleared {
+			if value == nil {
 				fv.SetZero()
+			} else {
+				// clearedValue is a fresh value on every call: the result's own.
+				fv.Set(reflect.ValueOf(value))
 			}
 			continue
 		}
-		if err := assignValue(fv, op.Value, a.codec); err != nil {
-			return zero, &core.ParseError{
+		err = assignValue(fv, value, a.codec)
+		if err != nil {
+			invalid := &core.ParseError{
 				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
 				Message: fmt.Sprintf("setting field %s: %v", fieldName, err),
 				Path:    op.Path, Cause: err,
 			}
+			return zero, invalid
 		}
 	}
 	return out.value, nil
@@ -369,7 +484,10 @@ func assignStoredJSON(dst reflect.Value, value any) error {
 // exact kind (no wrap, no truncation), strings reach encoding.TextUnmarshaler
 // destinations (time.Time, uuid.UUID), pointers are allocated and assigned
 // through, and composite kinds (slices, maps, structs) decode via the codec,
-// whose decoder range-checks every leaf.
+// whose decoder range-checks every leaf. dst never shares memory with v: a
+// value that can (a map, a slice, an interface holding a document) is
+// decoded afresh, so each result is its own, and changing it changes
+// neither the patch nor another result.
 func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 	t := dst.Type()
 	if v == nil {
@@ -385,7 +503,7 @@ func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 		return nil
 	}
 	rv := reflect.ValueOf(v)
-	if rv.Type() == t {
+	if rv.Type() == t && !sharesMemory(t) {
 		dst.Set(rv)
 		return nil
 	}
@@ -431,7 +549,9 @@ func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 		dst.SetBool(b)
 		return nil
 	case reflect.Interface:
-		if rv.Type().AssignableTo(t) {
+		// A scalar is shared safely, and no document decodes into an
+		// interface with methods: it holds the value parsed.
+		if rv.Type().AssignableTo(t) && (!sharesMemory(rv.Type()) || t.NumMethod() > 0) {
 			dst.Set(rv)
 			return nil
 		}
@@ -446,6 +566,26 @@ func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 	}
 	dst.Set(decoded.Elem())
 	return nil
+}
+
+// sharesMemory reports whether two values of t can share memory that one
+// of them changes: t is, or holds in an element or a field, a map, slice,
+// pointer, interface, channel or function. A string shares only memory no
+// one changes.
+func sharesMemory(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Pointer, reflect.Interface, reflect.Chan, reflect.Func, reflect.UnsafePointer:
+		return true
+	case reflect.Array:
+		return sharesMemory(t.Elem())
+	case reflect.Struct:
+		for i := range t.NumField() {
+			if sharesMemory(t.Field(i).Type) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // checkDocumentFieldNames catches the default JSON codec paired with a
@@ -524,6 +664,10 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 	if err = a.codec.Decode(data, &doc); err != nil {
 		return zero, fmt.Errorf("patch: decoding target to a document: %w", err)
 	}
+	err = a.presentOmitted(doc, target, parsed.Operations)
+	if err != nil {
+		return zero, err
+	}
 
 	run := &jsonPatchRun{codec: a.codec, copyBudget: a.copyBudget}
 	ops := parsed.Operations
@@ -537,7 +681,7 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 			if pointerErr != nil || len(tokens) != 1 {
 				return zero, fmt.Errorf("patch: merge path %q is not a top-level field", op.Path)
 			}
-			value, err := documentValue(op)
+			value, err := wireValue(op)
 			if err != nil {
 				return zero, err
 			}
@@ -733,7 +877,7 @@ func testValue(doc map[string]any, op *PatchOperation, index int) error {
 	if err != nil {
 		return fail(fmt.Sprintf("value at %s: %v", op.Path, err))
 	}
-	value, err := documentValue(op)
+	value, err := wireValue(op)
 	if err != nil {
 		return err
 	}
@@ -753,27 +897,24 @@ func wireOp(op *PatchOperation) (map[string]any, error) {
 	if tokens, err := core.ParsePointer(op.Path); err == nil && len(tokens) == 1 {
 		topLevel = true
 	}
-	// Clearing a top-level slice or map empties it (clearedValue); add also
-	// covers a member the encoding omitted.
-	if topLevel && (op.Op == PatchOpRemove || op.Value == nil) && op.Op != PatchOpMove && op.Op != PatchOpCopy && op.Op != PatchOpTest {
-		if cleared := op.Schema.clearedValue(); cleared != nil {
-			return addOp(op.Path, cleared), nil
+	// Top-level schema fields exist even when omitempty omits their current
+	// value, so writing or clearing one adds the value it leaves
+	// (wholeValue), as the direct path sets it; nested JSON members keep
+	// RFC 6902's existence requirements.
+	if topLevel && (op.Op == PatchOpAdd || op.Op == PatchOpReplace || op.Op == PatchOpRemove) {
+		value, cleared := wholeValue(op)
+		if cleared {
+			return addOp(op.Path, value), nil
 		}
+		wire, err := wireValue(op)
+		if err != nil {
+			return nil, err
+		}
+		return addOp(op.Path, wire), nil
 	}
-	value, err := documentValue(op)
+	value, err := wireValue(op)
 	if err != nil {
 		return nil, err
-	}
-	// Top-level schema fields exist even when omitempty omits their current
-	// value, so replacing or clearing one adds it, as the direct path sets it;
-	// nested JSON members keep RFC 6902's existence requirements.
-	if topLevel {
-		switch op.Op {
-		case PatchOpReplace:
-			return addOp(op.Path, value), nil
-		case PatchOpRemove:
-			return addOp(op.Path, nil), nil
-		}
 	}
 	w := map[string]any{rfc6902.Op: string(op.Op), rfc6902.Path: op.Path}
 	switch op.Op {
@@ -786,10 +927,10 @@ func wireOp(op *PatchOperation) (map[string]any, error) {
 	return w, nil
 }
 
-// documentValue is op's value as the target's JSON document holds it: a
+// wireValue is op's value as the target's JSON document holds it: a
 // quoted field's (PathSchema.Wire) in its wire form, which the document
 // decodes back into the field from.
-func documentValue(op *PatchOperation) (any, error) {
+func wireValue(op *PatchOperation) (any, error) {
 	v, err := core.ToWire(op.Schema.Wire, op.Value)
 	if err != nil {
 		return nil, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("value for path %s: %v", op.Path, err), Path: op.Path, Cause: err}

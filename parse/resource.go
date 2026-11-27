@@ -2,7 +2,6 @@ package parse
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -196,7 +195,10 @@ func ParserOptions(opts ...core.Option) ResourceOption {
 
 // AcceptParams names query parameters the endpoint reads itself. ParseList
 // leaves them alone; any other parameter that is neither a list parameter
-// (filter.Param*) nor a filterable field is an error (E2071).
+// (filter.Param*) nor a filterable field is an error (E2071). A name that is
+// a list parameter, the search parameter, or a flat filter on a field
+// (filter.FlatParamFields) is refused by NewResource, and by Relate and
+// WithPaths for the fields they add: ParseList would skip that filter.
 func AcceptParams(names ...string) ResourceOption {
 	return func(c *resourceConfig) { c.accepted = append(c.accepted, names...) }
 }
@@ -213,7 +215,8 @@ type Schemas struct {
 }
 
 // CustomizeSchemas changes the generated schemas while the resource is
-// built: a patch path pattern (patch.PatchSchema.AddPath), a validator, a
+// built: a patch path pattern (patch.PatchSchema.AddPath), a patch path's
+// validator or narrower operation set (UpdatePath), a filter field's
 // narrower operator set. NewResource runs the functions in order, before its
 // checks, so a customized schema is held to the read set (ReadColumns), the
 // column declarations and the computed columns as a generated one is; an
@@ -314,7 +317,8 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	}
 	r.filterSchema.SystemFields = systemFields(table, cfg, columns, fieldsByColumn)
 	r.filterSchema.PrimaryKey = slices.Clone(cfg.pk)
-	err = r.setSearchParam()
+	r.setSearchParam()
+	err = r.checkQueryParams(r.filterSchema)
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
 	}
@@ -546,8 +550,7 @@ func sqlTypes(table string, cfg resourceConfig, columns map[string]reflect.Type)
 // Values such as interfaces and nested structs are checked by the JSON encoder
 // at the write boundary; construction must not invoke user encoding hooks.
 func jsonRepresentableType(t reflect.Type) bool {
-	marshaler := reflect.TypeFor[json.Marshaler]()
-	if t.Implements(marshaler) || reflect.PointerTo(t).Implements(marshaler) {
+	if core.MarshalsJSON(t) {
 		return true
 	}
 	switch t.Kind() {
@@ -747,8 +750,12 @@ func (r *Resource[T]) TenantColumnName() string { return r.tenant }
 // DeletedColumnName is the soft-delete column; "" without soft delete.
 func (r *Resource[T]) DeletedColumnName() string { return r.deleted }
 
-// ColumnSQLType returns a column's explicit storage declaration. The returned
-// value cannot mutate the resource's metadata; false means no declaration.
+// ColumnSQLType returns the SQL type a column is read and written as: its
+// declaration (ColumnType), or, for a value type that declares none, the
+// type its Go type implies (core.ImpliedSQLType: a civil date, an interval,
+// an array of intervals). false means neither: the column holds its Go
+// type's own representation. The returned value cannot mutate the
+// resource's metadata.
 func (r *Resource[T]) ColumnSQLType(column string) (core.SQLType, bool) {
 	t, ok := r.sqlTypes[column]
 	return t, ok
@@ -897,7 +904,8 @@ func (r *Resource[T]) checkIdentityWrite(column string) error {
 // systemFields are the columns policies constrain without the request
 // filtering on them: the key, the tenant and the soft-delete column, typed
 // from T's fields, in the wire form their fields travel in (a json:",string"
-// key's filter operands are JSON strings).
+// key's filter operands are JSON strings). A key column is Indexed, since a
+// primary key is an index by construction, so a filter on it costs as one.
 func systemFields(table string, cfg resourceConfig, columns map[string]reflect.Type, byColumn map[string]*core.Field) map[string]*filter.FieldSchema {
 	field := func(column string, ops ...filter.FilterOperator) *filter.FieldSchema {
 		info := core.TypeOf(columns[column])
@@ -912,7 +920,9 @@ func systemFields(table string, cfg resourceConfig, columns map[string]reflect.T
 	}
 	fields := make(map[string]*filter.FieldSchema, len(cfg.pk)+2)
 	for _, column := range cfg.pk {
-		fields[column] = field(column, filter.OpEq, filter.OpGt, filter.OpLt, filter.OpGte, filter.OpLte, filter.OpIn)
+		key := field(column, filter.OpEq, filter.OpGt, filter.OpLt, filter.OpGte, filter.OpLte, filter.OpIn)
+		key.Indexed = true
+		fields[column] = key
 	}
 	if cfg.tenant != "" && !slices.Contains(cfg.pk, cfg.tenant) {
 		fields[cfg.tenant] = field(cfg.tenant, filter.OpEq, filter.OpIn)
@@ -979,7 +989,7 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
 	}
-	err = r.checkSearchParam(fs)
+	err = r.checkQueryParams(fs)
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
 	}

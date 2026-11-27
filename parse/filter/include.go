@@ -297,7 +297,7 @@ func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQuer
 		return nil, fmt.Errorf("field %q is not opted into include via parse:\"include\"", field.ExternalName)
 	}
 	if field.Relation.Policy && field.Related == nil {
-		return nil, fmt.Errorf("policy-scoped relation has no target schema")
+		return nil, unresolvableRelation(field, "is policy-scoped without a target schema to hold its policy")
 	}
 	err := field.Relation.Check()
 	if err != nil {
@@ -399,7 +399,7 @@ func policyScope(field *FieldSchema, exprs columnExprs, dialect Dialect, scope r
 		return "", nil
 	}
 	if field.Related == nil {
-		return "", fmt.Errorf("policy-scoped relation has no target schema")
+		return "", unresolvableRelation(field, "is policy-scoped without a target schema to hold its policy")
 	}
 	root, err := related.on(field, nil)
 	if err != nil || root == nil {
@@ -422,8 +422,10 @@ func policyScope(field *FieldSchema, exprs columnExprs, dialect Dialect, scope r
 // admitted by the target's policy) and live. It begins with " AND ", is ""
 // when nothing limits the targets, and binds every value with bind — for a
 // statement another package numbers, such as a membership patch's guarded
-// insert.
-func VisibleRelated(field *FieldSchema, dialect Dialect, alias string, tenant any, related map[string]*PolicyConstraints, bind func(any) string) (string, error) {
+// insert. scope's Tenant, Related and Now are read: the request's tenant,
+// the targets' policies and the instant their relative-time tokens resolve
+// against (the wall clock when zero).
+func VisibleRelated(field *FieldSchema, dialect Dialect, alias string, scope RelationScope, bind func(any) string) (string, error) {
 	if field == nil || field.Relation == nil || field.Relation.TargetTable == "" {
 		return "", fmt.Errorf("VisibleRelated: field is not a many-to-many with a target")
 	}
@@ -431,13 +433,17 @@ func VisibleRelated(field *FieldSchema, dialect Dialect, alias string, tenant an
 	if err != nil {
 		return "", err
 	}
-	scope := relationScope{tenant: tenant}
-	tc, err := targetScope(field, dialect, scope, bind, alias)
+	tenancy := relationScope{tenant: scope.Tenant}
+	tc, err := targetScope(field, dialect, tenancy, bind, alias)
 	if err != nil {
 		return "", err
 	}
-	policies := relatedPolicies{byTable: related, now: time.Now().UTC()}
-	pc, err := policyScope(field, exprs, dialect, scope, policies, &buildState{bind: bind}, alias)
+	now := scope.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	policies := relatedPolicies{byTable: scope.Related, now: now}
+	pc, err := policyScope(field, exprs, dialect, tenancy, policies, &buildState{bind: bind}, alias)
 	if err != nil {
 		return "", err
 	}

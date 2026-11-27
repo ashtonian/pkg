@@ -8,22 +8,66 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode/utf8"
 	"uuid"
 
 	"github.com/ashtonian/pkg/gowalker"
 )
 
-// ErrNUL is the error a request string holding U+0000 is refused with.
-var ErrNUL = errors.New("text holds U+0000, which no backend compares as written")
+// ErrInvalidText is the error request text is refused with when it holds
+// U+0000 or is not valid UTF-8.
+var ErrInvalidText = errors.New("invalid text")
 
-// CheckNUL refuses s when it holds U+0000. PostgreSQL refuses the character
-// in text and jsonb parameters, and SQLite ends a LIKE or GLOB pattern at
-// it, so a request value holding it would fail at execution on one backend
-// and match differently on another. Request values are checked where they
-// are read; values the server stored are not.
-func CheckNUL(s string) error {
+// CheckText refuses s when it holds U+0000 or is not valid UTF-8, wrapping
+// ErrInvalidText. PostgreSQL refuses both in text and jsonb parameters, and
+// SQLite stores them as sent and ends a LIKE or GLOB pattern at U+0000, so
+// a request value holding either would fail at execution on one backend and
+// match differently on another. Request values are checked where they are
+// read; values the server stored are not.
+func CheckText(s string) error {
 	if strings.IndexByte(s, 0) >= 0 {
-		return ErrNUL
+		return fmt.Errorf("%w: it holds U+0000, which no backend compares as written", ErrInvalidText)
+	}
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("%w: it is not valid UTF-8", ErrInvalidText)
+	}
+	return nil
+}
+
+// CheckValueText is CheckText for every string of a normalized request
+// value: the value itself, a list's or a key's elements, and a document's
+// member names and members, at any depth. The error names where the string
+// stands. Values of other types hold no request text a backend binds as
+// written.
+func CheckValueText(v any) error {
+	switch x := v.(type) {
+	case string:
+		return CheckText(x)
+	case []any:
+		return checkElementsText(x)
+	case Key:
+		return checkElementsText(x)
+	case map[string]any:
+		for k, e := range x {
+			err := CheckText(k)
+			if err != nil {
+				return fmt.Errorf("member name %q: %w", k, err)
+			}
+			err = CheckValueText(e)
+			if err != nil {
+				return fmt.Errorf("%s: %w", k, err)
+			}
+		}
+	}
+	return nil
+}
+
+func checkElementsText(elements []any) error {
+	for i, e := range elements {
+		err := CheckValueText(e)
+		if err != nil {
+			return fmt.Errorf("[%d]: %w", i, err)
+		}
 	}
 	return nil
 }
@@ -47,7 +91,8 @@ func CheckNUL(s string) error {
 //
 // Other data types pass through unchanged. Non-nil pointers are
 // dereferenced first, so typed Go input (*int64, *time.Time) normalizes like
-// its value. A nil value is an error; callers decide separately whether a
+// its value, and a value of a named string, integer, float or bool type
+// normalizes as its kind's value does. A nil value is an error; callers decide separately whether a
 // field admits null.
 func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	v = deref(v)
@@ -86,7 +131,7 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	case FieldTypeDecimal:
 		return DecimalText(v)
 	case FieldTypeBool:
-		b, ok := v.(bool)
+		b, ok := boolean(v)
 		if !ok {
 			return nil, fmt.Errorf("expected boolean, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 		}
@@ -236,6 +281,20 @@ func text(v any) (string, bool) {
 		return rv.String(), true
 	}
 	return "", false
+}
+
+// boolean returns v as a bool when it is one, named bool types included, as
+// text and nativeInt read named strings and integers.
+func boolean(v any) (bool, bool) {
+	b, ok := v.(bool)
+	if ok {
+		return b, true
+	}
+	rv := reflect.ValueOf(v)
+	if rv.IsValid() && rv.Kind() == reflect.Bool {
+		return rv.Bool(), true
+	}
+	return false, false
 }
 
 func deref(v any) any {

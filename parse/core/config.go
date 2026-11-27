@@ -26,7 +26,8 @@ type ParserConfig struct {
 	// condition, 10 per unindexed one, more for documents, relations,
 	// unanchored patterns and $or.
 	MaxCost int
-	// MaxInputSize bounds a filter or patch body in bytes.
+	// MaxInputSize bounds a filter or patch body in bytes. Unlimited, a
+	// request body is still bounded (ListBodyLimit, PatchBodyLimit).
 	MaxInputSize int
 	// MaxListBodySize bounds a list request sent as a POST body, in bytes;
 	// zero derives the bound from MaxInputSize (ListBodyLimit).
@@ -67,29 +68,48 @@ func (c *ParserConfig) GetCodec() Codec {
 // search and name lists, and the members' JSON.
 const listBodyHeadroom = 16 << 10
 
-// defaultMaxListBodySize bounds a list body when MaxInputSize is unlimited.
+// defaultMaxBodySize bounds a request body when MaxInputSize is unlimited.
 // It is net/http's default header limit (http.DefaultMaxHeaderBytes), which
-// bounded the same request in a URL.
-const defaultMaxListBodySize = 1 << 20
+// bounds a list request sent in a URL.
+const defaultMaxBodySize = 1 << 20
 
 // ListBodyLimit returns the bytes a list body may hold: MaxListBodySize when
 // it is positive; otherwise MaxInputSize plus 16 KiB for the members beside
-// the filter, or 1 MiB when MaxInputSize is unlimited. Nothing in front of a
-// handler bounds a request body as header limits bound a URL, so a list body
-// is always bounded. A nil configuration is DefaultConfig.
+// the filter, or 1 MiB when MaxInputSize is unlimited. A nil configuration
+// is DefaultConfig.
 func (c *ParserConfig) ListBodyLimit() int {
 	if c == nil {
 		c = DefaultConfig()
 	}
-	switch {
-	case c.MaxListBodySize > 0:
+	if c.MaxListBodySize > 0 {
 		return c.MaxListBodySize
+	}
+	return c.bodyLimit(listBodyHeadroom)
+}
+
+// PatchBodyLimit returns the bytes a patch body may hold: MaxInputSize, the
+// size the patch parsers hold a document to, or 1 MiB when MaxInputSize is
+// unlimited. A nil configuration is DefaultConfig.
+func (c *ParserConfig) PatchBodyLimit() int {
+	if c == nil {
+		c = DefaultConfig()
+	}
+	return c.bodyLimit(0)
+}
+
+// bodyLimit is the one rule a request body is bounded by: MaxInputSize plus
+// headroom for the members beside what MaxInputSize bounds, or
+// defaultMaxBodySize when MaxInputSize is unlimited. Nothing in front of a
+// handler bounds a request body as header limits bound a URL, so a body is
+// always bounded, whatever the parsers are allowed.
+func (c *ParserConfig) bodyLimit(headroom int) int {
+	switch {
 	case c.MaxInputSize <= 0:
-		return defaultMaxListBodySize
-	case c.MaxInputSize > math.MaxInt-listBodyHeadroom:
+		return defaultMaxBodySize
+	case c.MaxInputSize > math.MaxInt-headroom:
 		return math.MaxInt
 	}
-	return c.MaxInputSize + listBodyHeadroom
+	return c.MaxInputSize + headroom
 }
 
 // Effective returns the configuration a parser reads: c with each zero

@@ -64,7 +64,8 @@ func TestParsePatchRequest_TheMediaTypeNamesTheGrammar(t *testing.T) {
 }
 
 // The body is read no further than MaxInputSize, one byte past it telling a
-// body too large without reading the rest; zero or less reads it whole.
+// body too large without reading the rest; with MaxInputSize unlimited, no
+// further than 1 MiB, as a list body.
 func TestParsePatchRequest_TheBodyIsBoundedByTheInputSize(t *testing.T) {
 	body := func(n int) string { return `{"name":"` + strings.Repeat("x", n-len(`{"name":""}`)) + `"}` }
 
@@ -78,8 +79,14 @@ func TestParsePatchRequest_TheBodyIsBoundedByTheInputSize(t *testing.T) {
 	assert.Equal(t, 65, r.n, "read one byte past the limit and no further")
 
 	for _, size := range []int{0, -1} {
-		_, err := limitedDocs(t, core.WithMaxInputSize(size)).ParsePatchRequest(parse.MediaTypeMergePatch, strings.NewReader(body(1<<20)))
-		assert.NoError(t, err, "input size %d reads the body whole", size)
+		unlimited := limitedDocs(t, core.WithMaxInputSize(size))
+		_, err := unlimited.ParsePatchRequest(parse.MediaTypeMergePatch, strings.NewReader(body(1<<20)))
+		require.NoError(t, err, "input size %d reads a body of 1 MiB", size)
+		r := &countingReader{r: strings.NewReader(body(4 << 20))}
+		_, err = unlimited.ParsePatchRequest(parse.MediaTypeMergePatch, r)
+		require.ErrorIs(t, err, patch.ECodeInputTooLarge, "input size %d", size)
+		require.ErrorContains(t, err, "patch body exceeds maximum 1048576 bytes")
+		assert.Equal(t, 1<<20+1, r.n, "input size %d reads one byte past 1 MiB and no further", size)
 	}
 }
 

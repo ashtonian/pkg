@@ -11,5 +11,5 @@ import (
 )
 
 func TestExecutorContract_SQLite(t *testing.T) {
-	runExecutorContract(t, func(t *testing.T) *sql.DB { return dbtest.SQLite(t) }, filter.SQLiteDialect{}, "TEXT")
+	runExecutorContract(t, func(t *testing.T) *sql.DB { return dbtest.SQLiteHooked(t) }, filter.SQLiteDialect{}, "TEXT")
 }

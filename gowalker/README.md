@@ -84,6 +84,9 @@ compiled field or declaration yields the keys compilation already read
 (`TagKeys()`), and `MisspeltTagKey(key, known)` names the key of yours a key you
 do not read most likely misspells (equal ignoring case, `-` and `_`, or one
 character away), for your library to refuse it rather than ignore it.
+`shape.MisspeltTagKeys(known)` makes that check on every declared field of a
+struct and returns each misspelling with its declaration, for you to filter
+and word.
 
 ## Pick a naming convention
 
@@ -108,9 +111,9 @@ Two fields claiming one name fail compilation with an error naming both.
 | Call | Returns | Keep it for |
 |---|---|---|
 | `gowalker.Compile[T]()` or `engine.Compile[T]()` | `*Schema`, cached by the engine | Every use of `T` |
-| `schema.Root().Fields()` | `[]*Field`: `Name`, `Type`, `Tag(key)`, `Tags`, `Index` | Building your metadata |
+| `schema.Root().Fields()` | `[]*Field`: `Name`, `Type`, `Tag(key)`, `Tags`, `Index`; `GoSelector` (`Audit.ID`) to name one in your errors | Building your metadata |
 | `schema.Root().Match(name)` | The field `encoding/json` decodes a member named `name` into, and whether it matched exactly or only by case (`ExactMatch`, `FoldedMatch`, `NoMatch`); `MatchBytes` for a decoder's bytes | Telling a member spelled in another case from an unknown one |
-| `schema.Root().Declarations()` | Every declared field with what the view made of it: named, unnamed, shadowed, tied, skipped | Checking your tags on every field; reading fields the view hides, with `KeepHidden` |
+| `schema.Root().Declarations()` | Every declared field with what the view made of it: named, unnamed, shadowed, tied, skipped | Checking your tags on every field; reading fields the view hides, with `KeepHidden`; refusing a field behind an unexported embedded pointer, which no write can allocate (`UnallocatableParent`) |
 | `gowalker.NewTypeCache(engine, build)` | Your per-type metadata, built once | Your library's hot path |
 | `schema.AccessName(name)` | `*Accessor`, cached by the schema | Reading or writing one field across many values |
 | `schema.ResolveText("server.port")` | `*Accessor`, not cached | Nested locations; keep it yourself |
@@ -216,7 +219,7 @@ The standard library only, Go 1.27 or later. There are no external services.
 |---|---|
 | `engine.go` | `Engine`, options, limits, the schema cache and `CacheStats` |
 | `tags.go` | Tag parsing, `TagKeys`, `WithTaggedFields` and `WithJSONFields` |
-| `tag_spelling.go` | `MisspeltTagKey`: the known tag key a misspelt one means |
+| `tag_spelling.go` | `MisspeltTagKey`: the known tag key a misspelt one means; `Shape.MisspeltTagKeys` and `TagMisspelling`: every misspelling a struct's declarations carry |
 | `shape.go` | Compilation: the raw type graph, field rules, inlining, name resolution, the view pass and `Declarations` |
 | `schema.go` | `Schema`, `At`, path resolution and cached root-field accessors |
 | `route.go` | Static routes for paths of struct fields and pointers |

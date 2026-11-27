@@ -326,6 +326,20 @@ func TestNormalizeScalar(t *testing.T) {
 	}
 }
 
+// A document's integer beyond 64 bits is one refusal however it is
+// written: with its digits, with an exponent, or with a fraction of zeros.
+func TestNormalizeJSON_IntegerBeyond64BitsOneRefusal(t *testing.T) {
+	for _, s := range []string{"100000000000000000000", "1e20", "1.0e20", "-1e20", "1.5e300", "18446744073709551616"} {
+		t.Run(s, func(t *testing.T) {
+			_, err := NormalizeJSON(json.Number(s))
+			assert.EqualError(t, err, "integer "+s+" exceeds 64 bits")
+		})
+	}
+	got, err := NormalizeJSON(json.Number("1e19"))
+	require.NoError(t, err)
+	assert.Equal(t, uint64(10000000000000000000), got, "an exponent within 64 bits is the integer")
+}
+
 // Every reader of a number literal takes the JSON grammar and nothing
 // wider: strconv and math/big alone would read each of these.
 func TestNumberGrammar_EveryReaderRefusesGoLiterals(t *testing.T) {

@@ -79,23 +79,43 @@ export class SchemaVersionError extends Error {
 export type Payload = "patch" | "filter" | "list body" | "request body";
 
 /**
+ * A value in a request payload that JSON.stringify would write as null
+ * though it is not null: an invalid Date (its toJSON is null), any other
+ * value whose toJSON returns null, and undefined, a function or a symbol in
+ * an array. In a merge patch null removes the member, and in a filter it
+ * compares with NULL, so the request would mean something the caller never
+ * wrote. Thrown before anything is sent, whether or not the client
+ * validates against the schema. {@link NonFiniteNumberError} is the case of
+ * a number.
+ */
+export class UnencodableValueError extends RangeError {
+  readonly payload: Payload;
+  /** The member's RFC 6901 JSON Pointer within the payload (`/prefs/scores/2`); `""` is the payload itself. */
+  readonly pointer: string;
+  /** The value as the caller passed it, before any toJSON. */
+  readonly value: unknown;
+
+  constructor(payload: Payload, pointer: string, value: unknown, description: string) {
+    super(`the ${payload} member ${pointer === "" ? "(the whole payload)" : pointer} is ${description}, which JSON cannot carry: JSON.stringify would send null`);
+    this.name = "UnencodableValueError";
+    this.payload = payload;
+    this.pointer = pointer;
+    this.value = value;
+  }
+}
+
+/**
  * A number in a request payload that JSON cannot carry: NaN, Infinity or
  * -Infinity, which JSON.stringify writes as null (in a merge patch, the
  * member's removal). Thrown before anything is sent, whether or not the
  * client validates against the schema.
  */
-export class NonFiniteNumberError extends RangeError {
-  readonly payload: Payload;
-  /** The member's RFC 6901 JSON Pointer within the payload (`/prefs/scores/2`); `""` is the payload itself. */
-  readonly pointer: string;
-  readonly value: number;
+export class NonFiniteNumberError extends UnencodableValueError {
+  declare readonly value: number;
 
   constructor(payload: Payload, pointer: string, value: number) {
-    super(`the ${payload} member ${pointer === "" ? "(the whole payload)" : pointer} is ${String(value)}, which JSON cannot carry: JSON.stringify would send null`);
+    super(payload, pointer, value, String(value));
     this.name = "NonFiniteNumberError";
-    this.payload = payload;
-    this.pointer = pointer;
-    this.value = value;
   }
 }
 
