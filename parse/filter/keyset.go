@@ -416,9 +416,8 @@ func SeekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 // Keys that all walk one direction, none nullable and no value NULL, take a
 // row-value comparison, (key_0, …, key_n) > (v_0, …, v_n), which every
 // dialect has (SQLite from 3.15.0, below the release parse supports) and
-// which seeks an index on the keys to the cursor's row; led by an
-// expression on a dialect that seeks no such row value
-// (rowValueSeeksExpressions), it also bounds key_0 on its own. Others take
+// which seeks an index on the keys to the cursor's row; led by a key that is
+// no bare column (bareColumn), it also bounds key_0 on its own. Others take
 // the lexicographic expansion, OR over depth i of (key_0 = v_0 AND … AND
 // key_i after v_i), NULL-aware. bind binds one value and returns its
 // placeholder; every non-null token value is bound once and its placeholder
@@ -455,11 +454,14 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 			op = "<"
 		}
 		seek := "(" + strings.Join(exprs, ", ") + ") " + op + " (" + strings.Join(phs, ", ") + ")"
-		if d.rowValueSeeksExpressions() || bareColumn(d, keys[0]) {
+		if bareColumn(d, keys[0]) {
 			return seek
 		}
-		// The row value implies the bound; the bound alone is what an
-		// index on the leading key's expression seeks.
+		// SQLite seeks a row value's index only from a bare leading column;
+		// led by an expression, such as a decimal's parse_decimal_key, the
+		// comparison scans the index, and so does the OR expansion over
+		// three keys or more. The row value implies the bound, which an
+		// index on the expression seeks on every dialect.
 		return "(" + exprs[0] + " " + op + "= " + phs[0] + " AND " + seek + ")"
 	}
 

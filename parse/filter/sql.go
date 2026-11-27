@@ -115,11 +115,6 @@ type Dialect interface {
 	// still seeks an index on the column. A key read through an expression
 	// is collated on the expression instead (keyExpr).
 	codePointPair(column, operand string) (string, string)
-	// rowValueSeeksExpressions reports whether the planner seeks an index
-	// on a row-value comparison whose leading element is an expression, as
-	// it does on one led by a bare column. Where it does not, a keyset seek
-	// led by an expression also bounds that key on its own (seekPredicate).
-	rowValueSeeksExpressions() bool
 	// setRows binds a set's members as one parameter and reads them back
 	// as rows of one column, v, of the type FieldExpr reads field as.
 	setRows(field *FieldSchema, members []any, bind func(any) string) (string, error)

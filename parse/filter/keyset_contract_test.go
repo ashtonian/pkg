@@ -87,6 +87,56 @@ func TestSQLiteRowValueSeek(t *testing.T) {
 	assert.Len(t, result.Args, 2)
 }
 
+// loweredNames reads the name column through lower(), an expression an
+// index on lower(name) serves.
+type loweredNames struct{}
+
+func (loweredNames) MapColumn(table, column string, _ core.FieldType) string {
+	expr := `"` + table + `"."` + column + `"`
+	if column == "name" {
+		return "lower(" + expr + ")"
+	}
+	return expr
+}
+
+// A row-value seek led by an expression also bounds that key on its own, on
+// both dialects: SQLite seeks no row value led by an expression, and the
+// bound, which the row value implies, is what an index on the expression
+// seeks. A seek led by a bare column is the row value alone.
+func TestRowValueSeek_LedByAnExpressionBoundsItsFirstKey(t *testing.T) {
+	g := core.NewSchemaGenerator(core.WithColumnMapper(loweredNames{}), core.WithSQLTableName("walk_items"))
+	fs, err := filter.GenerateFilterSchema[walkItem](g)
+	require.NoError(t, err)
+	fs.PrimaryKey = []string{"id"}
+	ss, err := filter.GenerateSortSchema[walkItem](g)
+	require.NoError(t, err)
+	cursor := mintCursor(t, false,
+		filter.CursorField{Name: "name", Value: "m", Direction: filter.SortAsc},
+		filter.CursorField{Name: "id", Value: int64(7), Direction: filter.SortAsc},
+	)
+	for _, tt := range []struct {
+		name    string
+		dialect filter.Dialect
+		want    string
+	}{
+		{"SQLite", filter.SQLiteDialect{}, `(lower("walk_items"."name") COLLATE BINARY >= ?1 AND (lower("walk_items"."name") COLLATE BINARY, "walk_items"."id") > (?1, ?2))`},
+		{"PostgreSQL", filter.PostgresDialect{}, `(lower("walk_items"."name") COLLATE pg_c_utf8 >= $1 AND (lower("walk_items"."name") COLLATE pg_c_utf8, "walk_items"."id") > ($1, $2))`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			lq := mustListQuery(t, fs, ss, tt.dialect)
+			result, err := lq.Build(filter.ListSort("name"), filter.ListCursor(cursor))
+			require.NoError(t, err)
+			assert.Contains(t, result.Where, tt.want)
+			assert.Len(t, result.Args, 2, "the bound reuses the key's placeholder")
+
+			bare, err := lq.Build(filter.ListSort("id"), filter.ListCursor(mintCursor(t, false,
+				filter.CursorField{Name: "id", Value: int64(7), Direction: filter.SortAsc})))
+			require.NoError(t, err)
+			assert.NotContains(t, bare.Where, ">=", "a single bare key seeks alone")
+		})
+	}
+}
+
 // TestSQLiteExpansion asserts the lexicographic OR-expansion a keyset of
 // mixed directions takes, with numbered (reusable) placeholders and one
 // bound arg per key.
