@@ -14,9 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -25,8 +22,6 @@ import (
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/parsetest"
-	"github.com/ashtonian/pkg/parse/parsepgx"
-	"github.com/ashtonian/pkg/parse/parsesql"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -100,59 +95,19 @@ func execPanics(p *parse.Provider) *parse.Resource[execPanicItem] {
 	return parse.MustResource[execPanicItem](p, "exec_panics")
 }
 
-// pgxAnnounced is a caller's pgx.Tx that reports each statement it sends to
-// the hook dbtest.OnStatement put in the statement's context, as the
-// database dbtest.SQLiteHooked opens does on SQLite.
-type pgxAnnounced struct {
-	pgx.Tx
-}
-
-func (c pgxAnnounced) SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults {
-	for _, q := range b.QueuedQueries {
-		// pgx refuses the batch itself once a hook has ended ctx.
-		_ = dbtest.Announce(ctx, q.SQL)
-	}
-	return c.Tx.SendBatch(ctx, b)
-}
-
-func (c pgxAnnounced) Exec(ctx context.Context, query string, args ...any) (pgconn.CommandTag, error) {
-	err := dbtest.Announce(ctx, query)
-	if err != nil {
-		return pgconn.CommandTag{}, err
-	}
-	return c.Tx.Exec(ctx, query, args...)
-}
-
-// callerTx runs fn in a transaction of the application's own on db, as parse
-// takes one: a *sql.Tx through parsesql.Tx on SQLite; on PostgreSQL a pgx.Tx
-// on one of the pool's connections, announcing its statements
-// (pgxAnnounced), through parsepgx.Tx. query reads the first column of a
-// statement's rows as text in that transaction. The transaction is rolled
-// back after fn unless fn settled it.
+// callerTx runs fn in a transaction of the application's own on one of db's
+// connections, as the engine's provider takes one (Engine.CallerTx). query
+// reads the first column of a statement's rows as text in that
+// transaction. The transaction is rolled back after fn unless fn settled
+// it.
 func callerTx(t *testing.T, b sqlBackend, db *sql.DB, fn func(tx *parse.Tx, query func(stmt string) []string)) {
 	t.Helper()
-	if b.engine == SQLite {
-		sqlTx, err := db.BeginTx(t.Context(), nil)
-		require.NoError(t, err)
-		tx := parsesql.Tx(sqlTx)
-		defer func() { require.NoError(t, tx.Rollback(t.Context())) }()
-		fn(tx, func(stmt string) []string { return dbtest.QueryRows[string](t, sqlTx, stmt) })
-		return
-	}
 	conn, err := db.Conn(t.Context())
 	require.NoError(t, err)
 	defer func() { require.NoError(t, conn.Close()) }()
-	err = conn.Raw(func(driverConn any) error {
-		c, ok := driverConn.(*stdlib.Conn)
-		require.True(t, ok, "db is not a pgx stdlib pool: %T", driverConn)
-		pgxTx, err := c.Conn().Begin(t.Context())
-		require.NoError(t, err)
-		tx := parsepgx.Tx(pgxAnnounced{Tx: pgxTx})
-		defer func() { require.NoError(t, tx.Rollback(t.Context())) }()
+	err = b.opener.CallerTx(t.Context(), conn, func(tx *parse.Tx, query func(stmt string) ([]string, error)) error {
 		fn(tx, func(stmt string) []string {
-			rows, err := pgxTx.Query(t.Context(), stmt)
-			require.NoError(t, err, stmt)
-			out, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			out, err := query(stmt)
 			require.NoError(t, err, stmt)
 			return out
 		})
@@ -161,12 +116,12 @@ func callerTx(t *testing.T, b sqlBackend, db *sql.DB, fn func(tx *parse.Tx, quer
 	require.NoError(t, err)
 }
 
-// pgxUpdateAlone applies p to target with r on a connection of db's its own,
-// in a transaction of its own that r runs in (Resource.In), under the
-// settings scan holds (the planner's scan methods), sending the
-// connection's backend PID to pids before the update (0 when it has none),
-// so a test can watch the update wait for a lock.
-func pgxUpdateAlone(ctx context.Context, db *sql.DB, r *parse.Resource[parsetest.ExecItem], p *patch.ParsedPatch, target parse.Target, opts []parse.UpdateOption, scan []string, pids chan<- uint32) (err error) {
+// updateAlone applies p to target with r on a connection of db's its own,
+// in a transaction of the application's own that r runs in (Resource.In),
+// under the settings scan holds (the planner's scan methods), sending the
+// connection's PostgreSQL backend PID to pids before the update (0 when it
+// has none), so a test can watch the update wait for a lock.
+func updateAlone(ctx context.Context, b sqlBackend, db *sql.DB, r *parse.Resource[parsetest.ExecItem], p *patch.ParsedPatch, target parse.Target, opts []parse.UpdateOption, scan []string, pids chan<- uint32) (err error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		pids <- 0
@@ -185,28 +140,23 @@ func pgxUpdateAlone(ctx context.Context, db *sql.DB, r *parse.Resource[parsetest
 			return err
 		}
 	}
-	err = conn.Raw(func(driverConn any) error {
-		c, ok := driverConn.(*stdlib.Conn)
-		if !ok {
-			pids <- 0
-			return fmt.Errorf("db is not a pgx stdlib pool: %T", driverConn)
-		}
-		pids <- c.Conn().PgConn().PID()
-		pgxTx, err := c.Conn().Begin(ctx)
+	var pid uint32
+	err = conn.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&pid)
+	pids <- pid
+	if err != nil {
+		return err
+	}
+	return b.opener.CallerTx(ctx, conn, func(tx *parse.Tx, _ func(string) ([]string, error)) error {
+		scoped, err := r.In(tx)
 		if err != nil {
 			return err
 		}
-		tx := parsepgx.Tx(pgxTx)
-		scoped, err := r.In(tx)
-		if err == nil {
-			_, err = scoped.Update(ctx, p, target, execScope(), opts...)
-		}
+		_, err = scoped.Update(ctx, p, target, execScope(), opts...)
 		if err != nil {
-			return errors.Join(err, tx.Rollback(context.WithoutCancel(ctx)))
+			return err
 		}
 		return tx.Commit(ctx)
 	})
-	return err
 }
 
 // Every provider holds to one contract: what an update reports as changed
@@ -214,7 +164,7 @@ func pgxUpdateAlone(ctx context.Context, db *sql.DB, r *parse.Resource[parsetest
 // and names, how it runs in a transaction the application holds, and what
 // a list page carries. SQLite's database reports each statement to
 // dbtest.OnStatement's hook; on PostgreSQL a caller's transaction does
-// through pgxAnnounced.
+// (Engine.CallerTx).
 func executorContract(t *testing.T, engine Engine) {
 	runOn(t, engine, runExecutorContract, hooked())
 }
@@ -661,7 +611,7 @@ func runExecutorContract(t *testing.T, b sqlBackend) {
 				pids := make(chan uint32, len(targets))
 				results := make(chan error, len(targets))
 				for i, target := range targets {
-					go func() { results <- pgxUpdateAlone(t.Context(), db, r, patches[i], target, opts, scans[i], pids) }()
+					go func() { results <- updateAlone(t.Context(), b, db, r, patches[i], target, opts, scans[i], pids) }()
 				}
 				first, second := <-pids, <-pids
 				require.NotZero(t, first, "the first update has a connection")

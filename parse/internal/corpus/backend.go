@@ -4,6 +4,7 @@ package corpus
 
 import (
 	"cmp"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"maps"
@@ -13,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
@@ -22,22 +22,62 @@ import (
 	"github.com/ashtonian/pkg/parse/filter/filtertest"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/parsetest"
-	"github.com/ashtonian/pkg/parse/internal/providertest"
-	"github.com/ashtonian/pkg/parse/parsepgx"
-	"github.com/ashtonian/pkg/parse/parsesql"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
-// Engine is a SQL database the corpus runs on.
-type Engine string
+// Kind is the SQL database an Engine is.
+type Kind string
 
 const (
-	// SQLite is an in-memory SQLite database through parsesql.
-	SQLite Engine = "sqlite"
-	// Postgres is a fresh schema of the PostgreSQL test server through
-	// parsepgx.
-	Postgres Engine = "postgres"
+	// SQLite is an in-memory SQLite database.
+	SQLite Kind = "sqlite"
+	// Postgres is a fresh schema of the PostgreSQL test server.
+	Postgres Kind = "postgres"
 )
+
+// Engine is a SQL database a provider package runs the corpus on: what kind
+// of database it is, and how a case opens one. The corpus imports no
+// provider and no driver; the provider's TestCorpus supplies both functions.
+type Engine struct {
+	Kind Kind
+	// Open opens a fresh database for one case, as v asks: the provider
+	// resources run on there, and a handle on the same database for the
+	// case's own statements. A variant the engine cannot honor fails t.
+	Open func(t *testing.T, v Variant) (*parse.Provider, *sql.DB)
+	// CallerTx runs fn in a transaction of the application's own begun on
+	// conn, as the provider takes one (parsesql.Tx, parsepgx.Tx), whose
+	// statements are reported to dbtest.OnStatement's hook. query reads the
+	// first column of a statement's rows as text in that transaction. The
+	// transaction is rolled back after fn unless fn settled it, and fn's
+	// error is returned.
+	CallerTx func(ctx context.Context, conn *sql.Conn, fn func(tx *parse.Tx, query func(stmt string) ([]string, error)) error) error
+}
+
+// Variant is what one case asks of the database an Engine opens.
+type Variant struct {
+	// Settle bounds each statement that settles an update's transaction.
+	Settle time.Duration
+	// Hooked, on SQLite, reports each statement the database runs to the
+	// hook dbtest.OnStatement puts in its context.
+	Hooked bool
+	// Collation and ContainmentMaxValues configure the PostgreSQL
+	// provider's dialect.
+	Collation            filter.PostgresCollation
+	ContainmentMaxValues int
+	// PostGIS opens PostgreSQL on the PARSE_POSTGIS_DSN server, PostGIS
+	// enabled.
+	PostGIS bool
+	// SessionParams are PostgreSQL runtime parameters, such as TimeZone,
+	// every connection starts with.
+	SessionParams map[string]string
+}
+
+// sqlStateError is a database error that carries its SQLSTATE code, as
+// pgx's *pgconn.PgError does.
+type sqlStateError interface {
+	error
+	SQLState() string
+}
 
 // sqlDialect compiles for a backend and writes a value as its provider
 // binds it.
@@ -46,18 +86,16 @@ type sqlDialect interface {
 	MarshalValue(value any, t core.TypeInfo) (any, error)
 }
 
-// sqlBackend is one database every SQL family runs on: the dialect that
-// compiles for it, how a test opens a fresh database there, and how a
-// table there declares, binds and holds each kind of value, following
+// sqlBackend is one database every SQL family runs on: the engine that
+// opens it, the dialect that compiles for it, what a case asks of it, and
+// how a table there declares, binds and holds each kind of value, following
 // core.TypeOf's storage model. A family's own variants (a collation, the
 // PostGIS server, another column type for a kind) are sqlBackendOptions.
 type sqlBackend struct {
-	engine  Engine
+	engine  Kind
+	opener  Engine
 	dialect sqlDialect
-	// sqlite opens a fresh SQLite database, and pool a pool on a fresh
-	// PostgreSQL schema; each backend sets its engine's.
-	sqlite func(t *testing.T) *sql.DB
-	pool   func(t *testing.T) *pgxpool.Pool
+	variant Variant
 	// storage replaces the engine's column type for a field type.
 	storage map[core.FieldType]string
 }
@@ -67,14 +105,14 @@ type sqlBackendOption func(*sqlBackend)
 
 // sqlBackendOf is engine's backend with opts applied.
 func sqlBackendOf(engine Engine, opts ...sqlBackendOption) sqlBackend {
-	var b sqlBackend
-	switch engine {
+	b := sqlBackend{engine: engine.Kind, opener: engine}
+	switch engine.Kind {
 	case SQLite:
-		b = sqlBackend{engine: SQLite, dialect: filter.SQLiteDialect{}, sqlite: func(t *testing.T) *sql.DB { return dbtest.SQLite(t) }}
+		b.dialect = filter.SQLiteDialect{}
 	case Postgres:
-		b = sqlBackend{engine: Postgres, dialect: filter.PostgresDialect{}, pool: func(t *testing.T) *pgxpool.Pool { return dbtest.PostgresPool(t) }}
+		b.dialect = filter.PostgresDialect{}
 	default:
-		panic("corpus: no engine " + string(engine))
+		panic("corpus: no engine " + string(engine.Kind))
 	}
 	return b.with(opts...)
 }
@@ -96,19 +134,25 @@ func (b sqlBackend) open(t *testing.T) (*parse.Provider, *sql.DB) {
 // by settle (parsesql.SettleTimeout, parsepgx.SettleTimeout).
 func (b sqlBackend) openSettling(t *testing.T, settle time.Duration) (*parse.Provider, *sql.DB) {
 	t.Helper()
-	if b.engine == SQLite {
-		db := b.sqlite(t)
-		return providertest.SQLiteOn(t, db, parsesql.SettleTimeout(settle)), db
+	v := b.variant
+	v.Settle = settle
+	if pg, ok := b.dialect.(filter.PostgresDialect); ok {
+		v.Collation, v.ContainmentMaxValues = pg.Collation, pg.ContainmentMaxValues
 	}
-	pg, ok := b.dialect.(filter.PostgresDialect)
-	require.True(t, ok, "a %s backend compiles for %T", b.engine, b.dialect)
-	return providertest.PostgresOn(t, b.pool(t),
-		parsepgx.Collation(pg.Collation), parsepgx.ContainmentMaxValues(pg.ContainmentMaxValues), parsepgx.SettleTimeout(settle))
+	return b.opener.Open(t, v)
+}
+
+// db opens a fresh database on b for statements the case writes itself.
+func (b sqlBackend) db(t *testing.T) *sql.DB {
+	t.Helper()
+	_, db := b.open(t)
+	return db
 }
 
 // with is b with opts applied.
 func (b sqlBackend) with(opts ...sqlBackendOption) sqlBackend {
 	b.storage = maps.Clone(b.storage)
+	b.variant.SessionParams = maps.Clone(b.variant.SessionParams)
 	for _, opt := range opts {
 		opt(&b)
 	}
@@ -116,7 +160,7 @@ func (b sqlBackend) with(opts ...sqlBackendOption) sqlBackend {
 }
 
 // on applies opts to engine's backend alone.
-func on(engine Engine, opts ...sqlBackendOption) sqlBackendOption {
+func on(engine Kind, opts ...sqlBackendOption) sqlBackendOption {
 	return func(b *sqlBackend) {
 		if b.engine != engine {
 			return
@@ -140,9 +184,7 @@ func storing(ft core.FieldType, columnType string) sqlBackendOption {
 // onPostGIS opens PostgreSQL on the PARSE_POSTGIS_DSN server, PostGIS
 // enabled.
 func onPostGIS() sqlBackendOption {
-	return on(Postgres, func(b *sqlBackend) {
-		b.pool = func(t *testing.T) *pgxpool.Pool { return dbtest.PostGISPool(t) }
-	})
+	return on(Postgres, func(b *sqlBackend) { b.variant.PostGIS = true })
 }
 
 // collation compiles PostgreSQL's code-point comparisons under c and
@@ -159,23 +201,17 @@ func collation(c filter.PostgresCollation) sqlBackendOption {
 // connection the pool opens has them.
 func sessionParams(params map[string]string) sqlBackendOption {
 	return on(Postgres, func(b *sqlBackend) {
-		b.pool = func(t *testing.T) *pgxpool.Pool {
-			config := dbtest.PostgresPoolConfig(t)
-			maps.Copy(config.ConnConfig.RuntimeParams, params)
-			pool, err := pgxpool.NewWithConfig(dbtest.Context(t), config)
-			require.NoError(t, err)
-			t.Cleanup(pool.Close)
-			return pool
+		if b.variant.SessionParams == nil {
+			b.variant.SessionParams = map[string]string{}
 		}
+		maps.Copy(b.variant.SessionParams, params)
 	})
 }
 
 // hooked opens SQLite through the driver that reports each statement to the
 // hook dbtest.OnStatement puts in its context.
 func hooked() sqlBackendOption {
-	return on(SQLite, func(b *sqlBackend) {
-		b.sqlite = func(t *testing.T) *sql.DB { return dbtest.SQLiteHooked(t) }
-	})
+	return on(SQLite, func(b *sqlBackend) { b.variant.Hooked = true })
 }
 
 // columnType is the column type b declares a column of kind with: SQLite
@@ -290,7 +326,7 @@ type sqlColumn struct {
 	notNull bool
 	// as replaces the column type on the engines it names: a fixture that
 	// holds this column's kind otherwise than its other columns.
-	as map[Engine]string
+	as map[Kind]string
 }
 
 // column is a column holding values of Go type T, classified by
@@ -301,10 +337,10 @@ func column[T any](name string) sqlColumn {
 }
 
 // holding is c declared as columnType on engine.
-func (c sqlColumn) holding(engine Engine, columnType string) sqlColumn {
+func (c sqlColumn) holding(engine Kind, columnType string) sqlColumn {
 	c.as = maps.Clone(c.as)
 	if c.as == nil {
-		c.as = map[Engine]string{}
+		c.as = map[Kind]string{}
 	}
 	c.as[engine] = columnType
 	return c
@@ -325,7 +361,7 @@ type sqlTable struct {
 }
 
 // holding is table with its column name declared as columnType on engine.
-func (table sqlTable) holding(name string, engine Engine, columnType string) sqlTable {
+func (table sqlTable) holding(name string, engine Kind, columnType string) sqlTable {
 	i := slices.IndexFunc(table.columns, func(c sqlColumn) bool { return c.name == name })
 	if i < 0 {
 		panic("table " + table.name + " has no column " + name)

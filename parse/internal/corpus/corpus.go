@@ -16,9 +16,9 @@ import (
 // sqlCase is one case of the corpus: a subtest of RunSQL.
 type sqlCase struct {
 	name string
-	// only is the one engine the case runs on, for a feature of that
-	// engine alone; empty runs it on every engine.
-	only Engine
+	// only is the one kind of engine the case runs on, for a feature of
+	// that engine alone; empty runs it on every engine.
+	only Kind
 	run  func(t *testing.T, engine Engine)
 }
 
@@ -38,7 +38,6 @@ func sqlCases() []sqlCase {
 		{name: "FoldMatrix", run: foldMatrix},
 		{name: "GeoMatrix", run: geoMatrix},
 		{name: "HasKey", run: hasKey},
-		{name: "IncludeQuery_NativePgxUUIDKeysAreCanonicalText", only: Postgres, run: includeQueryNativePgxUUIDKeysAreCanonicalText},
 		{name: "JSONIntegerEdges_SameRowsOnEveryBackend", run: jsonIntegerEdgesSameRowsOnEveryBackend},
 		{name: "LookupSets", run: lookupSets},
 		{name: "MembershipMatrix", run: membershipMatrix},
@@ -63,7 +62,6 @@ func sqlCases() []sqlCase {
 		{name: "GovernedMixedTypes", run: governedMixedTypes},
 		{name: "ListBodyTransport", run: listBodyTransport},
 
-		{name: "SetPlans_PostgreSQL", only: Postgres, run: setPlansPostgreSQL},
 		{name: "SetPlans_SQLiteDecimalKeyIndex", only: SQLite, run: setPlansSQLiteDecimalKeyIndex},
 
 		{name: "PolicyServerFields", run: policyServerFields},
@@ -114,11 +112,14 @@ func sqlCases() []sqlCase {
 // the case.
 func RunSQL(t *testing.T, engine Engine) {
 	t.Helper()
-	if !slices.Contains([]Engine{SQLite, Postgres}, engine) {
-		t.Fatalf("corpus: no engine %q", engine)
+	if !slices.Contains([]Kind{SQLite, Postgres}, engine.Kind) {
+		t.Fatalf("corpus: no engine %q", engine.Kind)
+	}
+	if engine.Open == nil || engine.CallerTx == nil {
+		t.Fatalf("corpus: the %s engine has no Open or no CallerTx", engine.Kind)
 	}
 	for _, c := range sqlCases() {
-		if c.only != "" && c.only != engine {
+		if c.only != "" && c.only != engine.Kind {
 			continue
 		}
 		t.Run(c.name, func(t *testing.T) { c.run(t, engine) })

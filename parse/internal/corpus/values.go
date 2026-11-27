@@ -73,7 +73,7 @@ func civilDateSQL(t *testing.T, engine Engine) {
 // over every column type a decimal is held in: PostgreSQL numeric, with and
 // without a declared scale, and SQLite NUMERIC and REAL.
 func decimalSQL(t *testing.T, engine Engine) {
-	columnTypes := map[Engine][]string{SQLite: {"NUMERIC", "REAL"}, Postgres: {"NUMERIC", "NUMERIC(12,4)"}}
+	columnTypes := map[Kind][]string{SQLite: {"NUMERIC", "REAL"}, Postgres: {"NUMERIC", "NUMERIC(12,4)"}}
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		for _, columnType := range columnTypes[b.engine] {
 			t.Run(columnType, func(t *testing.T) { runDecimalSQL(t, b.with(storing(core.FieldTypeDecimal, columnType))) })
@@ -126,7 +126,7 @@ func runDecimalSQL(t *testing.T, b sqlBackend) {
 
 // PostgreSQL holds and compares decimals beyond float64's precision.
 func decimalSQLPostgresIsExact(t *testing.T, engine Engine) {
-	b := sqlBackendOf(Postgres)
+	b := sqlBackendOf(engine)
 	provider, db := b.open(t)
 	b.create(t, db, ledgerTable())
 	_, err := db.ExecContext(t.Context(), `INSERT INTO ledger_lines VALUES ('a','0.1',NULL), ('b','0.10000000000000001',NULL),
@@ -180,7 +180,7 @@ func float32FilterAndPatchSQLiteParity(t *testing.T, engine Engine) {
 	}
 	p, err := parse.NewResource[row](providertest.Compile(filter.SQLiteDialect{}), "ratios")
 	require.NoError(t, err)
-	db := dbtest.SQLite(t)
+	db := sqlBackendOf(engine).db(t)
 	_, err = db.ExecContext(t.Context(), "CREATE TABLE ratios (id INTEGER PRIMARY KEY, ratio REAL)")
 	require.NoError(t, err)
 	_, err = db.ExecContext(t.Context(), "INSERT INTO ratios VALUES (1, ?)", float64(float32(0.1)))
@@ -501,7 +501,7 @@ func typedDocumentSQLiteParity(t *testing.T, engine Engine) {
 		{"typed map deletion", `{"doc":{"by_name":{"old":null}}}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := dbtest.SQLite(t)
+			db := sqlBackendOf(engine).db(t)
 			ctx := t.Context()
 			_, err := db.ExecContext(ctx, `CREATE TABLE docs (doc TEXT NOT NULL)`)
 			require.NoError(t, err)

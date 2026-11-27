@@ -171,6 +171,12 @@ func PostgresPoolConfig(t testing.TB) *pgxpool.Config {
 	return postgresServer.poolConfig(t)
 }
 
+// PostGISPoolConfig is PostgresPoolConfig on the PostGIS server.
+func PostGISPoolConfig(t testing.TB) *pgxpool.Config {
+	t.Helper()
+	return postgisServer.poolConfig(t)
+}
+
 // PostgresPool is a pgx pool on a fresh schema of the Postgres server,
 // closed at cleanup.
 func PostgresPool(t testing.TB) *pgxpool.Pool {

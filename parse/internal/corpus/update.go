@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -703,7 +702,7 @@ func buildUpdateAnEmptyPatchIsAScopedRead(t *testing.T, engine Engine) {
 // update's transaction ends, so a second writer waits for them. PostgreSQL
 // alone locks rows: SQLite's write transactions serialize.
 func buildUpdateRelationChangeLocksItsOwners(t *testing.T, engine Engine) {
-	b := sqlBackendOf(Postgres)
+	b := sqlBackendOf(engine)
 	provider, db := loadGadgets(t, b)
 	r := parsetest.Gadgets(t, provider)
 	ctx := t.Context()
@@ -728,9 +727,9 @@ func buildUpdateRelationChangeLocksItsOwners(t *testing.T, engine Engine) {
 	_, err = other.ExecContext(ctx, `SET LOCAL lock_timeout = '200ms'`)
 	require.NoError(t, err)
 	_, err = other.ExecContext(ctx, plan.Owner.SQL, plan.Owner.Args...)
-	var pgErr *pgconn.PgError
+	var pgErr sqlStateError
 	require.ErrorAs(t, err, &pgErr, "a second writer waits for the owner rows")
-	assert.Equal(t, "55P03", pgErr.Code, "lock_not_available")
+	assert.Equal(t, "55P03", pgErr.SQLState(), "lock_not_available")
 	require.NoError(t, other.Rollback())
 
 	res, err := scoped.Update(ctx, p, parse.ByID("g1"), parse.Scope{Tenant: "t1"})

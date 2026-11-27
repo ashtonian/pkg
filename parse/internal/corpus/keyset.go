@@ -42,7 +42,7 @@ func keysetWalkLinguisticCollationWalksByCodePoint(t *testing.T, engine Engine) 
 		"C":         {Collation: filter.CollationC},
 	} {
 		t.Run(name, func(t *testing.T) {
-			db := dbtest.Postgres(t)
+			db := sqlBackendOf(engine).db(t)
 			_, err := db.ExecContext(t.Context(), `CREATE TABLE probe (id INT PRIMARY KEY, name TEXT NOT NULL COLLATE "en-US-x-icu")`)
 			require.NoError(t, err)
 			_, err = db.ExecContext(t.Context(), `INSERT INTO probe VALUES (1, 'b'), (2, 'B'), (3, 'a'), (4, 'A'), (5, 'é'), (6, 'z')`)
