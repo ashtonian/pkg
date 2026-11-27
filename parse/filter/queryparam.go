@@ -117,8 +117,11 @@ func NewQueryParamParser(schema *ResourceSchema, opts ...QueryParamOption) (*Que
 // list parameter (IsListParam), or a flat filter on a request field of
 // schema, suffix forms included (FlatParamField: price_gte filters price).
 // Skipped, such a parameter would drop the filter it carries and widen the
-// list without a word.
+// list without a word. A nil schema is an error.
 func CheckAcceptedParam(schema *ResourceSchema, name string) error {
+	if schema == nil {
+		return errors.New("filter: CheckAcceptedParam: nil schema")
+	}
 	if IsListParam(name) {
 		return &AcceptedParamError{Param: name}
 	}

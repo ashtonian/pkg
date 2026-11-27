@@ -262,7 +262,7 @@ func TestGeneratePatchSchema_RemoveFollowsNullability(t *testing.T) {
 		Name string `json:"name" parse:"patch" patch_ops:"replace,remove"`
 	}
 	_, err = parse.NewResource[tagged]("taggeds")
-	assert.ErrorContains(t, err, "nullable")
+	assert.ErrorIs(t, err, patch.ErrRemoveNeedsNull)
 }
 
 func TestGeneratorOptions_DefaultPatchOpsHonoured(t *testing.T) {

@@ -2,6 +2,7 @@ package patch
 
 import (
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -471,10 +472,7 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 	if err != nil {
 		return nil, err
 	}
-	target := ps.GoType
-	for target != nil && target.Kind() == reflect.Pointer {
-		target = target.Elem()
-	}
+	target := columnType(ps.GoType)
 	if op == PatchOpArrayAppend {
 		switch {
 		case target == nil:
@@ -566,7 +564,7 @@ func normalizeCompositeKeys(columns []RelationKey, v any, codec core.Codec) (any
 		for j, c := range columns {
 			value, err := core.FromWire(c.Wire, core.TypeOf(c.Type).Type, values[j])
 			if err == nil {
-				value, err = normalizeTyped(c.Type, value, codec)
+				value, err = normalizeTyped(columnType(c.Type), value, codec)
 			}
 			if err != nil {
 				return nil, fmt.Errorf("element %d, key column %d: %w", i, j, err)
@@ -578,7 +576,52 @@ func normalizeCompositeKeys(columns []RelationKey, v any, codec core.Codec) (any
 	return keys, nil
 }
 
-// normalizeTyped normalizes v for the Go type t: scalars, decimals included,
+// holdsJSONNull reports whether a document's member or element of type t
+// holds null as encoding/json writes it: a pointer, slice, map or interface,
+// whose nil is null, or a type whose own JSON methods write its zero value as
+// null, as decimal.NullDecimal and uuid.NullUUID do. A type encoding/json
+// writes as its fields, such as sql.NullString, holds no null there, whether
+// or not its column holds NULL (core.IsNullableType): the application's own
+// write of the document stores {"String":"","Valid":false}. A MarshalJSON
+// that panics on the zero value holds no null either.
+func holdsJSONNull(t reflect.Type) (holds bool) {
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Interface:
+		return true
+	}
+	if !core.MarshalsJSON(t) {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			holds = false
+		}
+	}()
+	// Through a pointer, as encoding/json reaches a member or an element:
+	// its pointer-receiver methods count too.
+	data, err := json.Marshal(reflect.New(t).Interface())
+	return err == nil && string(data) == "null"
+}
+
+// columnType is the Go type a column of field type t holds a value of:
+// t's pointers stripped, and a nullable wrapper's value (core.NullWrapperOf),
+// which the column holds while the wrapper is Valid. nil for nil.
+func columnType(t reflect.Type) reflect.Type {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil {
+		return nil
+	}
+	w, wrapped := core.NullWrapperOf(t)
+	if wrapped {
+		return columnType(w.ValueType())
+	}
+	return t
+}
+
+// normalizeTyped normalizes v for the Go type t: null where t holds it inside
+// a document (holdsJSONNull), scalars, decimals included,
 // via core.NormalizeScalar, slices and arrays element by element, another
 // type that is a database value (driver.Valuer) by decoding into it, and
 // remaining composite kinds by decoding and re-encoding their canonical
@@ -586,7 +629,7 @@ func normalizeCompositeKeys(columns []RelationKey, v any, codec core.Codec) (any
 func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
 	v = normalizeNilPointer(v)
 	if v == nil {
-		if core.IsNullableType(t) {
+		if holdsJSONNull(t) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("null is not valid for %s", gowalker.TypeText(t))
@@ -659,9 +702,11 @@ func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
 var valuerType = reflect.TypeFor[driver.Valuer]()
 
 // scalarFieldType maps a Go type to the DataType core.NormalizeScalar
-// handles, or reports false for composite and unknown types.
+// handles, or reports false for composite and unknown types. A nullable
+// wrapper is composite: the type is a column's value's (columnType) or a
+// document's member, which holds the wrapper's JSON (core.MemberTypeOf).
 func scalarFieldType(t reflect.Type) (core.FieldType, bool) {
-	switch ft := core.TypeOf(t).Type; ft {
+	switch ft := core.MemberTypeOf(t).Type; ft {
 	case core.FieldTypeString, core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeDecimal, core.FieldTypeBool,
 		core.FieldTypeTimestamp, core.FieldTypeDate, core.FieldTypeUUID,
 		core.FieldTypeTime, core.FieldTypeInterval, core.FieldTypeInet, core.FieldTypeCIDR, core.FieldTypeMACAddr:

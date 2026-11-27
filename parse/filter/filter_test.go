@@ -799,6 +799,14 @@ func TestNewQueryParamParser_RefusesAnAcceptedNameItReads(t *testing.T) {
 	require.EqualError(t, err, "filter: NewQueryParamParser: nil schema")
 }
 
+// A nil schema is refused for every name, a list parameter or not, as
+// NewQueryParamParser refuses it.
+func TestCheckAcceptedParam_RefusesANilSchema(t *testing.T) {
+	for _, param := range []string{"debug", "sort"} {
+		assert.EqualError(t, filter.CheckAcceptedParam(nil, param), "filter: CheckAcceptedParam: nil schema", param)
+	}
+}
+
 // --- Integer Validation Tests ---
 
 func TestFilterParser_IntRejectsFloat(t *testing.T) {

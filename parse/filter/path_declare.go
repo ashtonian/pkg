@@ -226,7 +226,7 @@ func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want 
 		if m.Wire() != "" {
 			return nil, nil, quotedMemberError(strings.Join(segs, "."))
 		}
-		info := core.TypeOf(m.Type())
+		info := core.MemberTypeOf(m.Type())
 		elem, elemKind, isArray := scalarElements(m.Type())
 		switch {
 		case pathTypes[info.Type] || isArray:
@@ -281,7 +281,7 @@ func scalarElements(t reflect.Type) (core.FieldType, reflect.Kind, bool) {
 	if (t.Kind() != reflect.Slice && t.Kind() != reflect.Array) || t.Elem().Kind() == reflect.Uint8 {
 		return "", reflect.Invalid, false
 	}
-	info := core.TypeOf(t.Elem())
+	info := core.MemberTypeOf(t.Elem())
 	if !pathTypes[info.Type] {
 		return "", reflect.Invalid, false
 	}

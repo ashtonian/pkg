@@ -73,7 +73,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `policy_compose.go` | `RepositoryScope`, `BuildBaseConstraints`, `ComposeConstraints`, `PolicyConstraints.Merge`: a repository read's tree |
 | `related_policy.go` | Related tables' policies (`RelationScope.Related`) compiled at one instant per statement |
 | `policy_fields.go` | Policy field names: `ResourceSchema.PolicyField`, the generated `PolicyFields` index, `ErrAmbiguousPolicyField` and fields kept with their typing error |
-| `queryparam.go` | Flat query parameters — `QueryParamParser` (`QueryParamAccept`, `QueryParamLenient`, `QueryParamFieldsOnly`), `IsListParam`, `FlatParamFields` and `ResourceSchema.FlatParamField` (the field a flat parameter filters), `CheckAcceptedParam` (the one rule for a parameter the endpoint reads itself: `NewQueryParamParser` and `parse.NewResource` run it) |
+| `queryparam.go` | Flat query parameters — `QueryParamParser` (`QueryParamAccept`, `QueryParamLenient`, `QueryParamFieldsOnly`), `IsListParam`, `FlatParamFields` and `ResourceSchema.FlatParamField` (the field a flat parameter filters), `CheckAcceptedParam` (the one rule for a parameter the endpoint reads itself: `NewQueryParamParser` runs it, and `parse.NewResource`, `Relate` and `WithPaths` over the schema with the fields they add) |
 | `params.go` | `Param*` list request parameters |
 | `geo.go` | Geo types, validation, tag parsing, WKT |
 | `time_token.go` | Relative-time tokens |

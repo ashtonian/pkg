@@ -40,10 +40,10 @@ func assertParseCode(t *testing.T, err error, code core.Code) {
 	}
 }
 
-// TestPostgresNativeRowCompare covers a uniform-direction
-// composite keyset emits Postgres' native row-value comparison, and the
-// tie-breaker joins the ORDER BY so emitted order matches the comparison.
-func TestPostgresNativeRowCompare(t *testing.T) {
+// TestPostgresRowValueSeek covers a uniform-direction composite keyset
+// emitting a row-value comparison, and the tie-breaker joining the ORDER BY
+// so emitted order matches the comparison.
+func TestPostgresRowValueSeek(t *testing.T) {
 	cur := mintCursor(t, false,
 		filter.CursorField{Name: "created_at", Value: "2026-01-15T10:30:00Z", Direction: filter.SortDesc},
 		filter.CursorField{Name: "id", Value: "01HF3K", Direction: filter.SortDesc},
@@ -67,11 +67,11 @@ func TestPostgresNativeRowCompare(t *testing.T) {
 	}
 }
 
-// TestSQLiteNativeRowCompare: SQLite, like PostgreSQL, seeks a
+// TestSQLiteRowValueSeek: SQLite, like PostgreSQL, seeks a
 // uniform-direction composite keyset with a row-value comparison, its text
 // keys compared by code point through the operand's collation, which
 // leaves the columns bare for the planner.
-func TestSQLiteNativeRowCompare(t *testing.T) {
+func TestSQLiteRowValueSeek(t *testing.T) {
 	cur := mintCursor(t, false,
 		filter.CursorField{Name: "created_at", Value: "2026-01-15T10:30:00Z", Direction: filter.SortDesc},
 		filter.CursorField{Name: "id", Value: "01HF3K", Direction: filter.SortDesc},

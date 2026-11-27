@@ -147,7 +147,7 @@ func TestSearchParam_CollisionsAreRefusedAtConstruction(t *testing.T) {
 	parts, err := parse.NewResource[searchedPart]("pump_parts")
 	require.NoError(t, err)
 	err = res.Relate("q", parse.HasMany(parts, "pump_id"))
-	require.ErrorContains(t, err, `relation "q": search parameter "q" would be a flat filter on it`)
+	require.ErrorContains(t, err, `parse: pumps: relation "q": search parameter "q" is a flat filter on field "q"`)
 	require.NoError(t, res.Relate("parts", parse.HasMany(parts, "pump_id")), "another name relates")
 
 	dotted, err := searchedPumps(t, "labels.env")
@@ -180,8 +180,13 @@ func TestAcceptParams_CollisionsAreRefusedAtConstruction(t *testing.T) {
 	parts, err := parse.NewResource[searchedPart]("pump_parts")
 	require.NoError(t, err)
 	err = res.Relate("view", parse.HasMany(parts, "pump_id"))
-	require.ErrorContains(t, err, `relation "view": accepted parameter "view" (AcceptParams) would be a flat filter on it`)
+	require.ErrorContains(t, err, `parse: pumps: relation "view": accepted parameter "view" (AcceptParams) is a flat filter on field "view"`)
 	require.NoError(t, res.Relate("parts", parse.HasMany(parts, "pump_id")), "another name relates")
+
+	suffixed, err := searchedPumps(t, "", parse.AcceptParams("kits_in"))
+	require.NoError(t, err)
+	err = suffixed.Relate("kits", parse.HasMany(parts, "pump_id"))
+	require.ErrorContains(t, err, `parse: pumps: relation "kits": accepted parameter "kits_in" (AcceptParams) is a flat filter on field "kits"`)
 
 	dotted, err := searchedPumps(t, "", parse.AcceptParams("labels.env"))
 	require.NoError(t, err)

@@ -3,12 +3,15 @@
 package core_test
 
 import (
+	"database/sql"
 	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -48,6 +51,52 @@ func TestTypeOf(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, core.TypeOf(tt.typ))
+		})
+	}
+}
+
+// validInt64 has a nullable wrapper's fields but no Scanner or Valuer: no
+// driver reads it as one value.
+type validInt64 struct {
+	Int64 int64
+	Valid bool
+}
+
+// A nullable wrapper's column holds its value, NULL while Valid is false:
+// the column is typed as the value's type, wherever the wrapper comes from.
+// A document holds what encoding/json writes for the wrapper, its fields, so
+// a member or an element of one keeps the struct's type.
+func TestTypeOf_NullableWrapper(t *testing.T) {
+	tests := []struct {
+		name   string
+		typ    reflect.Type
+		column core.TypeInfo
+		member core.TypeInfo
+	}{
+		{"sql.NullString", reflect.TypeFor[sql.NullString](), core.TypeInfo{Type: core.FieldTypeString}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"sql.NullInt64", reflect.TypeFor[sql.NullInt64](), core.TypeInfo{Type: core.FieldTypeInt, NumberKind: reflect.Int64}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"sql.NullInt32", reflect.TypeFor[sql.NullInt32](), core.TypeInfo{Type: core.FieldTypeInt, NumberKind: reflect.Int32}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"sql.NullFloat64", reflect.TypeFor[sql.NullFloat64](), core.TypeInfo{Type: core.FieldTypeFloat, NumberKind: reflect.Float64}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"sql.NullBool", reflect.TypeFor[sql.NullBool](), core.TypeInfo{Type: core.FieldTypeBool}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"sql.NullTime", reflect.TypeFor[sql.NullTime](), core.TypeInfo{Type: core.FieldTypeTimestamp}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"*sql.NullTime", reflect.TypeFor[*sql.NullTime](), core.TypeInfo{Type: core.FieldTypeTimestamp}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"sql.Null[int16]", reflect.TypeFor[sql.Null[int16]](), core.TypeInfo{Type: core.FieldTypeInt, NumberKind: reflect.Int16}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"sql.Null[core.Date]", reflect.TypeFor[sql.Null[core.Date]](), core.TypeInfo{Type: core.FieldTypeDate}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"google uuid.NullUUID", reflect.TypeFor[uuid.NullUUID](), core.TypeInfo{Type: core.FieldTypeUUID}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"decimal.NullDecimal", reflect.TypeFor[decimal.NullDecimal](), core.TypeInfo{Type: core.FieldTypeDecimal}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"pgtype.Int8", reflect.TypeFor[pgtype.Int8](), core.TypeInfo{Type: core.FieldTypeInt, NumberKind: reflect.Int64}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"pgtype.Text", reflect.TypeFor[pgtype.Text](), core.TypeInfo{Type: core.FieldTypeString}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"pgtype.Bool", reflect.TypeFor[pgtype.Bool](), core.TypeInfo{Type: core.FieldTypeBool}, core.TypeInfo{Type: core.FieldTypeObject}},
+		// More than a value and its flag: no one value.
+		{"pgtype.Timestamptz", reflect.TypeFor[pgtype.Timestamptz](), core.TypeInfo{Type: core.FieldTypeObject}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"a wrapper's fields without a Scanner", reflect.TypeFor[validInt64](), core.TypeInfo{Type: core.FieldTypeObject}, core.TypeInfo{Type: core.FieldTypeObject}},
+		{"a slice of wrappers is a document", reflect.TypeFor[[]sql.NullString](), core.TypeInfo{Type: core.FieldTypeJSON}, core.TypeInfo{Type: core.FieldTypeJSON}},
+		{"int64", reflect.TypeFor[int64](), core.TypeInfo{Type: core.FieldTypeInt, NumberKind: reflect.Int64}, core.TypeInfo{Type: core.FieldTypeInt, NumberKind: reflect.Int64}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.column, core.TypeOf(tt.typ), "column")
+			assert.Equal(t, tt.member, core.MemberTypeOf(tt.typ), "member")
 		})
 	}
 }

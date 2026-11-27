@@ -136,10 +136,12 @@ func TenantColumn(column string) ResourceOption {
 }
 
 // DeletedColumn names the soft-delete timestamp: a row is live while it is
-// NULL, so its field must hold NULL (core.IsNullableType: a pointer, or a
-// type such as sql.NullTime whose zero value scans and writes NULL), and it
-// is neither the key nor the tenant column. Lists exclude deleted rows
-// unless Scope.IncludeDeleted; updates never reach them.
+// NULL, so its field must hold NULL (core.IsNullableType: a pointer, slice,
+// map or interface, or a type such as sql.NullTime whose zero value writes
+// NULL and scans NULL back; an sql.Scanner with no Value, or whose zero
+// value writes a value, does not), and it is neither the key nor the tenant
+// column. Lists exclude deleted rows unless Scope.IncludeDeleted; updates
+// never reach them.
 func DeletedColumn(column string) ResourceOption {
 	return func(c *resourceConfig) { c.deleted = column }
 }
@@ -195,9 +197,9 @@ func ParserOptions(opts ...core.Option) ResourceOption {
 // AcceptParams names query parameters the endpoint reads itself. ParseList
 // leaves them alone; any other parameter that is neither a list parameter
 // (filter.Param*) nor a filterable field is an error (E2071). A name that is
-// a list parameter, the search parameter, or a flat filter on a field
-// (filter.FlatParamFields) is refused by NewResource, and by Relate and
-// WithPaths for the fields they add: ParseList would skip that filter.
+// a list parameter, the search parameter, or a flat filter on a request
+// field (filter.CheckAcceptedParam) is refused by NewResource, and by Relate
+// and WithPaths for the fields they add: ParseList would skip that filter.
 func AcceptParams(names ...string) ResourceOption {
 	return func(c *resourceConfig) { c.accepted = append(c.accepted, names...) }
 }

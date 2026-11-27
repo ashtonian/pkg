@@ -291,11 +291,15 @@ type PathSchema struct {
 	SQLType core.SQLType
 	// GoType is the Go type the path's value decodes into (the struct
 	// field's type, pointer included). It drives parse-time validation so an
-	// accepted operation always applies: numeric range
-	// against the exact kind, nullability (only pointer, slice, map and
-	// interface fields accept null or remove), array element types, and the
-	// shape of struct / map values. nil — hand-built schemas — validates by
-	// DataType alone over the widest numeric domain and admits null.
+	// accepted operation always applies: numeric range against the exact
+	// kind, nullability (a field accepts null or remove when its type holds
+	// NULL, core.IsNullableType: a pointer, slice, map or interface, or a
+	// type such as sql.NullInt64 whose zero value writes NULL and scans NULL
+	// back; inside a document, where encoding/json writes null), array
+	// element types, and the shape of struct / map values. A nullable
+	// wrapper (core.NullWrapperOf) validates as its value's type. nil —
+	// hand-built schemas — validates by DataType alone over the widest
+	// numeric domain and admits null.
 	GoType reflect.Type
 	// Wire is the form operations give the path's value in: core.WireString
 	// for a bool, integer or float field tagged json:",string", whose value

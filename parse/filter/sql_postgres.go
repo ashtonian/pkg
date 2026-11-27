@@ -666,14 +666,15 @@ func (d PostgresDialect) DecimalValue(o DecimalOperand) string {
 // DecimalOrder is DecimalValue: numeric orders exactly.
 func (d PostgresDialect) DecimalOrder(o DecimalOperand) string { return d.DecimalValue(o) }
 
-// NativeRowCompare reports true: PostgreSQL evaluates row comparison
-// lexicographically with full composite-index support.
-func (PostgresDialect) NativeRowCompare() bool { return true }
+// rowValueSeeksExpressions is true: PostgreSQL matches a row comparison's
+// leading elements to an index's expressions as to its columns
+// (Index Cond: ROW((price)::numeric, id) > ROW($1, $2)).
+func (PostgresDialect) rowValueSeeksExpressions() bool { return true }
 
 // codePointPair collates the column, which an index in the same collation
 // serves.
-func (d PostgresDialect) codePointPair(expr, operand string) (string, string) {
-	return d.CodePointOrder(expr), operand
+func (d PostgresDialect) codePointPair(column, operand string) (string, string) {
+	return d.CodePointOrder(column), operand
 }
 
 // CodePointOrder applies the dialect's Collation. A column declared with the
