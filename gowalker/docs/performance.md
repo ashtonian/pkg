@@ -93,6 +93,7 @@ fixtures, not every root shape.
 | Parse a tag and test an option, `Tag("db")` then `Has("pk")` | 0 | 0 |
 | Cached per-type metadata, `TypeCache.For[T]` | 0 | 0 |
 | Match a member name, `MatchBytes`: exact, in another case, or unknown | 0 | 0 |
+| Check a string or integer map key's spelling, `IsCanonicalJSONKey` | 0 | 0 |
 | One-call read with the default engine, `gowalker.Get(&row, "Child.N")` | 544 | 6 |
 | Read through a pointer, `Child.N` | 0 | 0 |
 | Read from a map of structs, `Rows["one"].N` | 8 | 1 |

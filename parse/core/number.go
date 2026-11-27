@@ -509,3 +509,41 @@ func PortableDecimal(s string) bool {
 	got, _ := new(big.Rat).SetString(strconv.FormatFloat(f, 'g', -1, 64))
 	return got != nil && want.Cmp(got) == 0
 }
+
+// NonFinite reports v, a value a column of type t holds, is NaN or an
+// infinity: a float's, or a decimal's as the text PostgreSQL's numeric
+// writes it ("NaN", "Infinity", "-Infinity"). No request value is one, a
+// stored value may be (NormalizeStored), and none has a canonical text
+// (CanonicalText), so no facet or key names one.
+func NonFinite(t FieldType, v any) bool {
+	return nonFiniteRank(t, v) != 0
+}
+
+// nonFiniteRank is v's place among the values of a column of type t as
+// PostgreSQL orders them: -1 for -Infinity, before every finite value
+// (0), 1 for Infinity, 2 for NaN.
+func nonFiniteRank(t FieldType, v any) int {
+	rv := reflect.ValueOf(v)
+	switch {
+	case t == FieldTypeFloat && (rv.Kind() == reflect.Float32 || rv.Kind() == reflect.Float64):
+		f := rv.Float()
+		switch {
+		case math.IsNaN(f):
+			return 2
+		case math.IsInf(f, 1):
+			return 1
+		case math.IsInf(f, -1):
+			return -1
+		}
+	case t == FieldTypeDecimal && rv.Kind() == reflect.String:
+		switch rv.String() {
+		case "NaN":
+			return 2
+		case "Infinity":
+			return 1
+		case "-Infinity":
+			return -1
+		}
+	}
+	return 0
+}

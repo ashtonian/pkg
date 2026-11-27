@@ -48,6 +48,11 @@ func Codes() []core.Code {
 	}
 }
 
+// ErrRemoveNeedsNull is a field whose patch_ops name remove while its type
+// holds no NULL (core.IsNullableType): a clear would have no value to write.
+// GeneratePatchSchema wraps it with the field and its type.
+var ErrRemoveNeedsNull = errors.New("patch operation remove requires a type that holds null")
+
 // ErrSQLColumnMissing is a patch schema path, neither a relation nor a
 // column, that an operation names: BuildPatchSQL cannot compile it and never
 // uses the request's path as a SQL identifier. The schema is the server's,

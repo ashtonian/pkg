@@ -14,7 +14,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
 // computedAccountFixture: accounts 1–5 of t1 hold 2, 1, 2, 0 and 1
@@ -35,35 +34,26 @@ var computedAccountFixture = []string{
 	`INSERT INTO account_groups VALUES (1, 20), (1, 10), (2, 20), (3, 30)`,
 }
 
-func TestReadExpr_SQLite(t *testing.T) {
-	runReadExpr(t, dbtest.SQLite(t), filter.SQLiteDialect{})
-}
-
-func TestReadExpr_Postgres(t *testing.T) {
-	runReadExpr(t, dbtest.Postgres(t), filter.PostgresDialect{})
+func TestReadExpr(t *testing.T) {
+	runSQLBackends(t, runReadExpr)
 }
 
 // runReadExpr serves the one package-level resource on d: SQLite and
 // PostgreSQL read it through their own expressions.
-func runReadExpr(t *testing.T, db *sql.DB, d parse.Dialect) {
+func runReadExpr(t *testing.T, b sqlBackend) {
+	db := b.open(t)
+	d := b.dialect
 	page := func(t *testing.T, plan *parse.ListPlan) *filter.Page[computedAccount] {
 		return listPage(t, db, computedAccounts, d, plan)
 	}
-	for _, stmt := range computedAccountFixture {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
+	execStatements(t, db, computedAccountFixture...)
 	list := func(t *testing.T, q url.Values) []int {
 		t.Helper()
 		req, err := computedAccounts.ParseList(q)
 		require.NoError(t, err)
 		plan, err := computedAccounts.BuildList(d, req, parse.Scope{Tenant: "t1"})
 		require.NoError(t, err)
-		var ids []int
-		for _, item := range page(t, plan).Items {
-			ids = append(ids, item.ID)
-		}
-		return ids
+		return itemIDs(page(t, plan).Items, computedAccountID)
 	}
 
 	t.Run("a page scans every computed column", func(t *testing.T) {
@@ -136,9 +126,7 @@ func runReadExpr(t *testing.T, db *sql.DB, d parse.Dialect) {
 			plan, err := computedAccounts.BuildList(d, req, parse.Scope{Tenant: "t1"})
 			require.NoError(t, err)
 			p := page(t, plan)
-			for _, item := range p.Items {
-				got = append(got, item.ID)
-			}
+			got = append(got, itemIDs(p.Items, computedAccountID)...)
 			if !p.PageInfo.HasNextPage {
 				break
 			}
@@ -156,12 +144,8 @@ func runReadExpr(t *testing.T, db *sql.DB, d parse.Dialect) {
 		require.NoError(t, err)
 		plan, err := computedAccounts.BuildList(d, req, parse.Scope{Tenant: "t1"})
 		require.NoError(t, err)
-		var ids []int
-		for _, item := range page(t, plan).Items {
-			ids = append(ids, item.ID)
-		}
-		assert.Equal(t, []int{1, 3}, ids, "t2's account 6 has more, but is not t1's")
-		assert.Equal(t, "2", fmt.Sprint(queryRows(t, db, plan.Count.SQL, plan.Count.Args)[0][0]))
+		assert.Equal(t, []int{1, 3}, itemIDs(page(t, plan).Items, computedAccountID), "t2's account 6 has more, but is not t1's")
+		assert.Equal(t, "2", fmt.Sprint(queryRows[[]any](t, db, plan.Count.SQL, plan.Count.Args...)[0][0]))
 
 		assert.Equal(t, []int{2}, list(t, url.Values{filter.ParamFilter: {`{"email":""}`}}), "the NULL email compares as the dialect's expression reads it")
 	})
@@ -176,7 +160,7 @@ func runReadExpr(t *testing.T, db *sql.DB, d parse.Dialect) {
 		require.NoError(t, err)
 		plan, err := computedAccounts.BuildUpdate(d, p, parse.ByID(3), parse.Scope{Tenant: "t1"})
 		require.NoError(t, err)
-		rows := queryRows(t, db, plan.Owner.SQL, plan.Owner.Args)
+		rows := queryRows[[]any](t, db, plan.Owner.SQL, plan.Owner.Args...)
 		require.Len(t, rows, 1)
 		assert.Equal(t, "renamed", fmt.Sprint(rows[0][2]))
 		assert.Equal(t, int64(2), computedInt(t, rows[0][4]), "member_count")
@@ -211,6 +195,8 @@ func runReadExpr(t *testing.T, db *sql.DB, d parse.Dialect) {
 }
 
 // keysOf lists r's rows for filterJSON on d and returns their keys.
+func computedAccountID(a computedAccount) int { return a.ID }
+
 func keysOf[T any](t *testing.T, db *sql.DB, r *parse.Resource[T], d filter.Dialect, filterJSON string, scope parse.Scope) []string {
 	t.Helper()
 	req, err := r.ParseList(url.Values{filter.ParamFilter: {filterJSON}})
@@ -219,7 +205,7 @@ func keysOf[T any](t *testing.T, db *sql.DB, r *parse.Resource[T], d filter.Dial
 	require.NoError(t, err)
 	key := slices.Index(r.ColumnNames(), r.PrimaryKeyColumns()[0])
 	var out []string
-	for _, row := range queryRows(t, db, plan.Page.SQL, plan.Page.Args) {
+	for _, row := range queryRows[[]any](t, db, plan.Page.SQL, plan.Page.Args...) {
 		out = append(out, fmt.Sprint(row[key]))
 	}
 	return out

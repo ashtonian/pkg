@@ -264,7 +264,8 @@ func TestPaths_SortKeys(t *testing.T) {
 
 	sr, err := filter.ParseSort(s, "-attrs.size")
 	require.NoError(t, err)
-	assert.Equal(t, `ORDER BY (CASE WHEN jsonb_typeof("path_records"."attrs" -> 'size') = 'number' THEN ("path_records"."attrs" ->> 'size')::numeric END) DESC NULLS FIRST`, sr.ToSQL(filter.PostgresDialect{}))
+	size := `("path_records"."attrs" ->> 'size')`
+	assert.Equal(t, `ORDER BY (CASE WHEN (jsonb_typeof("path_records"."attrs" -> 'size') = 'number' AND length(split_part(ltrim(`+size+`, '-'), '.', 1)) + length(rtrim(split_part(`+size+`, '.', 2), '0')) <= 1000) THEN `+size+`::numeric END) DESC NULLS FIRST`, sr.ToSQL(filter.PostgresDialect{}))
 }
 
 func TestPaths_SortWithPaths(t *testing.T) {
@@ -288,25 +289,83 @@ func TestPaths_SortWithPaths(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// An int path may hold a decimal member, so its cursor carries either kind.
+// A number path's cursor carries the member's canonical decimal text,
+// exactly as the document holds it: an int path may hold a decimal member,
+// and a member may lie beyond float64 precision.
 func TestPaths_NumericCursorValues(t *testing.T) {
 	s, err := filter.GenerateSortSchema[filtertest.PathRecord](core.NewSchemaGenerator())
 	require.NoError(t, err)
 	sr, err := filter.ParseSort(s, "attrs.size")
 	require.NoError(t, err)
 	keys := filter.Keyset(sr, filter.CursorKey{Name: "id", Table: "path_records", Column: "id", DataType: core.FieldTypeString})
-	for _, v := range []any{int64(3), 3.5, nil} {
-		tok := &filter.PageToken{Fields: []filter.CursorField{{Name: "attrs.size", Value: v, Direction: filter.SortAsc}, {Name: "id", Value: "a", Direction: filter.SortAsc}}}
-		assert.NoError(t, filter.ValidateCursor(tok, keys), "%v", v)
+	for _, tc := range []struct {
+		value, want any
+	}{
+		{"3.5", "3.5"},
+		{"0.10000000000000001", "0.10000000000000001"},
+		{int64(3), "3"}, // an earlier release's token
+		{3.5, "3.5"},
+		{nil, nil},
+	} {
+		tok := &filter.PageToken{Fields: []filter.CursorField{{Name: "attrs.size", Value: tc.value, Direction: filter.SortAsc}, {Name: "id", Value: "a", Direction: filter.SortAsc}}}
+		require.NoError(t, filter.ValidateCursor(tok, keys), "%v", tc.value)
+		assert.Equal(t, tc.want, tok.Fields[0].Value)
 	}
-	tok := &filter.PageToken{Fields: []filter.CursorField{{Name: "attrs.size", Value: "3", Direction: filter.SortAsc}, {Name: "id", Value: "a", Direction: filter.SortAsc}}}
-	assert.Error(t, filter.ValidateCursor(tok, keys))
+	for _, v := range []any{"3.5x", true} {
+		tok := &filter.PageToken{Fields: []filter.CursorField{{Name: "attrs.size", Value: v, Direction: filter.SortAsc}, {Name: "id", Value: "a", Direction: filter.SortAsc}}}
+		require.Error(t, filter.ValidateCursor(tok, keys), "%v", v)
+	}
 
-	got, err := filter.CursorPlan{Keys: keys}.Token(false, func(col string) (any, error) {
-		return map[string]any{"attrs": json.RawMessage(`{"size":3.5}`), "id": "g"}[col], nil
-	})
-	require.NoError(t, err)
-	assert.Equal(t, 3.5, got.Fields[0].Value, "a cursor reads the member with the path rule")
+	for doc, want := range map[string]any{
+		`{"size":3.5}`:                 "3.5",
+		`{"size":0.10000000000000001}`: "0.10000000000000001",
+		`{"size":1e1}`:                 "10",
+		`{"size":1e400}`:               "1" + strings.Repeat("0", 400),
+		`{"size":1e-1000}`:             nil,
+		`{"size":"3.5"}`:               nil,
+		`{}`:                           nil,
+	} {
+		got, err := filter.CursorPlan{Keys: keys}.Token(false, func(col string) (any, error) {
+			return map[string]any{"attrs": json.RawMessage(doc), "id": "g"}[col], nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, want, got.Fields[0].Value, "a cursor carries %s's member exactly, as its canonical decimal text", doc)
+	}
+}
+
+// A number member is a JSON number of at most core.MaxDecimalDigits digits
+// in plain notation, read as a json.Number of its canonical decimal text
+// however the document was decoded; a JSON number beyond the bound is
+// absent, as the SQL renderings read it.
+func TestPathValue_NumberMembers(t *testing.T) {
+	size := &filter.FieldSchema{ExternalName: "attrs.size", DataType: core.FieldTypeFloat,
+		Path: &filter.JSONPath{Column: "attrs", Segments: []string{"size"}, Storage: filter.StorageJSONB}}
+	digits := strings.Repeat("9", core.MaxDecimalDigits)
+	for _, tt := range []struct {
+		name string
+		doc  any
+		want any
+	}{
+		{"an integer", `{"size":7}`, json.Number("7")},
+		{"spelled with a scale and an exponent", `{"size":15.0e-1}`, json.Number("1.5")},
+		{"beyond float64 precision", `{"size":0.10000000000000001}`, json.Number("0.10000000000000001")},
+		{"beyond float64 range", `{"size":1e400}`, json.Number("1" + strings.Repeat("0", 400))},
+		{"at the bound", `{"size":1e-999}`, json.Number("0." + strings.Repeat("0", 998) + "1")},
+		{"the most digits", `{"size":` + digits + `}`, json.Number(digits)},
+		{"decoded as a float64", map[string]any{"size": 0.1}, json.Number("0.1")},
+		{"past the bound below", `{"size":1e-1000}`, nil},
+		{"past the bound above", `{"size":1` + digits + `}`, nil},
+		{"a string", `{"size":"7"}`, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, present, err := filter.PathValue(tt.doc, size)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want != nil, present)
+			if tt.want != nil {
+				assert.Equal(t, tt.want, got)
+			}
+		})
+	}
 }
 
 func TestPaths_Facets(t *testing.T) {

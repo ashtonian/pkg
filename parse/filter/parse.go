@@ -85,22 +85,13 @@ func (p *FilterParser) ParseBytes(data []byte) (*FilterAST, error) {
 	}
 
 	if p.config.MaxInputSize > 0 && len(data) > p.config.MaxInputSize {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInputTooLarge.String(),
-			Message: fmt.Sprintf("input size %d exceeds maximum %d bytes", len(data), p.config.MaxInputSize),
-		}
+		return nil, core.NewError(ECodeInputTooLarge, fmt.Sprintf("input size %d exceeds maximum %d bytes", len(data), p.config.MaxInputSize))
 	}
 
 	p = p.At(p.now())
 	var raw map[string]any
 	if err := p.codec.Decode(data, &raw); err != nil {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInvalidJSON.String(),
-			Message: "invalid JSON syntax",
-			Cause:   err,
-		}
+		return nil, core.NewError(ECodeInvalidJSON, "invalid JSON syntax", core.WithCause(err))
 	}
 
 	root, err := p.parseNode(raw, 0)
@@ -145,11 +136,7 @@ func (p *FilterParser) And(filters ...*FilterAST) (*FilterAST, error) {
 
 func (p *FilterParser) parseNode(raw map[string]any, depth int) (*FilterNode, error) {
 	if depth > p.config.MaxDepth {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeDepthExceeded.String(),
-			Message: fmt.Sprintf("filter depth exceeds maximum %d", p.config.MaxDepth),
-		}
+		return nil, core.NewError(ECodeDepthExceeded, fmt.Sprintf("filter depth exceeds maximum %d", p.config.MaxDepth))
 	}
 
 	var children []*FilterNode
@@ -189,27 +176,27 @@ func (p *FilterParser) parseLogical(op FilterOperator, value any, depth int) (*F
 	case OpNot:
 		obj, ok := value.(map[string]any)
 		if !ok {
-			return nil, newFilterError(ECodeInvalidJSON, "$not requires an object value")
+			return nil, core.NewError(ECodeInvalidJSON, "$not requires an object value")
 		}
 		child, err := p.parseNode(obj, depth+1)
 		if err != nil {
 			return nil, err
 		}
 		if child == nil { // empty {} yields a nil node — would SIGSEGV the SQL builder
-			return nil, newFilterError(ECodeInvalidJSON, "$not requires a non-empty object")
+			return nil, core.NewError(ECodeInvalidJSON, "$not requires a non-empty object")
 		}
 		return &FilterNode{Op: OpNot, Children: []*FilterNode{child}}, nil
 
 	case OpOr, OpAnd:
 		arr, ok := value.([]any)
 		if !ok {
-			return nil, newFilterError(ECodeInvalidJSON, fmt.Sprintf("$%s requires an array value", op))
+			return nil, core.NewError(ECodeInvalidJSON, fmt.Sprintf("$%s requires an array value", op))
 		}
 		var children []*FilterNode
 		for _, item := range arr {
 			obj, ok := item.(map[string]any)
 			if !ok {
-				return nil, newFilterError(ECodeInvalidJSON, fmt.Sprintf("$%s array items must be objects", op))
+				return nil, core.NewError(ECodeInvalidJSON, fmt.Sprintf("$%s array items must be objects", op))
 			}
 			child, err := p.parseNode(obj, depth+1)
 			if err != nil {
@@ -220,23 +207,19 @@ func (p *FilterParser) parseLogical(op FilterOperator, value any, depth int) (*F
 			}
 		}
 		if len(children) == 0 { // [] or [{}] — zero children builds `WHERE ()`
-			return nil, newFilterError(ECodeInvalidJSON, fmt.Sprintf("$%s requires at least one non-empty condition", op))
+			return nil, core.NewError(ECodeInvalidJSON, fmt.Sprintf("$%s requires at least one non-empty condition", op))
 		}
 		return &FilterNode{Op: op, Children: children}, nil
 	}
 
-	return nil, newFilterError(ECodeInvalidJSON, fmt.Sprintf("unknown logical operator: %s", op))
+	return nil, core.NewError(ECodeInvalidJSON, fmt.Sprintf("unknown logical operator: %s", op))
 }
 
 func (p *FilterParser) parseFieldCondition(fieldName string, value any, depth int) (*FilterNode, error) {
 	field, ok := p.schema.RequestField(fieldName)
 	if !ok {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeUnknownField.String(),
-			Message: fmt.Sprintf("field '%s' is not filterable", fieldName),
-			Details: map[string]any{core.DetailField: fieldName},
-		}
+		return nil, core.NewError(ECodeUnknownField, fmt.Sprintf("field '%s' is not filterable", fieldName),
+			core.WithField(fieldName))
 	}
 
 	obj, isObj := value.(map[string]any)
@@ -245,11 +228,8 @@ func (p *FilterParser) parseFieldCondition(fieldName string, value any, depth in
 	}
 
 	if !field.AllowsOperator(OpEq) {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInvalidOperator.String(),
-			Message: fmt.Sprintf("operator 'eq' not allowed on field '%s'", field.ExternalName),
-		}
+		return nil, core.NewError(ECodeInvalidOperator, fmt.Sprintf("operator 'eq' not allowed on field '%s'", field.ExternalName),
+			core.WithField(field.ExternalName))
 	}
 	value, err := fromWire(field, OpEq, value)
 	if err != nil {
@@ -268,26 +248,17 @@ func (p *FilterParser) parseOperatorObject(field *FieldSchema, obj map[string]an
 	for _, key := range slices.Sorted(maps.Keys(obj)) { // deterministic SQL text
 		val := obj[key]
 		if key == "" || key[0] != '$' {
-			return nil, &core.ParseError{
-				Kind:    core.ParseErrorKindFilter,
-				Code:    ECodeInvalidOperator.String(),
-				Message: fmt.Sprintf("unexpected key '%s' in operator object (keys must start with $)", key),
-			}
+			return nil, core.NewError(ECodeInvalidOperator, fmt.Sprintf("unexpected key '%s' in operator object (keys must start with $)", key),
+				core.WithField(field.ExternalName))
 		}
 		op, ok := ParseOperator(key)
 		if !ok {
-			return nil, &core.ParseError{
-				Kind:    core.ParseErrorKindFilter,
-				Code:    ECodeInvalidOperator.String(),
-				Message: fmt.Sprintf("unknown operator '%s'", key),
-			}
+			return nil, core.NewError(ECodeInvalidOperator, fmt.Sprintf("unknown operator '%s'", key),
+				core.WithField(field.ExternalName))
 		}
 		if !field.AllowsOperator(op) {
-			return nil, &core.ParseError{
-				Kind:    core.ParseErrorKindFilter,
-				Code:    ECodeInvalidOperator.String(),
-				Message: fmt.Sprintf("operator '%s' not allowed on field '%s'", op, field.ExternalName),
-			}
+			return nil, core.NewError(ECodeInvalidOperator, fmt.Sprintf("operator '%s' not allowed on field '%s'", op, field.ExternalName),
+				core.WithField(field.ExternalName))
 		}
 
 		if isRelationPredicate(op) {
@@ -304,7 +275,7 @@ func (p *FilterParser) parseOperatorObject(field *FieldSchema, obj map[string]an
 			// their opposites select non-NULL.
 			want, ok := val.(bool)
 			if !ok {
-				return nil, newFilterError(ECodeValueTypeMismatch, key+" requires a boolean value")
+				return nil, core.NewError(ECodeValueTypeMismatch, key+" requires a boolean value", core.WithField(field.ExternalName))
 			}
 			isNull := want
 			if op != OpNull {

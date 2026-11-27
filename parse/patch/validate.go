@@ -3,7 +3,6 @@ package patch
 import (
 	"errors"
 	"fmt"
-	"maps"
 	"reflect"
 	"slices"
 
@@ -64,7 +63,13 @@ const maxOperationFailures = 10
 type stepFailure struct {
 	code    core.Code
 	cause   error
-	details map[string]any
+	details []core.ErrorOption // core.WithDetail entries
+}
+
+// options are the options framing f: at, which places the operation, then
+// f's cause and details.
+func (f stepFailure) options(at ...core.ErrorOption) []core.ErrorOption {
+	return slices.Concat(at, []core.ErrorOption{core.WithCause(f.cause)}, f.details)
 }
 
 // valueChecker is what checks values against a schema's paths: the codec
@@ -170,12 +175,7 @@ func boundFailures(failures []stepFailure) []stepFailure {
 		return failures
 	}
 	kept := slices.Clone(failures[:maxOperationFailures])
-	details := maps.Clone(kept[0].details)
-	if details == nil {
-		details = make(map[string]any, 1)
-	}
-	details[DetailFailureCount] = len(failures)
-	kept[0].details = details
+	kept[0].details = append(slices.Clone(kept[0].details), core.WithDetail(DetailFailureCount, len(failures)))
 	return kept
 }
 
@@ -239,7 +239,7 @@ func (c valueChecker) relationValues(value any) (any, *stepFailure) {
 		return nil, &stepFailure{
 			code:    ECodeRelationPatchTooLarge,
 			cause:   fmt.Errorf("%d values exceed the maximum %d", len(unique), c.maxRelationValues),
-			details: map[string]any{DetailValueCount: len(unique), DetailValueLimit: c.maxRelationValues},
+			details: []core.ErrorOption{core.WithDetail(DetailValueCount, len(unique)), core.WithDetail(DetailValueLimit, c.maxRelationValues)},
 		}
 	}
 	return unique, nil

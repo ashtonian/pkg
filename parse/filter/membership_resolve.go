@@ -316,18 +316,23 @@ func (r *memberResolver) ask(ctx context.Context, l *Lookup) ([]any, bool, error
 			out = append(out, k)
 			continue
 		}
-		if isNullValue(v) {
+		stored, err := lookupStored(l.Project, v)
+		if err != nil {
+			return nil, false, fmt.Errorf("filter: membership lookup on %s: %w", l.Table, err)
+		}
+		if stored == nil {
 			hasNull = true
 			continue
 		}
-		out = append(out, derefValue(v))
+		out = append(out, stored)
 	}
 	return out, hasNull, nil
 }
 
 // projectedKey is a value a lookup projecting a key answered, which must be
-// a key of a value per ProjectKey column, each followed to its stored value;
-// nil for a key holding NULL. Any other answer is the store's defect.
+// a key of a value per ProjectKey column, each read as the database holds
+// it (lookupStored); nil for a key holding NULL. Any other answer is the
+// store's defect.
 func projectedKey(l *Lookup, v any) (core.Key, error) {
 	var k []any
 	switch kv := v.(type) {
@@ -343,10 +348,11 @@ func projectedKey(l *Lookup, v any) (core.Key, error) {
 	}
 	out := make(core.Key, len(k))
 	for i, value := range k {
-		out[i] = derefValue(value)
-		if out[i] == nil {
-			return nil, nil
+		stored, err := lookupStored(l.ProjectKey[i], value)
+		if err != nil || stored == nil {
+			return nil, err
 		}
+		out[i] = stored
 	}
 	return out, nil
 }
@@ -405,23 +411,34 @@ func MatchLookupRow(cond *LookupCond, column func(name string) (value any, ok bo
 	case LookupOpKeyMember:
 		return false, invalidLookup(fmt.Sprintf("lookup key (%s) is a member of an unanswered lookup; ResolveMemberships answers it", strings.Join(cond.Columns, ", ")))
 	}
-	v, ok := column(cond.Column)
+	raw, ok := column(cond.Column)
 	if !ok {
 		return false, invalidLookup(fmt.Sprintf("lookup row has no column %q", cond.Column))
 	}
-	v = derefValue(v)
+	v, err := lookupStored(cond.Column, raw)
+	if err != nil {
+		return false, err
+	}
 	switch cond.Op {
 	case LookupOpNull:
-		return isNullValue(v), nil
+		return v == nil, nil
 	case LookupOpNotNull:
-		return !isNullValue(v), nil
+		return v != nil, nil
 	case LookupOpMember:
 		return false, invalidLookup(fmt.Sprintf("lookup column %q is a member of an unanswered lookup; ResolveMemberships answers it", cond.Column))
 	case LookupOpEq:
-		return equalAs(cond.Types, 0, v, derefValue(cond.Value)), nil
+		want, err := lookupStored(cond.Column, cond.Value)
+		if err != nil {
+			return false, err
+		}
+		return equalAs(cond.Types, 0, v, want), nil
 	case LookupOpIn:
-		for _, want := range cond.Values {
-			if equalAs(cond.Types, 0, v, derefValue(want)) {
+		for _, value := range cond.Values {
+			want, err := lookupStored(cond.Column, value)
+			if err != nil {
+				return false, err
+			}
+			if equalAs(cond.Types, 0, v, want) {
 				return true, nil
 			}
 		}
@@ -431,65 +448,56 @@ func MatchLookupRow(cond *LookupCond, column func(name string) (value any, ok bo
 }
 
 // equalAs is a lookup condition's equality of a stored value and its value
-// in compared column i: lookupEqual, or, for a typed condition
-// (LookupCond.Types), the two values' canonical texts as the column's type
-// (core.KeyValueText), one exactly when the database holds them equal.
+// in compared column i, both as the database holds them (lookupStored), nil
+// for NULL: lookupEqual, or, for a typed condition (LookupCond.Types), the
+// two values' canonical texts as the column's type (core.CanonicalText),
+// one exactly when the database holds them equal.
 func equalAs(types []core.TypeInfo, i int, stored, want any) bool {
 	if types == nil {
 		return lookupEqual(stored, want)
 	}
-	if isNullValue(stored) || isNullValue(want) {
+	if stored == nil || want == nil {
 		return false
 	}
-	x, err := core.KeyValueText(types[i], projectedValue(stored))
+	x, err := core.CanonicalText(types[i], projectedValue(stored))
 	if err != nil {
 		return false
 	}
-	y, err := core.KeyValueText(types[i], projectedValue(want))
+	y, err := core.CanonicalText(types[i], projectedValue(want))
 	return err == nil && x == y
 }
 
 // lookupEqual is SQL equality of a stored value and a lookup's value, as
-// the lookup's statement compares them (lookupCondSQL): typed by the
-// lookup value's Go type (core.TypeOf), each side read as that type's
-// canonical value (core.NormalizeScalar), so a timestamp compares at its
-// instant whether stored as a time or as its text, a UUID in either case,
-// and a date by its day. Numbers compare by value, a decimal beyond
-// float64's precision ("1.50" is 1.5).
+// the lookup's statement compares them (lookupCondSQL): equal in the one
+// order of the type both are compared as (lookupType, core.CompareCanonical),
+// so a timestamp compares at its instant whether stored as a time or as its
+// text, a UUID in either case, a date by its day, and numbers by value, a
+// decimal beyond float64's precision ("1.50" is 1.5).
 func lookupEqual(stored, want any) bool {
-	if isNullValue(stored) || isNullValue(want) {
+	if stored == nil || want == nil {
 		return false
 	}
+	c, err := core.CompareCanonical(lookupType(stored, want), stored, want)
+	return err == nil && c == 0
+}
+
+// lookupType is the type an untyped lookup compares a stored value and its
+// value as: a decimal when either is one; no type, whose values compare as
+// the scalars both are, for two numbers; otherwise the lookup value's Go
+// type (core.TypeOf), or no type when it names no scalar.
+func lookupType(stored, want any) core.TypeInfo {
 	if isLookupDecimal(stored) || isLookupDecimal(want) {
-		c, ok := core.CompareDecimals(stored, want)
-		return ok && c == 0
+		decimal := core.TypeInfo{Type: core.FieldTypeDecimal}
+		return decimal
 	}
-	c, ok := core.CompareNumbers(stored, want)
-	if ok {
-		return c == 0
+	if core.IsNumber(stored) && core.IsNumber(want) {
+		return core.TypeInfo{}
 	}
 	info := core.TypeOf(reflect.TypeOf(want))
 	if !core.IsKeyType(info.Type) {
-		x, xok := lookupText(stored)
-		y, yok := lookupText(want)
-		return xok && yok && x == y
+		return core.TypeInfo{}
 	}
-	x, err := core.NormalizeScalar(info.Type, info.NumberKind, stored)
-	if err != nil {
-		return false
-	}
-	y, err := core.NormalizeScalar(info.Type, info.NumberKind, want)
-	return err == nil && x == y
-}
-
-func lookupText(v any) (string, bool) {
-	if u, ok := core.UUIDText(v); ok {
-		return u, true
-	}
-	if rv := reflect.ValueOf(v); rv.Kind() == reflect.String {
-		return rv.String(), true
-	}
-	return "", false
+	return info
 }
 
 // matchKey reports whether a row's key columns equal one of a WhereKeyIn's
@@ -502,18 +510,23 @@ func matchKey(cond *LookupCond, column func(name string) (value any, ok bool)) (
 		if !ok {
 			return false, invalidLookup(fmt.Sprintf("lookup row has no column %q", name))
 		}
-		row[i] = derefValue(v)
-		if row[i] == nil {
-			return false, nil
+		stored, err := lookupStored(name, v)
+		if err != nil || stored == nil {
+			return false, err
 		}
+		row[i] = stored
 	}
 	for _, k := range cond.Keys {
 		if len(k) != len(row) {
 			return false, invalidLookup(fmt.Sprintf("lookup key (%s) has a key of %d values", strings.Join(cond.Columns, ", "), len(k)))
 		}
 		equal := true
-		for i, want := range k {
-			if !equalAs(cond.Types, i, row[i], derefValue(want)) {
+		for i, value := range k {
+			want, err := lookupStored(cond.Columns[i], value)
+			if err != nil {
+				return false, err
+			}
+			if !equalAs(cond.Types, i, row[i], want) {
 				equal = false
 				break
 			}
@@ -525,31 +538,28 @@ func matchKey(cond *LookupCond, column func(name string) (value any, ok bool)) (
 	return false, nil
 }
 
-// projectedValue is a stored value as normalization takes it: a UUID
-// column scans to a UUID type (core.IsUUIDType), and normalization reads
-// UUIDs as text.
-func projectedValue(v any) any {
-	v = derefValue(v)
-	if u, ok := core.UUIDText(v); ok {
+// lookupStored is a lookup's value, or a lookup row's, as the database
+// holds it (core.StoredValue): a scanned pointer followed, a driver.Valuer
+// read; nil for NULL. Lookup values and stored rows are read through it
+// alike, so a typed and an untyped comparison see one value.
+func lookupStored(column string, v any) (any, error) {
+	stored, null, err := core.StoredValue(v)
+	if err != nil {
+		return nil, invalidLookup(fmt.Sprintf("lookup column %q: %v", column, err))
+	}
+	if null {
+		return nil, nil
+	}
+	return stored, nil
+}
+
+// projectedValue is a stored value (lookupStored) as normalization takes
+// it: a UUID column scans to a UUID type (core.IsUUIDType), and
+// normalization reads UUIDs as text.
+func projectedValue(stored any) any {
+	u, ok := core.UUIDText(stored)
+	if ok {
 		return u
 	}
-	return v
+	return stored
 }
-
-// derefValue follows pointers and interfaces to the stored value; a nil one
-// is NULL.
-func derefValue(v any) any {
-	rv := reflect.ValueOf(v)
-	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
-		if rv.IsNil() {
-			return nil
-		}
-		rv = rv.Elem()
-	}
-	if !rv.IsValid() {
-		return nil
-	}
-	return rv.Interface()
-}
-
-func isNullValue(v any) bool { return derefValue(v) == nil }

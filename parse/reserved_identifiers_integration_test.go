@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"database/sql"
 	"fmt"
 	"net/url"
 	"testing"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
 // The tables and columns below are reserved words (user, order, group,
@@ -72,19 +70,14 @@ func reservedUsers(t *testing.T) *parse.Resource[reservedUser] {
 	return users
 }
 
-func TestReservedIdentifiers_SQLite(t *testing.T) {
-	runReservedIdentifiers(t, dbtest.SQLite(t), filter.SQLiteDialect{})
+func TestReservedIdentifiers(t *testing.T) {
+	runSQLBackends(t, runReservedIdentifiers)
 }
 
-func TestReservedIdentifiers_Postgres(t *testing.T) {
-	runReservedIdentifiers(t, dbtest.Postgres(t), filter.PostgresDialect{})
-}
-
-func runReservedIdentifiers(t *testing.T, db *sql.DB, d parse.Dialect) {
-	for _, stmt := range reservedFixture {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
+func runReservedIdentifiers(t *testing.T, b sqlBackend) {
+	db := b.open(t)
+	d := b.dialect
+	execStatements(t, db, reservedFixture...)
 	users := reservedUsers(t)
 	list := func(q url.Values) *parse.ListPlan {
 		t.Helper()
@@ -99,11 +92,7 @@ func runReservedIdentifiers(t *testing.T, db *sql.DB, d parse.Dialect) {
 		return listPage(t, db, users, d, plan)
 	}
 	ids := func(p *filter.Page[reservedUser]) []int64 {
-		out := make([]int64, len(p.Items))
-		for i, u := range p.Items {
-			out[i] = u.ID
-		}
-		return out
+		return itemIDs(p.Items, func(u reservedUser) int64 { return u.ID })
 	}
 
 	t.Run("lists, pages and counts", func(t *testing.T) {
@@ -187,7 +176,7 @@ func runReservedIdentifiers(t *testing.T, db *sql.DB, d parse.Dialect) {
 		require.NoError(t, err)
 		require.Len(t, res.Unchanged, 1)
 		assert.Equal(t, int64(2), res.RelationRows, "20 removed, 21 added")
-		pairs := normalizeInts(t, queryRows(t, db, `SELECT "table" FROM "grant" WHERE "user" = 1 ORDER BY "table"`, nil))
+		pairs := normalizeInts(t, queryRows[[]any](t, db, `SELECT "table" FROM "grant" WHERE "user" = 1 ORDER BY "table"`))
 		assert.Equal(t, [][]any{{int64(21)}}, pairs)
 	})
 
@@ -208,7 +197,7 @@ func runReservedIdentifiers(t *testing.T, db *sql.DB, d parse.Dialect) {
 		require.NoError(t, err)
 		assert.Len(t, res.Changed, 2)
 		assert.Empty(t, res.Unchanged)
-		got := queryRows(t, db, `SELECT id, "order", "group" FROM "user" WHERE id IN (2, 3) ORDER BY id`, nil)
+		got := queryRows[[]any](t, db, `SELECT id, "order", "group" FROM "user" WHERE id IN (2, 3) ORDER BY id`)
 		require.Len(t, got, 2)
 		assert.Equal(t, []any{int64(2), int64(5), "alpha"}, []any{asInt64(t, got[0][0]), asInt64(t, got[0][1]), reservedText(t, got[0][2])})
 		assert.Equal(t, []any{int64(3), int64(2), "delta"}, []any{asInt64(t, got[1][0]), asInt64(t, got[1][1]), reservedText(t, got[1][2])})

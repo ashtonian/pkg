@@ -123,7 +123,7 @@ func TestDeterministicSQLText(t *testing.T) {
 
 // TestRepeatedQueryParamsBecomeIn: ?tag=a&tag=b silently dropped b.
 func TestRepeatedQueryParamsBecomeIn(t *testing.T) {
-	p := filter.NewQueryParamParser(testSchema())
+	p := queryParams(t, testSchema())
 	ast, err := p.Parse(url.Values{"status": {"active", "inactive"}})
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +152,7 @@ func TestFieldNamedLikeSuffixNotSplit(t *testing.T) {
 			},
 		},
 	}
-	p := filter.NewQueryParamParser(schema)
+	p := queryParams(t, schema)
 	ast, err := p.Parse(url.Values{"email_like": {"x@y.z"}})
 	if err != nil {
 		t.Fatalf("exact field name split as suffix: %v", err)
@@ -265,10 +265,7 @@ func TestEnumTagValuesTrimmed(t *testing.T) {
 // TestErrorIndexZeroSurvivesWire: op index 0 vanished from wire errors
 // via omitempty.
 func TestErrorIndexZeroSurvivesWire(t *testing.T) {
-	pe := &core.ParseError{
-		Kind: core.ParseErrorKindPatch, Code: "E2077", Message: "x",
-		Index: new(0),
-	}
+	pe := core.NewError(core.CodePatchValueInvalid, "x", core.WithIndex(0))
 	b, err := json.Marshal(pe)
 	if err != nil {
 		t.Fatal(err)
@@ -277,7 +274,7 @@ func TestErrorIndexZeroSurvivesWire(t *testing.T) {
 		t.Errorf("wire %s; want index:0 present", b)
 	}
 
-	noIdx := &core.ParseError{Kind: core.ParseErrorKindFilter, Code: "E2086", Message: "y"}
+	noIdx := core.NewError(core.CodeInvalidJSON, "y")
 	b2, _ := json.Marshal(noIdx)
 	if strings.Contains(string(b2), `"index"`) {
 		t.Errorf("wire %s; want index absent when unset", b2)

@@ -2,6 +2,7 @@ package patch
 
 import (
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/internal/rfc6902"
 )
 
 // Parser parses and validates JSON Patch documents.
@@ -38,6 +38,16 @@ type RawPatchOp struct {
 	HasValue bool `json:"-"`
 }
 
+// The members of an RFC 6902 operation object, which RawPatchOp's json tags
+// also spell, for the operations patch reads and writes as maps: a struct
+// field cannot tell a missing value from a null one.
+const (
+	memberOp    = "op"
+	memberPath  = "path"
+	memberFrom  = "from"
+	memberValue = "value"
+)
+
 // present reports whether op carried a value member.
 func (r RawPatchOp) present() bool { return r.HasValue || r.Value != nil }
 
@@ -57,10 +67,7 @@ func (p *Parser) Parse(body []byte) (*ParsedPatch, error) {
 		return nil, errNoSchema
 	}
 	if p.config.MaxInputSize > 0 && len(body) > p.config.MaxInputSize {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeInputTooLarge.String(),
-			Message: fmt.Sprintf("input size %d exceeds maximum %d bytes", len(body), p.config.MaxInputSize),
-		}
+		return nil, core.NewError(ECodeInputTooLarge, fmt.Sprintf("input size %d exceeds maximum %d bytes", len(body), p.config.MaxInputSize))
 	}
 
 	// Operations are decoded as objects first, with the configured codec so
@@ -68,13 +75,10 @@ func (p *Parser) Parse(body []byte) (*ParsedPatch, error) {
 	// a struct field cannot tell a missing "value" from "value": null.
 	var docs []map[string]any
 	if err := p.codec.Decode(body, &docs); err != nil {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeInvalidJSON.String(),
-			Message: "invalid JSON Patch syntax", Cause: err,
-		}
+		return nil, core.NewError(ECodeInvalidJSON, "invalid JSON Patch syntax", core.WithCause(err))
 	}
 	if docs == nil {
-		return nil, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodeInvalidJSON.String(), Message: "JSON Patch must be an array of operations"}
+		return nil, core.NewError(ECodeInvalidJSON, "JSON Patch must be an array of operations")
 	}
 	ops := make([]RawPatchOp, len(docs))
 	for i, doc := range docs {
@@ -93,31 +97,25 @@ func rawOpFrom(doc map[string]any, i int) (RawPatchOp, error) {
 	for _, m := range []struct {
 		name string
 		dst  *string
-	}{{rfc6902.Op, &op.Op}, {rfc6902.Path, &op.Path}, {rfc6902.From, &op.From}} {
+	}{{memberOp, &op.Op}, {memberPath, &op.Path}, {memberFrom, &op.From}} {
 		v, ok := doc[m.name]
 		if !ok {
 			continue
 		}
 		s, isString := v.(string)
 		if !isString {
-			return op, &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodeInvalidJSON.String(),
-				Message: fmt.Sprintf("member %q of the operation at index %d must be a string", m.name, i),
-				Index:   new(i),
-			}
+			return op, core.NewError(ECodeInvalidJSON, fmt.Sprintf("member %q of the operation at index %d must be a string", m.name, i),
+				core.WithIndex(i))
 		}
 		*m.dst = s
 	}
-	op.Value, op.HasValue = doc[rfc6902.Value]
+	op.Value, op.HasValue = doc[memberValue]
 	return op, nil
 }
 
 func (p *Parser) validateOps(ops []RawPatchOp) (*ParsedPatch, error) {
 	if p.schema.MaxOperations > 0 && len(ops) > p.schema.MaxOperations {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeTooManyOps.String(),
-			Message: fmt.Sprintf("too many operations: %d exceeds maximum %d", len(ops), p.schema.MaxOperations),
-		}
+		return nil, core.NewError(ECodeTooManyOps, fmt.Sprintf("too many operations: %d exceeds maximum %d", len(ops), p.schema.MaxOperations))
 	}
 
 	result := &ParsedPatch{
@@ -145,22 +143,16 @@ func (p *Parser) validateOps(ops []RawPatchOp) (*ParsedPatch, error) {
 
 func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, error) {
 	if !isValidPatchOp(raw.Op) {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeInvalidPatchOp.String(),
-			Message: fmt.Sprintf("invalid operation '%s' at index %d", raw.Op, i),
-			Index:   new(i),
-		}
+		return nil, core.NewError(ECodeInvalidPatchOp, fmt.Sprintf("invalid operation '%s' at index %d", raw.Op, i),
+			core.WithIndex(i))
 	}
 	op := PatchOp(raw.Op)
 	if opTakesValue(op) && !raw.present() {
 		// RFC 6902 §4.1, §4.3, §4.6: add, replace and test carry a
 		// value (as array_append carries its element); without one an
 		// operation is malformed, not a clear.
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeInvalidPatchOp.String(),
-			Message: fmt.Sprintf("'value' required for %s at index %d", raw.Op, i),
-			Path:    raw.Path, Index: new(i),
-		}
+		return nil, core.NewError(ECodeInvalidPatchOp, fmt.Sprintf("'value' required for %s at index %d", raw.Op, i),
+			core.WithPath(raw.Path), core.WithIndex(i))
 	}
 
 	pathSchema, depth, err := p.resolvePath(raw.Path, i)
@@ -180,18 +172,12 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 		errs := make([]error, len(failures))
 		for j, f := range failures {
 			if f.code == ECodeOpNotAllowed {
-				errs[j] = &core.ParseError{
-					Kind: core.ParseErrorKindPatch, Code: f.code.String(),
-					Message: fmt.Sprintf("operation '%s' not allowed on path '%s' at index %d", op, raw.Path, i),
-					Path:    raw.Path, Index: new(i),
-				}
+				errs[j] = core.NewError(f.code, fmt.Sprintf("operation '%s' not allowed on path '%s' at index %d", op, raw.Path, i),
+					core.WithPath(raw.Path), core.WithIndex(i))
 				continue
 			}
-			errs[j] = &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: f.code.String(),
-				Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, f.cause),
-				Path:    raw.Path, Index: new(i), Cause: f.cause, Details: f.details,
-			}
+			errs[j] = core.NewError(f.code, fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, f.cause),
+				f.options(core.WithPath(raw.Path), core.WithIndex(i))...)
 		}
 		return nil, errors.Join(errs...)
 	}
@@ -199,11 +185,8 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 	if depth > 1 {
 		err := checkDocumentMember(p.schema, op, raw.Path, value)
 		if err != nil {
-			invalid := &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-				Message: fmt.Sprintf("invalid member '%s' at index %d: %v", raw.Path, i, err),
-				Path:    raw.Path, Index: new(i), Cause: err,
-			}
+			invalid := core.NewError(ECodePatchValueInvalid, fmt.Sprintf("invalid member '%s' at index %d: %v", raw.Path, i, err),
+				core.WithPath(raw.Path), core.WithIndex(i), core.WithCause(err))
 			return nil, invalid
 		}
 	}
@@ -211,11 +194,8 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 	var fromSchema *PathSchema
 	if op == PatchOpMove || op == PatchOpCopy {
 		if raw.From == "" {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodeInvalidPatchOp.String(),
-				Message: fmt.Sprintf("'from' required for %s at index %d", raw.Op, i),
-				Index:   new(i),
-			}
+			return nil, core.NewError(ECodeInvalidPatchOp, fmt.Sprintf("'from' required for %s at index %d", raw.Op, i),
+				core.WithPath(raw.Path), core.WithIndex(i))
 		}
 		// The source must itself be a schema path: move/copy read it, and
 		// an unlisted source would expose a field the schema never made
@@ -225,11 +205,8 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 			return nil, err
 		}
 		if err := checkTransfer(op, from, fromDepth, pathSchema, depth); err != nil {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: err.code.String(),
-				Message: fmt.Sprintf("%s from '%s' to '%s' at index %d: %s", op, raw.From, raw.Path, i, err.msg),
-				Path:    raw.Path, Index: new(i), Cause: err.cause,
-			}
+			return nil, core.NewError(err.code, fmt.Sprintf("%s from '%s' to '%s' at index %d: %s", op, raw.From, raw.Path, i, err.msg),
+				core.WithPath(raw.Path), core.WithIndex(i), core.WithCause(err.cause))
 		}
 		fromSchema = from
 	}
@@ -246,33 +223,21 @@ func (p *Parser) resolvePath(path string, index int) (*PathSchema, int, error) {
 		err = core.CheckText(path)
 	}
 	if err != nil {
-		return nil, 0, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeInvalidPatchOp.String(),
-			Message: fmt.Sprintf("invalid path at index %d: %v", index, err),
-			Path:    path, Index: new(index), Cause: err,
-		}
+		return nil, 0, core.NewError(ECodeInvalidPatchOp, fmt.Sprintf("invalid path at index %d: %v", index, err),
+			core.WithPath(path), core.WithIndex(index), core.WithCause(err))
 	}
 	if len(tokens) == 0 {
-		return nil, 0, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePatchFieldNotFound.String(),
-			Message: fmt.Sprintf("path at index %d targets the whole document; patch a field instead", index),
-			Path:    path, Index: new(index),
-		}
+		return nil, 0, core.NewError(ECodePatchFieldNotFound, fmt.Sprintf("path at index %d targets the whole document; patch a field instead", index),
+			core.WithPath(path), core.WithIndex(index))
 	}
 	if len(tokens) > p.config.MaxDepth {
-		return nil, 0, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePathTooDeep.String(),
-			Message: fmt.Sprintf("path '%s' at index %d has %d segments; maximum is %d", path, index, len(tokens), p.config.MaxDepth),
-			Path:    path, Index: new(index),
-		}
+		return nil, 0, core.NewError(ECodePathTooDeep, fmt.Sprintf("path '%s' at index %d has %d segments; maximum is %d", path, index, len(tokens), p.config.MaxDepth),
+			core.WithPath(path), core.WithIndex(index))
 	}
 	ps, err := matchPath(p.schema, path)
 	if err != nil {
-		return nil, 0, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePatchFieldNotFound.String(),
-			Message: fmt.Sprintf("path '%s' at index %d: %v", path, index, err),
-			Path:    path, Index: new(index), Cause: err,
-		}
+		return nil, 0, core.NewError(ECodePatchFieldNotFound, fmt.Sprintf("path '%s' at index %d: %v", path, index, err),
+			core.WithPath(path), core.WithIndex(index), core.WithCause(err))
 	}
 	return ps, len(tokens), nil
 }
@@ -462,10 +427,7 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 	if err != nil {
 		return nil, err
 	}
-	target := ps.GoType
-	for target != nil && target.Kind() == reflect.Pointer {
-		target = target.Elem()
-	}
+	target := columnType(ps.GoType)
 	if op == PatchOpArrayAppend {
 		switch {
 		case target == nil:
@@ -557,7 +519,7 @@ func normalizeCompositeKeys(columns []RelationKey, v any, codec core.Codec) (any
 		for j, c := range columns {
 			value, err := core.FromWire(c.Wire, core.TypeOf(c.Type).Type, values[j])
 			if err == nil {
-				value, err = normalizeTyped(c.Type, value, codec)
+				value, err = normalizeTyped(columnType(c.Type), value, codec)
 			}
 			if err != nil {
 				return nil, fmt.Errorf("element %d, key column %d: %w", i, j, err)
@@ -569,7 +531,52 @@ func normalizeCompositeKeys(columns []RelationKey, v any, codec core.Codec) (any
 	return keys, nil
 }
 
-// normalizeTyped normalizes v for the Go type t: scalars, decimals included,
+// holdsJSONNull reports whether a document's member or element of type t
+// holds null as encoding/json writes it: a pointer, slice, map or interface,
+// whose nil is null, or a type whose own JSON methods write its zero value as
+// null, as decimal.NullDecimal and uuid.NullUUID do. A type encoding/json
+// writes as its fields, such as sql.NullString, holds no null there, whether
+// or not its column holds NULL (core.IsNullableType): the application's own
+// write of the document stores {"String":"","Valid":false}. A MarshalJSON
+// that panics on the zero value holds no null either.
+func holdsJSONNull(t reflect.Type) (holds bool) {
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Interface:
+		return true
+	}
+	if !core.MarshalsJSON(t) {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			holds = false
+		}
+	}()
+	// Through a pointer, as encoding/json reaches a member or an element:
+	// its pointer-receiver methods count too.
+	data, err := json.Marshal(reflect.New(t).Interface())
+	return err == nil && string(data) == "null"
+}
+
+// columnType is the Go type a column of field type t holds a value of:
+// t's pointers stripped, and a nullable wrapper's value (core.NullWrapperOf),
+// which the column holds while the wrapper is Valid. nil for nil.
+func columnType(t reflect.Type) reflect.Type {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil {
+		return nil
+	}
+	w, wrapped := core.NullWrapperOf(t)
+	if wrapped {
+		return columnType(w.ValueType())
+	}
+	return t
+}
+
+// normalizeTyped normalizes v for the Go type t: null where t holds it inside
+// a document (holdsJSONNull), scalars, decimals included,
 // via core.NormalizeScalar, slices and arrays element by element, another
 // type that is a database value (driver.Valuer) by decoding into it, and
 // remaining composite kinds by decoding and re-encoding their canonical
@@ -577,7 +584,7 @@ func normalizeCompositeKeys(columns []RelationKey, v any, codec core.Codec) (any
 func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
 	v = normalizeNilPointer(v)
 	if v == nil {
-		if isNullableType(t) {
+		if holdsJSONNull(t) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("null is not valid for %s", gowalker.TypeText(t))
@@ -650,9 +657,11 @@ func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
 var valuerType = reflect.TypeFor[driver.Valuer]()
 
 // scalarFieldType maps a Go type to the DataType core.NormalizeScalar
-// handles, or reports false for composite and unknown types.
+// handles, or reports false for composite and unknown types. A nullable
+// wrapper is composite: the type is a column's value's (columnType) or a
+// document's member, which holds the wrapper's JSON (core.MemberTypeOf).
 func scalarFieldType(t reflect.Type) (core.FieldType, bool) {
-	switch ft := core.TypeOf(t).Type; ft {
+	switch ft := core.MemberTypeOf(t).Type; ft {
 	case core.FieldTypeString, core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeDecimal, core.FieldTypeBool,
 		core.FieldTypeTimestamp, core.FieldTypeDate, core.FieldTypeUUID,
 		core.FieldTypeTime, core.FieldTypeInterval, core.FieldTypeInet, core.FieldTypeCIDR, core.FieldTypeMACAddr:

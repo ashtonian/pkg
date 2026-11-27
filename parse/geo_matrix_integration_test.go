@@ -5,11 +5,21 @@ package parse_test
 import (
 	"testing"
 
-	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/stretchr/testify/require"
+
+	"github.com/ashtonian/pkg/parse/filter/filtertest"
 )
 
-// Stored points on PostGIS: jsonb read as PostgreSQL casts its members.
-func TestGeoMatrix_PostGIS(t *testing.T) {
-	runGeoMatrix(t, dbtest.PostGIS(t), filter.PostgresDialect{}, "JSONB", "%s::jsonb")
+// Stored points on each backend: JSON text read through parsesqlite's
+// functions on SQLite, jsonb read as PostgreSQL casts its members on
+// PostGIS.
+func TestGeoMatrix(t *testing.T) {
+	runSQLBackends(t, func(t *testing.T, b sqlBackend) {
+		db := b.open(t)
+		schema, err := filtertest.GeoSchema()
+		require.NoError(t, err)
+		table := schemaTable(schema)
+		b.load(t, db, table, recordRows(t, table, filtertest.GeoRecords()))
+		filtertest.RunGeo(t, b.filterIDs(db, schema))
+	}, onPostGIS())
 }

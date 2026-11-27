@@ -16,17 +16,20 @@ import (
 // names the columns. A one-column key holds one value.
 type Key = core.Key
 
-// ownerKeys are keys of r's rows as read back (Key), checked to hold a
-// value per key column before statements over the rows' relations bind
-// them.
+// ownerKeys are keys of r's rows as read back (Key), normalized
+// (keyColumns.normalize) before statements over the rows' relations bind
+// them, so they bind as the rows' targets did.
 func (r *Resource[T]) ownerKeys(keys []Key) ([]core.Key, error) {
+	kc := r.keyColumns()
+	out := make([]core.Key, len(keys))
 	for i, k := range keys {
-		if len(k) != len(r.pk) {
-			return nil, fmt.Errorf("parse: %s: owner key %d: %w: %d values for the %d key columns (%s)",
-				r.table, i, ErrKeyInvalid, len(k), len(r.pk), strings.Join(r.pk, ", "))
+		normalized, err := kc.normalize(k)
+		if err != nil {
+			return nil, fmt.Errorf("parse: %s: owner key %d: %w", r.table, i, err)
 		}
+		out[i] = normalized
 	}
-	return keys, nil
+	return out, nil
 }
 
 // keyColumns are a resource's key columns and their types: what a key is
@@ -55,31 +58,37 @@ func (r *Resource[T]) columnTypeInfo(column string) core.TypeInfo {
 	return info
 }
 
-// normalize is key with each value in its column's canonical form, as a
-// policy on the column normalizes it; ErrKeyInvalid when key holds another
-// number of values than there are columns, or a column cannot hold its
-// value.
+// normalize is key with each value in its column's canonical form
+// (core.NormalizeKey), as a policy on the column normalizes it and as patch
+// binds a relation's keys; ErrKeyInvalid when key holds another number of
+// values than there are columns, or a column cannot hold its value.
 func (kc keyColumns) normalize(key Key) (Key, error) {
-	if len(key) != len(kc.names) {
-		return nil, fmt.Errorf("%w: %d values for the %d key columns (%s)", ErrKeyInvalid, len(key), len(kc.names), strings.Join(kc.names, ", "))
-	}
-	out := make(Key, len(key))
-	for i := range kc.types {
-		v, err := kc.normalizeColumn(i, key[i])
-		switch {
-		case err != nil && len(kc.names) == 1:
-			return nil, fmt.Errorf("%w: %w", ErrKeyInvalid, err)
-		case err != nil:
-			return nil, fmt.Errorf("%w: key column %s: %w", ErrKeyInvalid, kc.names[i], err)
-		}
-		out[i] = v
+	out, err := core.NormalizeKey(kc.types, key)
+	if err != nil {
+		return nil, kc.keyError(ErrKeyInvalid, err)
 	}
 	return out, nil
 }
 
-// normalizeColumn is v in key column i's canonical form.
-func (kc keyColumns) normalizeColumn(i int, v any) (any, error) {
-	return core.NormalizeScalar(kc.types[i].Type, kc.types[i].NumberKind, v)
+// keyError is a core.NormalizeKey refusal as sentinel: a key of another
+// length naming every column, a value a key of several columns refused
+// naming its column (columnError), a one-column key's value as it is.
+func (kc keyColumns) keyError(sentinel, err error) error {
+	valueErr, ok := errors.AsType[*core.KeyValueError](err)
+	if ok && len(kc.names) == 1 {
+		return fmt.Errorf("%w: %w", sentinel, valueErr.Err)
+	}
+	return kc.columnError(sentinel, err)
+}
+
+// columnError is a core.NormalizeKey refusal as sentinel, naming the key
+// column whose value it refused.
+func (kc keyColumns) columnError(sentinel, err error) error {
+	valueErr, ok := errors.AsType[*core.KeyValueError](err)
+	if !ok {
+		return fmt.Errorf("%w: %w (%s)", sentinel, err, strings.Join(kc.names, ", "))
+	}
+	return fmt.Errorf("%w: key column %s: %w", sentinel, kc.names[valueErr.Index], valueErr.Err)
 }
 
 // requested is a key a caller names a row by — a target's, a batch row's —
@@ -135,18 +144,21 @@ func (kc keyColumns) identity(key Key) (any, error) {
 	return text, nil
 }
 
-// compare orders two normalized keys column by column as a statement
-// ordered by filter.KeyOrder reads them (filter.CompareKeyValues): strings
-// by code point, numbers and decimals by value, timestamps by instant,
-// false before true.
-func (kc keyColumns) compare(a, b Key) int {
+// compare orders two keys column by column as a statement ordered by
+// filter.KeyOrder reads them, each column in its type's one order
+// (core.CompareCanonical): strings by code point, numbers and decimals by
+// value, timestamps by instant, false before true.
+func (kc keyColumns) compare(a, b Key) (int, error) {
 	for i, info := range kc.types {
-		c := filter.CompareKeyValues(filter.CursorKey{DataType: info.Type, NumberKind: info.NumberKind}, a[i], b[i])
+		c, err := core.CompareCanonical(info, a[i], b[i])
+		if err != nil {
+			return 0, fmt.Errorf("%w: key column %s: %w", ErrKeyInvalid, kc.names[i], err)
+		}
 		if c != 0 {
-			return c
+			return c, nil
 		}
 	}
-	return 0
+	return 0, nil
 }
 
 // order is the ORDER BY list that reads the key columns of table in

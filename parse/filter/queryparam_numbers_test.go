@@ -24,7 +24,7 @@ type numberParams struct {
 func TestQueryParamParser_NumbersTakeTheJSONGrammar(t *testing.T) {
 	schema, err := filter.GenerateFilterSchema[numberParams](core.NewSchemaGenerator())
 	require.NoError(t, err)
-	qp := filter.NewQueryParamParser(schema)
+	qp := queryParams(t, schema)
 
 	for _, tt := range []struct{ name, value string }{
 		{"n", "abc"},

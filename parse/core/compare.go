@@ -1,0 +1,279 @@
+package core
+
+import (
+	"cmp"
+	"fmt"
+	"math"
+	"reflect"
+	"strings"
+	"time"
+	"uuid"
+
+	"github.com/ashtonian/pkg/gowalker"
+)
+
+// CompareCanonical orders a and b, two values of a column of type t, as
+// the SQL dialects order the column, returning -1, 0 or +1. Each is read
+// as the database holds it (StoredValue). NULL — nil, a nil pointer, a
+// Valuer whose value is nil — orders after every value and equals NULL, as
+// a keyset orders NULL greatest. Otherwise:
+//
+//   - int, float, decimal: by value, exactly, however each is held (an
+//     integer of any kind, a float, a json.Number, a decimal's text or
+//     type), the infinities before and after every finite value; a float
+//     column's NaN after +Infinity and equal to every NaN, as PostgreSQL
+//     orders float8 (SQLite stores NaN as NULL), and a decimal column's
+//     NaN and infinities, the texts PostgreSQL's numeric writes them as
+//     (NonFinite), alike, as it orders numeric; a float32 column's
+//     finite values at float32 precision, as its column holds them, so
+//     0.1 and float32(0.1) are equal there;
+//   - string: by code point;
+//   - uuid, timestamp, date, time, interval, inet, cidr, macaddr: as
+//     their canonical texts (NormalizeScalar) order, a UUID by its bytes
+//     and a timestamp by its instant, which order alike (the text is
+//     lower-case hexadecimal, and TimestampLayout fixed width), a date by
+//     its day and a time of day by its time; an interval or network value,
+//     which no sort orders, by its text, as a key of one locks
+//     (filter.KeyOrder);
+//   - bool: false before true;
+//   - object, or a key that declares no type (""): as the scalar both
+//     values reduce to, numbers by value, text by code point, false before
+//     true.
+//
+// A value t cannot hold, a float's NaN outside a float column, values of
+// an object or untyped key that reduce to scalars of different kinds, and
+// a type with no order (json, array, geo, any) are errors: no comparison falls
+// back to another reading. Evaluate, keysets, keys and patch policies
+// order and equate values through it, so a filter, a page boundary, a
+// lock order and a policy's allowed values agree.
+func CompareCanonical(t TypeInfo, a, b any) (int, error) {
+	x, xnull, err := StoredValue(a)
+	if err != nil {
+		return 0, err
+	}
+	y, ynull, err := StoredValue(b)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case xnull && ynull:
+		return 0, nil
+	case xnull:
+		return 1, nil
+	case ynull:
+		return -1, nil
+	}
+	switch t.Type {
+	case FieldTypeInt:
+		return compareNumbers(t.Type, x, y)
+	case FieldTypeFloat:
+		return compareFloatValues(t.NumberKind, x, y)
+	case FieldTypeDecimal:
+		return compareDecimalValues(x, y)
+	case FieldTypeUUID:
+		return compareRead(x, y, uuidOf, uuid.UUID.Compare)
+	case FieldTypeTimestamp:
+		return compareRead(x, y, timestampOf, time.Time.Compare)
+	case FieldTypeString, FieldTypeDate, FieldTypeTime,
+		FieldTypeInterval, FieldTypeInet, FieldTypeCIDR, FieldTypeMACAddr:
+		textOf := func(v any) (string, error) { return canonicalText(t.Type, v) }
+		return compareRead(x, y, textOf, strings.Compare)
+	case FieldTypeBool:
+		xb, xok := boolean(x)
+		yb, yok := boolean(y)
+		if !xok || !yok {
+			return 0, incomparable(t.Type, x, y)
+		}
+		return compareBools(xb, yb), nil
+	case FieldTypeObject, "":
+		return compareScalars(t.Type, x, y)
+	}
+	return 0, fmt.Errorf("a %s value has no order", t.Type)
+}
+
+// compareNumbers orders two numbers of a column of type t by value.
+func compareNumbers(t FieldType, x, y any) (int, error) {
+	c, ok := CompareNumbers(x, y)
+	if !ok {
+		return 0, incomparable(t, x, y)
+	}
+	return c, nil
+}
+
+// compareFloatValues orders two values of a float column of number kind
+// kind by value, NaN after every number and equal to NaN. A stored value
+// may be NaN, though no request value is. A float32 column holds a finite
+// value at float32 precision, so each is read at it first: 0.1 and
+// float32(0.1) are one value there.
+func compareFloatValues(kind reflect.Kind, x, y any) (int, error) {
+	if kind == reflect.Float32 {
+		var err error
+		x, err = float32Precision(x)
+		if err != nil {
+			return 0, err
+		}
+		y, err = float32Precision(y)
+		if err != nil {
+			return 0, err
+		}
+	}
+	xnan, ynan := isNaN(x), isNaN(y)
+	if !xnan && !ynan {
+		return compareNumbers(FieldTypeFloat, x, y)
+	}
+	if xnan && ynan {
+		return 0, nil
+	}
+	number := x
+	if xnan {
+		number = y
+	}
+	_, ok := numberOperand(number)
+	if !ok {
+		return 0, incomparable(FieldTypeFloat, x, y)
+	}
+	if xnan {
+		return 1, nil
+	}
+	return -1, nil
+}
+
+// compareDecimalValues orders two values of a decimal column by value:
+// -Infinity before every finite value, Infinity after, then NaN, equal to
+// NaN, as PostgreSQL orders numeric. Only a stored value is non-finite
+// (NonFinite); a request value is finite.
+func compareDecimalValues(x, y any) (int, error) {
+	xrank, yrank := nonFiniteRank(FieldTypeDecimal, x), nonFiniteRank(FieldTypeDecimal, y)
+	if xrank == 0 && yrank == 0 {
+		c, ok := CompareDecimals(x, y)
+		if !ok {
+			return 0, incomparable(FieldTypeDecimal, x, y)
+		}
+		return c, nil
+	}
+	finite := x
+	if xrank != 0 {
+		finite = y
+	}
+	if xrank == 0 || yrank == 0 {
+		_, err := DecimalText(finite)
+		if err != nil {
+			return 0, incomparable(FieldTypeDecimal, x, y)
+		}
+	}
+	return cmp.Compare(xrank, yrank), nil
+}
+
+// float32Precision is v as a float32 column holds it: a finite number
+// rounded to the nearest float32 (NormalizeFloat). NaN, the infinities and
+// a value that is no number are kept, for compareFloatValues to order or
+// refuse.
+func float32Precision(v any) (any, error) {
+	if !IsNumber(v) || isNaN(v) || isInf(v) {
+		return v, nil
+	}
+	return NormalizeFloat(v, reflect.Float32)
+}
+
+func isInf(v any) bool {
+	rv := reflect.ValueOf(v)
+	kind := rv.Kind()
+	return (kind == reflect.Float32 || kind == reflect.Float64) && math.IsInf(rv.Float(), 0)
+}
+
+func isNaN(v any) bool {
+	rv := reflect.ValueOf(v)
+	kind := rv.Kind()
+	return (kind == reflect.Float32 || kind == reflect.Float64) && math.IsNaN(rv.Float())
+}
+
+// compareRead orders x and y, two stored values of a type whose canonical
+// value is text, by what read reads each as, after its named string
+// type's string (plainString), as NormalizeScalar reads them: its UUID,
+// instant or canonical text, without writing the text out where its bytes
+// or instant order alike.
+func compareRead[T any](x, y any, read func(any) (T, error), compare func(T, T) int) (int, error) {
+	xv, err := read(plainString(x))
+	if err != nil {
+		return 0, err
+	}
+	yv, err := read(plainString(y))
+	if err != nil {
+		return 0, err
+	}
+	return compare(xv, yv), nil
+}
+
+// compareScalars orders two values of a column whose type names no scalar
+// by the scalars they are: both numbers, both text or both booleans.
+func compareScalars(t FieldType, x, y any) (int, error) {
+	if IsNumber(x) && IsNumber(y) {
+		return compareNumbers(t, x, y)
+	}
+	xs, xok := text(x)
+	ys, yok := text(y)
+	if xok && yok {
+		return strings.Compare(xs, ys), nil
+	}
+	xb, xok := boolean(x)
+	yb, yok := boolean(y)
+	if xok && yok {
+		return compareBools(xb, yb), nil
+	}
+	return 0, incomparable(t, x, y)
+}
+
+func compareBools(a, b bool) int {
+	switch {
+	case a == b:
+		return 0
+	case !a:
+		return -1
+	}
+	return 1
+}
+
+func incomparable(t FieldType, x, y any) error {
+	if t == "" {
+		return fmt.Errorf("%s and %s are incomparable", gowalker.TypeText(reflect.TypeOf(x)), gowalker.TypeText(reflect.TypeOf(y)))
+	}
+	return fmt.Errorf("%s values %s and %s are incomparable", t, gowalker.TypeText(reflect.TypeOf(x)), gowalker.TypeText(reflect.TypeOf(y)))
+}
+
+// CanonicalText is the canonical text of v, a value of a column of type t,
+// read as one value of a key (NormalizeKey): a text type's canonical value
+// (a UUID lower-case and hyphenated, a timestamp at TimestampLayout); a
+// number's canonical decimal text, a float32 column's at float32
+// precision, so -0 is 0; true or false. It is the text statements read
+// the column as (a key's text, a terms facet's key), so it is equal for
+// two values a database holds exactly when it holds them equal; keys,
+// facets and typed lookups name a value by it. A value written to
+// PostgreSQL can be held at less precision than its text: a timestamp
+// column rounds to the microsecond (filter's Dialect.StoredKeyValue), so
+// two texts a fraction of a microsecond apart are one value there. NULL,
+// NaN, the infinities and a type of no scalar (IsKeyType) have none.
+func CanonicalText(t TypeInfo, v any) (string, error) {
+	n, err := normalizeKeyValue(t, v)
+	if err != nil {
+		return "", err
+	}
+	return normalizedText(t, n)
+}
+
+// CompareCanonicalTexts orders a and b, two canonical texts (CanonicalText)
+// of values of type t, as CompareCanonical orders the values: a number's
+// text, which is a decimal's, by value, PostgreSQL's NaN and infinities
+// among them (NonFinite), and any other type's by code point, which is its
+// values' order, since each type's canonical text is chosen to order as
+// they do (a UUID's lower-case hexadecimal, a timestamp's fixed width).
+// Text that names no value of a number type, and a type of no scalar, are
+// errors. A terms facet orders its keys by it.
+func CompareCanonicalTexts(t TypeInfo, a, b string) (int, error) {
+	switch {
+	case t.Type == FieldTypeInt || t.Type == FieldTypeFloat || t.Type == FieldTypeDecimal:
+		return CompareCanonical(TypeInfo{Type: FieldTypeDecimal}, a, b)
+	case IsKeyType(t.Type):
+		return strings.Compare(a, b), nil
+	}
+	return 0, fmt.Errorf("a %s value has no canonical text", t.Type)
+}

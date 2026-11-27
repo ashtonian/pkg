@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"database/sql"
 	"net/url"
 	"testing"
 
@@ -12,20 +11,12 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
 type intTenantDevice struct {
 	ID       int    `json:"id"   db:"id"   parse:"filter,sort"`
 	TenantID int    `json:"-"    db:"tenant_id"`
 	Name     string `json:"name" db:"name" parse:"filter,sort,patch"`
-}
-
-type intTenantCommand struct {
-	ID       int    `json:"id"        db:"id"        parse:"filter,sort"`
-	TenantID int    `json:"-"         db:"tenant_id"`
-	DeviceID int    `json:"device_id" db:"device_id" parse:"filter"`
-	Status   string `json:"status"    db:"status"    parse:"filter"`
 }
 
 type intTenantTag struct {
@@ -52,7 +43,7 @@ var intTenantFixture = []string{
 func intTenantResources(t *testing.T) *parse.Resource[intTenantDevice] {
 	t.Helper()
 	devices := parse.MustResource[intTenantDevice]("devices", parse.TenantColumn("tenant_id"))
-	commands := parse.MustResource[intTenantCommand]("commands", parse.TenantColumn("tenant_id"))
+	commands := parse.MustResource[tenantKeyCommand]("commands", parse.TenantColumn("tenant_id"))
 	tags := parse.MustResource[intTenantTag]("tags", parse.TenantColumn("tenant_id"))
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed()))
 	devices.MustRelate("tags", parse.ManyToMany(tags,
@@ -61,19 +52,14 @@ func intTenantResources(t *testing.T) *parse.Resource[intTenantDevice] {
 	return devices
 }
 
-func TestIntegerTenantKeys_SQLite(t *testing.T) {
-	runIntegerTenantKeys(t, dbtest.SQLite(t), filter.SQLiteDialect{})
+func TestIntegerTenantKeys(t *testing.T) {
+	runSQLBackends(t, runIntegerTenantKeys)
 }
 
-func TestIntegerTenantKeys_Postgres(t *testing.T) {
-	runIntegerTenantKeys(t, dbtest.Postgres(t), filter.PostgresDialect{})
-}
-
-func runIntegerTenantKeys(t *testing.T, db *sql.DB, d parse.Dialect) {
-	for _, stmt := range intTenantFixture {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
+func runIntegerTenantKeys(t *testing.T, b sqlBackend) {
+	db := b.open(t)
+	d := b.dialect
+	execStatements(t, db, intTenantFixture...)
 	devices := intTenantResources(t)
 	list := func(tenant string, q url.Values) *filter.Page[intTenantDevice] {
 		t.Helper()
@@ -84,11 +70,7 @@ func runIntegerTenantKeys(t *testing.T, db *sql.DB, d parse.Dialect) {
 		return listPage(t, db, devices, d, plan)
 	}
 	ids := func(page *filter.Page[intTenantDevice]) []int {
-		var out []int
-		for _, item := range page.Items {
-			out = append(out, item.ID)
-		}
-		return out
+		return itemIDs(page.Items, func(dev intTenantDevice) int { return dev.ID })
 	}
 
 	t.Run("lists and counts the tenant's rows", func(t *testing.T) {
@@ -129,13 +111,9 @@ func runIntegerTenantKeys(t *testing.T, db *sql.DB, d parse.Dialect) {
 		require.NoError(t, err)
 		require.Len(t, res.Unchanged, 1)
 		assert.Equal(t, int64(1), res.RelationRows, "only tenant 1's tag 20 is paired")
-		pairs := normalizeInts(t, queryRows(t, db, "SELECT device_id, tag_id, tenant_id FROM device_tags WHERE device_id = 2 ORDER BY tag_id", nil))
+		pairs := normalizeInts(t, queryRows[[]any](t, db, "SELECT device_id, tag_id, tenant_id FROM device_tags WHERE device_id = 2 ORDER BY tag_id"))
 		assert.Equal(t, [][]any{{int64(2), int64(20), int64(1)}}, pairs, "tenant 2's tag is not paired")
 	})
-}
-
-func TestTenantKeyGraph_Postgres(t *testing.T) {
-	runTenantKeyGraph(t, func(t *testing.T) *sql.DB { return dbtest.Postgres(t) }, filter.PostgresDialect{}, "UUID")
 }
 
 func normalizeInts(t *testing.T, rows [][]any) [][]any {

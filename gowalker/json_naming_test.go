@@ -417,3 +417,265 @@ func TestResolveByDepth_ExplicitBeatsDerived(t *testing.T) {
 		t.Errorf("without ResolveByDepth the collision compiled: %v", err)
 	}
 }
+
+// LeafCodedA and LeafCodedB each write themselves. A struct embedding both
+// inherits neither MarshalJSON, the two colliding, so encoding/json writes
+// it by its fields and promotes theirs.
+type LeafCodedA struct{ X int }
+
+func (LeafCodedA) MarshalJSON() ([]byte, error) { return []byte(`"a"`), nil }
+
+type LeafCodedB struct {
+	Y int `json:"y"`
+}
+
+func (LeafCodedB) MarshalJSON() ([]byte, error) { return []byte(`"b"`), nil }
+
+type jsonLeafEmbeds struct {
+	LeafCodedA
+	LeafCodedB
+	Z int `json:"z"`
+}
+
+type jsonLeafPointers struct {
+	*LeafCodedA
+	*LeafCodedB
+	Z int `json:"z"`
+}
+
+// jsonMoney has no methods; the engine's WithAtomicType makes it a leaf.
+type jsonMoney struct {
+	Amount   int    `json:"amount"`
+	Currency string `json:"currency"`
+}
+
+type jsonPriced struct {
+	jsonMoney
+	N int `json:"n"`
+}
+
+// jsonPriceTagged's tag names the unexported embedded leaf, which
+// encoding/json writes as one member.
+type jsonPriceTagged struct {
+	jsonMoney `json:"price"`
+	N         int `json:"n"`
+}
+
+// leafStampA and leafStampB write themselves; textStampA and textStampB
+// append their text. A struct embedding both of a pair under tag names
+// inherits neither method, the two colliding, and encoding/json, which
+// cannot call a method through an unexported field, drops both members.
+type leafStampA struct{ At int }
+
+func (leafStampA) MarshalJSON() ([]byte, error) { return []byte(`"a"`), nil }
+
+type leafStampB struct{ At int }
+
+func (leafStampB) MarshalJSON() ([]byte, error) { return []byte(`"b"`), nil }
+
+type textStampA struct{ At int }
+
+func (textStampA) AppendText(b []byte) ([]byte, error) { return append(b, 'a'), nil }
+
+type textStampB struct{ At int }
+
+func (textStampB) AppendText(b []byte) ([]byte, error) { return append(b, 'b'), nil }
+
+type jsonStampedPrivately struct {
+	leafStampA `json:"a"`
+	leafStampB `json:"b"`
+	N          int `json:"n"`
+}
+
+type jsonTextStampedPrivately struct {
+	*textStampA `json:"a"`
+	textStampB  `json:"b"`
+	N           int `json:"n"`
+}
+
+// decodeStamp decodes itself through its pointer, which a struct embedding
+// it by value does not lend its own value: encoding/json writes that struct
+// by its fields and drops the member.
+type decodeStamp struct{ At int }
+
+func (*decodeStamp) UnmarshalJSON([]byte) error { return nil }
+
+type jsonDecodedPrivately struct {
+	decodeStamp `json:"d"`
+	N           int `json:"n"`
+}
+
+// zeroStampA and zeroStampB report their own zero value. encoding/json drops
+// the member it would call IsZero on for omitzero, and keeps the other.
+type zeroStampA struct{ At int }
+
+func (zeroStampA) IsZero() bool { return true }
+
+type zeroStampB struct{ At int }
+
+func (zeroStampB) IsZero() bool { return true }
+
+type jsonZeroedPrivately struct {
+	zeroStampA `json:"z,omitzero"`
+	zeroStampB `json:"kept"`
+	N          int `json:"n"`
+}
+
+// misnamedStamp's MarshalJSONTo lacks encoding/json/v2's signature, so
+// encoding/json does not call it and writes the member a tag names.
+type misnamedStamp struct{ At int }
+
+func (misnamedStamp) MarshalJSONTo() error { return nil }
+
+type jsonMisnamedPrivately struct {
+	misnamedStamp `json:"m"`
+	N             int `json:"n"`
+}
+
+// leafJSONNaming is encoding/json's naming beside leaf rules: types that
+// write themselves, and jsonMoney, are leaves.
+func leafJSONNaming(t testing.TB, options ...gowalker.TagOption) *gowalker.Engine {
+	t.Helper()
+	return engine(t,
+		gowalker.WithJSONFields("json", options...),
+		gowalker.WithAtomicImplementers(reflect.TypeFor[json.Marshaler]()),
+		gowalker.WithAtomicType(func(t reflect.Type) bool { return t == reflect.TypeFor[jsonMoney]() }),
+	)
+}
+
+// Leaf rules decide where paths and walks stop, not which members
+// encoding/json writes: an embedded leaf struct without a tag name
+// contributes its fields, one a tag names is a member unless it is
+// unexported and codes itself, and each promoted field reads the value
+// written under its name. Engines with and without leaf rules agree.
+func TestJSONNaming_LeafRulesKeepTheMembersJSONWrites(t *testing.T) {
+	for _, nested := range []bool{false, true} {
+		var options []gowalker.TagOption
+		if nested {
+			options = append(options, gowalker.NestedFields())
+		}
+		values := []any{
+			jsonLeafEmbeds{LeafCodedA{1}, LeafCodedB{2}, 3},
+			jsonLeafPointers{&LeafCodedA{1}, &LeafCodedB{2}, 3},
+			jsonPriced{jsonMoney{5, "EUR"}, 6},
+			jsonPriceTagged{jsonMoney{5, "EUR"}, 6},
+			jsonStampedPrivately{N: 7},
+			jsonTextStampedPrivately{textStampA: &textStampA{}, N: 7},
+			jsonDecodedPrivately{N: 7},
+			jsonZeroedPrivately{N: 7},
+			jsonMisnamedPrivately{N: 7},
+		}
+		checkJSONMembers(t, leafJSONNaming(t, options...), fmt.Sprintf("leaves nested=%t", nested), values...)
+		checkJSONMembers(t, engine(t, gowalker.WithJSONFields("json", options...)), fmt.Sprintf("nested=%t", nested), values...)
+	}
+}
+
+// checkJSONMembers compares e's view of each value's type with the members
+// json.Marshal writes for the value, and each exported field's read with
+// the member's value.
+func checkJSONMembers(t *testing.T, e *gowalker.Engine, label string, values ...any) {
+	t.Helper()
+	for _, value := range values {
+		t.Run(fmt.Sprintf("%T %s", value, label), func(t *testing.T) {
+			members := map[string]json.RawMessage{}
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = json.Unmarshal(raw, &members)
+			if err != nil {
+				t.Fatal(err)
+			}
+			schema, err := e.CompileType(reflect.TypeOf(value))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var names []string
+			for _, f := range schema.Root().Fields() {
+				names = append(names, f.Name())
+				if !f.GoField().IsExported() {
+					continue // reflection reads no unexported value whole
+				}
+				accessor, err := schema.AccessName(f.Name())
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := accessor.Get(value)
+				if err != nil {
+					t.Fatalf("%s: %v", f.Name(), err)
+				}
+				encoded, err := json.Marshal(got.Interface())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(encoded) != string(members[f.Name()]) {
+					t.Errorf("%s reads %s; encoding/json writes %s", f.Name(), encoded, members[f.Name()])
+				}
+			}
+			slices.Sort(names)
+			want := slices.Sorted(maps.Keys(members))
+			if !slices.Equal(names, want) {
+				t.Errorf("fields %v; encoding/json writes %v", names, want)
+			}
+		})
+	}
+}
+
+// A write reaches a field promoted through an embedded pointer to a leaf,
+// allocating the pointer, by name and by path; a value walk and a
+// declared-view type walk reach it too.
+func TestJSONNaming_LeafInlineParentsAreTraversed(t *testing.T) {
+	schema := schemaFor[jsonLeafPointers](t, leafJSONNaming(t, gowalker.NestedFields()))
+	byName, err := schema.AccessName("X")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath, err := schema.ResolveText("y")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v jsonLeafPointers
+	err = byName.Set(&v, 7, gowalker.WithPointerAllocation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = byPath.Set(&v, 8, gowalker.WithPointerAllocation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.LeafCodedA == nil || v.X != 7 || v.LeafCodedB == nil || v.Y != 8 {
+		t.Fatalf("writes left %+v", v)
+	}
+
+	var walked []string
+	err = schema.WalkValue(&v, func(visit gowalker.ValueVisit) (gowalker.Control, error) {
+		text, err := visit.Path.MarshalText()
+		walked = append(walked, string(text))
+		return gowalker.Continue, err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"X", "y", "z"} {
+		if !slices.Contains(walked, want) {
+			t.Errorf("the value walk visits %q, not %q", walked, want)
+		}
+	}
+
+	var declared []string
+	err = schema.WalkType(func(visit gowalker.TypeVisit) (gowalker.Control, error) {
+		n := len(visit.Route)
+		if n > 0 && visit.Route[n-1].Field != nil {
+			declared = append(declared, visit.Route[n-1].Field.GoSelector())
+		}
+		return gowalker.Continue, nil
+	}, gowalker.WithDeclaredView())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"LeafCodedA", "X", "LeafCodedB", "Y", "Z"} {
+		if !slices.Contains(declared, want) {
+			t.Errorf("the declared-view walk visits %q, not %q", declared, want)
+		}
+	}
+}

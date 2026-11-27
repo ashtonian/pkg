@@ -34,16 +34,14 @@ import (
 // cannot widen a list. Flat field filters do not apply: a body has filter.
 // A read that fails is a *BodyReadError, not a request error.
 func (r *Resource[T]) ParseListBody(body io.Reader) (*ListRequest, error) {
-	data, err := r.readBody(body, r.cfg.ListBodyLimit(), "list", core.ParseErrorKindFilter)
+	data, err := r.readBody(body, r.cfg.ListBodyLimit(), "list")
 	if err != nil {
 		return nil, err
 	}
 	var members map[string]json.RawMessage
 	if err := r.codec.Decode(data, &members); err != nil || members == nil {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindFilter, Code: filter.ECodeInvalidJSON.String(),
-			Message: "a list body is one JSON object, each member named once", Cause: err,
-		}
+		return nil, core.NewError(filter.ECodeInvalidJSON, "a list body is one JSON object, each member named once",
+			core.WithCause(err))
 	}
 	var in ListInput
 	// Sorted, so a body with several bad members reports the same one each

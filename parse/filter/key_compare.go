@@ -2,11 +2,10 @@ package filter
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -53,7 +52,7 @@ func (d SQLiteDialect) KeyOperand(expr string, t core.TypeInfo) string {
 }
 
 // keyValueText renders a key column, read as expr and typed t, as its
-// canonical text (core.KeyValueText): a string, UUID or integer column's
+// canonical text (core.CanonicalText): a string, UUID or integer column's
 // text, a network value's display form (ReadColumn), and otherwise the text
 // a terms facet keys the value by (termsKeyExpr).
 func keyValueText(d Dialect, expr string, t core.TypeInfo) string {
@@ -96,7 +95,7 @@ func correlation(d Dialect, leftAlias string, left []string, rightAlias string, 
 }
 
 // keySetOn is a key set's columns, each read as read renders it, and its keys
-// with each value normalized as its column's type.
+// with each value normalized as its column's type (core.NormalizeKey).
 type keySetOn struct {
 	table  string
 	fields []*FieldSchema
@@ -121,17 +120,15 @@ func newKeySet(table string, read func(column string) string, columns []string, 
 	}
 	normalized := make([]core.Key, len(keys))
 	for i, k := range keys {
-		if len(k) != len(columns) {
-			return keySetOn{}, fmt.Errorf("key set on %s: key %d has %d values for %d columns", table, i, len(k), len(columns))
-		}
-		normalized[i] = make(core.Key, len(k))
-		for j, f := range fields {
-			v, err := core.NormalizeScalar(f.DataType, f.NumberKind, k[j])
-			if err != nil {
-				return keySetOn{}, fmt.Errorf("key set on %s: key %d: column %s: %w", table, i, f.ExternalName, err)
+		n, err := core.NormalizeKey(types, k)
+		if err != nil {
+			valueErr, ok := errors.AsType[*core.KeyValueError](err)
+			if !ok {
+				return keySetOn{}, fmt.Errorf("key set on %s: key %d: %w", table, i, err)
 			}
-			normalized[i][j] = v
+			return keySetOn{}, fmt.Errorf("key set on %s: key %d: column %s: %w", table, i, columns[valueErr.Index], valueErr.Err)
 		}
+		normalized[i] = n
 	}
 	set := keySetOn{table: table, fields: fields, keys: normalized}
 	return set, nil
@@ -297,26 +294,17 @@ func keyInKeyword(member bool) string {
 func (SQLiteDialect) StoredKeyValue(_ core.TypeInfo, v any) (any, error) { return v, nil }
 
 // StoredKeyValue is a key column's canonical value (core.NormalizeScalar)
-// as PostgreSQL holds it: a timestamp to the microsecond, rounded as
-// PostgreSQL rounds the canonical text it reads, the fraction parsed as a
-// double and scaled with rint, ties to even. Two timestamps PostgreSQL
-// holds equal have one value. A time of day is canonical at microseconds
-// already (core.ParseLocalTime).
+// as PostgreSQL holds it: a timestamp to the microsecond
+// (core.MicrosecondTimestamp), so two timestamps PostgreSQL holds equal
+// have one value. A time of day is canonical at microseconds already
+// (core.ParseLocalTime).
 func (PostgresDialect) StoredKeyValue(t core.TypeInfo, v any) (any, error) {
 	if t.Type != core.FieldTypeTimestamp {
 		return v, nil
 	}
 	text, ok := v.(string)
-	at, err := time.Parse(time.RFC3339Nano, text)
-	if !ok || err != nil || core.FormatTimestamp(at) != text {
+	if !ok {
 		return nil, fmt.Errorf("timestamp key %v is not canonical text", v)
 	}
-	// The fraction with its point and nine digits, as PostgreSQL parses it.
-	const seconds = len("2006-01-02T15:04:05")
-	f, err := strconv.ParseFloat(text[seconds:len(text)-1], 64)
-	if err != nil {
-		return nil, fmt.Errorf("timestamp key %q: %w", text, err)
-	}
-	micros := time.Duration(math.RoundToEven(f*1e6)) * time.Microsecond
-	return core.FormatTimestamp(at.Truncate(time.Second).Add(micros)), nil
+	return core.MicrosecondTimestamp(text)
 }

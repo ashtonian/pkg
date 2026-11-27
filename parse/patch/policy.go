@@ -3,7 +3,6 @@ package patch
 import (
 	"errors"
 	"fmt"
-	"reflect"
 	"regexp"
 	"slices"
 
@@ -37,8 +36,14 @@ type PatchPolicyConstraints struct {
 }
 
 // ValueConstraint restricts the values written at a path. AllowedValues and
-// DeniedValues compare numbers by value; Pattern is a regular expression a
-// string must match; Min and Max bound a number.
+// DeniedValues compare as the path's scalar type orders it
+// (core.CompareCanonical) — numbers by value, a UUID in any spelling, a
+// timestamp at its instant — and as JSON at a document path or one no
+// schema types (core.JSONEqual, numbers by value). DeniedValues also
+// denies a timestamp PostgreSQL holds as a listed one, in the same
+// microsecond (core.MicrosecondTimestamp), since a TIMESTAMPTZ column
+// would hold the write as the denied value. Pattern is a regular
+// expression a string must match; Min and Max bound a number.
 type ValueConstraint struct {
 	AllowedValues []any
 	DeniedValues  []any
@@ -172,11 +177,8 @@ func ApplyPatchPolicyConstraints(patch *ParsedPatch, pc *PatchPolicyConstraints,
 		}
 		for _, v := range pc.validators {
 			if err := v(op, subject); err != nil {
-				return &core.ParseError{
-					Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-					Message: fmt.Sprintf("policy validator failed for path '%s' at index %d: %v", op.Path, i, err),
-					Path:    op.Path, Index: new(i), Cause: err,
-				}
+				return core.NewError(ECodePatchValueInvalid, fmt.Sprintf("policy validator failed for path '%s' at index %d: %v", op.Path, i, err),
+					core.WithPath(op.Path), core.WithIndex(i), core.WithCause(err))
 			}
 		}
 	}
@@ -242,10 +244,7 @@ func (j policyJudge) forbidden(op *PatchOperation, path string, whole bool, inde
 		default:
 			msg = fmt.Sprintf("path '%s' covers '%s', which policy forbids, at index %d", path, pattern, index)
 		}
-		return &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyForbidden.String(),
-			Message: msg, Path: path, Index: new(index),
-		}
+		return core.NewError(ECodePatchPolicyForbidden, msg, core.WithPath(path), core.WithIndex(index))
 	}
 	return nil
 }
@@ -260,20 +259,14 @@ func (j policyJudge) checkValues(w write, index int) error {
 		// constraint at or below the destination can judge it here: anything
 		// could be staged in an unconstrained field and moved over this one.
 		if j.selectConstraint(w.path) != nil || j.constrainedBelow(w.path) {
-			return &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
-				Message: fmt.Sprintf("path '%s' has value constraints; only add/replace are allowed (index %d)", w.path, index),
-				Path:    w.path, Index: new(index),
-			}
+			return core.NewError(ECodePatchPolicyValue, fmt.Sprintf("path '%s' has value constraints; only add/replace are allowed (index %d)", w.path, index),
+				core.WithPath(w.path), core.WithIndex(index))
 		}
 		return nil
 	case writeMerge:
 		if j.selectConstraint(w.path) != nil {
-			return &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
-				Message: fmt.Sprintf("path '%s' has value constraints, which a merge into it cannot be checked against; replace it whole (index %d)", w.path, index),
-				Path:    w.path, Index: new(index),
-			}
+			return core.NewError(ECodePatchPolicyValue, fmt.Sprintf("path '%s' has value constraints, which a merge into it cannot be checked against; replace it whole (index %d)", w.path, index),
+				core.WithPath(w.path), core.WithIndex(index))
 		}
 		for _, member := range w.members() {
 			if err := j.checkValues(member, index); err != nil {
@@ -350,7 +343,7 @@ func (j policyJudge) judge(path string, value any, schema *PathSchema, index int
 		items, _ := core.AnySlice(value)
 		return j.judgeElements(path, items, schema, index)
 	}
-	return vc.check(path, value, isDecimal(schema), index)
+	return vc.check(path, value, orderOf(schema), index)
 }
 
 // judgeElements holds items, elements written into the array at path, to the
@@ -360,8 +353,9 @@ func (j policyJudge) judgeElements(path string, items []any, schema *PathSchema,
 	if vc == nil {
 		return nil
 	}
+	order := orderOf(schema)
 	for _, item := range items {
-		err := vc.check(path, item, isDecimal(schema), index)
+		err := vc.check(path, item, order, index)
 		if err != nil {
 			return err
 		}
@@ -384,11 +378,8 @@ func (j policyJudge) checkElementWrite(op *PatchOperation, w write, index int) e
 			continue
 		}
 		if n < len(tokens)-1 || w.kind == writeCopy || w.kind == writeMerge {
-			refused := &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
-				Message: fmt.Sprintf("path '%s' is inside an element of '%s', whose value constraint judges each element whole; write the element with add or replace (index %d)", w.path, array, index),
-				Path:    w.path, Index: new(index),
-			}
+			refused := core.NewError(ECodePatchPolicyValue, fmt.Sprintf("path '%s' is inside an element of '%s', whose value constraint judges each element whole; write the element with add or replace (index %d)", w.path, array, index),
+				core.WithPath(w.path), core.WithIndex(index))
 			return refused
 		}
 		if w.kind == writeClear && (op.Op == PatchOpRemove || op.Op == PatchOpMove) {
@@ -441,24 +432,116 @@ func (j policyJudge) constrainedBelow(path string) bool {
 	return false
 }
 
-func isDecimal(schema *PathSchema) bool {
-	return schema != nil && schema.DataType == core.FieldTypeDecimal
+// valueOrder is how a value constraint compares the values written at a
+// path: as the scalar type the path holds — its schema's, an array path's
+// element type — in that type's one order (core.CompareCanonical), so a
+// UUID in any spelling and a timestamp in any zone are one value, as the
+// database holds them; and as JSON (core.JSONEqual, numbers by value) at a
+// document path or one no schema types.
+type valueOrder struct {
+	info  core.TypeInfo
+	typed bool
+}
+
+// orderOf is the order a constraint compares values written at a path of
+// schema by.
+func orderOf(schema *PathSchema) valueOrder {
+	if schema == nil {
+		return valueOrder{}
+	}
+	info := core.TypeInfo{Type: schema.DataType, NumberKind: core.NumericKind(schema.GoType)}
+	if schema.DataType == core.FieldTypeArray {
+		if schema.GoType == nil {
+			return valueOrder{}
+		}
+		array := core.TypeOf(schema.GoType)
+		info = core.TypeInfo{Type: array.Elem, NumberKind: array.NumberKind}
+	}
+	if !core.IsKeyType(info.Type) {
+		return valueOrder{}
+	}
+	order := valueOrder{info: info, typed: true}
+	return order
+}
+
+// equal reports whether a written value equals a constraint's listed
+// value. A listed value the path's type cannot hold equals no value
+// written there.
+func (o valueOrder) equal(value, listed any) bool {
+	if !o.typed {
+		return core.JSONEqual(value, listed)
+	}
+	c, err := core.CompareCanonical(o.info, value, listed)
+	return err == nil && c == 0
+}
+
+// denies reports whether a written value is a denied listed value: equal
+// to it, or, at a timestamp path, held as it is at the microsecond, as a
+// PostgreSQL column holds both.
+func (o valueOrder) denies(value, listed any) bool {
+	if o.equal(value, listed) {
+		return true
+	}
+	if !o.typed || o.info.Type != core.FieldTypeTimestamp {
+		return false
+	}
+	x, err := microsecond(o.info, value)
+	if err != nil {
+		return false
+	}
+	y, err := microsecond(o.info, listed)
+	return err == nil && x == y
+}
+
+// microsecond is a timestamp's canonical text at the microsecond, as
+// PostgreSQL holds it.
+func microsecond(info core.TypeInfo, v any) (string, error) {
+	text, err := core.CanonicalText(info, v)
+	if err != nil {
+		return "", err
+	}
+	return core.MicrosecondTimestamp(text)
+}
+
+// decimal reports a decimal path, whose values are canonical text.
+func (o valueOrder) decimal() bool {
+	return o.typed && o.info.Type == core.FieldTypeDecimal
+}
+
+// compareBound orders a written value against a bound exactly: as the
+// path's number type, a decimal path's text by value; as a number at a
+// path of no number type. ok is false when value is no number.
+func (o valueOrder) compareBound(value any, bound float64) (int, bool) {
+	if o.numeric() {
+		c, err := core.CompareCanonical(o.info, value, bound)
+		return c, err == nil
+	}
+	return core.CompareNumbers(value, bound)
+}
+
+// numeric reports a path of a number type.
+func (o valueOrder) numeric() bool {
+	if !o.typed {
+		return false
+	}
+	switch o.info.Type {
+	case core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeDecimal:
+		return true
+	}
+	return false
 }
 
 // check judges one value written at path. Null is judged by AllowedValues and
 // DeniedValues; a pattern judges strings and the bounds numbers, and any
 // other value at a path they constrain is refused rather than passed.
-func (vc *valueRule) check(path string, value any, decimal bool, index int) error {
+func (vc *valueRule) check(path string, value any, order valueOrder, index int) error {
 	refuse := func(format string, args ...any) error {
-		return &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
-			Message: fmt.Sprintf(format, args...), Path: path, Index: new(index),
-		}
+		return core.NewError(ECodePatchPolicyValue, fmt.Sprintf(format, args...), core.WithPath(path), core.WithIndex(index))
 	}
-	if len(vc.AllowedValues) > 0 && !valueInList(value, vc.AllowedValues, decimal) {
+	if len(vc.AllowedValues) > 0 && !valueInList(value, vc.AllowedValues, order.equal) {
 		return refuse("value for path '%s' is not in allowed values at index %d", path, index)
 	}
-	if len(vc.DeniedValues) > 0 && valueInList(value, vc.DeniedValues, decimal) {
+	if len(vc.DeniedValues) > 0 && valueInList(value, vc.DeniedValues, order.denies) {
 		return refuse("value for path '%s' is denied by policy at index %d", path, index)
 	}
 	if value == nil {
@@ -476,44 +559,33 @@ func (vc *valueRule) check(path string, value any, decimal bool, index int) erro
 	if vc.Min == nil && vc.Max == nil {
 		return nil
 	}
-	if !core.IsNumber(value) && !decimal {
+	if !core.IsNumber(value) && !order.decimal() {
 		return refuse("value for path '%s' is not a number, which its bounds require, at index %d", path, index)
 	}
 	if vc.Min != nil {
-		if c, ok := compareNumeric(value, *vc.Min, decimal); !ok || c < 0 {
+		c, ok := order.compareBound(value, *vc.Min)
+		if !ok || c < 0 {
 			return refuse("value for path '%s' is below minimum %v at index %d", path, *vc.Min, index)
 		}
 	}
 	if vc.Max != nil {
-		if c, ok := compareNumeric(value, *vc.Max, decimal); !ok || c > 0 {
+		c, ok := order.compareBound(value, *vc.Max)
+		if !ok || c > 0 {
 			return refuse("value for path '%s' exceeds maximum %v at index %d", path, *vc.Max, index)
 		}
 	}
 	return nil
 }
 
-// compareNumeric compares a patch value with a policy's number exactly:
-// as decimals for a decimal path, whose values are canonical text.
-func compareNumeric(value, bound any, decimal bool) (int, bool) {
-	if decimal {
-		return core.CompareDecimals(value, bound)
-	}
-	return core.CompareNumbers(value, bound)
-}
-
-// valueInList reports whether value is in list. Numbers compare by exact
-// value, not Go type — a normalized int64 matches a policy's float64 or int
-// literal, and a decimal path's value matches a list number or decimal
-// string of equal value.
-func valueInList(value any, list []any, decimal bool) bool {
-	for _, v := range list {
-		if c, ok := compareNumeric(value, v, decimal); ok {
-			if c == 0 {
-				return true
-			}
-			continue
-		}
-		if reflect.DeepEqual(value, v) {
+// valueInList reports whether value matches a member of list, by the
+// path's order (valueOrder.equal, or valueOrder.denies for a deny list):
+// numbers by exact value, not Go type — a normalized int64 matches a
+// policy's float64 or int literal, and a decimal path's value a listed
+// number or decimal string of equal value — and a typed path's values as
+// its type, so a listed UUID or timestamp matches in any spelling.
+func valueInList(value any, list []any, matches func(value, listed any) bool) bool {
+	for _, listed := range list {
+		if matches(value, listed) {
 			return true
 		}
 	}

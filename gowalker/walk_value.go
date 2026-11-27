@@ -191,7 +191,7 @@ func (w *valueWalk) fieldValue(v reflect.Value, shape *Shape, field *Field) (ref
 	for _, index := range field.index {
 		var missing bool
 		var err error
-		v, shape, missing, err = a.follow(v, shape)
+		v, shape, missing, err = a.follow(v, shape, true)
 		if err != nil || missing {
 			return reflect.Value{}, missing, err
 		}

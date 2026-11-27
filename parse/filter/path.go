@@ -4,13 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"math"
-	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/decimals"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
@@ -44,9 +41,13 @@ type JSONPath struct {
 	// element makes the path read one array element: alias is a row of the
 	// dialect's element table (Dialect.elementRows) and Segments is empty.
 	// The builder makes such paths for `$some` / `$none` conditions and
-	// facets on scalar arrays; no schema declares one.
-	element bool
-	alias   string
+	// facets on scalar arrays; no schema declares one. columnElement marks
+	// an array column's element, which SQLite holds as JSON text too: it
+	// reads as the column's value (ColumnValue), not as a document member,
+	// so a number element has no member bound (decimals.Number).
+	element       bool
+	columnElement bool
+	alias         string
 }
 
 // document is the SQL that reads the path's document: its column, or the
@@ -121,12 +122,15 @@ var uuidShape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 // JSON text, json.RawMessage, a decoded document or any Go value that
 // encodes to one, decoded on every call.
 //
-// Strings come back as string, numbers as int64 when the literal is an
-// integer within int64 and float64 otherwise, booleans as bool, timestamps
-// as their canonical text and UUIDs lower-cased. A decimal member is a JSON
-// number, or a string of at most core.MaxDecimalDigits characters in plain
-// decimal notation, and comes back as its canonical text
-// (core.DecimalText).
+// Strings come back as string, booleans as bool, timestamps as their
+// canonical text and UUIDs lower-cased. An int or float member is a number
+// member: a JSON number of at most core.MaxDecimalDigits digits in plain
+// notation, which comes back as a json.Number of its canonical decimal text
+// (core.DecimalText), the exact value PostgreSQL compares the member as
+// (::numeric), and compares exactly, as a decimal (Evaluate); a JSON number
+// beyond the bound is absent on every backend. A decimal member is a number
+// member, or a string of at most core.MaxDecimalDigits characters in plain
+// decimal notation, and comes back as its canonical text.
 //
 // An array member (FieldTypeArray) comes back as []any of its elements of
 // type f.Elem, each read as a member of that type is; elements of another
@@ -206,26 +210,6 @@ func arrayMember(v any, elem core.FieldType) (any, bool, error) {
 	return out, len(out) > 0, nil
 }
 
-// pathNumber validates a numeric path key's cursor value: an int path may
-// hold a decimal member, so either kind resumes a page.
-func pathNumber(v any) (any, error) {
-	switch n := v.(type) {
-	case int64:
-		return n, nil
-	case uint64:
-		if n > math.MaxInt64 {
-			return nil, fmt.Errorf("%d is outside the portable integer range", n)
-		}
-		return int64(n), nil
-	case float64:
-		if math.IsNaN(n) || math.IsInf(n, 0) {
-			return nil, fmt.Errorf("%v is not a finite number", n)
-		}
-		return n, nil
-	}
-	return nil, fmt.Errorf("expected a number, got %s", gowalker.TypeText(reflect.TypeOf(v)))
-}
-
 func decodeDocument(doc any) (any, error) {
 	var data []byte
 	switch d := doc.(type) {
@@ -269,18 +253,11 @@ func pathMember(v any, t core.FieldType) (any, bool, error) {
 		s, ok := v.(string)
 		return s, ok, nil
 	case core.FieldTypeInt, core.FieldTypeFloat:
-		n, ok := jsonNumber(v)
+		text, ok := decimals.Number(v)
 		if !ok {
 			return nil, false, nil
 		}
-		if i, err := strconv.ParseInt(string(n), 10, 64); err == nil {
-			return i, true, nil
-		}
-		f, err := strconv.ParseFloat(string(n), 64)
-		if err != nil || math.IsInf(f, 0) {
-			return nil, false, nil
-		}
-		return f, true, nil
+		return json.Number(text), true, nil
 	case core.FieldTypeDecimal:
 		text, ok := decimals.Member(v)
 		if !ok {
@@ -310,21 +287,15 @@ func pathMember(v any, t core.FieldType) (any, bool, error) {
 	return nil, false, fmt.Errorf("path type %s is not supported", t)
 }
 
-// jsonNumber is a JSON number member as its literal: a json.Number as
-// decoded with UseNumber, or a Go number as encoding/json writes it, so a
-// document decoded either way reads alike.
-func jsonNumber(v any) (json.Number, bool) {
-	if n, ok := v.(json.Number); ok {
-		return n, true
+// memberType is the type a member read as a path of type t reads it
+// (pathMember) compares and keys in: a number member as a decimal, exactly,
+// as PostgreSQL compares it (::numeric); any other in t.
+func memberType(t core.FieldType) core.TypeInfo {
+	if t == core.FieldTypeInt || t == core.FieldTypeFloat {
+		t = core.FieldTypeDecimal
 	}
-	if !core.IsNumber(v) {
-		return "", false
-	}
-	b, err := json.Marshal(v)
-	if err != nil { // NaN or an infinity
-		return "", false
-	}
-	return json.Number(b), true
+	info := core.TypeInfo{Type: t}
+	return info
 }
 
 // canonicalTimestamp pads a UTC RFC 3339 member's fraction to nine digits —

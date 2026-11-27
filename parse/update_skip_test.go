@@ -3,11 +3,9 @@
 package parse_test
 
 import (
-	"database/sql"
-	"slices"
+	"database/sql/driver"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,231 +13,11 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
-	"github.com/ashtonian/pkg/parse/parsesql"
 )
-
-type note struct {
-	ID        string   `json:"id"         db:"id"         parse:"filter,sort"`
-	TenantID  string   `json:"tenant_id"  db:"tenant_id"`
-	Title     *string  `json:"title"      db:"title"      parse:"filter,patch"`
-	Rank      int64    `json:"rank"       db:"rank"       parse:"filter,patch"`
-	Version   int64    `json:"version"    db:"version"`
-	UpdatedAt string   `json:"updated_at" db:"updated_at"`
-	DeletedAt *string  `json:"deleted_at" db:"deleted_at"`
-	Tags      []string `json:"tags"       db:"-"          parse:"filter,patch" relation:"note_tags,note_id,tag_id,id,tenant_id" indexed:"true"`
-}
-
-func notes(t *testing.T) *parse.Resource[note] {
-	t.Helper()
-	r, err := parse.NewResource[note]("notes", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
-	require.NoError(t, err)
-	return r
-}
-
-// noteDB: t1 holds n1 and n2 (title "one" and "two", rank 1) and a deleted
-// n3; t2 holds m1. n1 is tagged red.
-func noteDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db := dbtest.SQLite(t)
-	for _, stmt := range []string{
-		`CREATE TABLE notes (id TEXT PRIMARY KEY, tenant_id TEXT, title TEXT, rank INTEGER, version INTEGER NOT NULL DEFAULT 1, updated_at TEXT, deleted_at TEXT)`,
-		`CREATE TABLE note_tags (note_id TEXT, tag_id TEXT, tenant_id TEXT, UNIQUE (note_id, tag_id))`,
-		`INSERT INTO notes (id, tenant_id, title, rank, updated_at, deleted_at) VALUES ('n1','t1','one',1,'old',NULL), ('n2','t1','two',1,'old',NULL),
-			('n3','t1','gone',1,'old','2026-01-01T00:00:00Z'), ('m1','t2','other',1,'old',NULL)`,
-		`INSERT INTO note_tags VALUES ('n1','red','t1')`,
-	} {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
-	return db
-}
-
-var skipAt = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
-
-// skipUpdate builds a SkipUnchanged plan that stamps and counts.
-func skipUpdate(t *testing.T, r *parse.Resource[note], d parse.Dialect, body string, target parse.Target) *parse.UpdatePlan {
-	t.Helper()
-	p, err := r.ParseMergePatch([]byte(body))
-	require.NoError(t, err)
-	plan, err := r.BuildUpdate(d, p, target, parse.Scope{Tenant: "t1"},
-		parse.Stamp("updated_at", skipAt), parse.Increment("version"), parse.SkipUnchanged())
-	require.NoError(t, err)
-	return plan
-}
-
-// noteIDs are the rows' keys, sorted; nil for none.
-func noteIDs(ns []note) []string {
-	var out []string
-	for _, n := range ns {
-		out = append(out, n.ID)
-	}
-	slices.Sort(out)
-	return out
-}
-
-// applied runs a guarded plan through the executor and splits the target
-// rows.
-func applied(t *testing.T, r *parse.Resource[note], db *sql.DB, plan *parse.UpdatePlan) (changed, unchanged []note) {
-	t.Helper()
-	require.NotNil(t, plan.Current)
-	res, err := parsesql.Update(t.Context(), db, r, plan)
-	require.NoError(t, err)
-	return res.Changed, res.Unchanged
-}
-
-func storedNote(t *testing.T, db *sql.DB, id string) note {
-	t.Helper()
-	got := resourceRows(t, db, notes(t), filter.SQLiteDialect{}, parse.Statement{SQL: `SELECT id, tenant_id, title, rank, version, updated_at, deleted_at FROM notes WHERE id = ?1`, Args: []any{id}})
-	require.Len(t, got, 1)
-	return got[0]
-}
-
-func TestSkipUnchanged_WritesOnlyRowsThePatchChanges(t *testing.T) {
-	r := notes(t)
-	d := filter.SQLiteDialect{}
-	stamp := core.FormatTimestamp(skipAt)
-
-	t.Run("a patch of what the row holds writes nothing", func(t *testing.T) {
-		db := noteDB(t)
-		changed, unchanged := applied(t, r, db, skipUpdate(t, r, d, `{"title":"one","rank":1}`, parse.ByID("n1")))
-		assert.Empty(t, changed, "no row is updated")
-		assert.Equal(t, []string{"n1"}, noteIDs(unchanged), "the read-back finds the row")
-		n1 := storedNote(t, db, "n1")
-		assert.Equal(t, int64(1), n1.Version, "the version stays")
-		assert.Equal(t, "old", n1.UpdatedAt, "the stamp stays")
-		assert.Equal(t, unchanged[0], n1)
-	})
-
-	t.Run("a patch changing one column of two writes, stamps and counts", func(t *testing.T) {
-		db := noteDB(t)
-		changed, unchanged := applied(t, r, db, skipUpdate(t, r, d, `{"title":"one","rank":5}`, parse.ByID("n1")))
-		require.Equal(t, []string{"n1"}, noteIDs(changed))
-		assert.Empty(t, unchanged)
-		assert.Equal(t, int64(5), changed[0].Rank)
-		assert.Equal(t, int64(2), changed[0].Version)
-		assert.Equal(t, stamp, changed[0].UpdatedAt)
-	})
-
-	t.Run("a value to NULL, then NULL to NULL", func(t *testing.T) {
-		db := noteDB(t)
-		changed, _ := applied(t, r, db, skipUpdate(t, r, d, `{"title":null}`, parse.ByID("n1")))
-		require.Equal(t, []string{"n1"}, noteIDs(changed))
-		assert.Nil(t, changed[0].Title)
-		changed, unchanged := applied(t, r, db, skipUpdate(t, r, d, `{"title":null}`, parse.ByID("n1")))
-		assert.Empty(t, changed)
-		assert.Equal(t, []string{"n1"}, noteIDs(unchanged))
-		changed, _ = applied(t, r, db, skipUpdate(t, r, d, `{"title":"back"}`, parse.ByID("n1")))
-		require.Equal(t, []string{"n1"}, noteIDs(changed), "NULL to a value")
-		assert.Equal(t, int64(3), changed[0].Version)
-	})
-
-	t.Run("a batch writes the rows that change, within the scope", func(t *testing.T) {
-		db := noteDB(t)
-		changed, unchanged := applied(t, r, db, skipUpdate(t, r, d, `{"title":"two"}`, parse.ByIDs("n1", "n2", "n3", "m1")))
-		assert.Equal(t, []string{"n1"}, noteIDs(changed))
-		assert.Equal(t, []string{"n2"}, noteIDs(unchanged), "n3 is deleted, m1 is t2's")
-		assert.Equal(t, int64(1), storedNote(t, db, "n2").Version)
-		assert.Equal(t, int64(1), storedNote(t, db, "m1").Version)
-	})
-
-	t.Run("a filter the patch moves rows out of", func(t *testing.T) {
-		db := noteDB(t)
-		changed, unchanged := applied(t, r, db, skipUpdate(t, r, d, `{"rank":7}`, byNoteFilter(t, r, `{"rank":1}`)))
-		assert.Equal(t, []string{"n1", "n2"}, noteIDs(changed))
-		assert.Empty(t, unchanged, "the rows the patch moved out of the filter are changed ones")
-		changed, unchanged = applied(t, r, db, skipUpdate(t, r, d, `{"rank":7}`, byNoteFilter(t, r, `{"rank":7}`)))
-		assert.Empty(t, changed)
-		assert.Equal(t, []string{"n1", "n2"}, noteIDs(unchanged))
-	})
-
-	t.Run("a target outside the scope is not found", func(t *testing.T) {
-		db := noteDB(t)
-		for _, id := range []string{"m1", "n3", "zz"} {
-			changed, unchanged := applied(t, r, db, skipUpdate(t, r, d, `{"title":"x"}`, parse.ByID(id)))
-			assert.Empty(t, changed, id)
-			assert.Empty(t, unchanged, id)
-		}
-	})
-}
-
-func byNoteFilter(t *testing.T, r *parse.Resource[note], f string) parse.Target {
-	t.Helper()
-	pf, err := r.ParseFilter(f)
-	require.NoError(t, err)
-	return parse.ByFilter(pf)
-}
-
-func noteTags(t *testing.T, db *sql.DB) []string {
-	t.Helper()
-	rows, err := db.Query(`SELECT note_id || ':' || tag_id FROM note_tags ORDER BY 1`)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, rows.Close()) }()
-	var out []string
-	for rows.Next() {
-		var s string
-		require.NoError(t, rows.Scan(&s))
-		out = append(out, s)
-	}
-	require.NoError(t, rows.Err())
-	return out
-}
-
-func TestSkipUnchanged_Relations(t *testing.T) {
-	r := notes(t)
-	d := filter.SQLiteDialect{}
-
-	t.Run("a relation-only patch selects every owner, and the junction says what changed", func(t *testing.T) {
-		db := noteDB(t)
-		for _, tc := range []struct {
-			body    string
-			changes int64
-			tags    []string
-		}{
-			{`{"tags":["red"]}`, 0, []string{"n1:red"}},
-			{`{"tags":["blue"]}`, 2, []string{"n1:blue"}},
-		} {
-			plan := skipUpdate(t, r, d, tc.body, parse.ByID("n1"))
-			assert.Nil(t, plan.Current, "Owner returns every target row")
-			assert.True(t, plan.Writes)
-			res, err := parsesql.Update(t.Context(), db, r, plan)
-			require.NoError(t, err)
-			assert.Empty(t, res.Changed, "a relation change moves no column")
-			require.Equal(t, []string{"n1"}, noteIDs(res.Unchanged))
-			assert.Equal(t, tc.changes, res.RelationRows, tc.body)
-			assert.Equal(t, tc.tags, noteTags(t, db))
-			assert.Equal(t, int64(1), storedNote(t, db, "n1").Version, "a relation change moves no column")
-		}
-	})
-
-	t.Run("unchanged columns still change relations, for the rows Current reads", func(t *testing.T) {
-		db := noteDB(t)
-		plan := skipUpdate(t, r, d, `{"title":"one","tags":["blue"]}`, parse.ByIDs("n1", "n2"))
-		require.NotNil(t, plan.Current)
-		res, err := parsesql.Update(t.Context(), db, r, plan)
-		require.NoError(t, err)
-		assert.Equal(t, []string{"n2"}, noteIDs(res.Changed), "n1 already reads one")
-		assert.Equal(t, []string{"n1"}, noteIDs(res.Unchanged))
-		assert.Equal(t, int64(3), res.RelationRows, "red out of n1, blue into both")
-		assert.Equal(t, []string{"n1:blue", "n2:blue"}, noteTags(t, db))
-		assert.Equal(t, int64(1), storedNote(t, db, "n1").Version)
-		assert.Equal(t, int64(2), storedNote(t, db, "n2").Version)
-	})
-
-	t.Run("an empty patch is a scoped read", func(t *testing.T) {
-		plan := skipUpdate(t, r, d, `{}`, parse.ByID("n1"))
-		assert.False(t, plan.Writes)
-		assert.Nil(t, plan.Current)
-		res, err := parsesql.Update(t.Context(), noteDB(t), r, plan)
-		require.NoError(t, err)
-		assert.Empty(t, res.Changed)
-		assert.Equal(t, []string{"n1"}, noteIDs(res.Unchanged))
-	})
-}
 
 func TestSkipUnchanged_SQL(t *testing.T) {
 	r := notes(t)
-	at := core.FormatTimestamp(skipAt)
+	at := core.FormatTimestamp(skipAt())
 	const columns = `"notes"."id", "notes"."tenant_id", "notes"."title", "notes"."rank", "notes"."version", "notes"."updated_at", "notes"."deleted_at"`
 	for _, tc := range []struct {
 		dialect        parse.Dialect
@@ -275,7 +53,7 @@ func TestSkipUnchanged_SQL(t *testing.T) {
 // and cannot deadlock on each other: Current, a relation-only patch's Owner,
 // and Lock, which an unguarded UPDATE of several rows runs first, since the
 // UPDATE takes its own locks in the order its plan reads the rows. One row
-// needs no order, and SQLite locks no rows. TestExecutorContract_Postgres
+// needs no order, and SQLite locks no rows. TestExecutorContract/postgres
 // runs the deadlock itself.
 func TestBuildUpdate_LocksSeveralRowsInKeyOrder(t *testing.T) {
 	r := notes(t)
@@ -356,4 +134,32 @@ func TestUnchanged_ComparesPointerKeysByValue(t *testing.T) {
 
 	_, err = r.Unchanged(nil, []pointerKeyed{{}})
 	assert.ErrorContains(t, err, "has no key")
+}
+
+// optionalCode is a key codec that writes NULL for its zero value.
+type optionalCode string
+
+func (c optionalCode) Value() (driver.Value, error) {
+	if c == "" {
+		return nil, nil
+	}
+	return string(c), nil
+}
+
+type valuerKeyed struct {
+	ID   optionalCode `json:"id"   db:"id"   parse:"filter"`
+	Name string       `json:"name" db:"name" parse:"patch"`
+}
+
+// A key column the database holds as NULL — a Valuer that writes nil, as
+// a nil pointer — is a row without a key.
+func TestUnchanged_RefusesARowWhoseKeyIsNull(t *testing.T) {
+	r, err := parse.NewResource[valuerKeyed]("keyed")
+	require.NoError(t, err)
+	unchanged, err := r.Unchanged([]valuerKeyed{{ID: "a"}}, []valuerKeyed{{ID: "a"}, {ID: "b"}})
+	require.NoError(t, err)
+	assert.Equal(t, []valuerKeyed{{ID: "b"}}, unchanged)
+
+	_, err = r.Unchanged(nil, []valuerKeyed{{}})
+	require.ErrorContains(t, err, "parse: keyed: a row has no key: key column id holds no value")
 }

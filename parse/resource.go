@@ -1,7 +1,6 @@
 package parse
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
 	"maps"
@@ -118,7 +117,8 @@ type columnType struct {
 // with each of them in key order (HasMany, BelongsTo, Through). A key
 // column is of any scalar type (core.IsKeyType): a string, UUID, integer,
 // float, decimal, boolean, date, time of day, timestamp, interval or
-// network value. Every statement compares it by value, as a filter
+// network value, or a pointer to or nullable wrapper (core.NullWrapperOf)
+// of one. Every statement compares it by value, as a filter
 // compares its type (a decimal stored as "1.50" is the key 1.5), and Go
 // tells keys apart by their canonical text (core.KeyTextOf). A document,
 // array or geometry column has no equality to identify a row by, and
@@ -129,7 +129,8 @@ func PrimaryKey(columns ...string) ResourceOption {
 
 // TenantColumn names the column that holds a row's tenant. Every list is then
 // held to Scope.Tenant, and so are tenant-scoped relation junctions. The
-// column's field is a string, a UUID or an integer; Scope.Tenant is
+// column's field is a string, a UUID or an integer, or a pointer to or
+// nullable wrapper (core.NullWrapperOf) of one; Scope.Tenant is
 // normalized to it, and to every tenant column the resource's relations
 // reach (Relate).
 func TenantColumn(column string) ResourceOption {
@@ -137,10 +138,12 @@ func TenantColumn(column string) ResourceOption {
 }
 
 // DeletedColumn names the soft-delete timestamp: a row is live while it is
-// NULL, so its field must hold NULL (a pointer or an sql.Scanner such as
-// sql.NullTime),
-// and it is neither the key nor the tenant column. Lists exclude deleted rows
-// unless Scope.IncludeDeleted; updates never reach them.
+// NULL, so its field must hold NULL (core.IsNullableType: a pointer, slice,
+// map or interface, or a type such as sql.NullTime whose zero value writes
+// NULL and scans NULL back; an sql.Scanner with no Value, or whose zero
+// value writes a value, does not), and it is neither the key nor the tenant
+// column. Lists exclude deleted rows unless Scope.IncludeDeleted; updates
+// never reach them.
 func DeletedColumn(column string) ResourceOption {
 	return func(c *resourceConfig) { c.deleted = column }
 }
@@ -196,9 +199,9 @@ func ParserOptions(opts ...core.Option) ResourceOption {
 // AcceptParams names query parameters the endpoint reads itself. ParseList
 // leaves them alone; any other parameter that is neither a list parameter
 // (filter.Param*) nor a filterable field is an error (E2071). A name that is
-// a list parameter, the search parameter, or a flat filter on a field
-// (filter.FlatParamFields) is refused by NewResource, and by Relate and
-// WithPaths for the fields they add: ParseList would skip that filter.
+// a list parameter, the search parameter, or a flat filter on a request
+// field (filter.CheckAcceptedParam) is refused by NewResource, and by Relate
+// and WithPaths for the fields they add: ParseList would skip that filter.
 func AcceptParams(names ...string) ResourceOption {
 	return func(c *resourceConfig) { c.accepted = append(c.accepted, names...) }
 }
@@ -316,6 +319,10 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		return nil, fmt.Errorf("parse: %s: customizing schemas: %w", table, err)
 	}
 	r.filterSchema.SystemFields = systemFields(table, cfg, columns, fieldsByColumn)
+	err = checkSystemFields(r.filterSchema.SystemFields)
+	if err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", table, err)
+	}
 	r.filterSchema.PrimaryKey = slices.Clone(cfg.pk)
 	r.setSearchParam()
 	err = r.checkQueryParams(r.filterSchema)
@@ -855,17 +862,10 @@ func checkDeletedColumn(cfg resourceConfig, t reflect.Type) error {
 		return fmt.Errorf("deleted column %q is a key column", cfg.deleted)
 	case cfg.deleted == cfg.tenant:
 		return fmt.Errorf("deleted column %q is the tenant column", cfg.deleted)
-	case !holdsNull(t):
-		return fmt.Errorf("deleted column %q is %s, which cannot hold NULL: a row is live while the column is NULL, so declare a pointer or an sql.Scanner such as sql.NullTime", cfg.deleted, gowalker.TypeText(t))
+	case !core.IsNullableType(t):
+		return fmt.Errorf("deleted column %q is %s, which cannot hold NULL: a row is live while the column is NULL, so declare a pointer or a nullable type such as sql.NullTime", cfg.deleted, gowalker.TypeText(t))
 	}
 	return nil
-}
-
-// holdsNull reports whether a field of type t scans a NULL: a pointer, or
-// an sql.Scanner (sql.NullTime, sql.Null[T], a driver's nullable type), to
-// which the driver hands NULL as nil.
-func holdsNull(t reflect.Type) bool {
-	return t.Kind() == reflect.Pointer || reflect.PointerTo(t).Implements(reflect.TypeFor[sql.Scanner]())
 }
 
 // checkIdentityPatches refuses a patch path, request or server, that writes
@@ -904,8 +904,10 @@ func (r *Resource[T]) checkIdentityWrite(column string) error {
 // systemFields are the columns policies constrain without the request
 // filtering on them: the key, the tenant and the soft-delete column, typed
 // from T's fields, in the wire form their fields travel in (a json:",string"
-// key's filter operands are JSON strings). A key column is Indexed, since a
-// primary key is an index by construction, so a filter on it costs as one.
+// key's filter operands are JSON strings). A key column takes the operators
+// its type orders and compares by (filter.KeyOperators), and is Indexed,
+// since a primary key is an index by construction, so a filter on it costs
+// as one.
 func systemFields(table string, cfg resourceConfig, columns map[string]reflect.Type, byColumn map[string]*core.Field) map[string]*filter.FieldSchema {
 	field := func(column string, ops ...filter.FilterOperator) *filter.FieldSchema {
 		info := core.TypeOf(columns[column])
@@ -920,7 +922,7 @@ func systemFields(table string, cfg resourceConfig, columns map[string]reflect.T
 	}
 	fields := make(map[string]*filter.FieldSchema, len(cfg.pk)+2)
 	for _, column := range cfg.pk {
-		key := field(column, filter.OpEq, filter.OpGt, filter.OpLt, filter.OpGte, filter.OpLte, filter.OpIn)
+		key := field(column, filter.KeyOperators(core.TypeOf(columns[column]).Type)...)
 		key.Indexed = true
 		fields[column] = key
 	}
@@ -931,6 +933,18 @@ func systemFields(table string, cfg resourceConfig, columns map[string]reflect.T
 		fields[cfg.deleted] = field(cfg.deleted, filter.OpNull, filter.OpNotNull)
 	}
 	return fields
+}
+
+// checkSystemFields holds every system field to its type's operators, as
+// schema generation holds a declared field (filter.CheckOperators).
+func checkSystemFields(fields map[string]*filter.FieldSchema) error {
+	for _, column := range slices.Sorted(maps.Keys(fields)) {
+		err := filter.CheckOperators(fields[column])
+		if err != nil {
+			return fmt.Errorf("system field %q: %w", column, err)
+		}
+	}
+	return nil
 }
 
 // resourceColumns lists T's columns in field order with the field holding

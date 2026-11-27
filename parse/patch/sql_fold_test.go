@@ -23,11 +23,12 @@ func TestBuildPatchSQL_FoldsOrderedOpsSQLite(t *testing.T) {
 
 func TestBuildPatchSQL_MembersSQLite(t *testing.T) {
 	runMemberCases(t, mergeDB{
-		db:      dbtest.SQLite(t),
-		dialect: filter.SQLiteDialect{},
-		schema:  `CREATE TABLE docs (id INTEGER PRIMARY KEY, doc TEXT)`,
-		insert:  `INSERT INTO docs (id, doc) VALUES (1, ?1)`,
-		read:    `SELECT doc FROM docs WHERE id = 1`,
+		db:            dbtest.SQLite(t),
+		dialect:       filter.SQLiteDialect{},
+		schema:        `CREATE TABLE docs (id INTEGER PRIMARY KEY, doc TEXT)`,
+		insert:        `INSERT INTO docs (id, doc) VALUES (1, ?1)`,
+		read:          `SELECT doc FROM docs WHERE id = 1`,
+		refusesQuoted: true,
 	})
 }
 

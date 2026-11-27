@@ -1,6 +1,6 @@
 # parse/parsesqlite
 
-Registers the SQL functions parse's SQLite plans compare decimals, key numbers and decide geo filters through, with `modernc.org/sqlite`. SQLite has no exact decimal type: a `NUMERIC` column converts text past 64-bit integers to a double, and `json_extract` reads a JSON number as one. `filter.SQLiteDialect` therefore reads every decimal column and decimal path member through deterministic functions, so equality, sets, ranges, sorts, keyset seeks and facets on SQLite agree with PostgreSQL's `numeric` and with `filter.Evaluate` to `core.MaxDecimalDigits` (1000) digits. A numeric facet keys its values through them too, as canonical decimal text. SQLite has no geometry either: geo filters on a JSONB point call functions that decide them as PostGIS does, `$near` by the WGS 84 geodesic distance and `$within` / `$intersects` a box or polygon with its boundary, so SQLite, PostgreSQL with PostGIS and `filter.Evaluate` select the same rows.
+Registers the SQL functions parse's SQLite plans compare decimals, key numbers, bound an int or float path's number members and decide geo filters through, with `modernc.org/sqlite`. SQLite has no exact decimal type: a `NUMERIC` column converts text past 64-bit integers to a double, and `json_extract` reads a JSON number as one. `filter.SQLiteDialect` therefore reads every decimal column and decimal path member through deterministic functions, so equality, sets, ranges, sorts, keyset seeks and facets on SQLite agree with PostgreSQL's `numeric` and with `filter.Evaluate` to `core.MaxDecimalDigits` (1000) digits. A numeric facet keys its values through them too, as canonical decimal text. SQLite has no geometry either: geo filters on a JSONB point call functions that decide them as PostGIS does, `$near` by the WGS 84 geodesic distance and `$within` / `$intersects` a box or polygon with its boundary, so SQLite, PostgreSQL with PostGIS and `filter.Evaluate` select the same rows.
 
 ## Quick Start
 
@@ -29,8 +29,9 @@ flowchart LR
 ```
 
 **Entry points**
-- `Register()`: registers the six functions with modernc.org/sqlite's `"sqlite"` driver, once per process.
+- `Register()`: registers the six functions, and the connection hook that refuses a SQLite older than `MinSQLiteVersion`, with modernc.org/sqlite's `"sqlite"` driver, once per process.
 - `RegisterOn(d *sqlite.Driver)`: registers them on a `sqlite.Driver` the caller constructs, which then carries them on its own connections only. Package-level registrations, `Register`'s included, never reach a constructed driver.
+- `MinSQLiteVersion`, `CheckVersion(version)`, `VersionError{Have, Need}`: the oldest SQLite parse's plans run on, the check the hook runs on what `sqlite_version()` reports, and its refusal ([supported SQLite](#supported-sqlite)).
 - `Functions()`: the table both install, as `Function{Name, NArgs, Call}`, for registering with another SQLite driver ([below](#another-sqlite-driver)).
 - `Decimal(v)`, `DecimalKey(v)`, `DecimalFloat32(v)`: the functions over one SQLite value.
 - `GeoNear(point, latKey, lonKey, lat, lon, meters)`, `GeoInBox(point, latKey, lonKey, south, north, west, east)`, `GeoCoveredBy(point, latKey, lonKey, polygon)`: the geo functions over a stored point's JSON text, its member names and the bound operands.
@@ -39,14 +40,15 @@ flowchart LR
 - Function results: TEXT, a BLOB, 1 or 0, or NULL. Nothing is written or logged.
 
 **Failure modes**
-- A connection opened before `Register`, or a database whose driver never registered the functions: every statement on a decimal field, and every facet of a number, fails with SQLite's `no such function: parse_decimal` (or `parse_decimal_key`, `parse_decimal_float32`), and every geo filter with `no such function: parse_geo_near` (or `parse_geo_in_box`, `parse_geo_covered_by`). parse never falls back to a rounded comparison or key, or to a spherical distance.
+- `connection hook: parsesqlite: SQLite 3.46.1 is older than 3.47.0, the oldest release parse's plans run on`: the driver links, or with mattn's `libsqlite3` tag loads, a SQLite older than `MinSQLiteVersion`, and every connection it opens is refused. Move to a driver release that bundles a newer one, or upgrade the system library; `SELECT sqlite_version()` on a connection opened without the hook shows what it runs.
+- A connection opened before `Register`, or a database whose driver never registered the functions: every statement on a decimal field or an int or float path, and every facet of a number, fails with SQLite's `no such function: parse_decimal` (or `parse_decimal_key`, `parse_decimal_float32`), and every geo filter with `no such function: parse_geo_near` (or `parse_geo_in_box`, `parse_geo_covered_by`). parse never falls back to a rounded comparison or key, or to a spherical distance.
 - `Register` failing: `parsesqlite: register parse_decimal: a function named "parse_decimal" is already registered` means another package registered that name with modernc.org/sqlite first. The functions before the taken name in `Functions()` are registered and the rest are not, so fix the conflict rather than retrying: `Register` returns its first result on every call. `RegisterOn` fails the same way on a driver that already has a name, and is not memoized: call it once per driver.
 - A value that holds no decimal (a JSON boolean, a string with an exponent, text that is no number, a BLOB): NULL, so a filter treats it as missing, as `filter.PathValue` does.
 - A point member that holds no coordinate (missing, JSON `null`, a boolean, an object or array, text float8 rejects such as `1_0`, a value beyond float8's range): the point is NULL, so the geo filter is unknown and `$not` does not select the row. PostgreSQL refuses the query on any of these but a missing or null member; check the stored documents when the two disagree. A member holding `NaN` or `Infinity` is a coordinate on both, and its point is near, in and on nothing.
 - `parse_geo_near: geo: decode point: …`: the stored point is not JSON (`json()` in the plan reports malformed JSON first). `want the point's member names as text`, `want the point as JSON text`, `want a number for operand n`, `parse_geo_covered_by: want the polygon as a WKB blob` or `geo: want a little-endian one-ring polygon WKB`: hand-written SQL called a geo function with arguments `filter.SQLiteDialect` never binds. The operands are checked before the point, so the error comes on the first row, a NULL point's included. The dialect passes `json(column)`, the member names as text, numbers, and the polygon `geo.AppendPolygonWKB` writes.
 
 **Dependencies**
-- *Imports*: `parse/internal/decimals`, `parse/internal/geo`, `gowalker` (type text in errors), `modernc.org/sqlite`
+- *Imports*: `parse/internal/decimals`, `parse/internal/geo`, `parse/internal/dialect` (the SQLite minimum), `gowalker` (type text in errors), `modernc.org/sqlite`
 - *Imported by*: applications running parse plans on SQLite, `parse/internal/dbtest`, the example server
 - *Package boundary*: `filter` does not import this package, so the compiler stays driver-free; both read the function names from `internal/decimals` and `internal/geo`
 
@@ -56,7 +58,7 @@ The constants `DecimalFunc`, `DecimalKeyFunc`, `DecimalFloat32Func`, `GeoNearFun
 
 | SQL | Returns | Used for |
 |---|---|---|
-| `parse_decimal(x)` | `x`'s canonical decimal text (`core.DecimalText`): plain notation, no exponent, no leading or trailing zeros, `0` for either zero; NULL when `x` holds no decimal | facet terms, a decimal field's value as a statement reads it (`filter.FieldExpr`) |
+| `parse_decimal(x)` | `x`'s canonical decimal text (`core.DecimalText`): plain notation, no exponent, no leading or trailing zeros, `0` for either zero; NULL when `x` holds no decimal | facet terms, a decimal field's value as a statement reads it (`filter.FieldExpr`), whether an int or float path's member written with an exponent or more than 1000 characters is a number member |
 | `parse_decimal_key(x)` | a BLOB whose bytes order as `x`'s value, equal exactly where the values are; NULL exactly where `parse_decimal(x)` is | equality, `$ne`, `$in` / `$nin` against each member's key, ranges, `ORDER BY`, keyset seeks, range facets |
 | `parse_decimal_float32(x)` | the canonical decimal text of `x` rounded to float32 (an INTEGER, a REAL or TEXT holding a JSON number literal); NULL for anything else or a value beyond float32's range | facet terms of a `float32` field, whose REAL column holds the double of the float32 (`0.10000000149011612` for `0.1`) |
 
@@ -90,7 +92,7 @@ The key is a sign byte (negative, zero, positive), then for a nonzero value `0.d
 
 ### Another SQLite driver
 
-`Functions()` is the registration contract: each entry's `Name` is what `filter.SQLiteDialect` calls, `NArgs` how many arguments it passes, and `Call` the implementation over the `database/sql/driver` values a scalar function receives. Register every entry, as a deterministic function: SQLite uses an index on an expression only when its functions are deterministic.
+`Functions()` is the registration contract: each entry's `Name` is what `filter.SQLiteDialect` calls, `NArgs` how many arguments it passes, and `Call` the implementation over the `database/sql/driver` values a scalar function receives. Register every entry, as a deterministic function: SQLite uses an index on an expression only when its functions are deterministic. Check the release each connection runs as well, from the driver's connection hook: `CheckVersion` refuses one older than `MinSQLiteVersion` ([supported SQLite](#supported-sqlite)).
 
 | Name | Arguments |
 |---|---|
@@ -103,6 +105,23 @@ The key is a sign byte (negative, zero, positive), then for a nonzero value `0.d
 
 The functions need nothing from modernc.org/sqlite, but this package registers them with it, so a program on another driver that imports it links modernc.org/sqlite too. They are not split into a driver-free package: the exported functions and names would then live in two places.
 
+## Supported SQLite
+
+parse's SQLite plans need **SQLite 3.47.0** or later (`MinSQLiteVersion`), with its JSON functions, which are built in unless a build omits them. The JSON functions decide the release. From 3.45.0 they compare a path's label with a member's name as decoded, so a member encoding/json wrote escaped (`"a\u003cb"`) is the one `$."a<b"` names, where an older release finds none and `json_set` appends a second member. From 3.47.0 they read an escaped double quote inside a quoted label, where an older release ends the label there: `$."x\".y"` reads as the members `x\` and `y"`, and `json_set` creates them. The plans also use the `->` operator (3.38.0), which reads a document member's JSON text, row values (3.15.0: a keyset seek over several keys, `(a, b) > (?1, ?2)`, and a key set of several columns, `(a, b) IN (SELECT … FROM json_each(?1))`), `ON CONFLICT DO NOTHING` (3.24.0), window functions (3.25.0) and `NULLS FIRST` / `NULLS LAST` (3.30.0). An older SQLite refuses those when it prepares a statement; parse has no fallback SQL for any of them.
+
+The minimum is enforced, not only stated:
+
+- `Register` and `RegisterOn` also install a connection hook that reads `sqlite_version()` on every connection the driver opens and refuses a library older than `MinSQLiteVersion`. The open fails with `connection hook: parsesqlite: SQLite 3.46.1 is older than 3.47.0, the oldest release parse's plans run on`, a `*VersionError` (`Have`, `Need`) through `errors.As`.
+- Another driver calls `CheckVersion(version)` from its own connection hook with the release the connection reports: with `mattn/go-sqlite3`, a `sqlite3.SQLiteDriver` whose `ConnectHook` returns `parsesqlite.CheckVersion(v)` for `v, _, _ := sqlite3.Version()`.
+- A statement cannot ask which release runs it, and a connection no check reached may run an older one, so `filter.SQLiteDialect` refuses a JSON Patch operation on a document member whose name holds `"` or `\` whatever the release: it is E2070, and `ApplyValidatedPatch` applies it. A merge patch writes such a member, since it binds the member names inside its JSON rather than in a path; PostgreSQL writes any name.
+
+| Driver | SQLite it runs |
+|---|---|
+| `modernc.org/sqlite` | the release it bundles, at the version this module requires |
+| `github.com/mattn/go-sqlite3` | the release it bundles: 3.54.1 in v1.14.53 (`SQLITE_VERSION` in its `sqlite3-binding.c`); built with the `libsqlite3` tag, the system's library, which must meet the minimum itself |
+
+`TestDriver_MeetsTheSQLiteMinimum` opens `modernc.org/sqlite` at the version this module requires, checks that the release above is `MinSQLiteVersion` and that the bundled library passes `CheckVersion`, and runs each construct it lists, a label compared as decoded and one holding an escaped double quote included. This module does not require `mattn/go-sqlite3`, a cgo driver every consumer's module graph would carry: an application on it, or on a system `libsqlite3`, calls `CheckVersion` from its connection hook, as above. `TestRegisterOn_RefusesAnOlderSQLite` opens the bundled library through the hook `RegisterOn` installs with the release it needs raised past the bundled one, and gets the `*VersionError`.
+
 ## Configuration
 
 None. The functions are pure and deterministic; `Register` takes no options.
@@ -113,12 +132,15 @@ From the parse module directory:
 
 ```bash
 go test -tags=unit -race ./parsesqlite/ ./internal/decimals/ ./internal/geo/
-go test -tags=unit -race -run 'TestDecimalMatrix_SQLite|TestNumberKeys_SQLite|TestEvaluateDecimalConformance|TestGeoMatrix_SQLite|TestFilterMatrix_SQLite|TestEvaluateGeoConformance|TestEvaluateConformance' ./ ./filter/
-# PARSE_POSTGRES_DSN and PARSE_POSTGIS_DSN set; make parse-postgres-up starts a server and prints them
-go test -tags=integration -run 'MatchesPostGIS|TestGeoMatrix_PostGIS|TestFilterMatrix_PostgreSQL' ./ ./internal/geo/
+go test -tags=unit -race -run 'TestEvaluateDecimalConformance|TestEvaluateGeoConformance|TestEvaluateConformance' ./filter/
+# The matrices run on SQLite and PostgreSQL in the integration lane. The PostgreSQL runs read
+# PARSE_POSTGRES_DSN and PARSE_POSTGIS_DSN (make parse-postgres-up starts a server and prints them)
+# and skip when they are unset; -run 'TestDecimalMatrix/sqlite' selects one backend's run.
+go test -tags=integration -run 'TestDecimalMatrix|TestNumberKeys|TestGeoMatrix|TestFilterMatrix' ./
+go test -tags=integration -run 'MatchesPostGIS' ./internal/geo/
 ```
 
-`internal/decimals` checks over generated literals that the key orders as `core.CompareDecimals` does. `TestDecimalKey_EqualExactlyWhereTextIsEqual` compares every pair of stored forms in SQL (INTEGER, REAL, TEXT in plain and exponent notation, a member's JSON string, either zero, BLOB, NULL and text that is no number), and each with the canonical text a filter binds: two keys are equal exactly where `parse_decimal`'s texts are, and NULL together; `FuzzDecimalKey_EqualExactlyWhereTextIsEqual` checks the same over generated values. `TestDecimalMatrix_SQLite` runs `filtertest.DecimalCases`, the decimal sorts, keyset walks and facets on SQLite; the PostgreSQL and `filter.Evaluate` runs of the same cases must agree with it. `TestNumberKeys_SQLite` counts `filtertest.NumberKeyFacets` (number members written several ways, float64, float32 and int columns) on SQLite; `TestNumberKeys_PostgreSQL` and `filter.FacetKeys` must count the same buckets. `internal/geo` checks the distance against GeographicLib's test set to 1e-8 m; with PostGIS (`PARSE_POSTGIS_DSN`) it checks thousands of seeded distances against `ST_Distance` and `ST_DWithin`, and points at polygons' vertices and edges against `ST_CoveredBy` and `ST_Intersects`. `TestGeoMatrix_SQLite` runs `filtertest.GeoCases` (members held as numbers and strings, partial points, latitudes beyond a pole) and `TestFilterMatrix_SQLite` the operator cases' geo filters; PostGIS and `filter.Evaluate` run the same cases.
+`internal/decimals` checks over generated literals that the key orders as `core.CompareDecimals` does. `TestDecimalKey_EqualExactlyWhereTextIsEqual` compares every pair of stored forms in SQL (INTEGER, REAL, TEXT in plain and exponent notation, a member's JSON string, either zero, BLOB, NULL and text that is no number), and each with the canonical text a filter binds: two keys are equal exactly where `parse_decimal`'s texts are, and NULL together; `FuzzDecimalKey_EqualExactlyWhereTextIsEqual` checks the same over generated values. `TestDecimalMatrix/sqlite` runs `filtertest.DecimalCases`, the decimal sorts, keyset walks and facets on SQLite; `TestDecimalMatrix/postgres` and the `filter.Evaluate` run of the same cases must agree with it. `TestNumberKeys/sqlite` counts `filtertest.NumberKeyFacets` (number members written several ways, float64, float32 and int columns) on SQLite; `TestNumberKeys/postgres` and `filter.FacetKeys` must count the same buckets. `internal/geo` checks the distance against GeographicLib's test set to 1e-8 m; with PostGIS (`PARSE_POSTGIS_DSN`) it checks thousands of seeded distances against `ST_Distance` and `ST_DWithin`, and points at polygons' vertices and edges against `ST_CoveredBy` and `ST_Intersects`. `TestGeoMatrix/sqlite` runs `filtertest.GeoCases` (members held as numbers and strings, partial points, latitudes beyond a pole) and `TestFilterMatrix/sqlite` the operator cases' geo filters; their `postgres` runs, on PostGIS, and `filter.Evaluate` run the same cases.
 
 ## Operations
 
@@ -147,5 +169,7 @@ The functions read only their argument, allocate at most the value's digits (bou
 | File | Responsibility |
 |---|---|
 | [`parsesqlite.go`](parsesqlite.go) | `Function` and the `Functions` table, `Register`, `RegisterOn`, `Decimal`, `DecimalKey`, `DecimalFloat32`, `GeoNear`, `GeoInBox`, `GeoCoveredBy` and the function names |
+| [`version.go`](version.go) | `MinSQLiteVersion`, `CheckVersion`, `VersionError` and the connection hook that reads `sqlite_version()` |
+| [`drivers_test.go`](drivers_test.go) | The [supported SQLite](#supported-sqlite) check: the required driver's release and the constructs the minimum is for |
 | [`../internal/decimals`](../internal/decimals/decimals.go) | `Value` (a SQLite value as a decimal), `Float32Value` (as a float32), `Member` (a document member as a decimal), `Key`, the function names |
 | [`../internal/geo`](../internal/geo/geo.go) | `Distance` (WGS 84 geodesic, ported from GeographicLib), `Geodetic`, `Box`, `CoveredBy`, `Near`, `ReadPoint` / `ReadPointJSON` and `Coordinate` (a stored point, its members read as float8), the polygon WKB, the function names |

@@ -11,25 +11,20 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestUpdateBatchSQLite(t *testing.T) {
-	testUpdateBatchDatabase(t, dbtest.SQLite(t), filter.SQLiteDialect{})
-}
-func TestUpdateBatchPostgres(t *testing.T) {
-	testUpdateBatchDatabase(t, dbtest.Postgres(t), filter.PostgresDialect{})
+func TestUpdateBatchDatabase(t *testing.T) {
+	runSQLBackends(t, testUpdateBatchDatabase)
 }
 
-func testUpdateBatchDatabase(t *testing.T, db *sql.DB, d parse.Dialect) {
+func testUpdateBatchDatabase(t *testing.T, b sqlBackend) {
 	t.Helper()
+	db := b.open(t)
+	d := b.dialect
 	r := updateBatchResource(t)
-	jsonType := "TEXT"
-	if d.Name() == "postgres" {
-		jsonType = "JSONB"
-	}
+	jsonType := b.columnType(core.TypeInfo{Type: core.FieldTypeJSON})
 	_, err := db.ExecContext(t.Context(), `CREATE TABLE batch_rows (id BIGINT PRIMARY KEY,tenant_id TEXT NOT NULL,reference TEXT CHECK(reference <> 'refused'),version BIGINT NOT NULL,meta `+jsonType+` NOT NULL,updated_at TEXT NOT NULL,deleted_at TEXT)`)
 	require.NoError(t, err)
 	for id := int64(1); id <= 42; id++ {

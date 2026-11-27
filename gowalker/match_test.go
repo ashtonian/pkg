@@ -388,3 +388,47 @@ func TestNameMatch_String(t *testing.T) {
 		}
 	}
 }
+
+type OrdinalBase struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+type ordinalDoc struct {
+	OrdinalBase
+	Name  string      `json:"name"`
+	Note  string      `json:"-"`
+	Inner OrdinalBase `json:"inner"`
+	Z     int         `json:"z"`
+}
+
+// A field's Ordinal is its place in Fields, so a decoder keeps per-field
+// state, such as which members it has met, in a slice of NumFields; a
+// handle no view lists has none.
+func TestFieldOrdinal(t *testing.T) {
+	schema := schemaFor[ordinalDoc](t, engine(t, gowalker.WithJSONFields("json", gowalker.NestedFields(), gowalker.KeepHidden())))
+	for _, shape := range []*gowalker.Shape{schema.Root(), schema.Root().Fields()[2].Shape()} {
+		fields := shape.Fields()
+		if shape.NumFields() != len(fields) {
+			t.Errorf("%v: NumFields %d, Fields %d", shape.Type(), shape.NumFields(), len(fields))
+		}
+		for i, f := range fields {
+			if f.Ordinal() != i {
+				t.Errorf("%v: %s has ordinal %d, at %d in Fields", shape.Type(), f.GoSelector(), f.Ordinal(), i)
+			}
+		}
+		for _, d := range shape.Declarations() {
+			if d.Field != nil && d.State != gowalker.Named && d.Field.Ordinal() != -1 {
+				t.Errorf("%v: the %s %s has ordinal %d", shape.Type(), d.State, d.GoField.Name, d.Field.Ordinal())
+			}
+		}
+	}
+	field, _ := schema.Root().Match("z")
+	if field.Ordinal() != 3 {
+		t.Errorf("z has ordinal %d, want 3", field.Ordinal())
+	}
+	n := schema.Root().Fields()[0].Shape().NumFields()
+	if n != 0 {
+		t.Errorf("an int has %d fields", n)
+	}
+}

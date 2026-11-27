@@ -20,7 +20,7 @@ import (
 )
 
 // FacetKeys over the number key fixture counts the buckets the SQL facet
-// query does (TestNumberKeys_SQLite / _PostgreSQL).
+// query does on each backend (the root package's TestNumberKeys).
 func TestFacetKeys_NumberKeyFixture(t *testing.T) {
 	schema, err := filtertest.NumberKeySchema()
 	require.NoError(t, err)
@@ -54,7 +54,8 @@ func TestFacetKeys_NumberKeyFixture(t *testing.T) {
 }
 
 // FacetKeys over the timestamp fixture counts the buckets the SQL facet
-// query does (TestTimestamps_SQLite / _PostgreSQL): one per instant.
+// query does on each backend (the root package's TestTimestamps): one per
+// instant.
 func TestFacetKeys_TimestampFixture(t *testing.T) {
 	schema, err := filtertest.TimestampSchema()
 	require.NoError(t, err)

@@ -1,10 +1,14 @@
 // Package dialect is the SQL dialect kind parse compiles for: the
-// placeholder and identifier rules of PostgreSQL and SQLite. The filter
-// and patch dialects embed it and add their SQL.
+// placeholder, identifier and literal rules of PostgreSQL and SQLite.
+// filter's dialects embed a kind and add their SQL as methods, which
+// filter.Dialect and the interfaces patch consumes name: SQL differs by
+// database only there, and a dialect's Kind decides nothing but which type
+// filter.DialectFromDSN builds.
 //
 // The set is closed. Dialect has an unexported method, so only this
-// package's Postgres and SQLite, and the types embedding them, implement it,
-// and a switch on a dialect's Kind names every case.
+// package's Postgres and SQLite, and the types embedding them, implement
+// it. A new SQL provider is a kind here and a type in filter implementing
+// filter.Dialect.
 package dialect
 
 import (
@@ -22,7 +26,7 @@ var ErrUnknownDSN = errors.New("parse: unsupported DSN")
 // placeholders and identifier quoting.
 type Dialect interface {
 	// Name is the dialect's name for messages: "postgres" or "sqlite".
-	// SQL is chosen by KindOf, never by name.
+	// SQL is chosen by the dialect's methods, never by name.
 	Name() string
 	// Placeholder is the nth parameter's placeholder (1-based): "$1" on
 	// PostgreSQL, "?1" on SQLite.
@@ -30,6 +34,10 @@ type Dialect interface {
 	// QuoteIdent quotes an identifier with double quotes, doubling any
 	// quote inside it.
 	QuoteIdent(name string) string
+	// QuoteLiteral quotes s as a string literal that reads as s whatever
+	// the session's settings, for text a statement writes rather than
+	// binds: a JSON path's member names.
+	QuoteLiteral(s string) string
 	// MaxParams is the most parameters one statement binds.
 	MaxParams() int
 
@@ -44,7 +52,7 @@ const (
 	KindSQLite
 )
 
-// KindOf is d's kind.
+// KindOf is d's kind, which filter.DialectFromDSN maps to its type.
 func KindOf(d Dialect) Kind { return d.kind() }
 
 // String is the kind's dialect name.
@@ -58,8 +66,8 @@ func (k Kind) String() string {
 	return "Kind(" + strconv.Itoa(int(k)) + ")"
 }
 
-// Unsupported is the error of a switch on a kind that has no case for k:
-// a statement builder's bug, since every Dialect has one of the two kinds.
+// Unsupported is the error of a switch on a kind that has no case for k: a
+// bug, since every Dialect has one of the kinds the switch names.
 func Unsupported(k Kind, what string) error {
 	return fmt.Errorf("parse: %s has no form for dialect %s", what, k)
 }

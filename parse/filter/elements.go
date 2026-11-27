@@ -31,7 +31,7 @@ func documentElements(g *core.SchemaGenerator, field *core.Field, doc *FieldSche
 		for elem.Kind() == reflect.Pointer {
 			elem = elem.Elem()
 		}
-		if core.TypeOf(elem).Type == core.FieldTypeObject {
+		if core.MemberTypeOf(elem).Type == core.FieldTypeObject {
 			d, k, err := structPaths(g, elem, nil, core.CapabilityFilter)
 			if err != nil {
 				return nil, fmt.Errorf("elements: %w", err)

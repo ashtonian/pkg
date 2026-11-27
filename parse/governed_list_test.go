@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"database/sql"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,36 +10,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
-
-func governedSQLite(t *testing.T) *sql.DB {
-	t.Helper()
-	db := dbtest.SQLite(t)
-	for _, stmt := range governedFixtureSQL("TEXT") {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}
-	return db
-}
-
-func TestGovernedLists_SQLite(t *testing.T) {
-	db := governedSQLite(t)
-	runGovernedLists(t, filter.SQLiteDialect{}, db)
-}
-
-func TestGovernedLists_Memory(t *testing.T) {
-	db := governedSQLite(t)
-	r := governedDocuments(t)
-	runGovernedMemory(t, func(t *testing.T, filterJSON string) governedResult {
-		return listGoverned(t, r, filter.SQLiteDialect{}, db, filterJSON, parse.Scope{Governance: governanceA()})
-	})
-}
-
-func TestGovernedMixedTypes_SQLite(t *testing.T) {
-	db := dbtest.SQLite(t)
-	runGovernedMixedTypes(t, filter.SQLiteDialect{}, "TEXT", db)
-}
 
 func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {
 	r := governedDocuments(t)

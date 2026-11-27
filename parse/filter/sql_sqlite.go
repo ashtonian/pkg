@@ -187,7 +187,8 @@ func sqliteIntegers(field *FieldSchema, value any) error {
 	return nil
 }
 
-// sqliteSetMembers are a set's members as its JSON array holds them.
+// sqliteSetMembers are a set's members, none NULL (membership), as its
+// JSON array holds them.
 func sqliteSetMembers(field *FieldSchema, members []any) (any, error) {
 	if field.DataType == core.FieldTypeDecimal {
 		return typedSlice(members, core.DecimalText)
@@ -335,11 +336,12 @@ func caseWhen(guard string, terms []string) string {
 // and is NULL when the point is. Native geometry storage needs PostGIS:
 // E2115.
 func (d SQLiteDialect) geoCondition(field *FieldSchema, op FilterOperator, value any, bind func(any) string) (string, error) {
-	if err := validateGeoValue(value); err != nil {
+	err := validateGeoValue(field, value)
+	if err != nil {
 		return "", err
 	}
 	if field.GeoConfig != nil && field.GeoConfig.StorageType != GeoStorageJSONB {
-		return "", geoUnsupported(d, op, "native "+string(field.GeoConfig.StorageType)+" storage")
+		return "", geoUnsupported(d, field, op, "native "+string(field.GeoConfig.StorageType)+" storage")
 	}
 	latKey, lonKey := geoKeys(field)
 	call := func(fn string, operands ...any) string {
@@ -374,25 +376,22 @@ func (d SQLiteDialect) geoCondition(field *FieldSchema, op FilterOperator, value
 	return "", fmt.Errorf("geo operator %s does not take %s", op, gowalker.TypeText(reflect.TypeOf(value)))
 }
 
-func geoUnsupported(d dialect.Dialect, op FilterOperator, shape string) error {
-	return &core.ParseError{
-		Kind:    core.ParseErrorKindFilter,
-		Code:    ECodeGeoNotSupported.String(),
-		Message: fmt.Sprintf("geo operator '%s' on %s is not supported by the %s dialect", op, shape, d.Name()),
-	}
+func geoUnsupported(d dialect.Dialect, field *FieldSchema, op FilterOperator, shape string) error {
+	return core.NewError(ECodeGeoNotSupported, fmt.Sprintf("geo operator '%s' on %s is not supported by the %s dialect", op, shape, d.Name()),
+		core.WithField(field.ExternalName))
 }
 
 // MarshalValue serializes a value for SQLite parameter binding.
 // JSON/Array/Object types are marshaled to JSON strings for TEXT storage.
-// A timestamp, and each element of a list of them, is its canonical text
-// (core.FormatTimestamp), which SQLite stores: UTC at a fixed width, so
-// text order is time order.
+// A date and a timestamp, and each element of a list of timestamps, bind
+// as their columns hold them (boundScalar): a Valuer read, a timestamp its
+// canonical text (core.FormatTimestamp), UTC at a fixed width, so text
+// order is time order, where the driver would store a time.Time as its own
+// text in its own offset.
 func (d SQLiteDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
 	switch t.Type {
-	case core.FieldTypeDate:
-		return nullableDateValue(value)
-	case core.FieldTypeTimestamp:
-		return timestampText(value)
+	case core.FieldTypeDate, core.FieldTypeTimestamp:
+		return boundScalar(t.Type, value)
 	}
 
 	if _, ok := value.(driver.Valuer); ok && !t.SQLType.IsJSON() {
@@ -416,17 +415,10 @@ func (d SQLiteDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
 	}
 }
 
-// timestampText is a timestamp's canonical text, from a time.Time, a
-// pointer to one, a driver.Valuer holding one (sql.NullTime) or RFC 3339
-// text; nil and NULL are NULL. The driver would store a time.Time as its
-// own text in the value's offset, which neither compares nor keys as the
-// instant.
-func timestampText(value any) (any, error) {
-	v, ok, err := storedValue(value)
-	if err != nil || !ok {
-		return nil, err
-	}
-	return core.NormalizeScalar(core.FieldTypeTimestamp, reflect.Invalid, v)
+// StoresAsText reports the values MarshalValue writes as text: a
+// timestamp's canonical text, a document's or an array's JSON.
+func (SQLiteDialect) StoresAsText(t core.FieldType) bool {
+	return t == core.FieldTypeTimestamp || core.IsDocument(t) || t == core.FieldTypeArray
 }
 
 // timestampTexts is a list of timestamps, or a pointer to one, with each
@@ -434,9 +426,9 @@ func timestampText(value any) (any, error) {
 // offset, and an element reads as a timestamp only in UTC (PathExpr). A
 // nil list, or a value that is no list, is unchanged.
 func timestampTexts(value any) (any, error) {
-	list, ok := deref(value)
-	if !ok {
-		return value, nil
+	list, err := core.Deref(value)
+	if err != nil || list == nil {
+		return value, err
 	}
 	if rv := reflect.ValueOf(list); rv.Kind() == reflect.Slice && rv.IsNil() {
 		return value, nil
@@ -447,7 +439,7 @@ func timestampTexts(value any) (any, error) {
 	}
 	out := make([]any, len(items))
 	for i, item := range items {
-		text, err := timestampText(item)
+		text, err := boundScalar(core.FieldTypeTimestamp, item)
 		if err != nil {
 			return nil, fmt.Errorf("timestamp element %d: %w", i, err)
 		}
@@ -508,10 +500,13 @@ func (d SQLiteDialect) DecimalOrder(o DecimalOperand) string {
 	return decimals.SQLiteKeyFunc + "(" + operand + ")"
 }
 
-// NativeRowCompare reports false: row-value comparison is unevenly
-// supported across the SQLite build matrix, and the expansion stays
-// planner-friendly on single-column indexes.
-func (SQLiteDialect) NativeRowCompare() bool { return false }
+// codePointPair collates the operand: SQLite seeks an index only on a row
+// value's bare columns, and BINARY on the operand still overrides a column
+// declared NOCASE or RTRIM, an explicit collation outranking a column's.
+// The index must be BINARY-collated to serve the seek.
+func (d SQLiteDialect) codePointPair(column, operand string) (string, string) {
+	return column, d.CodePointOrder(operand)
+}
 
 // CodePointOrder applies BINARY collation, overriding a column declared
 // NOCASE or RTRIM.
@@ -534,7 +529,7 @@ func sqliteHasKey(expr, key string, bind func(any) string) string {
 // read an object's members, or a scalar as one row.
 func (d SQLiteDialect) elementRows(f *FieldSchema, alias string) string {
 	if p := f.Path; p != nil {
-		path := sqlitePathLiteral(p.Segments)
+		path := sqlitePathLiteral(d, p.Segments)
 		doc := p.document(d)
 		return "json_each(CASE WHEN json_type(" + doc + ", " + path + ") = 'array' THEN " + doc + " END, " + path + ") AS " + alias
 	}
@@ -552,7 +547,7 @@ func (SQLiteDialect) objectElement(alias string) string {
 func (SQLiteDialect) scalarElement(f *FieldSchema, alias string) *FieldSchema {
 	e := bound(elementOf(f))
 	e.Table, e.Column, e.Expr = "", "", ""
-	e.Path = &JSONPath{alias: alias, Storage: StorageJSONB, element: true}
+	e.Path = &JSONPath{alias: alias, Storage: StorageJSONB, element: true, columnElement: f.Path == nil}
 	return &e
 }
 
@@ -585,7 +580,7 @@ func (d SQLiteDialect) numberKey(f *FieldSchema) string {
 // fullkey.
 func (d SQLiteDialect) PathExpr(p *JSONPath, t core.FieldType) string {
 	kind, val, literal := sqlitePathMember(d, p)
-	return sqliteTypedMember(t, kind, val, literal)
+	return sqliteTypedMember(t, kind, val, literal, !p.columnElement)
 }
 
 // TwoValuedCondition has no second rendering on SQLite.

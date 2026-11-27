@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -32,21 +33,78 @@ func KeyText(key Key) string {
 	return joinKeyTexts(texts)
 }
 
-// KeyTextOf is KeyText of key, each value read as its column's type,
-// paired by position with types: the canonical text KeyValueText gives it.
-// Two keys of the columns have one text exactly when the database holds
-// them equal, and it is the text a statement names their row by.
-func KeyTextOf(types []TypeInfo, key Key) (string, error) {
+// NormalizeKey is key with each value in its column's canonical form,
+// paired by position with types: read as the database holds it
+// (StoredValue), so a driver.Valuer stands for the value it writes, then
+// normalized as its column's type (NormalizeScalar). It is the one rule a
+// key is bound and compared by — an update's target, the owner of the
+// relation rows it writes, a relation's member, a key set's key — so two
+// spellings of one key (an int32 and a uint64, a UUID in either case) name
+// one row wherever they are bound. A key of another number of values than
+// types is an error; a value that is NULL, of no scalar type (IsKeyType)
+// or one its column's type cannot hold is a *KeyValueError naming its
+// position.
+func NormalizeKey(types []TypeInfo, key Key) (Key, error) {
 	if len(key) != len(types) {
-		return "", fmt.Errorf("key has %d values for %d columns", len(key), len(types))
+		return nil, fmt.Errorf("%d values for the %d key columns", len(key), len(types))
 	}
-	texts := make([]string, len(key))
+	out := make(Key, len(key))
 	for i, v := range key {
-		text, err := KeyValueText(types[i], v)
+		n, err := normalizeKeyValue(types[i], v)
 		if err != nil {
-			if len(key) == 1 {
-				return "", err
-			}
+			keyErr := &KeyValueError{Index: i, Err: err}
+			return nil, keyErr
+		}
+		out[i] = n
+	}
+	return out, nil
+}
+
+// KeyValueError is a key value NormalizeKey refuses: Index is its position
+// in the key, which a caller names its column by.
+type KeyValueError struct {
+	Index int
+	Err   error
+}
+
+func (e *KeyValueError) Error() string { return fmt.Sprintf("key value %d: %v", e.Index, e.Err) }
+
+func (e *KeyValueError) Unwrap() error { return e.Err }
+
+// normalizeKeyValue is one value of a key in its column's canonical form
+// (NormalizeKey).
+func normalizeKeyValue(t TypeInfo, v any) (any, error) {
+	if !IsKeyType(t.Type) {
+		return nil, fmt.Errorf("a %s value is no key value", t.Type)
+	}
+	stored, _, err := StoredValue(v)
+	if err != nil {
+		return nil, err
+	}
+	// NULL is nil here, which NormalizeScalar refuses for every key type.
+	return NormalizeScalar(t.Type, t.NumberKind, stored)
+}
+
+// KeyTextOf is KeyText of key, each value read as its column's type,
+// paired by position with types: the canonical text (CanonicalText) of
+// each value of the key NormalizeKey gives. Two keys a database holds have
+// one text exactly when it holds them equal, and it is the text a
+// statement names their row by. PostgreSQL holds a timestamp at the
+// microsecond, so a key bound there is held as filter's
+// Dialect.StoredKeyValue gives it.
+func KeyTextOf(types []TypeInfo, key Key) (string, error) {
+	normalized, err := NormalizeKey(types, key)
+	if err != nil {
+		valueErr, ok := errors.AsType[*KeyValueError](err)
+		if ok && len(key) == 1 {
+			return "", valueErr.Err
+		}
+		return "", err
+	}
+	texts := make([]string, len(normalized))
+	for i, v := range normalized {
+		text, err := normalizedText(types[i], v)
+		if err != nil {
 			return "", fmt.Errorf("key value %d: %w", i, err)
 		}
 		texts[i] = text
@@ -54,20 +112,9 @@ func KeyTextOf(types []TypeInfo, key Key) (string, error) {
 	return joinKeyTexts(texts), nil
 }
 
-// KeyValueText is the canonical text of a key column's value, v normalized
-// as t (NormalizeScalar): the text of a text type's canonical value; a
-// number's canonical decimal text, a float32 column's at float32
-// precision, so -0 is 0; true or false. It is the text statements read the
-// column's key as, so it is equal for two values exactly when the database
-// holds them equal. NaN and the infinities are no key value.
-func KeyValueText(t TypeInfo, v any) (string, error) {
-	if !IsKeyType(t.Type) {
-		return "", fmt.Errorf("a %s value is no key value", t.Type)
-	}
-	n, err := NormalizeScalar(t.Type, t.NumberKind, v)
-	if err != nil {
-		return "", err
-	}
+// normalizedText is the text of a normalized key value n of type t
+// (CanonicalText).
+func normalizedText(t TypeInfo, n any) (string, error) {
 	switch x := n.(type) {
 	case string:
 		return x, nil

@@ -103,7 +103,7 @@ func TestDecimal_SQLBindsExactNumbers(t *testing.T) {
 
 func TestDecimal_QueryParams(t *testing.T) {
 	fs, _ := pricedSchemas(t)
-	ast, err := filter.NewQueryParamParser(fs).Parse(url.Values{"price_gte": {"10.50"}, "cost": {"1", "2.0"}})
+	ast, err := queryParams(t, fs).Parse(url.Values{"price_gte": {"10.50"}, "cost": {"1", "2.0"}})
 	require.NoError(t, err)
 	res, err := filter.NewSQLBuilder(fs, filter.PostgresDialect{}).Build(ast)
 	require.NoError(t, err)
@@ -125,7 +125,9 @@ func TestDecimal_CompareKeyValues(t *testing.T) {
 			case i > j:
 				want = 1
 			}
-			assert.Equal(t, want, filter.CompareKeyValues(key, a, b), "%v vs %v", a, b)
+			got, err := filter.CompareKeyValues(key, a, b)
+			require.NoError(t, err)
+			assert.Equal(t, want, got, "%v vs %v", a, b)
 		}
 	}
 }
@@ -181,7 +183,7 @@ func TestDecimal_SeekBindsExactNumbers(t *testing.T) {
 		where   string
 	}{
 		{filter.PostgresDialect{}, `("priceds"."price", "priceds"."id" COLLATE pg_c_utf8) > ($1::numeric, $2)`},
-		{filter.SQLiteDialect{}, `((parse_decimal_key("priceds"."price") > parse_decimal_key(?1)) OR (parse_decimal_key("priceds"."price") = parse_decimal_key(?1) AND "priceds"."id" COLLATE BINARY > ?2))`},
+		{filter.SQLiteDialect{}, `(parse_decimal_key("priceds"."price"), "priceds"."id") > (parse_decimal_key(?1), ?2 COLLATE BINARY)`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.dialect.Name(), func(t *testing.T) {

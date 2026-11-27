@@ -210,7 +210,7 @@ func TestTypeOf_Decimal(t *testing.T) {
 		{"shopspring pointer", reflect.TypeFor[*decimal.Decimal](), core.TypeInfo{Type: core.FieldTypeDecimal}},
 		{"pointer-receiver method set", reflect.TypeFor[fixedPoint](), core.TypeInfo{Type: core.FieldTypeDecimal}},
 		{"slice of decimals is a document", reflect.TypeFor[[]decimal.Decimal](), core.TypeInfo{Type: core.FieldTypeJSON}},
-		{"NullDecimal is a struct", reflect.TypeFor[decimal.NullDecimal](), core.TypeInfo{Type: core.FieldTypeObject}},
+		{"NullDecimal holds a decimal", reflect.TypeFor[decimal.NullDecimal](), core.TypeInfo{Type: core.FieldTypeDecimal}},
 		{"text-only decimal is a struct", reflect.TypeFor[textDecimal](), core.TypeInfo{Type: core.FieldTypeObject}},
 	}
 	for _, tt := range tests {

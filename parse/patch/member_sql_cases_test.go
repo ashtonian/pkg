@@ -34,6 +34,10 @@ type memberCase struct {
 	merge string // the merge patch writing the same document; "" when none does
 	want  string // resulting document; "" when the patch does not apply
 	unmet int    // when it does not, the index of the first operation that fails
+	// quoted is the path of the first operation naming a member that holds
+	// a double quote or a backslash, which SQLite refuses (E2070) and its
+	// merge patch writes.
+	quoted string
 }
 
 const memberBase = `{"a":1,"b":{"c":2,"d":3},"e":[1,2]}`
@@ -70,7 +74,7 @@ func memberCases() []memberCase {
 		{name: "keys holding quotes, backslashes, dots and newlines", start: `{"q\"u\\o":{"k":1},"a.b":1,"é\n":{"z":2}}`,
 			ops:   `[{"op":"replace","path":"/doc/q\"u\\o/k","value":2},{"op":"remove","path":"/doc/a.b"},{"op":"add","path":"/doc/é\n/y","value":3}]`,
 			merge: `{"doc":{"q\"u\\o":{"k":2},"a.b":null,"é\n":{"y":3}}}`,
-			want:  `{"q\"u\\o":{"k":2},"é\n":{"z":2,"y":3}}`},
+			want:  `{"q\"u\\o":{"k":2},"é\n":{"z":2,"y":3}}`, quoted: `/doc/q"u\o/k`},
 		{name: "a later operation reads the member an earlier one wrote", start: memberBase,
 			ops:   `[{"op":"add","path":"/doc/x","value":{}},{"op":"add","path":"/doc/x/y","value":1},{"op":"replace","path":"/doc/x/y","value":2},{"op":"remove","path":"/doc/a"}]`,
 			merge: `{"doc":{"x":{"y":2},"a":null}}`,
@@ -109,7 +113,9 @@ func memberCases() []memberCase {
 // RFC 6902 member writes compile to SQL on every dialect: each case is
 // executed with its precondition, checked against json-patch applying the
 // same operations to the document path's form of the row, and against the
-// equivalent merge patch where there is one.
+// equivalent merge patch where there is one. A dialect that refuses a
+// member name holding a double quote or a backslash refuses the case
+// naming one, and its merge patch writes what json-patch does.
 func runMemberCases(t *testing.T, mdb mergeDB) {
 	t.Helper()
 	parser := patch.NewParser(memberSchema(mdb.storage), nil)
@@ -137,9 +143,32 @@ func runMemberCases(t *testing.T, mdb mergeDB) {
 			reset()
 			reference, referenceErr := applyRFC6902(t, tc.start, tc.ops)
 
+			merged := func() string {
+				t.Helper()
+				reset()
+				merge, err := patch.ParseMergePatch([]byte(tc.merge), mergeSchema(mdb.storage), nil)
+				require.NoError(t, err)
+				mergeRes, err := patch.BuildPatchSQL(merge, mdb.dialect)
+				require.NoError(t, err)
+				_, err = mdb.db.ExecContext(t.Context(), "UPDATE docs SET "+mergeRes.SetClause+" WHERE id = "+mdb.dialect.Placeholder(mergeRes.ParamCount+1), append(mergeRes.Args, 1)...)
+				require.NoError(t, err)
+				return read()
+			}
+
 			parsed, err := parser.Parse([]byte(tc.ops))
 			require.NoError(t, err)
 			res, err := patch.BuildPatchSQL(parsed, mdb.dialect)
+			if mdb.refusesQuoted && tc.quoted != "" {
+				require.ErrorIs(t, err, core.CodeOpNotSQLCompilable)
+				pe, ok := errors.AsType[*core.ParseError](err)
+				require.True(t, ok, "%v is no ParseError", err)
+				assert.Equal(t, tc.quoted, pe.Path)
+				require.NoError(t, referenceErr)
+				if tc.merge != "" {
+					assert.Equal(t, reference, decodeDoc(t, merged()), "the merge patch writes what json-patch does")
+				}
+				return
+			}
 			if tc.want == "" && err != nil {
 				pe, ok := errors.AsType[*core.ParseError](err)
 				require.True(t, ok, "%v is no ParseError", err)
@@ -183,14 +212,7 @@ func runMemberCases(t *testing.T, mdb mergeDB) {
 			if tc.merge == "" {
 				return
 			}
-			reset()
-			merge, err := patch.ParseMergePatch([]byte(tc.merge), mergeSchema(mdb.storage), nil)
-			require.NoError(t, err)
-			mergeRes, err := patch.BuildPatchSQL(merge, mdb.dialect)
-			require.NoError(t, err)
-			_, err = mdb.db.ExecContext(t.Context(), "UPDATE docs SET "+mergeRes.SetClause+" WHERE id = "+mdb.dialect.Placeholder(mergeRes.ParamCount+1), append(mergeRes.Args, 1)...)
-			require.NoError(t, err)
-			assert.Equal(t, decodeDoc(t, got), decodeDoc(t, read()), "the same row as the equivalent merge patch")
+			assert.Equal(t, decodeDoc(t, got), decodeDoc(t, merged()), "the same row as the equivalent merge patch")
 		})
 	}
 }

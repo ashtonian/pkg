@@ -2,6 +2,7 @@ package parse
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -201,11 +202,6 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if _, ok := fs.SystemFields[name]; ok {
 		return fmt.Errorf("parse: %s: relation %q names a system field", r.table, name)
 	}
-	for _, own := range r.ownParams() {
-		if slices.Contains(filter.FlatParamFields(own.name), name) {
-			return fmt.Errorf("parse: %s: relation %q: %s would be a flat filter on it", r.table, name, own)
-		}
-	}
 	// Refused here rather than as ambiguous later: a relation under a name
 	// policies already resolve would change what those policies constrain.
 	if _, ok, _ := fs.PolicyField(name); ok {
@@ -294,11 +290,6 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		return err
 	}
 	t := rel.target
-	// The last check: past it nothing fails, so the graph never holds a
-	// relation the resource does not declare.
-	if err := r.tenantNode.relate(t.tenantGraph(), rel.policy); err != nil {
-		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
-	}
 	field := &filter.FieldSchema{
 		ExternalName:     name,
 		AllowedOperators: relationOperators(rel.kind, len(keys)),
@@ -318,6 +309,21 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		// A key of several columns is no one value: the field compares
 		// none, and includes and facets name each key by its text.
 		field.DataType = core.FieldTypeArray
+	}
+	// The schema with the relation, as WithPaths checks the fields it adds:
+	// a parameter the endpoint reads itself may not be a flat filter on it.
+	related := *fs
+	related.Fields = maps.Clone(fs.Fields)
+	related.Fields[name] = field
+	err = r.checkQueryParams(&related)
+	if err != nil {
+		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+	}
+	// The last check: past it nothing fails, so the graph never holds a
+	// relation the resource does not declare.
+	err = r.tenantNode.relate(t.tenantGraph(), rel.policy)
+	if err != nil {
+		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
 	}
 	fs.Fields[name] = field
 	if membership != nil {

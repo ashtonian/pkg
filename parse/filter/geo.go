@@ -186,10 +186,11 @@ func ValidateGeoPolygon(p *GeoPolygon) error {
 	return nil
 }
 
-// validateGeoValue re-checks a geo operand at build time: programmatic ASTs
-// bypass the parser, and a swapped corner or out-of-range point would
-// otherwise compile to a predicate that silently means something else.
-func validateGeoValue(value any) error {
+// validateGeoValue re-checks field's geo operand at build time:
+// programmatic ASTs bypass the parser, and a swapped corner or out-of-range
+// point would otherwise compile to a predicate that silently means something
+// else.
+func validateGeoValue(field *FieldSchema, value any) error {
 	var code = ECodeInvalidGeoCoords
 	var err error
 	switch v := value.(type) {
@@ -207,7 +208,7 @@ func validateGeoValue(value any) error {
 		err = fmt.Errorf("unexpected geo value %s", gowalker.TypeText(reflect.TypeOf(value)))
 	}
 	if err != nil {
-		return &core.ParseError{Kind: core.ParseErrorKindFilter, Code: code.String(), Message: err.Error(), Cause: err}
+		return core.NewError(code, err.Error(), core.WithField(field.ExternalName), core.WithCause(err))
 	}
 	return nil
 }
@@ -219,11 +220,7 @@ func validateGeoValue(value any) error {
 func parseGeoValue(field *FieldSchema, op FilterOperator, value any) (any, error) {
 	obj, ok := value.(map[string]any)
 	if !ok {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInvalidGeoCoords.String(),
-			Message: fmt.Sprintf("field '%s': geo operator %s requires an object value", field.ExternalName, op),
-		}
+		return nil, fieldError(ECodeInvalidGeoCoords, field.ExternalName, fmt.Sprintf("geo operator %s requires an object value", op))
 	}
 
 	switch op {
@@ -234,53 +231,29 @@ func parseGeoValue(field *FieldSchema, op FilterOperator, value any) (any, error
 	case OpIntersects:
 		return parseGeoWithinValue(field.ExternalName, obj)
 	default:
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInvalidOperator.String(),
-			Message: fmt.Sprintf("field '%s': unknown geo operator %s", field.ExternalName, op),
-		}
+		return nil, fieldError(ECodeInvalidOperator, field.ExternalName, fmt.Sprintf("unknown geo operator %s", op))
 	}
 }
 
 func parseGeoDistanceValue(fieldName string, obj map[string]any) (*GeoDistance, error) {
 	lat, ok := toFloat64(obj[geoMemberLat])
 	if !ok {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInvalidGeoCoords.String(),
-			Message: fmt.Sprintf("field '%s': $near requires numeric 'lat'", fieldName),
-		}
+		return nil, fieldError(ECodeInvalidGeoCoords, fieldName, "$near requires numeric 'lat'")
 	}
 	lon, ok := toFloat64(obj[geoMemberLon])
 	if !ok {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInvalidGeoCoords.String(),
-			Message: fmt.Sprintf("field '%s': $near requires numeric 'lon'", fieldName),
-		}
+		return nil, fieldError(ECodeInvalidGeoCoords, fieldName, "$near requires numeric 'lon'")
 	}
 	distStr, ok := obj[geoMemberDistance].(string)
 	if !ok || distStr == "" {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInvalidDistance.String(),
-			Message: fmt.Sprintf("field '%s': $near requires string 'distance' (e.g., \"5km\")", fieldName),
-		}
+		return nil, fieldError(ECodeInvalidDistance, fieldName, "$near requires string 'distance' (e.g., \"5km\")")
 	}
 
 	if err := ValidateGeoPoint(lat, lon); err != nil {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInvalidGeoCoords.String(),
-			Message: fmt.Sprintf("field '%s': %v", fieldName, err),
-		}
+		return nil, fieldError(ECodeInvalidGeoCoords, fieldName, err.Error())
 	}
 	if _, err := ParseDistance(distStr); err != nil {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInvalidDistance.String(),
-			Message: fmt.Sprintf("field '%s': %v", fieldName, err),
-		}
+		return nil, fieldError(ECodeInvalidDistance, fieldName, err.Error())
 	}
 
 	return &GeoDistance{Lat: lat, Lon: lon, Distance: distStr}, nil
@@ -294,38 +267,22 @@ func parseGeoWithinValue(fieldName string, obj map[string]any) (any, error) {
 	if _, hasPoints := obj[geoMemberPoints]; hasPoints {
 		return parseGeoPolygonValue(fieldName, obj)
 	}
-	return nil, &core.ParseError{
-		Kind:    core.ParseErrorKindFilter,
-		Code:    ECodeInvalidGeoCoords.String(),
-		Message: fmt.Sprintf("field '%s': $within requires 'top_left'/'bottom_right' (bbox) or 'points' (polygon)", fieldName),
-	}
+	return nil, fieldError(ECodeInvalidGeoCoords, fieldName, "$within requires 'top_left'/'bottom_right' (bbox) or 'points' (polygon)")
 }
 
 func parseGeoBBoxValue(fieldName string, obj map[string]any) (*GeoBoundingBox, error) {
 	tl, err := extractGeoPoint(obj[geoMemberTopLeft])
 	if err != nil {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInvalidGeoCoords.String(),
-			Message: fmt.Sprintf("field '%s': top_left: %v", fieldName, err),
-		}
+		return nil, fieldError(ECodeInvalidGeoCoords, fieldName, fmt.Sprintf("top_left: %v", err))
 	}
 	br, err := extractGeoPoint(obj[geoMemberBottomRight])
 	if err != nil {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInvalidGeoCoords.String(),
-			Message: fmt.Sprintf("field '%s': bottom_right: %v", fieldName, err),
-		}
+		return nil, fieldError(ECodeInvalidGeoCoords, fieldName, fmt.Sprintf("bottom_right: %v", err))
 	}
 
 	bb := &GeoBoundingBox{TopLeft: *tl, BottomRight: *br}
 	if err := ValidateGeoBoundingBox(bb); err != nil {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInvalidGeoCoords.String(),
-			Message: fmt.Sprintf("field '%s': %v", fieldName, err),
-		}
+		return nil, fieldError(ECodeInvalidGeoCoords, fieldName, err.Error())
 	}
 	return bb, nil
 }
@@ -333,33 +290,21 @@ func parseGeoBBoxValue(fieldName string, obj map[string]any) (*GeoBoundingBox, e
 func parseGeoPolygonValue(fieldName string, obj map[string]any) (*GeoPolygon, error) {
 	arr, ok := obj[geoMemberPoints].([]any)
 	if !ok {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInvalidGeoPolygon.String(),
-			Message: fmt.Sprintf("field '%s': 'points' must be an array", fieldName),
-		}
+		return nil, fieldError(ECodeInvalidGeoPolygon, fieldName, "'points' must be an array")
 	}
 
 	points := make([]GeoPoint, 0, len(arr))
 	for i, item := range arr {
 		pt, err := extractGeoPoint(item)
 		if err != nil {
-			return nil, &core.ParseError{
-				Kind:    core.ParseErrorKindFilter,
-				Code:    ECodeInvalidGeoCoords.String(),
-				Message: fmt.Sprintf("field '%s': points[%d]: %v", fieldName, i, err),
-			}
+			return nil, fieldError(ECodeInvalidGeoCoords, fieldName, fmt.Sprintf("points[%d]: %v", i, err))
 		}
 		points = append(points, *pt)
 	}
 
 	poly := &GeoPolygon{Points: points}
 	if err := ValidateGeoPolygon(poly); err != nil {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeInvalidGeoPolygon.String(),
-			Message: fmt.Sprintf("field '%s': %v", fieldName, err),
-		}
+		return nil, fieldError(ECodeInvalidGeoPolygon, fieldName, err.Error())
 	}
 	return poly, nil
 }
@@ -393,8 +338,8 @@ func toFloat64(v any) (float64, bool) {
 
 // --- Tag Parsing ---
 
-// geoKeyRe is a JSONB member name: it is interpolated into `->>'key'` and
-// `'$.key'` accessors, so only identifiers are accepted.
+// geoKeyRe is the JSONB member name a geo_lat or geo_lon tag may give: an
+// identifier.
 var geoKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // parseGeoTag reads the geo struct tags: geo (jsonb | geography | geometry),

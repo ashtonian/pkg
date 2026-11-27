@@ -142,6 +142,9 @@ type numericText string
 
 func (n numericText) Value() (any, error) { return string(n), nil }
 
+// stamp is an application's named string holding a timestamp's text.
+type stamp string
+
 func TestColumnValue(t *testing.T) {
 	field := func(dt core.FieldType) *FieldSchema { return &FieldSchema{ExternalName: "f", DataType: dt} }
 	arrayOf := func(elem core.FieldType) *FieldSchema {
@@ -163,6 +166,7 @@ func TestColumnValue(t *testing.T) {
 		{"unsigned above int64", &FieldSchema{ExternalName: "f", DataType: core.FieldTypeInt, NumberKind: reflect.Uint64}, uint64(1 << 63), uint64(1 << 63), true},
 		{"decimal drops its scale", field(core.FieldTypeDecimal), decimal.RequireFromString("10.00"), "10", true},
 		{"time in UTC canonical text", field(core.FieldTypeTimestamp), at, "2026-01-02T03:04:05.000000000Z", true},
+		{"a named string's timestamp", field(core.FieldTypeTimestamp), stamp("2026-01-02T05:04:05+02:00"), "2026-01-02T03:04:05.000000000Z", true},
 		{"UUID lower-cased", field(core.FieldTypeUUID), ref, "0198a3c2-7a1e-7c00-8000-000000000001", true},
 		{"document JSON text", field(core.FieldTypeJSON), json.RawMessage(`{"n":1}`), map[string]any{"n": json.Number("1")}, true},
 		{"JSON null document is a value", field(core.FieldTypeJSON), json.RawMessage(`null`), nil, true},

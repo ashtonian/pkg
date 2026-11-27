@@ -16,7 +16,7 @@ import (
 // field named twice is refused, since only its first mention can order.
 func ParseSort(schema *SortSchema, sortParam string) (*SortResult, error) {
 	if schema == nil {
-		return nil, newSortError(ECodeSortFieldNotAllowed, "no sort schema provided")
+		return nil, core.NewError(ECodeSortFieldNotAllowed, "no sort schema provided")
 	}
 
 	maxFields := schema.MaxFields
@@ -49,11 +49,7 @@ func ParseSort(schema *SortSchema, sortParam string) (*SortResult, error) {
 	}
 
 	if len(parts) > maxFields {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindSort,
-			Code:    ECodeSortFieldLimit.String(),
-			Message: fmt.Sprintf("sort field count %d exceeds maximum %d", len(parts), maxFields),
-		}
+		return nil, core.NewError(ECodeSortFieldLimit, fmt.Sprintf("sort field count %d exceeds maximum %d", len(parts), maxFields))
 	}
 
 	fields := make([]SortField, 0, len(parts))
@@ -68,21 +64,13 @@ func ParseSort(schema *SortSchema, sortParam string) (*SortResult, error) {
 		}
 		fieldSchema, ok := schema.Fields[name]
 		if !ok {
-			return nil, &core.ParseError{
-				Kind:    core.ParseErrorKindSort,
-				Code:    ECodeSortFieldNotAllowed.String(),
-				Message: fmt.Sprintf("sort field '%s' is not allowed", name),
-				Details: map[string]any{core.DetailField: name},
-			}
+			return nil, core.NewError(ECodeSortFieldNotAllowed, fmt.Sprintf("sort field '%s' is not allowed", name),
+				core.WithField(name))
 		}
 		named := slices.ContainsFunc(fields, func(f SortField) bool { return f.Name == name })
 		if named {
-			twice := &core.ParseError{
-				Kind:    core.ParseErrorKindSort,
-				Code:    ECodeSortFieldNotAllowed.String(),
-				Message: fmt.Sprintf("sort field '%s' is named more than once", name),
-				Details: map[string]any{core.DetailField: name},
-			}
+			twice := core.NewError(ECodeSortFieldNotAllowed, fmt.Sprintf("sort field '%s' is named more than once", name),
+				core.WithField(name))
 			return nil, twice
 		}
 		fields = append(fields, SortField{Name: name, Schema: fieldSchema, Direction: dir})

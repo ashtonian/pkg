@@ -3,7 +3,6 @@ package parse
 import (
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -437,18 +436,20 @@ func (r *Resource[T]) targetKeys(keys []Key) ([]Key, error) {
 }
 
 // rowKey is row's key as a map key (keyColumns.identity), so rows scanned
-// apart that hold equal keys, through pointers or not, share one.
+// apart that hold equal keys, through pointers or not, share one. A key
+// column the database holds as NULL (core.StoredValue: a nil pointer, a
+// Valuer of nil) is a row without a key.
 func (r *Resource[T]) rowKey(row T) (any, error) {
 	k, err := r.Key(row)
 	if err != nil {
 		return nil, err
 	}
 	for i, v := range k {
-		rv := reflect.ValueOf(v)
-		for rv.Kind() == reflect.Pointer && !rv.IsNil() {
-			rv = rv.Elem()
+		_, null, err := core.StoredValue(v)
+		if err != nil {
+			return nil, fmt.Errorf("parse: %s: row key: key column %s: %w", r.table, r.pk[i], err)
 		}
-		if !rv.IsValid() || rv.Kind() == reflect.Pointer {
+		if null {
 			return nil, fmt.Errorf("parse: %s: a row has no key: key column %s holds no value", r.table, r.pk[i])
 		}
 	}

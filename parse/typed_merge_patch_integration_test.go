@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -16,8 +15,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/parsehttp"
 )
 
@@ -36,12 +33,8 @@ type mergePrefsRow struct {
 	Prefs mergePrefs `json:"prefs" db:"prefs" parse:"patch"`
 }
 
-func TestTypedMergePatchPreservesSiblings_SQLite(t *testing.T) {
-	runTypedMergePatch(t, func(t *testing.T) *sql.DB { return dbtest.SQLite(t) }, filter.SQLiteDialect{}, "TEXT")
-}
-
-func TestTypedMergePatchPreservesSiblings_Postgres(t *testing.T) {
-	runTypedMergePatch(t, func(t *testing.T) *sql.DB { return dbtest.Postgres(t) }, filter.PostgresDialect{}, "JSONB")
+func TestTypedMergePatchPreservesSiblings(t *testing.T) {
+	runSQLBackends(t, runTypedMergePatch)
 }
 
 // runTypedMergePatch serves the merge patches the TypeScript SDK's typed
@@ -52,7 +45,10 @@ func TestTypedMergePatchPreservesSiblings_Postgres(t *testing.T) {
 // in ApplyValidatedPatch alike. null removes a member the document may
 // leave out and is refused on one its type always writes, which is the
 // rule the SDK's MergeDocument type states.
-func runTypedMergePatch(t *testing.T, open func(*testing.T) *sql.DB, d parse.Dialect, docType string) {
+func runTypedMergePatch(t *testing.T, b sqlBackend) {
+	open := b.open
+	d := b.dialect
+	docType := b.columnType(core.TypeInfo{Type: core.FieldTypeJSON})
 	r, err := parse.NewResource[mergePrefsRow]("merge_prefs")
 	require.NoError(t, err)
 	initial := mergePrefsRow{ID: "one", Prefs: mergePrefs{City: "York", Units: "metric", Label: "home"}}
