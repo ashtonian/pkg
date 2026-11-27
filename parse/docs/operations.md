@@ -140,7 +140,7 @@ SQLite cases run locally. PostgreSQL and PostGIS tests run against the servers `
 | [Change predicate cases](../patch/change_predicate_cases_test.go) | `SkipUnchanged`'s comparisons per column kind, executed on SQLite and PostgreSQL |
 | [HTTP server](../examples/server/) | SQLite requests, pagination, facets, and patching |
 | [Filter conformance](../filter/filtertest/) | Shared operator/type behavior for backend implementers |
-| [Database corpus](../internal/corpus/) | Every database-backed case, run by `parsesql`'s and `parsepgx`'s `TestCorpus` on their engine: executor contract, lists, keysets, facets, filters, keys, values, updates, policies, relations, tenancy, reserved identifiers, PostgreSQL plans |
+| [Database corpus](../internal/corpus/) | Every database-backed case, run by `parsesql`'s and `parsepgx`'s `TestCorpus` on their engine: executor contract, lists, keysets, facets, filters, keys, values, updates, policies, relations, tenancy, reserved identifiers, PostgreSQL plans, patch SQL, string literals, PostGIS geo measures |
 | [SDK fixtures](../testdata/) | Go-to-TypeScript schema/filter/page contracts |
 
 For the SDK, run `make test-parse-sdk` from the repository root, which first checks the pinned pnpm, or run `pnpm install --frozen-lockfile`, `pnpm run check`, `pnpm run check:compat`, `pnpm run lint`, `pnpm test`, and `pnpm run build` from `sdk/ts`. Regenerate shared fixtures only when the contract change is intentional; the [SDK guide](../sdk/ts/README.md#testing) lists the commands.

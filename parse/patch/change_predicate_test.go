@@ -10,23 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/internal/patchtest"
 	"github.com/ashtonian/pkg/parse/patch"
 )
-
-func TestBuildPatchSQL_ChangePredicateSQLite(t *testing.T) {
-	runChangeCases(t, changeDB{
-		db:      dbtest.SQLite(t),
-		dialect: filter.SQLiteDialect{},
-		setup: []string{`CREATE TABLE things (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE, email TEXT COLLATE NOCASE, mood TEXT,
-			rank INTEGER, price NUMERIC, amount REAL, ratio REAL, span TEXT, at TEXT, doc TEXT, raw TEXT, tags TEXT NOT NULL DEFAULT '[]',
-			version INTEGER NOT NULL DEFAULT 1, updated_at TEXT)`},
-		// quote() keeps the storage class: 1 and 1.0 read apart.
-		readBack: `SELECT quote(name) || '|' || quote(email) || '|' || quote(mood) || '|' || quote(rank) || '|' || quote(price) || '|' ||
-			quote(amount) || '|' || quote(ratio) || '|' || quote(span) || '|' || quote(at) || '|' || quote(doc) || '|' || quote(raw) || '|' ||
-			quote(tags) FROM things WHERE id = 1`,
-	})
-}
 
 func TestBuildPatchSQL_ChangePredicateSQL(t *testing.T) {
 	stamps := []patch.PatchSQLOption{patch.WithAutoTimestampSQL("updated_at", "NOW()"), patch.WithIncrement("version"), patch.WithChangePredicate()}
@@ -59,7 +45,7 @@ func TestBuildPatchSQL_ChangePredicateSQL(t *testing.T) {
 			`("doc" COLLATE BINARY IS NOT json_patch(COALESCE("doc", '{}'), ?1))`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			res, err := patch.BuildPatchSQL(patchOf(t, tc.patch), tc.dialect, stamps...)
+			res, err := patch.BuildPatchSQL(patchtest.ChangePatch(t, tc.patch), tc.dialect, stamps...)
 			require.NoError(t, err)
 			assert.Equal(t, tc.set, res.SetClause)
 			assert.Equal(t, tc.cmp, res.ChangePredicate)
@@ -72,7 +58,7 @@ var placeholderRe = regexp.MustCompile(`[$?][0-9]+`)
 // The predicate reuses the SET clause's placeholders, offset or not, and
 // binds no argument of its own.
 func TestBuildPatchSQL_ChangePredicateReusesPlaceholders(t *testing.T) {
-	p := patchOf(t, `{"name":"n","rank":2,"doc":{"a":{"b":1},"c":null},"tags":["x"]}`)
+	p := patchtest.ChangePatch(t, `{"name":"n","rank":2,"doc":{"a":{"b":1},"c":null},"tags":["x"]}`)
 	for _, d := range []patch.SQLDialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
 		for _, start := range []int{0, 4} {
 			plain, err := patch.BuildPatchSQL(p, d, patch.WithStartParam(start))
@@ -97,12 +83,12 @@ func TestBuildPatchSQL_ChangePredicateReusesPlaceholders(t *testing.T) {
 }
 
 func TestBuildPatchSQL_ChangePredicateIsOptIn(t *testing.T) {
-	p := patchOf(t, `{"name":"n"}`)
+	p := patchtest.ChangePatch(t, `{"name":"n"}`)
 	res, err := patch.BuildPatchSQL(p, filter.PostgresDialect{})
 	require.NoError(t, err)
 	assert.Empty(t, res.ChangePredicate)
 
-	server := patchOf(t, `{"version":3}`)
+	server := patchtest.ChangePatch(t, `{"version":3}`)
 	res, err = patch.BuildPatchSQL(server, filter.PostgresDialect{}, patch.WithIncrement("version"), patch.WithChangePredicate())
 	require.NoError(t, err)
 	assert.True(t, res.Empty)
