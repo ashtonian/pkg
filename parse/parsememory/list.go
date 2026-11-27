@@ -19,6 +19,7 @@ import (
 // names the part that failed, as the SQL providers name their statements:
 // page, facets, or include <field>.
 func (e executor) List(ctx context.Context, req backend.ListRequest, sink backend.ListSink) error {
+	defer e.hold()()
 	l, err := e.lister(req.Resource.Table, queryOf(req.List), true)
 	if err != nil {
 		return err
@@ -57,6 +58,7 @@ func (e executor) List(ctx context.Context, req backend.ListRequest, sink backen
 // Facets counts the population by the request's facets in one pass, as
 // List does; a request naming no facets reads nothing.
 func (e executor) Facets(ctx context.Context, req backend.ListRequest) ([]filter.FacetResult, error) {
+	defer e.hold()()
 	if len(req.List.Facets()) == 0 {
 		return nil, nil
 	}

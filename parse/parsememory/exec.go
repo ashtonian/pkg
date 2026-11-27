@@ -18,8 +18,20 @@ type executor struct {
 	txn *Txn
 }
 
+// hold runs the executor's request alone in its transaction, after the
+// operation in flight there and before the next (Txn.mu), until the
+// returned release; outside a transaction it holds nothing.
+func (e executor) hold() (release func()) {
+	if e.txn == nil {
+		return func() {}
+	}
+	e.txn.mu.Lock()
+	return e.txn.mu.Unlock
+}
+
 // view is what the executor's reads read: the transaction's write, or the
-// snapshot published when the read begins.
+// snapshot published when the read begins. A read in a transaction holds
+// it (hold) while it reads.
 func (e executor) view() (view, error) {
 	err := e.db.open()
 	if err != nil {
@@ -28,8 +40,9 @@ func (e executor) view() (view, error) {
 	if e.txn == nil {
 		return e.db.store.read(), nil
 	}
-	if e.txn.w.done {
-		return nil, ErrTxnDone
+	err = e.txn.live()
+	if err != nil {
+		return nil, err
 	}
 	return e.txn.w, nil
 }
@@ -53,6 +66,7 @@ func (e executor) write(ctx context.Context, table string, apply func(*write) er
 		if err != nil {
 			return parse.StatementFailed(table, "savepoint", err)
 		}
+		defer e.hold()()
 		return e.underSavepoint(apply)
 	}
 	w, err := e.db.store.begin(ctx)
@@ -68,13 +82,14 @@ func (e executor) write(ctx context.Context, table string, apply func(*write) er
 	return parse.StatementFailed(table, "commit", w.commit())
 }
 
-// underSavepoint runs apply in the executor's transaction under a
-// savepoint, restored unless apply returns nil.
+// underSavepoint runs apply in the executor's transaction, which it holds
+// (hold), under a savepoint, restored unless apply returns nil.
 func (e executor) underSavepoint(apply func(*write) error) error {
-	w := e.txn.w
-	if w.done {
-		return ErrTxnDone
+	err := e.txn.live()
+	if err != nil {
+		return err
 	}
+	w := e.txn.w
 	saved := w.savepoint()
 	returned := false
 	defer func() {
@@ -82,11 +97,12 @@ func (e executor) underSavepoint(apply func(*write) error) error {
 			w.restore(saved)
 		}
 	}()
-	err := apply(w)
+	err = apply(w)
 	returned = true
 	switch {
 	case errors.Is(err, ErrRowLimit):
 		w.abort()
+		e.txn.settled()
 	case err != nil:
 		w.restore(saved)
 	}
@@ -113,8 +129,11 @@ func (d database) Declare(res *backend.Resource) error {
 	return d.db.catalog.declare(res)
 }
 
+// Begin begins a transaction that lasts until Commit or Rollback, waiting
+// for the writer under ctx: parse.Provider.Begin's contract, which the SQL
+// providers keep too, is a transaction not bound to ctx's cancellation.
 func (d database) Begin(ctx context.Context) (backend.Tx, error) {
-	txn, err := d.db.Begin(ctx)
+	txn, err := d.db.begin(ctx)
 	if err != nil {
 		return nil, parse.StatementFailed("", "begin", err)
 	}

@@ -23,8 +23,8 @@ page, err := devices.List(ctx, req, parse.Scope{Tenant: "t1"})
 res, err := devices.Update(ctx, patch, parse.ByID("d1"), scope, parse.SkipUnchanged())
 
 // The application's writes and parse's updates, committed together:
-txn, err := db.Begin(ctx)
-defer txn.Rollback(ctx) // after Commit, a no-op
+txn, err := db.Begin(ctx) // bound to ctx: it rolls back once ctx ends
+defer txn.Rollback(ctx)   // after Commit, a no-op
 err = txn.Delete(ctx, "devices", parse.Key{"d2"})
 scoped, err := devices.In(parsememory.Tx(txn))
 _, err = scoped.Update(ctx, patch, parse.ByID("d1"), scope) // reads the delete, under a savepoint
@@ -96,11 +96,11 @@ The provider has no other setting: no timeouts (nothing leaves the process; ever
   - `Close() error`: drops every row; every later operation is `ErrClosed`, and a transaction still open commits nothing.
   - `Put(ctx, table string, rows ...Row) error`: writes rows, each replacing the row of its key, in one write — all of them or, on an error, none — waiting for the writer under `ctx`. A table or column no resource declared, a row without a value for a key column, a value its column cannot hold, and a table past `MaxRows` are errors.
   - `Delete(ctx, table string, keys ...parse.Key) error`: deletes the rows of keys in one write; a key no row holds deletes nothing. A key holds a value per key column in key order; a pair table's key is every column of its relation: sources, targets, then the tenant.
-  - `Begin(ctx) (*Txn, error)`: a transaction holding the writer from `Begin` until `Commit` or `Rollback`, waiting for it under `ctx`; it is not bound to `ctx` after.
+  - `Begin(ctx) (*Txn, error)`: a transaction holding the writer from `Begin` until `Commit` or `Rollback`, waiting for it under `ctx`, and bound to `ctx` as `database/sql` binds a `Tx` to `BeginTx`'s context: once `ctx` ends, the transaction rolls back and releases the writer, and every later operation, `Commit` included, returns `ErrTxnDone` wrapping `ctx`'s cause (`context.Cause`). A transaction parse begins (`Provider().Begin`) is bound to no context, as `parse.Provider.Begin` documents for every provider: it waits for the writer under `ctx` and lasts until `Commit` or `Rollback`.
 - `Row map[string]any`: one row to write, by column name.
-- `Txn`: a transaction of the application's own, used by one goroutine at a time. Its reads see its own writes, which other reads see only once it commits. `Put` and `Delete` as `Database`'s; `Commit(ctx) error` publishes what it wrote and releases the writer; `Rollback(ctx) error` drops it, and on a transaction already settled does nothing and returns nil.
+- `Txn`: a transaction of the application's own, safe for concurrent use: its operations and the requests resources run in it (`Tx`) run one at a time, as a `database/sql` `Tx` runs them on its one connection, and `Commit` or `Rollback` waits for the operation in flight. Its reads see its own writes, which other reads see only once it commits. `Put` and `Delete` as `Database`'s; `Commit(ctx) error` publishes what it wrote and releases the writer; `Rollback(ctx) error` drops it, and on a transaction already settled does nothing and returns nil.
 - `Tx(txn *Txn) *parse.Tx`: `txn` as a transaction resources run in (`parse.Resource.In`), so the application's writes and parse's updates commit together. Commit or roll back through `txn` or the returned `*parse.Tx`.
-- Errors, matched with `errors.Is`: `ErrRowLimit` (a table past `MaxRows`), `ErrClosed` (an operation after `Close`), `ErrTxnDone` (an operation on a transaction already committed or rolled back, one `ErrRowLimit` ended included), `ErrTableMismatch` (a resource whose table disagrees with what another resource declared: its key, or a column's type).
+- Errors, matched with `errors.Is`: `ErrRowLimit` (a table past `MaxRows`), `ErrClosed` (an operation after `Close`), `ErrTxnDone` (an operation on a transaction already committed or rolled back, one `ErrRowLimit` ended and one its context's end rolled back included), `ErrTableMismatch` (a resource whose table disagrees with what another resource declared: its key, or a column's type).
 
 The resource methods (`List`, `Facets`, `Update`, `UpdateBatch`, `In`) are the root package's. `Query` and the SQL builders (`BuildList`, `BuildFacets`, `IncludeQueries`, `Page`, `PagePointers`, `ListQuery`, `BuildUpdate`, `BuildUpdateBatch`), a list or facets request with `search`, `parse.ReadExpr` and `parse.StampSQL` are refused with an `*parse.UnsupportedError` naming the provider and the operation (`parse: notes: the memory provider does not support SQL builders`; `errors.Is(err, parse.ErrUnsupported)`), and so is a server policy holding raw SQL (`filter.PolicyConstraint.RawSQL`): `TestCapabilities_RefuseWhatNeedsSQL`.
 
@@ -140,7 +140,7 @@ From this module's directory (the repository's `go.work` builds it against the w
 
 ```sh
 go test -tags=unit ./...                          # the provider's own tests, the layout test among them
-go test -tags=concurrency -race ./...             # concurrent updates and reads, the writer's wait
+go test -tags=concurrency -race ./...             # concurrent updates and reads, the writer's wait, transactions
 go test -tags=integration ./...                   # TestCorpus: parse's database corpus on this provider
 go test -tags=integration -run 'TestCorpus/ComposeConstraints' .   # one case
 go test -tags=unit -run '^$' -bench . ./...       # BenchmarkList, BenchmarkWrite
@@ -148,7 +148,7 @@ go test -tags=unit -run '^$' -bench . ./...       # BenchmarkList, BenchmarkWrit
 
 From the repository root, `make test-parse-unit`, `make test-parse-race`, `make test-parse-race-all` and `make test-parse-integration` run them with parse's other modules, and `make test-parse-wasip1` builds the unit tests for `GOOS=wasip1 GOARCH=wasm` and runs them under wazero (v1.12.0) with no directory preopened, so a test that reached the filesystem would fail; CI runs it in the test job. The repository's `core` benchmarks `BenchmarkKeysetWalk` and `BenchmarkKeysetWalkCanonical` compare a keyset's comparisons on stored values with those on values read to canonical once, as this provider's walk reads them.
 
-The tests hold: the configuration's default and range; `Choice` through `parseprovider`; every refusal of what needs SQL; resources declaring one table together, and the refusals of a disagreement; `Put` and `Delete` writing all or nothing; `MaxRows` keeping nothing a write or transaction wrote; a transaction's isolation, rollback and writer; `Close`; lists with their pages both ways, counts, facets and includes; key-ordered pages agreeing with a full pass, forward and backward; updates writing all or nothing, in and out of a transaction; a relation only patches reach; a request whose context is done running nothing; and, under the race detector, a list's page, count and facets reading one state while batches commit, a failed update leaving the store as it was while others commit, and a writer's wait ending with its context.
+The tests hold: the configuration's default and range; `Choice` through `parseprovider`; every refusal of what needs SQL; resources declaring one table together, and the refusals of a disagreement; `Put` and `Delete` writing all or nothing; `MaxRows` keeping nothing a write or transaction wrote; a transaction's isolation, rollback and writer; `Close`; lists with their pages both ways, counts, facets and includes; key-ordered pages agreeing with a full pass, forward and backward; updates writing all or nothing, in and out of a transaction; a relation only patches reach; a request whose context is done running nothing; and, under the race detector, a list's page, count and facets reading one state while batches commit, a failed update leaving the store as it was while others commit, a writer's wait ending with its context, a transaction running concurrent operations one at a time and settling after the one in flight, and a transaction rolled back by its context's end, releasing the writer.
 
 ## Operations
 
@@ -156,7 +156,7 @@ The tests hold: the configuration's default and range; `Choice` through `parsepr
 - *Observability*: the package emits no metrics or logs of its own, as parse writes none; label failures by `parse.StatementError.Statement`.
 - *Shutdown*: close the database after the HTTP server has drained. `Close` drops every row at once; a write still running when it closes publishes nothing (`ErrClosed`).
 - *Memory*: every row of every table is in the process heap, a document or an array as its JSON text. `max_rows` bounds each table; size it from the largest table the process holds, pair tables included. A list holds at most the page size plus one rows beyond the snapshot; a list with relation facets holds its population's rows by tenant until it returns.
-- *Concurrency*: reads never wait and never block a writer. Writes — `Put`, `Delete`, `Begin` until it settles, each `Update` and `UpdateBatch` — take the one writer in turn; a `Txn` holds it until `Commit` or `Rollback`, so keep transactions short and always settle them (`defer txn.Rollback(ctx)`).
+- *Concurrency*: reads never wait and never block a writer. Writes — `Put`, `Delete`, `Begin` until it settles, each `Update` and `UpdateBatch` — take the one writer in turn; a `Txn` holds it until `Commit` or `Rollback`, or until the context `Database.Begin` was given ends, so keep transactions short and always settle them (`defer txn.Rollback(ctx)`). A transaction from `Provider().Begin` has no context bounding it: only its `Commit` or `Rollback` releases the writer.
 - *Cost*, for a table of n rows; measured on an Apple M2 Pro over 100,000 rows (`BenchmarkList`, `BenchmarkWrite`):
 
   | Operation | Cost | Measured |
@@ -177,8 +177,8 @@ The tests hold: the configuration's default and range; `Choice` through `parsepr
   - `parsememory: table "t": no resource declares it` on a list or update: the resource's table was declared to another database, or not at all; build the resource on this database's `Provider()`.
   - `parse: t: declaring the table: parsememory: resources disagree on a table: table "t": column "c" is declared as … and as …` (`ErrTableMismatch`): two resources on one table declare another key, or another type for one column; the message names both. Make the types agree, or use separate tables.
   - `parsememory: putting into "t": row 0: key column id: NULL`: a row lacks a value for a key column; the provider generates no key.
-  - `parsememory: waiting for the writer: context deadline exceeded`: a write waited past its deadline for another write, usually a `Txn` left open; settle transactions with a deferred `Rollback`.
-  - `parsememory: transaction already committed or rolled back` (`ErrTxnDone`): the transaction was settled, or `ErrRowLimit` ended it.
+  - Writes block, or fail with `parsememory: waiting for the writer: context deadline exceeded`: a transaction is open and holds the writer. A `Database.Begin` transaction lasts at most as long as its context, so give that context the deadline the work should take; one from `Provider().Begin` lasts until its `Commit` or `Rollback`. Settle every transaction with a deferred `Rollback`.
+  - `parsememory: transaction already committed or rolled back` (`ErrTxnDone`): the transaction was settled, or `ErrRowLimit` ended it; `…: rolled back as its context ended: context canceled` (or `deadline exceeded`) is a `Database.Begin` transaction whose context ended first, with nothing it wrote kept: begin again under a context that outlives the work.
   - `parsememory: database closed` (`ErrClosed`): the database was closed, usually during shutdown; a readiness probe then answers not ready.
   - `parse: t: the memory provider does not support …` (`parse.ErrUnsupported`): the request needs SQL. Remove the search, the computed column or the SQL stamp, or run on a SQL provider ([choosing a provider](../docs/providers.md)).
   - `parse: t: relations: parsememory: relation tags: pair table "t_tags": key column seq: NULL`: a resource keys the pair table by a column of its own, which no pair writes; key it by the pair's columns.
@@ -192,7 +192,7 @@ The provider runs no SQL: nothing a request carries is ever executed, and every 
 
 | File | Responsibility |
 |------|----------------|
-| [`parsememory.go`](parsememory.go) | `Name`, `Config`, `Open`, `Choice`, `Database` (`Provider`, `Ping`, `Close`, `Put`, `Delete`, `Begin`), `Row`, `Txn`, `Tx`, `ErrTxnDone`; a row checked against its table's definition, a key's probe |
+| [`parsememory.go`](parsememory.go) | `Name`, `Config`, `Open`, `Choice`, `Database` (`Provider`, `Ping`, `Close`, `Put`, `Delete`, `Begin`), `Row`, `Txn` (its lock and its context's rollback), `Tx`, `ErrTxnDone`; a row checked against its table's definition, a key's probe |
 | [`catalog.go`](catalog.go) | The tables the resources declare (`backend.Declarer`): each table's columns and key, the pair tables of the relations their filters read and their patches write, declarations merged and refused (`ErrTableMismatch`) |
 | [`store.go`](store.go) | The published snapshot, the one writer under the caller's context, the copy-on-write write, its savepoints, commit and abort; `ErrRowLimit`, `ErrClosed` |
 | [`keyrange.go`](keyrange.go) | The rows of a key prefix, found by the tree's order: a lookup's key ranges, a pair table's pairs of one owner |
@@ -204,7 +204,7 @@ The provider runs no SQL: nothing a request carries is ever executed, and every 
 | [`storage.go`](storage.go) | The storage form of a value (`backend.Storage`) |
 | [`contract.go`](contract.go) | The compile-time check that parse is at this module's release ([versions](#versions)) |
 | [`parsememory_test.go`](parsememory_test.go) | The provider's behaviour: configuration, declarations, writes, transactions, refusals, lists, updates, cancellation |
-| [`concurrency_test.go`](concurrency_test.go) | Under the race detector: one state per read while batches commit, a failed update writing nothing, the writer's wait |
+| [`concurrency_test.go`](concurrency_test.go) | Under the race detector: one state per read while batches commit, a failed update writing nothing, the writer's wait, a transaction's concurrent operations, a transaction bound to its context |
 | [`corpus_integration_test.go`](corpus_integration_test.go) | `TestCorpus`: parse's database corpus on this provider, through `corpus.Store` |
 | [`bench_test.go`](bench_test.go) | `BenchmarkList` and `BenchmarkWrite` over 100,000 rows |
 | [`layout_test.go`](layout_test.go) | No SQL package and no driver linked |

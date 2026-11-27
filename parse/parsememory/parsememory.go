@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/ashtonian/pkg/parse"
@@ -278,20 +279,53 @@ func (def *tableDef) probe(key parse.Key) (*record, error) {
 // Txn is a transaction of the application's own: it holds the writer from
 // Begin until Commit or Rollback, so the database's other writes wait for
 // it, and its reads see its own writes. Resources run in it through Tx. A
-// Txn is used by one goroutine at a time.
+// Txn is safe for concurrent use: its operations, and the requests
+// resources run in it, run one at a time, as a database/sql Tx runs them
+// on its one connection.
 type Txn struct {
 	db *Database
+	// mu serializes the transaction's operations: Put, Delete, Commit,
+	// Rollback, the rollback its context's end makes, and every request a
+	// resource runs in it (executor.hold).
+	mu sync.Mutex
 	w  *write
+	// cause is the cause of the end of the context the transaction is bound
+	// to (Database.Begin), nil until it ends, and stop stops the rollback
+	// that end makes; both nil for a transaction no context bounds.
+	cause func() error
+	stop  func() bool
+	// ended is why the transaction ended before Commit or Rollback: its
+	// context's end; nil for every other end.
+	ended error
 }
 
 // ErrTxnDone is an operation on a transaction already committed or rolled
-// back, including one ErrRowLimit ended.
+// back, including one ErrRowLimit ended and one its context's end rolled
+// back.
 var ErrTxnDone = errors.New("parsememory: transaction already committed or rolled back")
 
-// Begin begins a transaction, waiting for the writer under ctx. The
-// transaction is not bound to ctx after: it lasts until Commit or
-// Rollback.
+// Begin begins a transaction, waiting for the writer under ctx, and binds
+// it to ctx as database/sql binds a Tx to BeginTx's context: once ctx is
+// done, the transaction rolls back, releasing the writer, and every later
+// operation returns ErrTxnDone wrapping ctx's cause (context.Cause), Commit
+// included. A Rollback deferred past a Commit does nothing.
 func (d *Database) Begin(ctx context.Context) (*Txn, error) {
+	txn, err := d.begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	txn.cause = func() error { return context.Cause(ctx) }
+	txn.stop = context.AfterFunc(ctx, func() {
+		txn.mu.Lock()
+		defer txn.mu.Unlock()
+		_ = txn.live()
+	})
+	return txn, nil
+}
+
+// begin begins a transaction no context bounds, waiting for the writer
+// under ctx: parse.Provider.Begin's, which lasts until Commit or Rollback.
+func (d *Database) begin(ctx context.Context) (*Txn, error) {
 	err := d.open()
 	if err != nil {
 		return nil, err
@@ -302,6 +336,34 @@ func (d *Database) Begin(ctx context.Context) (*Txn, error) {
 	}
 	txn := &Txn{db: d, w: w}
 	return txn, nil
+}
+
+// live reports why the transaction takes no more operations, nil while it
+// takes them; a transaction whose context has ended is rolled back here,
+// so no operation runs past that end. It is called with mu held.
+func (t *Txn) live() error {
+	if !t.w.done && t.cause != nil {
+		cause := t.cause()
+		if cause != nil {
+			t.w.abort()
+			t.ended = fmt.Errorf("%w: rolled back as its context ended: %w", ErrTxnDone, cause)
+		}
+	}
+	if !t.w.done {
+		return nil
+	}
+	if t.ended != nil {
+		return t.ended
+	}
+	return ErrTxnDone
+}
+
+// settled stops the rollback the transaction's context would make, once it
+// has committed or rolled back. It is called with mu held.
+func (t *Txn) settled() {
+	if t.stop != nil {
+		t.stop()
+	}
 }
 
 // Put writes rows to table in the transaction, as Database.Put does: all
@@ -319,28 +381,41 @@ func (t *Txn) Delete(_ context.Context, table string, keys ...parse.Key) error {
 // apply runs apply, a write that checks every row before it writes any,
 // in the transaction. ErrRowLimit ends the transaction.
 func (t *Txn) apply(apply func(*write) error) error {
-	if t.w.done {
-		return ErrTxnDone
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	err := t.live()
+	if err != nil {
+		return err
 	}
-	err := apply(t.w)
+	err = apply(t.w)
 	if errors.Is(err, ErrRowLimit) {
 		t.w.abort()
+		t.settled()
 	}
 	return err
 }
 
-// Commit publishes what the transaction wrote and releases the writer.
+// Commit publishes what the transaction wrote and releases the writer,
+// once any operation in flight has returned.
 func (t *Txn) Commit(context.Context) error {
-	if t.w.done {
-		return ErrTxnDone
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	err := t.live()
+	if err != nil {
+		return err
 	}
+	t.settled()
 	return t.w.commit()
 }
 
-// Rollback drops what the transaction wrote and releases the writer. A
-// transaction already settled is left as it is, and Rollback returns nil.
+// Rollback drops what the transaction wrote and releases the writer, once
+// any operation in flight has returned. A transaction already settled is
+// left as it is, and Rollback returns nil.
 func (t *Txn) Rollback(context.Context) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.w.abort()
+	t.settled()
 	return nil
 }
 

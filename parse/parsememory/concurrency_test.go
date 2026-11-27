@@ -4,6 +4,7 @@ package parsememory_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"strconv"
@@ -245,4 +246,115 @@ func TestWriterWait_EndsWithItsContext(t *testing.T) {
 	require.NoError(t, txn.Commit(t.Context()))
 	require.NoError(t, checkOneState(t.Context(), r), "no waiter wrote")
 	assert.Equal(t, "b", groupOf(t, r, 0), "the transaction's swap is kept")
+}
+
+// putSwapped puts pair k's rows into the transaction with row 2k in group
+// first: the transaction's own write of the pair, which keeps as many rows
+// in a as in b.
+func putSwapped(ctx context.Context, txn *parsememory.Txn, k int, first string) error {
+	second := map[string]string{"a": "b", "b": "a"}[first]
+	return txn.Put(ctx, "members",
+		parsememory.Row{"id": int64(2 * k), "group": first, "attrs": map[string]string{}},
+		parsememory.Row{"id": int64(2*k + 1), "group": second, "attrs": map[string]string{}})
+}
+
+// A transaction is safe for concurrent use: its Put, the batches and lists
+// resources run in it, and its Commit or Rollback run one at a time, each
+// operation seeing the state the one before left. Settling it waits for
+// the operation in flight, and every operation after it is ErrTxnDone.
+func TestTxn_RunsConcurrentOperationsOneAtATime(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		settle func(*parsememory.Txn, context.Context) error
+		group  string
+	}{
+		{"commit", (*parsememory.Txn).Commit, "b"},
+		{"rollback", (*parsememory.Txn).Rollback, "a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, r := openMembers(t)
+			ctx := t.Context()
+			patches := groupPatches(t, r)
+			txn, err := db.Begin(ctx)
+			require.NoError(t, err)
+			require.NoError(t, putSwapped(ctx, txn, 0, "b"))
+			scoped, err := r.In(parsememory.Tx(txn))
+			require.NoError(t, err)
+
+			progress := make(chan struct{}, 1)
+			var workers sync.WaitGroup
+			for w := range memberWriters {
+				workers.Go(func() {
+					for i := 0; ; i++ {
+						// Pair 0 is the transaction's first write, which no
+						// worker moves.
+						k := 1 + (w*memberRounds+i)%(memberPairs-1)
+						first := []string{"a", "b"}[(w+i)%2]
+						_, err := scoped.UpdateBatch(ctx, swap(patches, k, first), parse.Scope{}, parse.UpdateBatchLimits{})
+						if err == nil {
+							err = putSwapped(ctx, txn, k, first)
+						}
+						if err == nil {
+							err = checkOneState(ctx, scoped)
+						}
+						if errors.Is(err, parsememory.ErrTxnDone) {
+							return
+						}
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						select {
+						case progress <- struct{}{}:
+						default:
+						}
+					}
+				})
+			}
+			for range memberRounds {
+				<-progress
+			}
+			require.NoError(t, tc.settle(txn, ctx))
+			workers.Wait()
+
+			require.NoError(t, checkOneState(ctx, r))
+			assert.Equal(t, tc.group, groupOf(t, r, 0), "the transaction's first write is kept by a commit alone")
+			require.NoError(t, db.Put(ctx, "members", parsememory.Row{"id": int64(0), "group": "a", "attrs": map[string]string{}},
+				parsememory.Row{"id": int64(1), "group": "b", "attrs": map[string]string{}}), "the writer is free")
+		})
+	}
+}
+
+// Database.Begin binds the transaction to its context, as database/sql
+// binds a Tx: once the context ends, the transaction rolls back and
+// releases the writer, and every later operation is ErrTxnDone with the
+// context's cause. parse.Provider.Begin's transaction is bound to no
+// context, as its contract says for every provider.
+func TestTxn_ItsContextBoundsIt(t *testing.T) {
+	db, r := openMembers(t)
+	bound, cancel := context.WithCancel(t.Context())
+	txn, err := db.Begin(bound)
+	require.NoError(t, err)
+	require.NoError(t, putSwapped(t.Context(), txn, 0, "b"))
+	cancel()
+
+	require.NoError(t, db.Put(t.Context(), "members", parsememory.Row{"id": int64(2), "group": "a", "attrs": map[string]string{}}),
+		"the rollback released the writer")
+	assert.Equal(t, "a", groupOf(t, r, 0), "the transaction's write is gone")
+	err = putSwapped(t.Context(), txn, 0, "b")
+	require.ErrorIs(t, err, parsememory.ErrTxnDone)
+	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorIs(t, txn.Commit(t.Context()), parsememory.ErrTxnDone)
+	require.NoError(t, txn.Rollback(t.Context()))
+
+	unbound, cancel := context.WithCancel(t.Context())
+	tx, err := db.Provider().Begin(unbound)
+	require.NoError(t, err)
+	cancel()
+	scoped, err := r.In(tx)
+	require.NoError(t, err)
+	_, err = scoped.UpdateBatch(t.Context(), swap(groupPatches(t, r), 0, "b"), parse.Scope{}, parse.UpdateBatchLimits{})
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit(t.Context()))
+	assert.Equal(t, "b", groupOf(t, r, 0))
 }
