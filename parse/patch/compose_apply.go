@@ -56,12 +56,12 @@ type RowWrite struct {
 //
 // Changed compares each patch column's stored and written values null-safe:
 // a document as PostgreSQL's jsonb text compares it (member order aside, a
-// number by its value and scale) and a native array element by element,
-// each by its type's value, in the forms SQLite's change predicate
-// compares (canonical.Text); a float with its zero's sign; and any other
-// value as its column's type orders it (core.CompareCanonical): a
-// timestamp by its instant, a decimal by its value. A scalar that holds no
-// value of its column's type compares as stored, as SQLite compares it.
+// number by its value and scale, exactly) and a native array element by
+// element, each by its type's value, in the forms SQLite's change
+// predicate compares (canonical.Text); a float with its zero's sign; and
+// any other value as its column's type orders it (core.CompareCanonical):
+// a timestamp by its instant, a decimal by its value. A scalar that holds
+// no value of its column's type compares as stored, as SQLite compares it.
 func (c *ComposedPatch) Apply(row StoredRow) (RowWrite, error) {
 	if !c.Assigns() {
 		return RowWrite{}, nil

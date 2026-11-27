@@ -249,7 +249,7 @@ func TestCanonical(t *testing.T) {
 		expr string
 		want any
 	}{
-		{"a document's members, spacing and numbers", `parse_canonical('{"b":1.50e1, "a":[1e2,-0,1.0]}', 'document')`, `{"a":[100,0,1.0],"b":15.0}`},
+		{"a document's members, spacing and numbers", `parse_canonical('{"b":1.50e1, "a":[1e2,-0,1.0,1e100000]}', 'document')`, `{"a":[1e2,0,10e-1,1e100000],"b":150e-1}`},
 		{"a UUID in upper case", "parse_canonical('0190A5B4-7C1E-7D8A-9B2C-3D4E5F6A7B8C', 'uuid')", "0190a5b4-7c1e-7d8a-9b2c-3d4e5f6a7b8c"},
 		{"a decimal's scale", "parse_canonical('1.50', 'decimal')", "1.5"},
 		{"a decimal REAL", "parse_canonical(1.5, 'decimal')", "1.5"},

@@ -58,12 +58,12 @@
 // more than one way by value too:
 //
 //   - parse_canonical(x, kind) is the form two stored values of one value
-//     share — a document as jsonb's text, an array element by element by
-//     each element's value, a decimal, UUID, timestamp or value type by its
-//     canonical text — NULL for NULL, x itself where it is a scalar that
-//     holds no value of kind, and an error where it is a document or array
-//     that holds no JSON value. patch.ComposedPatch.Apply compares the same
-//     form.
+//     share — a document as jsonb's text compares it, each number exactly;
+//     an array element by element by each element's value; a decimal,
+//     UUID, timestamp or value type by its canonical text — NULL for NULL,
+//     x itself where it is a scalar that holds no value of kind, and an
+//     error where it is a document or array that holds no JSON value.
+//     patch.ComposedPatch.Apply compares the same form.
 //
 // A statement on a connection without the functions fails with SQLite's
 // "no such function: parse_decimal" rather than comparing a rounded double.
