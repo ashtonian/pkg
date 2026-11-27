@@ -2,8 +2,10 @@ package core
 
 import (
 	"database/sql/driver"
+	"encoding/json"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/ashtonian/pkg/gowalker"
 )
@@ -20,6 +22,9 @@ const maxDerefDepth = 32
 // for a nil value, pointer or interface. More than maxDerefDepth of them
 // in a chain is an error.
 func Deref(v any) (any, error) {
+	if heldAsIs(v) {
+		return v, nil
+	}
 	rv := reflect.ValueOf(v)
 	for depth := 0; rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface; depth++ {
 		if rv.IsNil() {
@@ -53,6 +58,9 @@ func Deref(v any) (any, error) {
 // returns. Cursors, facets, memberships and relation keys read stored
 // values through this one rule.
 func StoredValue(v any) (value any, null bool, err error) {
+	if heldAsIs(v) {
+		return v, false, nil
+	}
 	for depth := 0; ; depth++ {
 		v, err = Deref(v)
 		if err != nil {
@@ -77,6 +85,22 @@ func StoredValue(v any) (value any, null bool, err error) {
 		}
 		v = next
 	}
+}
+
+// heldAsIs reports a value Deref and StoredValue return unchanged: one of
+// a builtin scalar type, which has no methods, or of json.Number,
+// time.Time or one of core's value types, none of them a pointer and each
+// kept as it is (typedScalar). Every comparison and normalization reads its
+// values through them, and reflecting on the scalar it is almost always
+// handed costs more than the comparison itself.
+func heldAsIs(v any) bool {
+	switch v.(type) {
+	case string, bool, []byte,
+		int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64,
+		json.Number, time.Time, Date, LocalTime, Interval, Inet, CIDR, MACAddr:
+		return true
+	}
+	return false
 }
 
 // typedScalar reports a type TypeOf classifies by the type itself rather

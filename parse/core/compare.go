@@ -6,6 +6,8 @@ import (
 	"math"
 	"reflect"
 	"strings"
+	"time"
+	"uuid"
 
 	"github.com/ashtonian/pkg/gowalker"
 )
@@ -26,9 +28,10 @@ import (
 //     finite values at float32 precision, as its column holds them, so
 //     0.1 and float32(0.1) are equal there;
 //   - string: by code point;
-//   - uuid, timestamp, date, time, interval, inet, cidr, macaddr: by
-//     canonical text (NormalizeScalar), which orders a UUID as its bytes, a
-//     timestamp by its instant (TimestampLayout is fixed width), a date by
+//   - uuid, timestamp, date, time, interval, inet, cidr, macaddr: as
+//     their canonical texts (NormalizeScalar) order, a UUID by its bytes
+//     and a timestamp by its instant, which order alike (the text is
+//     lower-case hexadecimal, and TimestampLayout fixed width), a date by
 //     its day and a time of day by its time; an interval or network value,
 //     which no sort orders, by its text, as a key of one locks
 //     (filter.KeyOrder);
@@ -67,17 +70,14 @@ func CompareCanonical(t TypeInfo, a, b any) (int, error) {
 		return compareFloatValues(t.NumberKind, x, y)
 	case FieldTypeDecimal:
 		return compareDecimalValues(x, y)
-	case FieldTypeString, FieldTypeUUID, FieldTypeTimestamp, FieldTypeDate, FieldTypeTime,
+	case FieldTypeUUID:
+		return compareRead(x, y, uuidOf, uuid.UUID.Compare)
+	case FieldTypeTimestamp:
+		return compareRead(x, y, timestampOf, time.Time.Compare)
+	case FieldTypeString, FieldTypeDate, FieldTypeTime,
 		FieldTypeInterval, FieldTypeInet, FieldTypeCIDR, FieldTypeMACAddr:
-		xs, err := canonicalString(t, x)
-		if err != nil {
-			return 0, err
-		}
-		ys, err := canonicalString(t, y)
-		if err != nil {
-			return 0, err
-		}
-		return strings.Compare(xs, ys), nil
+		textOf := func(v any) (string, error) { return canonicalText(t.Type, v) }
+		return compareRead(x, y, textOf, strings.Compare)
 	case FieldTypeBool:
 		xb, xok := boolean(x)
 		yb, yok := boolean(y)
@@ -187,18 +187,21 @@ func isNaN(v any) bool {
 	return (kind == reflect.Float32 || kind == reflect.Float64) && math.IsNaN(rv.Float())
 }
 
-// canonicalString is v normalized as t, a type whose canonical value is
-// text.
-func canonicalString(t TypeInfo, v any) (string, error) {
-	n, err := NormalizeScalar(t.Type, t.NumberKind, v)
+// compareRead orders x and y, two stored values of a type whose canonical
+// value is text, by what read reads each as, after its named string
+// type's string (plainString), as NormalizeScalar reads them: its UUID,
+// instant or canonical text, without writing the text out where its bytes
+// or instant order alike.
+func compareRead[T any](x, y any, read func(any) (T, error), compare func(T, T) int) (int, error) {
+	xv, err := read(plainString(x))
 	if err != nil {
-		return "", err
+		return 0, err
 	}
-	s, ok := n.(string)
-	if !ok {
-		return "", fmt.Errorf("%s value %s has no canonical text", t.Type, gowalker.TypeText(reflect.TypeOf(n)))
+	yv, err := read(plainString(y))
+	if err != nil {
+		return 0, err
 	}
-	return s, nil
+	return compare(xv, yv), nil
 }
 
 // compareScalars orders two values of a column whose type names no scalar

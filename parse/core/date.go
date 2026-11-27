@@ -18,7 +18,8 @@ type Date string
 // ParseDate validates a civil date without interpreting it as an instant.
 func ParseDate(value string) (Date, error) {
 	parsed, err := time.Parse(time.DateOnly, value)
-	if err != nil || len(value) != 10 || parsed.Year() < 1 || parsed.Format(time.DateOnly) != value {
+	var written [len(time.DateOnly)]byte // Format would allocate on every comparison of a date key
+	if err != nil || len(value) != 10 || parsed.Year() < 1 || string(parsed.AppendFormat(written[:0], time.DateOnly)) != value {
 		return "", fmt.Errorf("invalid civil date %q: expected YYYY-MM-DD", value)
 	}
 	return Date(value), nil

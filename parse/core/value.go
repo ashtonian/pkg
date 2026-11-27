@@ -109,26 +109,7 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	if v == nil {
 		return nil, fmt.Errorf("expected %s, got null", dt)
 	}
-	if dt != FieldTypeInt && dt != FieldTypeFloat && dt != FieldTypeBool {
-		v = plainString(v)
-	}
 	switch dt {
-	case FieldTypeString:
-		s, ok := text(v)
-		if !ok {
-			return nil, fmt.Errorf("expected string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
-		}
-		return s, nil
-	case FieldTypeUUID:
-		s, ok := text(v)
-		if !ok {
-			return nil, fmt.Errorf("expected UUID string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
-		}
-		id, err := uuid.Parse(s)
-		if err != nil {
-			return nil, fmt.Errorf("invalid UUID %q", s)
-		}
-		return id.String(), nil // canonical: lowercase, hyphenated
 	case FieldTypeInt:
 		if isUnsignedKind(kind) {
 			return NormalizeUint(v, kind)
@@ -137,13 +118,44 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	case FieldTypeFloat:
 		return NormalizeFloat(v, kind)
 	case FieldTypeDecimal:
-		return DecimalText(v)
+		return DecimalText(plainString(v))
 	case FieldTypeBool:
 		b, ok := boolean(v)
 		if !ok {
 			return nil, fmt.Errorf("expected boolean, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 		}
 		return b, nil
+	}
+	v = plainString(v)
+	s, err := canonicalText(dt, v)
+	if err != nil {
+		return nil, err
+	}
+	held, ok := v.(string)
+	if ok && held == s {
+		return v, nil // boxing s again would allocate
+	}
+	return s, nil
+}
+
+// canonicalText is the canonical text of v, a value of dt, a type whose
+// canonical value is text other than decimal (NormalizeScalar), read as
+// NormalizeScalar reads it: dereferenced, not nil, and its named string
+// type's string (plainString).
+func canonicalText(dt FieldType, v any) (string, error) {
+	switch dt {
+	case FieldTypeString:
+		s, ok := text(v)
+		if !ok {
+			return "", fmt.Errorf("expected string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
+		}
+		return s, nil
+	case FieldTypeUUID:
+		id, err := uuidOf(v)
+		if err != nil {
+			return "", err
+		}
+		return id.String(), nil // canonical: lowercase, hyphenated
 	case FieldTypeDate:
 		if text, ok := v.(string); ok {
 			date, err := ParseDate(text)
@@ -154,14 +166,11 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 			date, err := dateOf(t)
 			return string(date), err
 		}
-		return nil, fmt.Errorf("expected civil date string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
+		return "", fmt.Errorf("expected civil date string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 	case FieldTypeTimestamp:
-		t, err := toTime(v)
+		t, err := timestampOf(v)
 		if err != nil {
-			return nil, err
-		}
-		if y := t.UTC().Year(); y < minTimestampYear || y > maxTimestampYear {
-			return nil, fmt.Errorf("timestamp %s is outside the years 0001 to 9999 in UTC", t.Format(time.RFC3339Nano))
+			return "", err
 		}
 		return FormatTimestamp(t), nil
 	case FieldTypeTime:
@@ -175,7 +184,42 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	case FieldTypeMACAddr:
 		return normalizeMACAddr(v)
 	}
-	return v, nil
+	return "", fmt.Errorf("a %s value has no canonical text", dt)
+}
+
+// uuidOf is the UUID v spells, as canonicalText reads a UUID: a UUID
+// type's value, or text in any form uuid.Parse reads.
+func uuidOf(v any) (uuid.UUID, error) {
+	id, ok := v.(uuid.UUID)
+	if ok {
+		return id, nil
+	}
+	s, ok := text(v)
+	if !ok {
+		return uuid.UUID{}, fmt.Errorf("expected UUID string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
+	}
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return uuid.UUID{}, fmt.Errorf("invalid UUID %q", s)
+	}
+	return id, nil
+}
+
+// timestampOf is the instant v spells, in UTC, as canonicalText reads a
+// timestamp: a time.Time or RFC 3339 text, in the years 0001 to 9999 in
+// UTC. UTC also drops a monotonic clock reading, so instants compare by
+// their wall clock, as their canonical texts do.
+func timestampOf(v any) (time.Time, error) {
+	t, err := toTime(v)
+	if err != nil {
+		return time.Time{}, err
+	}
+	utc := t.UTC()
+	year := utc.Year()
+	if year < minTimestampYear || year > maxTimestampYear {
+		return time.Time{}, fmt.Errorf("timestamp %s is outside the years 0001 to 9999 in UTC", t.Format(time.RFC3339Nano))
+	}
+	return utc, nil
 }
 
 // plainString is v as a string when it is of a named string type (Date,
@@ -184,9 +228,9 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 // what a driver binds for it. A json.Number is a number, and any other
 // value is itself.
 func plainString(v any) any {
-	_, ok := v.(json.Number)
-	if ok {
-		return v
+	switch v.(type) {
+	case string, json.Number:
+		return v // already plain; returning rv.String() would box it again
 	}
 	rv := reflect.ValueOf(v)
 	if rv.Kind() != reflect.String {

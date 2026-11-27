@@ -29,6 +29,12 @@ func BenchmarkKeysetWalk(b *testing.B) {
 		"timestamp": {filter.CursorKey{DataType: core.FieldTypeTimestamp}, func(i int) any {
 			return core.FormatTimestamp(start.Add(time.Duration((i*7919)%rows) * time.Second))
 		}},
+		"uuid": {filter.CursorKey{DataType: core.FieldTypeUUID}, func(i int) any {
+			return fmt.Sprintf("0198a3c2-7a1e-7c00-8000-%012x", (i*7919)%rows)
+		}},
+		"date": {filter.CursorKey{DataType: core.FieldTypeDate}, func(i int) any {
+			return start.AddDate(0, 0, (i*7919)%rows).Format(time.DateOnly)
+		}},
 		"float": {filter.CursorKey{DataType: core.FieldTypeFloat}, func(i int) any { return float64((i*7919)%rows) + 0.5 }},
 		"mixed int and float": {filter.CursorKey{DataType: core.FieldTypeFloat}, func(i int) any {
 			if i%2 == 0 {
@@ -40,7 +46,7 @@ func BenchmarkKeysetWalk(b *testing.B) {
 			return json.Number(fmt.Sprintf("%d.5", (i*7919)%rows))
 		}},
 	}
-	for _, name := range []string{"string", "timestamp", "float", "mixed int and float", "document literal"} {
+	for _, name := range []string{"string", "timestamp", "uuid", "date", "float", "mixed int and float", "document literal"} {
 		k := keys[name]
 		values := make([]any, rows)
 		for i := range values {
