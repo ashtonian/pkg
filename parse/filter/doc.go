@@ -60,9 +60,9 @@
 // `$in` / `$nin` set binds as one array parameter whatever its size:
 // PostgreSQL compares a column with `= ANY`, typed by the column, and joins
 // a path's set unnested; SQLite reads the set with json_each. SQLite has no
-// exact decimal type and no geometry, so it compares and orders decimals and
-// decides geo filters through deterministic functions the database must
-// have: [github.com/ashtonian/pkg/parse/parsesqlite.Register] registers
+// exact decimal type and no geometry, so it compares and orders decimals,
+// bounds an int or float path's number members and decides geo filters
+// through deterministic functions the database must have: [github.com/ashtonian/pkg/parse/parsesqlite.Register] registers
 // them, and [github.com/ashtonian/pkg/parse/parsesqlite.Functions] lists
 // them for another driver. The plans need at least
 // [github.com/ashtonian/pkg/parse/parsesqlite.MinSQLiteVersion], whose JSON
