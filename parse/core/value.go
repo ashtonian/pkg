@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -280,6 +282,26 @@ const (
 // the instants NormalizeScalar accepts.
 func FormatTimestamp(t time.Time) string {
 	return t.UTC().Format(TimestampLayout)
+}
+
+// MicrosecondTimestamp is text, a timestamp's canonical text
+// (FormatTimestamp), as a PostgreSQL TIMESTAMPTZ column holds it: rounded
+// to the microsecond as PostgreSQL rounds the text it reads, the fraction
+// with its point parsed as a double and scaled with rint, ties to even,
+// carrying into the next second. Two timestamps PostgreSQL holds equal
+// have one text.
+func MicrosecondTimestamp(text string) (string, error) {
+	at, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil || FormatTimestamp(at) != text {
+		return "", fmt.Errorf("timestamp %q is not canonical text", text)
+	}
+	const seconds = len("2006-01-02T15:04:05")
+	f, err := strconv.ParseFloat(text[seconds:len(text)-1], 64)
+	if err != nil {
+		return "", fmt.Errorf("timestamp %q fraction: %w", text, err)
+	}
+	micros := time.Duration(math.RoundToEven(f*1e6)) * time.Microsecond
+	return FormatTimestamp(at.Truncate(time.Second).Add(micros)), nil
 }
 
 // AnySlice returns v as []any when it is the decoder's []any or any typed

@@ -39,7 +39,10 @@ type PatchPolicyConstraints struct {
 // DeniedValues compare as the path's scalar type orders it
 // (core.CompareCanonical) — numbers by value, a UUID in any spelling, a
 // timestamp at its instant — and as JSON at a document path or one no
-// schema types (core.JSONEqual, numbers by value); Pattern is a regular
+// schema types (core.JSONEqual, numbers by value). DeniedValues also
+// denies a timestamp PostgreSQL holds as a listed one, in the same
+// microsecond (core.MicrosecondTimestamp), since a TIMESTAMPTZ column
+// would hold the write as the denied value. Pattern is a regular
 // expression a string must match; Min and Max bound a number.
 type ValueConstraint struct {
 	AllowedValues []any
@@ -487,6 +490,34 @@ func (o valueOrder) equal(value, listed any) bool {
 	return err == nil && c == 0
 }
 
+// denies reports whether a written value is a denied listed value: equal
+// to it, or, at a timestamp path, held as it is at the microsecond, as a
+// PostgreSQL column holds both.
+func (o valueOrder) denies(value, listed any) bool {
+	if o.equal(value, listed) {
+		return true
+	}
+	if !o.typed || o.info.Type != core.FieldTypeTimestamp {
+		return false
+	}
+	x, err := microsecond(o.info, value)
+	if err != nil {
+		return false
+	}
+	y, err := microsecond(o.info, listed)
+	return err == nil && x == y
+}
+
+// microsecond is a timestamp's canonical text at the microsecond, as
+// PostgreSQL holds it.
+func microsecond(info core.TypeInfo, v any) (string, error) {
+	text, err := core.CanonicalText(info, v)
+	if err != nil {
+		return "", err
+	}
+	return core.MicrosecondTimestamp(text)
+}
+
 // decimal reports a decimal path, whose values are canonical text.
 func (o valueOrder) decimal() bool {
 	return o.typed && o.info.Type == core.FieldTypeDecimal
@@ -525,10 +556,10 @@ func (vc *valueRule) check(path string, value any, order valueOrder, index int) 
 			Message: fmt.Sprintf(format, args...), Path: path, Index: new(index),
 		}
 	}
-	if len(vc.AllowedValues) > 0 && !valueInList(value, vc.AllowedValues, order) {
+	if len(vc.AllowedValues) > 0 && !valueInList(value, vc.AllowedValues, order.equal) {
 		return refuse("value for path '%s' is not in allowed values at index %d", path, index)
 	}
-	if len(vc.DeniedValues) > 0 && valueInList(value, vc.DeniedValues, order) {
+	if len(vc.DeniedValues) > 0 && valueInList(value, vc.DeniedValues, order.denies) {
 		return refuse("value for path '%s' is denied by policy at index %d", path, index)
 	}
 	if value == nil {
@@ -562,14 +593,15 @@ func (vc *valueRule) check(path string, value any, order valueOrder, index int) 
 	return nil
 }
 
-// valueInList reports whether value is in list, compared by the path's
-// order: numbers by exact value, not Go type — a normalized int64 matches
-// a policy's float64 or int literal, and a decimal path's value a listed
+// valueInList reports whether value matches a member of list, by the
+// path's order (valueOrder.equal, or valueOrder.denies for a deny list):
+// numbers by exact value, not Go type — a normalized int64 matches a
+// policy's float64 or int literal, and a decimal path's value a listed
 // number or decimal string of equal value — and a typed path's values as
 // its type, so a listed UUID or timestamp matches in any spelling.
-func valueInList(value any, list []any, order valueOrder) bool {
+func valueInList(value any, list []any, matches func(value, listed any) bool) bool {
 	for _, listed := range list {
-		if order.equal(value, listed) {
+		if matches(value, listed) {
 			return true
 		}
 	}
