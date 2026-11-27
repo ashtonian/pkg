@@ -18,8 +18,9 @@ import (
 )
 
 // Every value of a type orders against every other as its case lists
-// them, in every spelling; the spellings of one value are equal and share
-// its canonical text; NULL orders after every value and equals NULL.
+// them, in every spelling, and so do their canonical texts; the spellings
+// of one value are equal and share its canonical text; NULL orders after
+// every value and equals NULL.
 func TestCompareCanonical_Conformance(t *testing.T) {
 	for _, c := range ordertest.Cases() {
 		t.Run(c.Name, func(t *testing.T) {
@@ -32,6 +33,11 @@ func TestCompareCanonical_Conformance(t *testing.T) {
 							assert.Equal(t, cmp.Compare(i, j), got, "%#v vs %#v", a, b)
 						}
 					}
+				}
+				for j, y := range c.Values {
+					got, err := core.CompareCanonicalTexts(c.Type, x.Text, y.Text)
+					require.NoError(t, err, "%s vs %s", x.Text, y.Text)
+					assert.Equal(t, cmp.Compare(i, j), got, "texts %s vs %s", x.Text, y.Text)
 				}
 				for _, a := range x.Spellings {
 					text, err := core.CanonicalText(c.Type, a)
@@ -81,6 +87,55 @@ func TestCompareCanonical_NonFiniteFloats(t *testing.T) {
 			}
 		}
 	}
+}
+
+// A decimal column orders as PostgreSQL's numeric does: -Infinity, the
+// finite values, Infinity, then NaN, every NaN equal, NULL after all. Only
+// a stored value is one: each is the text numeric writes it as, which
+// NormalizeStored keeps, and none has a canonical text.
+func TestCompareCanonical_NonFiniteDecimals(t *testing.T) {
+	decimal := core.TypeInfo{Type: core.FieldTypeDecimal}
+	ascending := [][]any{
+		{"-Infinity", new("-Infinity")},
+		{"-12345678901234567890", json.Number("-12345678901234567890")},
+		{"0", int64(0), "-0"},
+		{"1.5", 1.5},
+		{"Infinity", sql.NullString{String: "Infinity", Valid: true}},
+		{"NaN", new("NaN")},
+		{nil, sql.NullString{}},
+	}
+	for i, xs := range ascending {
+		for j, ys := range ascending {
+			for _, a := range xs {
+				for _, b := range ys {
+					got, err := core.CompareCanonical(decimal, a, b)
+					require.NoError(t, err, "%#v vs %#v", a, b)
+					assert.Equal(t, cmp.Compare(i, j), got, "%#v vs %#v", a, b)
+				}
+			}
+		}
+	}
+	texts := []string{"-Infinity", "-1", "0", "1.5", "Infinity", "NaN"}
+	for i, a := range texts {
+		for j, b := range texts {
+			got, err := core.CompareCanonicalTexts(decimal, a, b)
+			require.NoError(t, err)
+			assert.Equal(t, cmp.Compare(i, j), got, "texts %s vs %s", a, b)
+		}
+	}
+	for _, text := range []string{"NaN", "Infinity", "-Infinity"} {
+		assert.True(t, core.NonFinite(core.FieldTypeDecimal, text), text)
+		assert.False(t, core.NonFinite(core.FieldTypeString, text), text)
+		stored, err := core.NormalizeStored(core.FieldTypeDecimal, reflect.Invalid, text)
+		require.NoError(t, err)
+		assert.Equal(t, text, stored)
+		_, err = core.NormalizeScalar(core.FieldTypeDecimal, reflect.Invalid, text)
+		require.Error(t, err, "a request decimal is finite")
+		_, err = core.CanonicalText(decimal, text)
+		require.Error(t, err, "%s has no canonical text", text)
+	}
+	_, err := core.CompareCanonical(decimal, "NaN", "abc")
+	require.ErrorContains(t, err, "cannot compare decimal values string and string")
 }
 
 // A value its type cannot hold, NaN outside a float column, a type with

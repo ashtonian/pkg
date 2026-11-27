@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"reflect"
 	"strings"
 	"time"
@@ -195,12 +194,15 @@ func plainString(v any) any {
 
 // NormalizeStored is NormalizeScalar for v, a value a column of type dt
 // holds rather than a request value: a float column's NaN or infinity is
-// kept, as a float64, where NormalizeScalar refuses one, and a bool
-// column's integer 0 or 1 is false or true, as SQLite stores a boolean. A
-// request value is finite; a stored one need not be, since a table written
-// outside parse may hold NaN and both infinities (PostgreSQL's float8;
-// SQLite stores the infinities and holds NaN as NULL). Rows Evaluate reads
-// and the values a cursor carries normalize through it.
+// kept, as a float64, and a decimal column's, as the text PostgreSQL's
+// numeric writes it ("NaN", "Infinity", "-Infinity"), where
+// NormalizeScalar refuses one (NonFinite), and a bool column's integer 0
+// or 1 is false or true, as SQLite stores a boolean. A request value is
+// finite; a stored one need not be, since a table written outside parse
+// may hold NaN and both infinities (PostgreSQL's float8, and its numeric
+// from 14; SQLite stores a float's infinities, holds a float's NaN as
+// NULL, and has no decimal one). Rows Evaluate reads and the values a
+// cursor carries normalize through it.
 func NormalizeStored(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	held, err := Deref(v)
 	if err != nil {
@@ -208,11 +210,10 @@ func NormalizeStored(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	}
 	rv := reflect.ValueOf(held)
 	switch {
-	case dt == FieldTypeFloat && (rv.Kind() == reflect.Float32 || rv.Kind() == reflect.Float64):
-		f := rv.Float()
-		if math.IsNaN(f) || math.IsInf(f, 0) {
-			return f, nil
-		}
+	case dt == FieldTypeFloat && NonFinite(dt, held):
+		return rv.Float(), nil
+	case dt == FieldTypeDecimal && NonFinite(dt, held):
+		return rv.String(), nil
 	case dt == FieldTypeBool:
 		b, ok := storedBool(rv)
 		if ok {

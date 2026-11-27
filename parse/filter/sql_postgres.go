@@ -762,12 +762,16 @@ func (PostgresDialect) timestampKey(expr string) string {
 // (7.0, 1.50). A float column's key is its shortest text at the field's
 // precision, which float8 and float4 output give while extra_float_digits
 // is positive (PostgreSQL's default), read as numeric for plain notation.
-// A non-finite float has none.
+// A float's or a decimal column's NaN and infinities have none
+// (core.NonFinite); a JSON member holds none.
 func (d PostgresDialect) numberKey(f *FieldSchema) string {
 	expr := FieldExpr(d, f)
 	switch {
-	case f.Path != nil || f.DataType == core.FieldTypeDecimal:
+	case f.Path != nil:
 		return "trim_scale(" + expr + ")::text"
+	case f.DataType == core.FieldTypeDecimal:
+		text := "trim_scale(" + expr + ")::text"
+		return finiteKey(text, text)
 	case f.DataType == core.FieldTypeInt:
 		return "(" + expr + ")::text"
 	}
@@ -775,7 +779,13 @@ func (d PostgresDialect) numberKey(f *FieldSchema) string {
 	if f.NumberKind == reflect.Float32 {
 		text = "(" + expr + ")::float4::text"
 	}
-	return "(CASE WHEN " + text + " IN ('NaN', 'Infinity', '-Infinity') THEN NULL ELSE " + text + "::numeric::text END)"
+	return finiteKey(text, text+"::numeric::text")
+}
+
+// finiteKey is key, or NULL where text, the number's output, is NaN or an
+// infinity, which no facet keys.
+func finiteKey(text, key string) string {
+	return "(CASE WHEN " + text + " IN ('NaN', 'Infinity', '-Infinity') THEN NULL ELSE " + key + " END)"
 }
 
 // PathExpr renders p's typed value for PostgreSQL. The document is read as

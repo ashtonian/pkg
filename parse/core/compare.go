@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"reflect"
@@ -19,7 +20,9 @@ import (
 //     integer of any kind, a float, a json.Number, a decimal's text or
 //     type), the infinities before and after every finite value; a float
 //     column's NaN after +Infinity and equal to every NaN, as PostgreSQL
-//     orders float8 (SQLite stores NaN as NULL); a float32 column's
+//     orders float8 (SQLite stores NaN as NULL), and a decimal column's
+//     NaN and infinities, the texts PostgreSQL's numeric writes them as
+//     (NonFinite), alike, as it orders numeric; a float32 column's
 //     finite values at float32 precision, as its column holds them, so
 //     0.1 and float32(0.1) are equal there;
 //   - string: by code point;
@@ -34,9 +37,9 @@ import (
 //     values reduce to, numbers by value, text by code point, false before
 //     true.
 //
-// A value t cannot hold, NaN outside a float column, values of an object
-// or untyped key that reduce to scalars of different kinds, and a type
-// with no order (json, array, geo, any) are errors: no comparison falls
+// A value t cannot hold, a float's NaN outside a float column, values of
+// an object or untyped key that reduce to scalars of different kinds, and
+// a type with no order (json, array, geo, any) are errors: no comparison falls
 // back to another reading. Evaluate, keysets, keys and patch policies
 // order and equate values through it, so a filter, a page boundary, a
 // lock order and a policy's allowed values agree.
@@ -63,11 +66,7 @@ func CompareCanonical(t TypeInfo, a, b any) (int, error) {
 	case FieldTypeFloat:
 		return compareFloatValues(t.NumberKind, x, y)
 	case FieldTypeDecimal:
-		c, ok := CompareDecimals(x, y)
-		if !ok {
-			return 0, incomparable(t.Type, x, y)
-		}
-		return c, nil
+		return compareDecimalValues(x, y)
 	case FieldTypeString, FieldTypeUUID, FieldTypeTimestamp, FieldTypeDate, FieldTypeTime,
 		FieldTypeInterval, FieldTypeInet, FieldTypeCIDR, FieldTypeMACAddr:
 		xs, err := canonicalString(t, x)
@@ -137,6 +136,32 @@ func compareFloatValues(kind reflect.Kind, x, y any) (int, error) {
 		return 1, nil
 	}
 	return -1, nil
+}
+
+// compareDecimalValues orders two values of a decimal column by value:
+// -Infinity before every finite value, Infinity after, then NaN, equal to
+// NaN, as PostgreSQL orders numeric. Only a stored value is non-finite
+// (NonFinite); a request value is finite.
+func compareDecimalValues(x, y any) (int, error) {
+	xrank, yrank := nonFiniteRank(FieldTypeDecimal, x), nonFiniteRank(FieldTypeDecimal, y)
+	if xrank == 0 && yrank == 0 {
+		c, ok := CompareDecimals(x, y)
+		if !ok {
+			return 0, incomparable(FieldTypeDecimal, x, y)
+		}
+		return c, nil
+	}
+	finite := x
+	if xrank != 0 {
+		finite = y
+	}
+	if xrank == 0 || yrank == 0 {
+		_, err := DecimalText(finite)
+		if err != nil {
+			return 0, incomparable(FieldTypeDecimal, x, y)
+		}
+	}
+	return cmp.Compare(xrank, yrank), nil
 }
 
 // float32Precision is v as a float32 column holds it: a finite number
@@ -227,4 +252,22 @@ func CanonicalText(t TypeInfo, v any) (string, error) {
 		return "", err
 	}
 	return normalizedText(t, n)
+}
+
+// CompareCanonicalTexts orders a and b, two canonical texts (CanonicalText)
+// of values of type t, as CompareCanonical orders the values: a number's
+// text, which is a decimal's, by value, PostgreSQL's NaN and infinities
+// among them (NonFinite), and any other type's by code point, which is its
+// values' order, since each type's canonical text is chosen to order as
+// they do (a UUID's lower-case hexadecimal, a timestamp's fixed width).
+// Text that names no value of a number type, and a type of no scalar, are
+// errors. A terms facet orders its keys by it.
+func CompareCanonicalTexts(t TypeInfo, a, b string) (int, error) {
+	switch {
+	case t.Type == FieldTypeInt || t.Type == FieldTypeFloat || t.Type == FieldTypeDecimal:
+		return CompareCanonical(TypeInfo{Type: FieldTypeDecimal}, a, b)
+	case IsKeyType(t.Type):
+		return strings.Compare(a, b), nil
+	}
+	return 0, fmt.Errorf("a %s value has no canonical text", t.Type)
 }

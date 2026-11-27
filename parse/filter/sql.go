@@ -145,10 +145,11 @@ type Dialect interface {
 	// database holds equal have one: a timestamp at the database's
 	// precision.
 	StoredKeyValue(t core.TypeInfo, v any) (any, error)
-	// storesNaN reports whether a float column holds NaN as NaN, ordered
-	// after +Infinity; a database that does not stores it as NULL, so a
-	// NaN page boundary seeks as a NULL one.
-	storesNaN() bool
+	// readsAsNull reports a page boundary value v of a key of type t that
+	// the database reads as NULL, so the boundary seeks as a NULL one: a
+	// float's NaN where a float column stores NaN as NULL, a decimal's NaN
+	// or infinity (core.NonFinite) where a decimal column holds none.
+	readsAsNull(t core.FieldType, v any) bool
 	// pathNumberBound renders a seek's bound for an int or float path key,
 	// bound at ph as the member's canonical decimal text (KeyValue), as the
 	// dialect compares the member the key orders by.

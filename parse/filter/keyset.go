@@ -363,19 +363,18 @@ func SeekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 // key_i after v_i), NULL-aware. bind binds one value and returns its
 // placeholder; every non-null token value is bound once and its placeholder
 // reused across depths. A native row-value comparison is used when the
-// dialect supports it and no key or value involves NULL. A float key's NaN
-// is a NULL boundary on a dialect that stores NaN as NULL (storesNaN); a
-// number path's decimal text is read as the dialect compares the member
-// (pathNumberBound).
+// dialect supports it and no key or value involves NULL. A boundary the
+// database reads as NULL, a float's NaN or a decimal's NaN or infinity on
+// SQLite, is a NULL boundary (readsAsNull); a number path's decimal text
+// is read as the dialect compares the member (pathNumberBound).
 func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any) string) string {
 	values := make([]any, len(keys))
 	phs := make([]string, len(keys))
 	native := d.NativeRowCompare() && len(keys) > 1
 	for i, k := range keys {
 		v := token.Fields[i].Value
-		f, isFloat := v.(float64)
-		if isFloat && math.IsNaN(f) && !d.storesNaN() {
-			v = nil // the rows this database holds NaN in hold NULL
+		if d.readsAsNull(k.DataType, v) {
+			v = nil
 		}
 		values[i] = v
 		if v != nil {
@@ -426,12 +425,17 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 	return "(" + strings.Join(branches, " OR ") + ")"
 }
 
-// storesNaN reports true: a float8 column holds NaN, which orders after
-// +Infinity and equals NaN.
-func (PostgresDialect) storesNaN() bool { return true }
+// readsAsNull reports false: float8 and numeric hold NaN and the
+// infinities, NaN after +Infinity and equal to NaN.
+func (PostgresDialect) readsAsNull(core.FieldType, any) bool { return false }
 
-// storesNaN reports false: SQLite stores a NaN it is given as NULL.
-func (SQLiteDialect) storesNaN() bool { return false }
+// readsAsNull reports a float's NaN, which SQLite stores as NULL, and a
+// decimal key's NaN or infinity: a decimal column holds a number literal,
+// and parse_decimal reads any other text as NULL.
+func (SQLiteDialect) readsAsNull(t core.FieldType, v any) bool {
+	f, isFloat := v.(float64)
+	return (isFloat && math.IsNaN(f)) || (t == core.FieldTypeDecimal && core.NonFinite(t, v))
+}
 
 // pathNumberBound reads the bound through DecimalOrder: a number member
 // orders as numeric, exactly.
