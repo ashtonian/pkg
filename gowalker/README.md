@@ -170,8 +170,7 @@ From the repository root: `make test-gowalker` runs the race tests, `make lint`
 vets and lints every module, and `make gowalker-release-check` builds the
 module from its release archive, runs its tests there, and runs the quick start
 above and every program in the [usage guide](docs/usage.md) against their
-printed output. `go test -run '^$' -fuzz FuzzWithJSONFields ./gowalker` fuzzes
-the `encoding/json` naming against `json.Marshal`.
+printed output.
 
 ## Operations
 

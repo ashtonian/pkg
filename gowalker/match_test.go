@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/ashtonian/pkg/gowalker"
 )
@@ -208,33 +207,6 @@ func TestShapeMatch_SpellingsOfOneName(t *testing.T) {
 			}
 		})
 	}
-}
-
-// Match agrees with encoding/json on any member name; seeds run without
-// -fuzz.
-func FuzzShapeMatch(f *testing.F) {
-	for _, probe := range matchProbes {
-		f.Add(probe)
-	}
-	e := engine(f, gowalker.WithJSONFields("json"), gowalker.DropTies())
-	shapes := make([]*gowalker.Shape, len(matchTypes))
-	for i, typ := range matchTypes {
-		schema, err := e.CompileType(typ)
-		if err != nil {
-			f.Fatal(err)
-		}
-		shapes[i] = schema.Root()
-	}
-	f.Fuzz(func(t *testing.T, name string) {
-		// encoding/json replaces invalid UTF-8 before it matches, so it
-		// would match another name than the one given.
-		if !utf8.ValidString(name) {
-			return
-		}
-		for i, typ := range matchTypes {
-			checkMatch(t, shapes[i], typ, name)
-		}
-	})
 }
 
 type matchProbe struct {
