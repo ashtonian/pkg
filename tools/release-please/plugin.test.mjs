@@ -175,6 +175,36 @@ test("GitHub's default merge message counts as the pull request's title", () => 
   assert.ok(kept.every(c => c.sha === 'm1'), 'the branch commit is gone');
 });
 
+// #381 (55aac64): release-please lists nothing for a breaking title under
+// GitHub's subject, so its release listed the branch commits and not the title.
+test("a breaking title under GitHub's default merge subject is the merge's entry where its change reaches", async () => {
+  const message = 'Merge pull request #381 from a/b\n\nfeat(parse)!: parse/client becomes its own module';
+  assert.deepEqual(parseConventionalCommits([{ sha: 'm1', message, files: [] }], quiet), [], "release-please's own parse");
+  const branch = [
+    ['b1', 'feat(parse)!: decode answers', ['parse/client/decode.go']],
+    ['b2', 'docs(httpx): link the parse client', ['httpx/README.md']],
+  ];
+  const history = landedBatch(message, branch);
+  const kept = await runPaths(history, {
+    parse: [{ sha: 'm1', message, files: ['parse/client/decode.go'] }, { sha: 'b1', message: branch[0][1], files: branch[0][2] }],
+    httpx: [{ sha: 'm1', message, files: ['httpx/README.md'] }, { sha: 'b2', message: branch[1][1], files: branch[1][2] }],
+    gowalker: [],
+  });
+
+  assert.deepEqual(kept.parse.map(c => [c.sha, c.type, c.breaking]), [['m1', 'feat', true]], 'the title, as the one entry');
+  assert.match(await notes(kept.parse), /BREAKING CHANGES[\s\S]*parse\/client becomes its own module/);
+  assert.deepEqual(kept.httpx.map(c => [c.sha, c.type, c.breaking]), [['m1', 'docs', false]], 'the branch decides a complete path');
+  assert.deepEqual(kept.gowalker, [], 'a path the change misses lists nothing');
+});
+
+test("GitHub's default merge subject over a body that is no single conventional title keeps the branch commits", async () => {
+  const message = 'Merge pull request #9 from a/b\n\nfeat(parse)!: add Stream\nand a second line';
+  const branch = [['b1', 'feat(parse): add Stream', ['parse/stream.go']]];
+  const kept = await runPaths(landedBatch(message, branch), { parse: raw(message, branch, ['b1']) });
+
+  assert.deepEqual(kept.parse.map(c => c.sha), ['b1']);
+});
+
 test("a merge whose subject release-please can't parse keeps its branch commits", () => {
   const history = { mergeOf: new Map([['b1', 'm1']]), messageOf: new Map([['m1', 'Merge pull request #1 from a/b']]) };
   const commits = parsed([['b1', 'feat(parse): accept POST lists']]);
