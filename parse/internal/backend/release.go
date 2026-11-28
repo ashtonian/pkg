@@ -9,6 +9,6 @@ package backend
 
 const ReleaseMajor = 0 // x-release-please-major
 
-const ReleaseMinor = 18 // x-release-please-minor
+const ReleaseMinor = 19 // x-release-please-minor
 
 const ReleasePatch = 0 // x-release-please-patch

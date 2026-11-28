@@ -7,7 +7,7 @@ import "github.com/ashtonian/pkg/parse/internal/backend"
 
 const releaseMajor = 0 // x-release-please-major
 
-const releaseMinor = 18 // x-release-please-minor
+const releaseMinor = 19 // x-release-please-minor
 
 const releasePatch = 0 // x-release-please-patch
 

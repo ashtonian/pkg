@@ -1,5 +1,101 @@
 # Changelog
 
+## [0.19.0](https://github.com/ashtonian/pkg/compare/parse/v0.18.0...parse/v0.19.0) (2026-11-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parse:** parse/parsesqlite is gone: its Register, RegisterOn, Functions and function names are parsesql's. parsesql and parsepgx are modules: require them beside parse, at parse's version. parseprovider's Config, SQLiteConfig and PostgresConfig are gone: hold the provider's name and each linked provider's Config (parsesql.Config, parsepgx.Config, whose dsn and settle_timeout are each its own), and call parseprovider.Open(ctx, name, parsesql.Choice(cfg.SQLite), parsepgx.Choice(cfg.Postgres)). It returns the parseprovider.Database interface; the handle is the opened provider's (*parsesql.Database).DB or (*parsepgx.Database).Pool.
+* **parse:** a resource is built on a provider and runs its own statements.
+    - parse: NewResource and MustResource take a *Provider first.
+    - parse: BuildList, BuildFacets, BuildUpdate and BuildUpdateBatch take no
+      dialect; Columns() returns []string with no error; RowScanner and
+      ListQuery take no dialect.
+    - parse: removed CheckPlan, ErrDialect, Plan, Dialect, the plans' Dialect
+      methods, UpdatePlan.ConflictError, UpdateBatchChunk.CheckCurrent,
+      ListPage, ListRows, FollowUp, UpdateFollowUp, RelationStatements,
+      Reread, UpdatedRows, Unchanged, CheckBatchCurrent, BatchResult,
+      ExecConfig, ExecOption, NewExecConfig and WithSettleTimeout. Run plans
+      through the resource's List, Facets, Query, Update and UpdateBatch.
+    - parse: StatementFailed takes the table first, and StatementError has a
+      Table field; its message is "parse: &lt;table&gt;: &lt;statement&gt;: &lt;cause&gt;".
+    - parse: added Provider, Tx, ErrProviderMismatch, Resource.In,
+      Resource.Provider and RelatedResource's Provider method.
+    - parsesql: removed QueryPage, Query, Update, UpdateBatch, Queryer, DB
+      and ErrNoTransaction; added New, Option, SettleTimeout, Tx and Name.
+      MinSQLiteVersion, CheckVersion and VersionError moved here from
+      parsesqlite.
+    - parsepgx: removed QueryPage, Query, Update, UpdateBatch, Querier and
+      DB; added New, Option, Collation, ContainmentMaxValues, SettleTimeout,
+      Tx and Name.
+    - filter: removed DialectFromDSN, ErrUnknownDSN and ComputedExpr;
+      ComputedColumn holds resolved SQL, and ResourceSchema.ComputedSQL takes
+      no dialect and returns no error.
+    - filter: SQLiteDialect no longer refuses a JSON Patch member whose name
+      holds a quote or a backslash.
+    - parsesqlite: no longer checks the SQLite version on each connection.
+* **parse:** ParseError.Kind, ParseErrorKind and its constants are removed; build a ParseError with core.NewError and its options. Error responses carry details.field wherever an error is about one field, and the facet E2071 no longer sets path.
+* **parse:** a parse:"sort" field of a struct type now needs
+* **parse:** parse's SQLite plans need SQLite 3.47.0 or later, and parsesqlite.Register and RegisterOn refuse a connection to an older library. On SQLite a JSON Patch operation on a document member whose name holds " or \ is E2070; apply it with ApplyValidatedPatch, or write it with a merge patch.
+* **parse:** filter.PathValue returns an int or float path's member as a json.Number of its canonical decimal text, not an int64 or float64, and a JSON number beyond core.MaxDecimalDigits digits in plain notation is absent there, in cursors and in the SQL. Evaluate compares such members exactly. On SQLite a statement on an int or float path calls parse_decimal, so it needs the parsesqlite functions registered.
+* **parse:** filter.Dialect, SQLiteDialect and PostgresDialect no longer have a NativeRowCompare method.
+* **parse:** NewResource accepts a DeletedColumn field that is a slice, map or interface, and refuses an sql.Scanner with no Value method and one whose zero value writes a value rather than NULL, as it refuses uuid.UUID and the decimal types.
+* **parse:** a field of a nullable wrapper type is its value's type, not an object document: it takes its value's filter operators (filter_ops naming document operators such as contains or has_key is refused), sorts with its value's numeric range, and defaults to the replace and remove patch operations. core.TypeOf no longer types a document member; use core.MemberTypeOf for one.
+* **parse:** filter.NewQueryParamParser returns (*QueryParamParser, error); it refuses a nil schema and a QueryParamAccept name that is a list parameter or a flat filter on a field, suffix forms included, and Resource.ParseRequestFilter returns that error.
+* **parse:** a boolean, interval, inet, cidr or macaddr key takes eq and in alone; a range on it is E2072, and the schema document lists only those two.
+* **parse:** NewResource refuses a DeletedColumn whose type cannot hold NULL as its field sees it (uuid.UUID, decimal.Decimal, core's value types), and a patch relation refuses a key type that holds NULL, such as sql.NullString. A sort key or patch path of an sql.Null type is nullable: its cursor carries null, and its path takes remove and a null merge.
+* **parse:** filter.KeyValue returns an int or float path key's member as its canonical decimal text (a string), not an int64 or float64, and a cursor carries that text.
+* **parse:** filter.CompareKeyValues returns (int, error) and refuses values its key's type cannot order instead of ordering them by their text; core.KeyValueText is core.CanonicalText.
+* **parse:** parsesql.Update and UpdateBatch refuse a DB that is neither a *sql.Tx nor has BeginTx (parsesql.ErrNoTransaction), and both executors' Update and UpdateBatch take trailing parse.ExecOption arguments.
+* **parse:** a sort naming a field twice, such as sort=a,-a, is refused with E2079.
+* **parse:** a patch body read from a request is refused with E2063 past 1 MiB when MaxInputSize is unlimited.
+* **parse:** changing a PathSchema that PatchSchema.Path or Paths returns no longer changes the schema; use PatchSchema.UpdatePath.
+* **parse:** parsepgx.ErrDialect and parsesql.ErrDialect are removed; both executors refuse a plan compiled for another dialect with parse.ErrDialect, so test for that instead.
+* **parse:** NewResource, Relate and WithPaths refuse an AcceptParams name that is a list parameter or a flat filter on a field.
+* **parse:** NewPatchSchema, AddPath, ForbidPaths and ConstrainValues refuse a key or pattern that does not begin with /.
+* **parse:** these relation failures are no longer *core.ParseError E2083; match filter.ErrRelationUnresolvable with errors.Is.
+* **parse:** Resource.ParseKey, and so parsehttp.ItemKey, return ErrNoSuchKey, not ErrKeyInvalid, for a text a key column cannot hold.
+* **parse:** core.CheckNUL and core.ErrNUL are replaced by core.CheckText, core.CheckValueText and core.ErrInvalidText.
+* **parse:** filter.VisibleRelated takes a RelationScope (its Tenant, Related and Now) in place of the tenant and related-policy arguments.
+* **parse:** a payload holding an invalid Date, a toJSON that returns null, or undefined, a function or a symbol in an array throws UnencodableValueError where it was sent as null. A 2xx answer without the members a call reads is a ResponseError. A cached schema document is frozen. listAll throws ResponseError for a next page without a cursor.
+* **parse/client:** parse/client is the module github.com/ashtonian/pkg/parse/client and the parse module no longer contains it. Importers add the module (go get github.com/ashtonian/pkg/parse/client, or go mod tidy) and require parse at this release or later if they also require parse; an earlier parse still holds the package, and the import is then ambiguous.
+* **parse/filter:** a list page with no rows encodes "items":[] instead of "items":null. A client that tested items for null tests for an empty array.
+* **parse:** NewResource fails for a search parameter that is a list parameter, an AcceptParams name or a flat filter on one of the resource's fields, and Relate and WithPaths fail for a relation or path such a parameter would filter. Rename the parameter with core.WithSearchParam.
+* **parse/patch:** a field with parse:"patch", or with parse:"server" in the server patch schema, that is promoted through an unexported embedded pointer fails GeneratePatchSchema and GenerateServerPatchSchema, and so NewResource and Register; export the embedded type or embed it by value. NewResource also refuses a customized patch path that reaches such a field, and Applier.CheckSchema refuses one in a schema completed by hand. Apply refuses an unchecked one with an error that is not a core.ParseError, which the HTTP layer answers 500 rather than E2076 (422). Apply never writes the caller's row or a parent it embeds by pointer, on success or on a failure part-way.
+* **parse:** NewResource refuses a column it reads, a computed column included, whose field is promoted through an unexported embedded pointer, and a read column holding a stored document whose type has, at any depth, a member promoted that way. RowScanner refuses ScanJSON on an sql.Scanner column whose type has such a member, and GeneratePatchSchema and GenerateServerPatchSchema refuse a patch or server field whose type has one. Export the embedded type or embed it by value, or leave the column out of ReadColumns.
+* **parse/core:** the fields of core.StructFields and core.Field are now methods, and core.Tags no longer has Enum and Bounds. Write walk.Fields() to range over the fields, collect it with slices.Collect for a slice, and use walk.Len() for its length; walk.Type, f.GoName, f.Type, f.Route, f.External and f.Tags become calls, and the field's enum and bounds come from its Enum and Bounds methods. Route, Enum and Bounds return copies, so changing what they return no longer changes the walk.
+* **parse/sdk:** a patch, patchMany, list, listAll or facets call whose payload holds NaN, Infinity or -Infinity now rejects with NonFiniteNumberError and sends nothing, where it used to send null (or, under validateBeforeSend, rejected a top-level float with SchemaValidationError E2077). Send null where a removal is meant, and catch NonFiniteNumberError, or RangeError, for the refusal.
+* **parse/sdk:** PatchInput's value for a JSON object field is a MergeDocument of the field's type rather than the type itself, so code that reads a patch's field back as the row's type must take the merge document type; and a document literal holding null for a member its type always carries, a call the server refused with E2077, no longer compiles. Send that member's value, or leave it out.
+
+### Features
+
+* **parse/client:** its own standard-library module, with the decode side of the wire ([707e3f2](https://github.com/ashtonian/pkg/commit/707e3f242ef0c7342920d405746d4d825c2ee7a1)), refs [#377](https://github.com/ashtonian/pkg/issues/377)
+* **parse/parsehttp:** WriteList and MaskPage answer a list page under its field mask ([19e5c03](https://github.com/ashtonian/pkg/commit/19e5c037e06e3627f58c812a0ef55d739802e7ab))
+* **parse/sdk:** a request method for a server's other routes ([8171b87](https://github.com/ashtonian/pkg/commit/8171b876e8e8dec66b4a32fd630cb4628ec9fb87)), refs [#379](https://github.com/ashtonian/pkg/issues/379)
+* **parse:** an in-memory provider over one executor per provider ([#467](https://github.com/ashtonian/pkg/issues/467)) ([786ddf8](https://github.com/ashtonian/pkg/commit/786ddf8d0fd4c9e3d01d39b966d32ff70fe88208))
+* **parse:** each provider opens and runs its own resources ([#461](https://github.com/ashtonian/pkg/issues/461)) ([237414c](https://github.com/ashtonian/pkg/commit/237414c12c27f0b26a91d910467c8ec5076d5745))
+* **parse:** wave 6, the review's bugs: update transactions and locks, request text and keys, policies, patches, filters and the clients ([#458](https://github.com/ashtonian/pkg/issues/458)) ([fb9cf6d](https://github.com/ashtonian/pkg/commit/fb9cf6da1d35a0d9bb104ddef6ce49f0233c4cef)), refs [#441](https://github.com/ashtonian/pkg/issues/441) [#440](https://github.com/ashtonian/pkg/issues/440) [#433](https://github.com/ashtonian/pkg/issues/433) [#431](https://github.com/ashtonian/pkg/issues/431) [#429](https://github.com/ashtonian/pkg/issues/429) [#438](https://github.com/ashtonian/pkg/issues/438) [#436](https://github.com/ashtonian/pkg/issues/436) [#435](https://github.com/ashtonian/pkg/issues/435) [#439](https://github.com/ashtonian/pkg/issues/439) [#437](https://github.com/ashtonian/pkg/issues/437) [#434](https://github.com/ashtonian/pkg/issues/434) [#432](https://github.com/ashtonian/pkg/issues/432) [#426](https://github.com/ashtonian/pkg/issues/426) [#430](https://github.com/ashtonian/pkg/issues/430) [#428](https://github.com/ashtonian/pkg/issues/428) [#425](https://github.com/ashtonian/pkg/issues/425) [#424](https://github.com/ashtonian/pkg/issues/424) [#423](https://github.com/ashtonian/pkg/issues/423) [#422](https://github.com/ashtonian/pkg/issues/422) [#421](https://github.com/ashtonian/pkg/issues/421) [#420](https://github.com/ashtonian/pkg/issues/420) [#419](https://github.com/ashtonian/pkg/issues/419) [#418](https://github.com/ashtonian/pkg/issues/418) [#417](https://github.com/ashtonian/pkg/issues/417) [#413](https://github.com/ashtonian/pkg/issues/413) [#412](https://github.com/ashtonian/pkg/issues/412) [#411](https://github.com/ashtonian/pkg/issues/411) [#410](https://github.com/ashtonian/pkg/issues/410) [#409](https://github.com/ashtonian/pkg/issues/409) [#408](https://github.com/ashtonian/pkg/issues/408) [#407](https://github.com/ashtonian/pkg/issues/407) [#406](https://github.com/ashtonian/pkg/issues/406) [#404](https://github.com/ashtonian/pkg/issues/404) [#403](https://github.com/ashtonian/pkg/issues/403) [#401](https://github.com/ashtonian/pkg/issues/401) [#402](https://github.com/ashtonian/pkg/issues/402) [#400](https://github.com/ashtonian/pkg/issues/400) [#399](https://github.com/ashtonian/pkg/issues/399) [#398](https://github.com/ashtonian/pkg/issues/398) [#397](https://github.com/ashtonian/pkg/issues/397)
+
+
+### Bug Fixes
+
+* **parse/core:** the shared field walks are read-only ([19e5c03](https://github.com/ashtonian/pkg/commit/19e5c037e06e3627f58c812a0ef55d739802e7ab))
+* **parse/filter:** a cursor of another generation is E2082 "unsupported cursor version" whatever its payload holds ([19e5c03](https://github.com/ashtonian/pkg/commit/19e5c037e06e3627f58c812a0ef55d739802e7ab))
+* **parse/filter:** a list that matches nothing answers an empty items array ([19e5c03](https://github.com/ashtonian/pkg/commit/19e5c037e06e3627f58c812a0ef55d739802e7ab))
+* **parse/patch:** a patch never writes the caller's row, nor a parent it embeds by pointer ([19e5c03](https://github.com/ashtonian/pkg/commit/19e5c037e06e3627f58c812a0ef55d739802e7ab))
+* **parse/sdk:** PatchInput types a document field as a merge document, any subset of its members at every depth ([19e5c03](https://github.com/ashtonian/pkg/commit/19e5c037e06e3627f58c812a0ef55d739802e7ab))
+* **parse/sdk:** resource methods work destructured and as callbacks ([19e5c03](https://github.com/ashtonian/pkg/commit/19e5c037e06e3627f58c812a0ef55d739802e7ab))
+* **parse/sdk:** the SDK refuses NaN and infinities in a payload rather than send null ([19e5c03](https://github.com/ashtonian/pkg/commit/19e5c037e06e3627f58c812a0ef55d739802e7ab))
+* **parse:** a resource reads the search from the query parameter discovery advertises ([19e5c03](https://github.com/ashtonian/pkg/commit/19e5c037e06e3627f58c812a0ef55d739802e7ab))
+* **parse:** a resource refuses a read column no row scan can fill ([19e5c03](https://github.com/ashtonian/pkg/commit/19e5c037e06e3627f58c812a0ef55d739802e7ab))
+* **parse:** error text names a type without its struct tags ([19e5c03](https://github.com/ashtonian/pkg/commit/19e5c037e06e3627f58c812a0ef55d739802e7ab))
+* **parse:** wave 7, the review's remaining bugs and the deduplication they needed ([#459](https://github.com/ashtonian/pkg/issues/459)) ([59aa60f](https://github.com/ashtonian/pkg/commit/59aa60f35076d38d428f4eca93d2b5dd87192aa7)), refs [#454](https://github.com/ashtonian/pkg/issues/454) [#446](https://github.com/ashtonian/pkg/issues/446) [#453](https://github.com/ashtonian/pkg/issues/453) [#455](https://github.com/ashtonian/pkg/issues/455) [#443](https://github.com/ashtonian/pkg/issues/443) [#448](https://github.com/ashtonian/pkg/issues/448) [#452](https://github.com/ashtonian/pkg/issues/452) [#445](https://github.com/ashtonian/pkg/issues/445) [#447](https://github.com/ashtonian/pkg/issues/447) [#449](https://github.com/ashtonian/pkg/issues/449) [#456](https://github.com/ashtonian/pkg/issues/456) [#444](https://github.com/ashtonian/pkg/issues/444) [#451](https://github.com/ashtonian/pkg/issues/451)
+
+
+### Performance Improvements
+
+* **parse:** give each provider its own module, and require no driver in parse ([#465](https://github.com/ashtonian/pkg/issues/465)) ([abe3f93](https://github.com/ashtonian/pkg/commit/abe3f9363d6196c39728635deedecf3ae43ed132)), refs [#450](https://github.com/ashtonian/pkg/issues/450)
+
 ## [0.18.0](https://github.com/ashtonian/pkg/compare/parse/v0.17.1...parse/v0.18.0) (2026-11-23)
 
 
