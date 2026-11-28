@@ -122,7 +122,7 @@ func TestEvaluateRefusals(t *testing.T) {
 		{"a row value outside the field's domain", &FilterNode{Field: name, Op: OpEq, Value: "a"}, valueRow(int64(1)), ""},
 		{"and without children", &FilterNode{Op: OpAnd}, valueRow(nil), ""},
 		{"not with two children", &FilterNode{Op: OpNot, Children: []*FilterNode{{Op: OpRawSQL}, {Op: OpRawSQL}}}, valueRow(nil), ""},
-		{"a column the row lacks", &FilterNode{Field: name, Op: OpEq, Value: "a"}, ColumnRow(func(string) (any, bool) { return nil, false }), ""},
+		{"a column the row lacks", &FilterNode{Field: name, Op: OpEq, Value: "a"}, ColumnRow(func(ColumnRef) (any, bool) { return nil, false }), ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

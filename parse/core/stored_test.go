@@ -5,6 +5,7 @@ package core
 import (
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -158,4 +159,63 @@ func TestStoredScalar(t *testing.T) {
 	assert.False(t, present, "NULL")
 	_, _, err = StoredScalar(FieldTypeBool, reflect.Invalid, int64(2))
 	require.ErrorContains(t, err, "expected boolean, got int64")
+}
+
+// A value is stored in one form, whatever Go value spells it: a timestamp
+// as its canonical text, a document, a geo shape and an array as their JSON text, a
+// value type as its canonical text, anything else as its driver value.
+func TestStorageValue(t *testing.T) {
+	instant := time.Date(2026, 1, 2, 3, 4, 5, 500_000_000, time.FixedZone("", 2*60*60))
+	const canonical = "2026-01-02T01:04:05.500000000Z"
+	timestamps := TypeInfo{Type: FieldTypeArray, Elem: FieldTypeTimestamp}
+	type named string
+	for _, tc := range []struct {
+		name  string
+		t     TypeInfo
+		value any
+		want  driver.Value
+	}{
+		{"nil", TypeInfo{Type: FieldTypeString}, nil, nil},
+		{"a nil pointer", TypeInfo{Type: FieldTypeInt}, (*int)(nil), nil},
+		{"a NULL wrapper", TypeInfo{Type: FieldTypeInt}, sql.NullInt64{}, nil},
+		{"a wrapper's value", TypeInfo{Type: FieldTypeInt}, sql.NullInt64{Int64: 3, Valid: true}, int64(3)},
+		{"an int32", TypeInfo{Type: FieldTypeInt}, int32(7), int64(7)},
+		{"a uint64 within int64", TypeInfo{Type: FieldTypeInt}, uint64(7), int64(7)},
+		{"a float32", TypeInfo{Type: FieldTypeFloat}, float32(0.1), float64(float32(0.1))},
+		{"a named string", TypeInfo{Type: FieldTypeString}, named("x"), "x"},
+		{"a pointer to a string", TypeInfo{Type: FieldTypeString}, new("x"), "x"},
+		{"a decimal", TypeInfo{Type: FieldTypeDecimal}, decimal.RequireFromString("1.50"), "1.5"},
+		{"a UUID", TypeInfo{Type: FieldTypeUUID}, googleuuid.MustParse("0190A5B4-7C1E-7D8A-9B2C-3D4E5F6A7B8C"), "0190a5b4-7c1e-7d8a-9b2c-3d4e5f6a7b8c"},
+		{"a timestamp in an offset", TypeInfo{Type: FieldTypeTimestamp}, instant, canonical},
+		{"a timestamp's RFC 3339 text", TypeInfo{Type: FieldTypeTimestamp}, "2026-01-02T03:04:05.5+02:00", canonical},
+		{"a valid NullTime", TypeInfo{Type: FieldTypeTimestamp}, sql.NullTime{Time: instant, Valid: true}, canonical},
+		{"a date", TypeInfo{Type: FieldTypeDate}, Date("2026-01-02"), "2026-01-02"},
+		{"an interval", TypeInfo{Type: FieldTypeInterval}, Interval{Microseconds: 5_400_000_000}, "PT1H30M"},
+		{"a map", TypeInfo{Type: FieldTypeJSON}, map[string]any{"b": 1, "a": "<"}, `{"a":"\u003c","b":1}`},
+		{"a nil map", TypeInfo{Type: FieldTypeJSON}, map[string]any(nil), `null`},
+		{"raw JSON, compacted", TypeInfo{Type: FieldTypeJSON}, json.RawMessage(`{"a": 1}`), `{"a":1}`},
+		{"a struct", TypeInfo{Type: FieldTypeObject}, struct{ W int }{W: 2}, `{"W":2}`},
+		{"a geo point", TypeInfo{Type: FieldTypeGeo}, map[string]float64{"lon": 2, "lat": 1}, `{"lat":1,"lon":2}`},
+		{"a geo point's raw JSON, compacted", TypeInfo{Type: FieldTypeGeo}, json.RawMessage(`{"lat": 1, "lon": 2}`), `{"lat":1,"lon":2}`},
+		{"a declared json Valuer, as its JSON", TypeInfo{Type: FieldTypeJSON, SQLType: SQLJSON}, upper("a"), `"a"`},
+		{"an array", TypeInfo{Type: FieldTypeArray, Elem: FieldTypeString}, []string{"a", "b"}, `["a","b"]`},
+		{"an empty array", TypeInfo{Type: FieldTypeArray, Elem: FieldTypeString}, []string{}, `[]`},
+		{"a nil array", TypeInfo{Type: FieldTypeArray, Elem: FieldTypeString}, []string(nil), nil},
+		{"timestamps, each in UTC", timestamps, []time.Time{instant, instant.UTC()}, `["` + canonical + `","` + canonical + `"]`},
+		{"timestamps holding NULL", timestamps, []*time.Time{&instant, nil}, `["` + canonical + `",null]`},
+		{"a pointer to timestamps", timestamps, &[]time.Time{instant}, `["` + canonical + `"]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := StorageValue(tc.t, tc.value)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+
+	_, err := StorageValue(TypeInfo{Type: FieldTypeInt}, uint64(1<<63))
+	require.Error(t, err, "an unsigned integer above int64 has no driver value")
+	_, err = StorageValue(TypeInfo{Type: FieldTypeTimestamp}, instant.String())
+	require.Error(t, err, "the driver's own text is no RFC 3339 timestamp")
+	_, err = StorageValue(timestamps, []string{"yesterday"})
+	require.ErrorContains(t, err, "timestamp element 0")
 }

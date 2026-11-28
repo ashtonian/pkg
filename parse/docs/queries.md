@@ -201,9 +201,9 @@ An element predicate, on either kind of array, costs 10 (1 when the array is tag
 A backend that holds rows in memory evaluates a parsed filter with `filter.Evaluate(ast.Root, row)`, the reference evaluator: it returns the row's `filter.Truth` (`True`, `False` or `Unknown`) under the rules the SQL dialects render, and the row is selected only on `True`. `filtertest` runs every conformance case on it beside SQLite and PostgreSQL.
 
 ```go
-row := filter.ColumnRow(func(column string) (any, bool) {
-	v, ok := columns[column] // the Go values stored under each column
-	return v, ok
+row := filter.ColumnRow(func(column filter.ColumnRef) (any, bool) {
+	v, ok := columns[column.Column] // the Go values stored under each column of the table
+	return v, ok && column.Table == table
 })
 truth, err := filter.Evaluate(parsed.AST().Root, row)
 if err != nil {
@@ -223,7 +223,7 @@ selected := truth == filter.True
 | Unknown | SQL's unknown (`filter.UnknownConstraint`) is `Unknown` |
 | Not evaluable | a membership or raw-SQL predicate is `Unknown`, so it never admits a row its SQL would refuse; resolve memberships and relation predicates first with `filter.ResolveMemberships`, since an unresolved relation predicate is `filter.ErrRelationUnresolvable` |
 
-A `filter.Row` returns each field's value in the canonical domain filter values normalize to (`filter.Row` documents it). `filter.ColumnRow` reads a row stored as Go values by column — under `table.column` for a field's `Table` and `Column` or a path's document column, and under the expression itself for an `Expr` — converting each with `filter.ColumnValue` (drivers' `Valuer`s, decimals, times and UUIDs as SQL compares them; JSON text decoded) and each path with `filter.PathValue`; a column the row lacks is an error, never NULL. JSON text is decoded on every read, once for each condition on its paths; a store that evaluates many filters over the same rows decodes each document once with `filter.DecodeDocument` and returns the `filter.Document` (or a pointer to it) for its column, which every reader of a document (`PathValue`, `ColumnValue`, `DocumentElements`, `KeyValue`) takes as it takes the text. `filter.RowFunc` adapts any other source. Run `filtertest.Run(t, "memory", backend)`, `filtertest.RunPaths`, `filtertest.RunGeo`, `filtertest.RunMembership` and `filtertest.RunPolicy` (after `ResolveMemberships`) to prove a row adapter.
+A `filter.Row` returns each field's value in the canonical domain filter values normalize to (`filter.Row` documents it). `filter.ColumnRow` reads a row stored as Go values by column — the `filter.ColumnRef` a field reads (`FieldSchema.ColumnRef`): `Column` of `Table`, a path's document column, or `Expr` alone for a computed field, held as the field's own strings so a lookup builds no name per row (`ColumnRef.String` is the `table.column` name, for a row keyed by it) — converting each with `filter.ColumnValue` (drivers' `Valuer`s, decimals, times and UUIDs as SQL compares them; JSON text decoded) and each path with `filter.PathValue`; a column the row lacks is an error, never NULL. JSON text is decoded on every read, once for each condition on its paths; a store that evaluates many filters over the same rows decodes each document once with `filter.DecodeDocument` and returns the `filter.Document` (or a pointer to it) for its column, which every reader of a document (`PathValue`, `ColumnValue`, `DocumentElements`, `KeyValue`) takes as it takes the text. `filter.RowFunc` adapts any other source. Run `filtertest.Run(t, "memory", backend)`, `filtertest.RunPaths`, `filtertest.RunGeo`, `filtertest.RunMembership` and `filtertest.RunPolicy` (after `ResolveMemberships`) to prove a row adapter.
 
 ## Lists and keyset pagination
 
@@ -409,7 +409,7 @@ A relation that declares a `tenant_col` fails the build unless a tenant is bound
 
 A flat parameter that is neither a list parameter (`filter.Param*`), an accepted name nor a filterable field is E2071 on every entry point — `Resource.ParseList` (`AcceptParams`), `Resource.ParseRequestFilter` and `filter.NewQueryParamParser` (`QueryParamAccept`) — so a misspelt filter cannot return every row.
 
-The dialects are `filter.PostgresDialect` and `filter.SQLiteDialect`, and the set is sealed: `filter.Dialect` has unexported methods, so no type outside the module implements it of its own. A resource compiles for its provider's dialect, which the provider package sets (`parsepgx`'s from its `Collation` and `ContainmentMaxValues` options); the filter builders take one directly. A type that embeds one of the two to override a method is not a dialect parse supports, whatever it compiles to: the built-in methods call their own receiver's, so a statement quotes identifiers and binds values as the embedded dialect does whatever the outer type declares. Every dialect-specific choice is a method of the dialect, never a test of which dialect it is: `filter.Dialect`'s for filters, lists, facets and includes, the methods `patch.SQLDialect` and `patch.RelationDialect` name for the SQL a patch writes, and `StoresAsText` for what a row scan decodes. A new SQL provider is one type in `filter` implementing `filter.Dialect`, over a type of `internal/dialect` that gives its name, placeholders, identifier quoting and parameter limit, and a provider package that runs its statements. Application code can still type-switch on the two types, as the computed-column example below does.
+The dialects are `filter.PostgresDialect` and `filter.SQLiteDialect`, and the set is sealed: `filter.Dialect` has unexported methods, so no type outside the module implements it of its own. A resource compiles for its provider's dialect, which the provider package sets (`parsepgx`'s from its `Collation` and `ContainmentMaxValues` options); the filter builders take one directly. A type that embeds one of the two to override a method is not a dialect parse supports, whatever it compiles to: the built-in methods call their own receiver's, so a statement quotes identifiers and binds values as the embedded dialect does whatever the outer type declares. Every dialect-specific choice is a method of the dialect, never a test of which dialect it is: `filter.Dialect`'s for filters, lists, facets and includes, the methods `patch.SQLDialect` and `patch.RelationDialect` name for the SQL a patch writes, and `StoresAsText` for what a row scan decodes. A new SQL provider is one type in `filter` implementing `filter.Dialect`, over a type of `internal/dialect` that gives its name, placeholders, identifier quoting and parameter limit, and a provider package that sends the statements the SQL executor (`internal/sqlexec`) compiles and holds its transactions. Application code can still type-switch on the two types, as the computed-column example below does.
 
 PostgreSQL dialect:
 
@@ -495,7 +495,7 @@ SQLite searches with `LIKE '%cordless drill%'` — a phrase, where PostgreSQL's 
 <!-- output of Example_patches -->
 ```text
 {"name":"Cordless drill","stock":null,"attrs":{"color":"blue","legacy":null}}
-postgres SET "attrs" = (COALESCE(jsonb_path_query_first("attrs", 'strict $ ? (@.type() == "object")'), '{}'::jsonb) - $1::text[] || $2::jsonb), "name" = $3, "stock" = NULL [[legacy] {"color":"blue"} Cordless drill]
+postgres SET "attrs" = (COALESCE(jsonb_path_query_first("attrs"::jsonb, 'strict $ ? (@.type() == "object")'), '{}'::jsonb) - $1::text[] || $2::jsonb), "name" = $3, "stock" = NULL [[legacy] {"color":"blue"} Cordless drill]
 sqlite   SET "attrs" = json_patch(COALESCE("attrs", '{}'), ?1), "name" = ?2, "stock" = NULL [{"color":"blue","legacy":null} Cordless drill]
 [{"op":"array_append","path":"/tags","value":"clearance"},{"op":"replace","path":"/price","value":19.99}]
 postgres SET "tags" = array_append(COALESCE("tags", '{}'), $1), "price" = $2 [clearance 19.99]

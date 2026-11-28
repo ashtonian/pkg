@@ -30,6 +30,13 @@
 // or the application's own (parsesql.Tx, parsepgx.Tx), so parse's writes
 // commit with the application's.
 //
+// A resource composes each request it runs (the scope's floor and policy,
+// the keyset and cursor, an update's target and options) and hands it to
+// its provider's executor, which runs it and hands the rows back for the
+// resource to scan into its type; the SQL providers compile it to their
+// dialect. An operation the provider does not support is refused before
+// anything runs (ErrUnsupported).
+//
 // # SchemaRegistry
 //
 // SchemaRegistry holds each registered resource's schema document, which

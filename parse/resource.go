@@ -71,12 +71,16 @@ type resourceCore struct {
 	searchParam string
 	// read are the columns the resource reads, in field order, and
 	// sqlTypes the declared database types among them (ColumnType);
-	// tableColumns is every column of T, and columnFields the field holding
-	// each.
+	// tableColumns is every column of T, columnOrder the same in field
+	// order, and columnFields the field holding each.
 	read         []string
 	sqlTypes     map[string]core.SQLType
 	tableColumns map[string]reflect.Type
+	columnOrder  []string
 	columnFields map[string]*core.Field
+	// scalars are the scalar types of the document columns their storage
+	// declares one for (filter.ScalarStorage): the type the column holds.
+	scalars map[string]core.TypeInfo
 	// undecodable holds why a read column's type, an sql.Scanner the
 	// resource does not declare JSON, cannot be decoded as a stored
 	// document (jsonkeys.CheckDecodable): RowScanner refuses ScanJSON on it.
@@ -96,18 +100,19 @@ type resourceCore struct {
 	view bool
 
 	// provider is the provider the resource was built on, and dialect its
-	// dialect, which every statement compiles for; conn is where the
-	// statements run: the provider's database, or a transaction (In).
+	// dialect, nil for one that compiles no SQL; exec runs the resource's
+	// requests: the provider's database, or a transaction it joined (In).
 	provider *Provider
 	dialect  filter.Dialect
-	conn     backend.Conn
+	exec     backend.Executor
+	// desc is the descriptor every request carries (backend.Resource),
+	// fixed at construction; a view's holds the view's filter schema.
+	desc *backend.Resource
 	// computedSQL is each computed column's parenthesized SQL for dialect,
-	// by column, and projection the Columns every statement selects,
-	// joined; both are fixed at construction.
+	// by column, fixed at construction.
 	computedSQL map[string]string
-	projection  string
-	// scanRules scan the rows of the resource's statements; a provider
-	// that reports a result's document columns gets rules built for them
+	// scanRules scan the rows the executor hands back; a provider that
+	// reports a result's document columns gets rules built for them
 	// (rulesFor).
 	scanRules rowRules
 }
@@ -158,7 +163,27 @@ func NewResource[T any](p *Provider, table string, opts ...ResourceOption) (*Res
 		}
 	}
 	r := &Resource[T]{resourceCore: *c, applier: applier}
+	err = r.declare(r.desc)
+	if err != nil {
+		return nil, err
+	}
 	return r, nil
+}
+
+// declare declares desc's tables to the provider's database when the
+// database holds its tables itself (backend.Declarer): the last step of
+// building or relating a resource, so a refusal leaves nothing declared
+// that the resource does not hold.
+func (r *resourceCore) declare(desc *backend.Resource) error {
+	d, ok := r.provider.db.(backend.Declarer)
+	if !ok {
+		return nil
+	}
+	err := d.Declare(desc)
+	if err != nil {
+		return fmt.Errorf("parse: %s: declaring the table: %w", r.table, err)
+	}
+	return nil
 }
 
 // newResourceCore is NewResource's resource without what depends on T:
@@ -195,7 +220,7 @@ func newResourceCore(p *Provider, table string, rowType reflect.Type, generate f
 		accepted:    slices.Clone(cfg.accepted),
 		provider:    p,
 		dialect:     p.dialect,
-		conn:        p.db,
+		exec:        p.db,
 	}
 	err := r.generateSchemas(parserOpts, generate)
 	if err != nil {
@@ -250,7 +275,12 @@ func newResourceCore(p *Provider, table string, rowType reflect.Type, generate f
 	}
 	r.tenantNode = newTenantNode(table, tenant)
 	r.tableColumns = columns
+	r.columnOrder = order
 	r.columnFields = fieldsByColumn
+	r.scalars, err = scalarColumns(r.gen, fieldsByColumn)
+	if err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", table, err)
+	}
 
 	read, err := readColumns(table, cfg, columns)
 	if err != nil {
@@ -258,6 +288,12 @@ func newResourceCore(p *Provider, table string, rowType reflect.Type, generate f
 	}
 	if r.readExprs, err = newComputedColumns(table, cfg, columns, read); err != nil {
 		return nil, err
+	}
+	if r.readExprs != nil {
+		err = p.supports(table, backend.ComputedColumns)
+		if err != nil {
+			return nil, err
+		}
 	}
 	r.filterSchema.Computed, err = r.readExprs.resolve(r.dialect)
 	if err != nil {
@@ -309,7 +345,7 @@ func newResourceCore(p *Provider, table string, rowType reflect.Type, generate f
 	if err != nil {
 		return nil, err
 	}
-	r.projection = strings.Join(r.Columns(), ", ")
+	r.desc = r.descriptor()
 	r.scanRules, err = r.rowRules()
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
@@ -678,9 +714,13 @@ func (r *resourceCore) ColumnSQLType(column string) (core.SQLType, bool) {
 // them, table-qualified and quoted for the provider's dialect; a computed
 // column (ReadExpr) is read through its expression and a column with a
 // declared ColumnType as the dialect reads that type, each under the
-// column's own name, so rows scan by name.
+// column's own name, so rows scan by name. Nil on a provider that compiles
+// no SQL.
 func (r *resourceCore) Columns() []string {
 	d := r.dialect
+	if d == nil {
+		return nil
+	}
 	out := make([]string, len(r.read))
 	for i, name := range r.read {
 		stored := d.QuoteIdent(r.table) + "." + d.QuoteIdent(name)
@@ -698,6 +738,92 @@ func (r *resourceCore) Columns() []string {
 		out[i] = col
 	}
 	return out
+}
+
+// scalarColumns are the scalar types the storage of each document column
+// of fields declares (filter.ScalarStorage).
+func scalarColumns(g *core.SchemaGenerator, fields map[string]*core.Field) (map[string]core.TypeInfo, error) {
+	scalars := map[string]core.TypeInfo{}
+	for name, f := range fields {
+		info, err := g.FieldType(f)
+		if err != nil {
+			return nil, fmt.Errorf("column %s: %w", name, err)
+		}
+		if !core.IsDocument(info.Type) {
+			continue
+		}
+		scalar, err := filter.ScalarStorage(g, f)
+		if err != nil {
+			return nil, fmt.Errorf("column %s: %w", name, err)
+		}
+		if scalar.Type != "" {
+			scalars[name] = scalar
+		}
+	}
+	return scalars, nil
+}
+
+// storedTypeInfo is the type of the values column holds: its field's
+// (columnTypeInfo), or the scalar its storage declares a document field's
+// column holds.
+func (r *resourceCore) storedTypeInfo(column string) core.TypeInfo {
+	info := r.columnTypeInfo(column)
+	scalar, ok := r.scalars[column]
+	if ok {
+		scalar.SQLType = info.SQLType
+		return scalar
+	}
+	return info
+}
+
+// descriptor is the resource's descriptor (backend.Resource), with its
+// projection for a provider with a dialect.
+func (r *resourceCore) descriptor() *backend.Resource {
+	table := make([]backend.Column, len(r.columnOrder))
+	for i, name := range r.columnOrder {
+		table[i] = backend.Column{Name: name, Type: r.storedTypeInfo(name)}
+	}
+	desc := &backend.Resource{
+		Table:          r.table,
+		Columns:        slices.Clone(r.read),
+		Key:            slices.Clone(r.pk),
+		KeyTypes:       r.keyColumns().types,
+		TableColumns:   table,
+		Tenant:         r.tenant,
+		Deleted:        r.deleted,
+		Schema:         r.filterSchema,
+		PatchRelations: r.patchRelations(),
+		Computed:       r.readExprs != nil,
+	}
+	if r.dialect != nil {
+		desc.SQL = &backend.SQLResource{Projection: strings.Join(r.Columns(), ", ")}
+	}
+	return desc
+}
+
+// patchRelations are the many-to-many relations the resource's patch
+// schemas write that its filter schema does not hold, by field name
+// (backend.Resource.PatchRelations).
+func (r *resourceCore) patchRelations() map[string]*core.RelationSchema {
+	var relations map[string]*core.RelationSchema
+	for _, schema := range []*patch.PatchSchema{r.patchSchema, r.serverPatchSchema} {
+		for key, path := range schema.Paths() {
+			rel := path.Relation
+			if rel == nil || rel.Kind != core.ManyToMany {
+				continue
+			}
+			name := strings.TrimPrefix(key, "/")
+			field, filtered := r.filterSchema.Fields[name]
+			if filtered && field.Relation != nil {
+				continue
+			}
+			if relations == nil {
+				relations = map[string]*core.RelationSchema{}
+			}
+			relations[name] = rel
+		}
+	}
+	return relations
 }
 
 // ColumnNames is the unqualified name of each Columns entry, in the same
@@ -882,6 +1008,9 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 	}
 	view := *r
 	view.filterSchema, view.sortSchema, view.view = fs, ss, true
+	desc := *r.desc
+	desc.Schema = fs
+	view.desc = &desc
 	return &view, nil
 }
 

@@ -235,8 +235,107 @@ type ListResult struct {
 	Facets *FacetQuery
 }
 
-// Build parses all inputs and composes them into a ListResult.
+// ComposedList is one list request over a ListQuery's rows, composed
+// before any dialect is involved (Compose): the filter with the policy
+// merged in, the effective keyset and the cursor's position on it, the
+// clamped limit, the search query, and the count and facet requests, all at
+// one instant. Compile renders it to SQL for a dialect; a backend that
+// evaluates rows itself reads it through its accessors. It is read only:
+// every list it describes is one Compose admitted.
+type ComposedList struct {
+	query *ListQuery
+	// ast is the request's filter with the policy merged in; nil admits
+	// every row.
+	ast  *FilterAST
+	sort *SortResult
+	// keys are the effective keyset, its computed columns read through
+	// their expressions.
+	keys []CursorKey
+	// token is the decoded cursor, validated against keys; nil for a first
+	// page.
+	token      *PageToken
+	limit      int
+	search     string
+	count      bool
+	facets     []string
+	scope      RelationScope
+	tenancy    relationScope
+	related    relatedPolicies
+	now        time.Time
+	startParam int
+}
+
+// Filter is the request's filter with the policy merged in, as the page,
+// count and facets select by it; nil admits every row.
+func (c *ComposedList) Filter() *FilterAST { return c.ast }
+
+// Sort is the request's parsed sort; nil when the query has no sort schema.
+func (c *ComposedList) Sort() *SortResult { return c.sort }
+
+// Keys is the effective keyset: the sort's fields, then the key columns it
+// does not name.
+func (c *ComposedList) Keys() []CursorKey { return slices.Clone(c.keys) }
+
+// Cursor is the decoded cursor, validated against Keys: the page starts
+// past its position, walking the keyset backward when its Reverse is set.
+// Nil for a first page.
+func (c *ComposedList) Cursor() *PageToken { return c.token }
+
+// Plan is the keyset plan that turns the fetched rows into a page
+// (NewPage).
+func (c *ComposedList) Plan() CursorPlan {
+	plan := CursorPlan{Keys: slices.Clone(c.keys), HasCursor: c.token != nil}
+	if c.token != nil {
+		plan.Reverse = c.token.Reverse
+	}
+	return plan
+}
+
+// Limit is the page size, clamped to the query's maximum: a page fetches
+// Limit+1 rows to tell whether another follows.
+func (c *ComposedList) Limit() int { return c.limit }
+
+// Search is the full-text search query, "" for none. It narrows the page,
+// the count and the facets and never orders them.
+func (c *ComposedList) Search() string { return c.search }
+
+// SearchSchema is the query's search schema; nil when it has none.
+func (c *ComposedList) SearchSchema() *SearchSchema { return c.query.searchSchema }
+
+// Count reports whether the request counts the matched population: the
+// rows its filter and search select, with no cursor.
+func (c *ComposedList) Count() bool { return c.count }
+
+// Facets are the fields the request counts the matched population by.
+func (c *ComposedList) Facets() []string { return slices.Clone(c.facets) }
+
+// RelationScope is how the filter, count, facets and includes reach related
+// rows, its Now the list's instant.
+func (c *ComposedList) RelationScope() RelationScope { return c.scope }
+
+// Now is the instant the filter's, the policy's and the related policies'
+// relative-time tokens resolved against.
+func (c *ComposedList) Now() time.Time { return c.now }
+
+// Schema is the filter schema of the rows the list reads.
+func (c *ComposedList) Schema() *ResourceSchema { return c.query.filterSchema }
+
+// Build composes the request opts describe (Compose) and renders it for the
+// query's dialect (Compile).
 func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
+	c, err := lq.Compose(opts...)
+	if err != nil {
+		return nil, err
+	}
+	return c.Compile(lq.dialect)
+}
+
+// Compose composes the request opts describe without a dialect: it clamps
+// the limit, fixes the instant, parses the filter and merges the policy
+// into it, parses the sort, derives the keyset, and decodes the cursor and
+// validates it against the keyset. A request Compose refuses is refused
+// whichever backend would run it.
+func (lq *ListQuery) Compose(opts ...ListOption) (*ComposedList, error) {
 	cfg := &listConfig{limit: DefaultListLimit, maxLimit: MaxListLimit}
 	for _, opt := range opts {
 		opt(cfg)
@@ -272,12 +371,14 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 		}
 		ast = merged
 	}
-	// The sort keys and search fields read computed columns as the filter
-	// does; the builder resolves its own.
-	exprs := lq.filterSchema.ComputedSQL()
-	search := columnExprs(exprs).search(lq.searchSchema)
-	builder := &SQLBuilder{schema: lq.filterSchema, dialect: lq.dialect, startParam: cfg.startParam, scope: cfg.scope.over(lq.dialect, lq.filterSchema), related: related}
-	filterSQL, err := builder.build(ast, exprs)
+	// The offset and the relation scope are checked with the filter, before
+	// the sort and the cursor are read, so a list that misstates either
+	// fails on it first whichever backend runs it.
+	err := checkStartParam(cfg.startParam)
+	if err != nil {
+		return nil, err
+	}
+	err = cfg.scope.check()
 	if err != nil {
 		return nil, err
 	}
@@ -288,42 +389,74 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 			return nil, err
 		}
 	}
-
 	keys, err := lq.cursorKeys(sortResult)
 	if err != nil {
 		return nil, err
 	}
+	// The sort keys read computed columns as the filter does.
+	exprs := columnExprs(lq.filterSchema.ComputedSQL())
 	for i, k := range keys {
-		keys[i] = columnExprs(exprs).key(k)
+		keys[i] = exprs.key(k)
 	}
-	plan := CursorPlan{Keys: keys, HasCursor: cfg.cursor != ""}
 
-	args := make([]any, len(filterSQL.Args))
-	copy(args, filterSQL.Args)
-	paramIdx := cfg.startParam + filterSQL.ParamCount
-
-	whereParts := []string{filterSQL.Where}
-
+	c := &ComposedList{
+		query: lq, ast: ast, sort: sortResult, keys: keys, limit: cfg.limit,
+		search: cfg.searchQuery, count: cfg.withCount, facets: slices.Clone(cfg.facetFields),
+		tenancy: cfg.scope, related: related, now: now, startParam: cfg.startParam,
+	}
+	c.scope = RelationScope{Tenant: cfg.scope.tenant, RowTenant: cfg.scope.row.column, Unscoped: cfg.scope.unscoped, Related: related.byTable, Now: related.now}
 	if cfg.cursor != "" {
-		token, cursorErr := DecodeCursor(cfg.cursor)
-		if cursorErr != nil {
-			return nil, cursorErr
+		token, err := DecodeCursor(cfg.cursor)
+		if err != nil {
+			return nil, err
 		}
 		if err = ValidateCursor(token, keys); err != nil {
 			return nil, err
 		}
-		plan.Reverse = token.Reverse
-		whereParts = append(whereParts, seekPredicate(lq.dialect, keys, token, func(v any) string {
+		c.token = token
+	}
+	return c, nil
+}
+
+// Compile renders c for dialect d: the page's fragment (WHERE … ORDER BY …
+// LIMIT Limit+1) and its arguments, and the count and facet statements over
+// the matched population. The schema's computed columns (Expr) are SQL of
+// the provider the schema was built for, which d must be.
+func (c *ComposedList) Compile(d Dialect) (*ListResult, error) {
+	lq := c.query
+	if d == nil {
+		return nil, fmt.Errorf("filter: list of %s: no dialect to compile for", lq.filterSchema.Name)
+	}
+	// The search fields read computed columns as the filter does; the
+	// builder resolves its own.
+	exprs := lq.filterSchema.ComputedSQL()
+	search := columnExprs(exprs).search(lq.searchSchema)
+	builder := &SQLBuilder{schema: lq.filterSchema, dialect: d, startParam: c.startParam, scope: c.tenancy.over(d, lq.filterSchema), related: c.related}
+	filterSQL, err := builder.build(c.ast, exprs)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := c.keys
+	plan := c.Plan()
+	args := make([]any, len(filterSQL.Args))
+	copy(args, filterSQL.Args)
+	paramIdx := c.startParam + filterSQL.ParamCount
+
+	whereParts := []string{filterSQL.Where}
+
+	if c.token != nil {
+		whereParts = append(whereParts, seekPredicate(d, keys, c.token, func(v any) string {
 			paramIdx++
 			args = append(args, v)
-			return lq.dialect.Placeholder(paramIdx)
+			return d.Placeholder(paramIdx)
 		}))
 	}
 
 	// Search — WHERE-only, ANDed after filter + cursor. Never reorders the
 	// result, so keyset pagination stays stable on the configured sort.
-	if search != nil && cfg.searchQuery != "" {
-		sc, searchErr := buildSearchCondition(search, lq.dialect, cfg.searchQuery, paramIdx)
+	if search != nil && c.search != "" {
+		sc, searchErr := buildSearchCondition(search, d, c.search, paramIdx)
 		if searchErr != nil {
 			return nil, searchErr
 		}
@@ -345,9 +478,9 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 	// ORDER BY derives from the effective keyset so the tie-breaker
 	// participates and matches the seek predicate exactly; a backward seek
 	// walks it inverted.
-	orderBy := OrderByKeys(lq.dialect, keys, plan.Reverse)
+	orderBy := OrderByKeys(d, keys, plan.Reverse)
 
-	fetchLimit := cfg.limit + 1
+	fetchLimit := c.limit + 1
 
 	parts := []string{"WHERE " + where}
 	if orderBy != "" {
@@ -361,8 +494,8 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 		OrderBy:    orderBy,
 		Args:       args,
 		FetchLimit: fetchLimit,
-		Limit:      cfg.limit,
-		Sort:       sortResult,
+		Limit:      c.limit,
+		Sort:       c.sort,
 		Cursor:     plan,
 	}
 
@@ -370,32 +503,32 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 	// total and the facet counts describe. These are standalone queries
 	// with their own arguments, independent of the main fragment's offset.
 	population := filterSQL
-	if cfg.startParam != 0 && (cfg.withCount || len(cfg.facetFields) > 0) {
+	if c.startParam != 0 && (c.count || len(c.facets) > 0) {
 		populationBuilder := *builder
 		populationBuilder.startParam = 0
-		population, err = populationBuilder.build(ast, exprs)
+		population, err = populationBuilder.build(c.ast, exprs)
 		if err != nil {
 			return nil, err
 		}
 	}
-	popWhere, popArgs, err := AndSearch(search, lq.dialect, population.Where, population.Args, 0, cfg.searchQuery)
+	popWhere, popArgs, err := AndSearch(search, d, population.Where, population.Args, 0, c.search)
 	if err != nil {
 		return nil, err
 	}
 
-	if cfg.withCount {
+	if c.count {
 		// Relation predicates are correlated EXISTS, so no join multiplies
 		// owner rows and a plain COUNT(*) is exact.
-		result.CountSQL = "SELECT COUNT(*) FROM " + lq.dialect.QuoteIdent(lq.filterSchema.Name) + " WHERE " + popWhere
+		result.CountSQL = "SELECT COUNT(*) FROM " + d.QuoteIdent(lq.filterSchema.Name) + " WHERE " + popWhere
 		result.CountArgs = slices.Clone(popArgs)
 	}
 
-	if len(cfg.facetFields) > 0 {
-		reqs := make([]FacetRequest, len(cfg.facetFields))
-		for i, f := range cfg.facetFields {
+	if len(c.facets) > 0 {
+		reqs := make([]FacetRequest, len(c.facets))
+		for i, f := range c.facets {
 			reqs[i] = FacetRequest{Field: f}
 		}
-		fq, err := buildFacetQuery(lq.filterSchema, lq.dialect, popWhere, popArgs, reqs, facetConfig{scope: cfg.scope, related: related})
+		fq, err := buildFacetQuery(lq.filterSchema, d, popWhere, popArgs, reqs, facetConfig{scope: c.tenancy, related: c.related})
 		if err != nil {
 			return nil, err
 		}

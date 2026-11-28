@@ -94,20 +94,11 @@ func RenderRelationOp(op RelationPatchOp, d RelationDialect, ownerKeys []core.Ke
 	if len(ownerKeys) == 0 {
 		return nil, nil
 	}
-	rel := op.Schema
-	err := rel.Check()
+	err := op.Check()
 	if err != nil {
-		return nil, fmt.Errorf("patch: relation %s: %w", op.Field, err)
+		return nil, err
 	}
-	switch op.Verb {
-	case RelationVerbReplace:
-	case RelationVerbAdd, RelationVerbRemove:
-		if len(op.Values) == 0 {
-			return nil, fmt.Errorf("patch: relation %s: %s needs at least one value", op.Field, op.Verb)
-		}
-	default:
-		return nil, fmt.Errorf("patch: relation %s: unknown relation verb %q", op.Field, op.Verb)
-	}
+	rel := op.Schema
 	if rel.TenantColumn != "" && opts.TenantValue == nil && !opts.Unscoped {
 		return nil, fmt.Errorf("relation junction %s is tenant-scoped (%s): set TenantValue or Unscoped", rel.JoinTable, rel.TenantColumn)
 	}
@@ -124,9 +115,9 @@ func RenderRelationOp(op RelationPatchOp, d RelationDialect, ownerKeys []core.Ke
 	if err != nil {
 		return nil, fmt.Errorf("patch: relation %s: owner keys: %w", op.Field, err)
 	}
-	values, err := relationValueKeys(op.Values, rel.TargetColumns, rel.TargetTypes)
+	values, err := op.TargetKeys()
 	if err != nil {
-		return nil, fmt.Errorf("patch: relation %s: values: %w", op.Field, err)
+		return nil, err
 	}
 	r := relationRenderer{
 		rel: rel, d: d, opts: opts, owners: owners, values: values,
@@ -149,6 +140,44 @@ func RenderRelationOp(op RelationPatchOp, d RelationDialect, ownerKeys []core.Ke
 		stmts = append(stmts, st)
 	}
 	return stmts, nil
+}
+
+// Check refuses a membership change no store applies: one without a valid
+// relation schema (core.RelationSchema.Check), an add or a remove of no
+// value, and an unknown verb. RenderRelationOp refuses them, and a store
+// that writes pairs itself holds its changes to the same rule.
+func (op RelationPatchOp) Check() error {
+	if op.Schema == nil {
+		return errors.New("patch: relation patch op has nil schema")
+	}
+	err := op.Schema.Check()
+	if err != nil {
+		return fmt.Errorf("patch: relation %s: %w", op.Field, err)
+	}
+	switch op.Verb {
+	case RelationVerbReplace:
+	case RelationVerbAdd, RelationVerbRemove:
+		if len(op.Values) == 0 {
+			return fmt.Errorf("patch: relation %s: %s needs at least one value", op.Field, op.Verb)
+		}
+	default:
+		return fmt.Errorf("patch: relation %s: unknown relation verb %q", op.Field, op.Verb)
+	}
+	return nil
+}
+
+// TargetKeys are op's values as keys of its relation's target columns, each
+// normalized to its column's type (core.NormalizeKey): the targets a
+// replace or an add pairs, and a remove unpairs.
+func (op RelationPatchOp) TargetKeys() ([]core.Key, error) {
+	if op.Schema == nil {
+		return nil, errors.New("patch: relation patch op has nil schema")
+	}
+	keys, err := relationValueKeys(op.Values, op.Schema.TargetColumns, op.Schema.TargetTypes)
+	if err != nil {
+		return nil, fmt.Errorf("patch: relation %s: values: %w", op.Field, err)
+	}
+	return keys, nil
 }
 
 // relationValueKeys are a membership op's values as target keys of the

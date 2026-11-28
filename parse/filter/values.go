@@ -115,7 +115,7 @@ func (p *FilterParser) normalizeText(field *FieldSchema, value any, pattern bool
 	}
 	if err == nil && pattern {
 		s, _ := v.(string) // FieldTypeString normalizes to a string
-		_, err = likeTokens(s)
+		err = checkLike(s)
 	}
 	if err != nil {
 		return nil, valueMismatch(field, err)

@@ -367,15 +367,21 @@ func fieldStorage(g *core.SchemaGenerator, field *core.Field) (string, error) {
 	return tag, nil
 }
 
-// scalarStorage is the scalar type a document field's storage tag declares
-// (`storage:"scalar:<type>"`), or "" when the field is stored as a document.
-func scalarStorage(g *core.SchemaGenerator, field *core.Field) (core.FieldType, error) {
+// ScalarStorage is the scalar type a document field's storage tag declares
+// (`storage:"scalar:<type>"`), with the numeric kind it ranges as: the type
+// of the values its column holds. Its Type is "" when the field is stored
+// as a document.
+func ScalarStorage(g *core.SchemaGenerator, field *core.Field) (core.TypeInfo, error) {
 	tag, err := fieldStorage(g, field)
 	if err != nil || tag == "" {
-		return "", err
+		return core.TypeInfo{}, err
 	}
 	_, scalar, err := storageOf(tag)
-	return scalar, err
+	if err != nil || scalar == "" {
+		return core.TypeInfo{}, err
+	}
+	info := core.TypeInfo{Type: scalar, NumberKind: kindOf(scalar)}
+	return info, nil
 }
 
 // applyStorage applies a document field's storage declaration: the JSON storage of

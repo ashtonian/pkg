@@ -7,6 +7,7 @@ require (
 	github.com/ashtonian/pkg/config v0.14.0
 	github.com/ashtonian/pkg/config/kongprovider v0.6.0
 	github.com/ashtonian/pkg/parse v0.18.0
+	github.com/ashtonian/pkg/parse/parsememory v0.18.0
 	github.com/ashtonian/pkg/parse/parsepgx v0.18.0
 	github.com/ashtonian/pkg/parse/parsesql v0.18.0
 	github.com/jackc/pgx/v5 v5.13.0
@@ -38,6 +39,7 @@ require (
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/tidwall/btree v1.8.2 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.6 // indirect
@@ -54,6 +56,7 @@ require (
 // The example runs against the Parse working tree it sits in.
 replace (
 	github.com/ashtonian/pkg/parse => ../..
+	github.com/ashtonian/pkg/parse/parsememory => ../../parsememory
 	github.com/ashtonian/pkg/parse/parsepgx => ../../parsepgx
 	github.com/ashtonian/pkg/parse/parsesql => ../../parsesql
 )

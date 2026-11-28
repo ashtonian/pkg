@@ -43,19 +43,18 @@ func ckStockResource(t *testing.T, p *parse.Provider) *parse.Resource[ckStock] {
 // ckStockDB holds every warehouse's every SKU: either key column alone, the
 // quantity and the name all tie across rows, so only the whole key orders
 // and names one.
-func ckStockDB(t *testing.T, db *sql.DB, d filter.Dialect) {
+func ckStockDB(t *testing.T, b sqlBackend, db *sql.DB) {
 	t.Helper()
-	_, err := db.ExecContext(t.Context(), `CREATE TABLE ck_stock (warehouse_id TEXT NOT NULL, sku TEXT NOT NULL, qty BIGINT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (warehouse_id, sku))`)
-	require.NoError(t, err)
-	insert := "INSERT INTO ck_stock VALUES (" + d.Placeholder(1) + ", " + d.Placeholder(2) + ", " + d.Placeholder(3) + ", " + d.Placeholder(4) + ")"
+	var rows [][]any
 	i := 0
 	for _, w := range []string{"w1", "w2", "w3"} {
 		for _, sku := range []string{"a", "b", "c"} {
-			_, err := db.ExecContext(t.Context(), insert, w, sku, int64(i%2), []string{"x", "y"}[i%3%2])
-			require.NoError(t, err)
+			rows = append(rows, []any{w, sku, int64(i % 2), []string{"x", "y"}[i%3%2]})
 			i++
 		}
 	}
+	text := func(name string) sqlColumn { return column[string](name).required() }
+	b.load(t, db, sqlTable{name: "ck_stock", key: []string{"warehouse_id", "sku"}, columns: []sqlColumn{text("warehouse_id"), text("sku"), column[int64]("qty").required(), text("name")}}, rows)
 }
 
 func compositeKeyPaging(t *testing.T, engine Engine) {
@@ -67,7 +66,7 @@ func compositeKeyPaging(t *testing.T, engine Engine) {
 func testCompositeKeyPaging(t *testing.T, b sqlBackend) {
 	provider, db := b.open(t)
 	r := ckStockResource(t, provider)
-	ckStockDB(t, db, b.dialect)
+	ckStockDB(t, b, db)
 	const rows = 9
 	page := func(t *testing.T, sort string, size int, cursor string) *filter.Page[ckStock] {
 		t.Helper()
@@ -136,7 +135,7 @@ func testCompositeKeyUpdates(t *testing.T, b sqlBackend) {
 	quantities := func(t *testing.T, db *sql.DB) map[string]int64 {
 		t.Helper()
 		out := map[string]int64{}
-		for _, row := range dbtest.QueryRows[[]any](t, db, "SELECT warehouse_id, sku, qty FROM ck_stock") {
+		for _, row := range b.tableRows(t, db, "ck_stock", "warehouse_id", "sku", "qty") {
 			out[fmt.Sprint(row[0])+"/"+fmt.Sprint(row[1])] = asInt64(t, row[2])
 		}
 		return out
@@ -156,7 +155,7 @@ func testCompositeKeyUpdates(t *testing.T, b sqlBackend) {
 	open := func(t *testing.T) (*sql.DB, *parse.Resource[ckStock], *patch.ParsedPatch) {
 		t.Helper()
 		provider, db := b.open(t)
-		ckStockDB(t, db, b.dialect)
+		ckStockDB(t, b, db)
 		r := ckStockResource(t, provider)
 		setQty, err := r.ParseMergePatch([]byte(`{"qty":70}`))
 		require.NoError(t, err)
@@ -224,11 +223,9 @@ func runValuerKeys(t *testing.T, b sqlBackend) {
 	provider, db := b.open(t)
 	items, err := parse.NewResource[skuItem](provider, "sku_items")
 	require.NoError(t, err)
-	dbtest.Exec(t, db,
-		`CREATE TABLE sku_items (id TEXT PRIMARY KEY, qty BIGINT NOT NULL)`,
-		`CREATE TABLE sku_tags (sku_id TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (sku_id, tag_id))`)
-	_, err = db.ExecContext(ctx, `INSERT INTO sku_items VALUES (`+b.dialect.Placeholder(1)+`, 0)`, skuCode("ab"))
-	require.NoError(t, err)
+	b.load(t, db, sqlTable{name: "sku_items", key: []string{"id"}, columns: []sqlColumn{column[string]("id").required(), column[int64]("qty").required()}},
+		[][]any{{skuCode("ab"), 0}})
+	b.create(t, db, sqlTable{name: "sku_tags", key: []string{"sku_id", "tag_id"}, columns: []sqlColumn{column[string]("sku_id").required(), column[string]("tag_id").required()}})
 
 	parsed, err := items.ParsePatch([]byte(`[{"op":"replace","path":"/qty","value":7},{"op":"add","path":"/tags","value":["t1"]}]`))
 	require.NoError(t, err)
@@ -236,12 +233,18 @@ func runValuerKeys(t *testing.T, b sqlBackend) {
 	require.NoError(t, err)
 	require.Len(t, res.Changed, 1, "the target names the stored row")
 
-	var qty int64
-	require.NoError(t, db.QueryRowContext(ctx, `SELECT qty FROM sku_items WHERE id = 'AB'`).Scan(&qty))
-	assert.Equal(t, int64(7), qty)
+	stored := b.tableRows(t, db, "sku_items", "id", "qty")
+	require.Len(t, stored, 1)
+	assert.Equal(t, "AB", fmt.Sprint(stored[0][0]))
+	assert.Equal(t, int64(7), asInt64(t, stored[0][1]))
 
-	assert.Equal(t, []string{"AB:t1"}, dbtest.QueryRows[string](t, db, `SELECT sku_id || ':' || tag_id FROM sku_tags`), "an owner key read back binds as the target did")
+	var pairs []string
+	for _, row := range b.tableRows(t, db, "sku_tags", "sku_id", "tag_id") {
+		pairs = append(pairs, fmt.Sprintf("%v:%v", row[0], row[1]))
+	}
+	assert.Equal(t, []string{"AB:t1"}, pairs, "an owner key read back binds as the target did")
 
+	b.sqlOnly(t, "runs the statements patch.RenderRelationOp writes")
 	rel := &core.RelationSchema{JoinTable: "sku_tags", SourceColumns: []string{"tag_id"}, TargetColumns: []string{"sku_id"},
 		SourceTypes: []core.TypeInfo{{Type: core.FieldTypeString}}, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeString}}}
 	members, err := patch.RenderRelationOp(patch.RelationPatchOp{Field: "items", Schema: rel, Verb: patch.RelationVerbRemove, Values: []any{skuCode("ab")}},
@@ -329,9 +332,8 @@ func runUUIDKeyRanges(t *testing.T, b sqlBackend) {
 
 			var evaluated []uuid.UUID
 			for _, id := range keys {
-				row := filter.ColumnRow(func(column string) (any, bool) {
-					_, name, _ := strings.Cut(column, ".")
-					return id, name == "id"
+				row := filter.ColumnRow(func(column filter.ColumnRef) (any, bool) {
+					return id, column.Column == "id"
 				})
 				truth, err := filter.Evaluate(req.Filter().AST().Root, row)
 				require.NoError(t, err)
@@ -341,9 +343,15 @@ func runUUIDKeyRanges(t *testing.T, b sqlBackend) {
 			}
 			assert.Equal(t, want, evaluated, "filter.Evaluate")
 
-			plan, err := r.BuildList(req, parse.Scope{})
-			require.NoError(t, err)
-			selected := parsetest.ItemIDs(parsetest.ResourceRows(t, r, plan.Page), func(k uuidKeyed) uuid.UUID { return k.ID })
+			var page []uuidKeyed
+			if b.engine == Memory {
+				page = listPage(t, r, req, parse.Scope{}).Items
+			} else {
+				plan, err := r.BuildList(req, parse.Scope{})
+				require.NoError(t, err)
+				page = parsetest.ResourceRows(t, r, plan.Page)
+			}
+			selected := parsetest.ItemIDs(page, func(k uuidKeyed) uuid.UUID { return k.ID })
 			assert.Equal(t, want, selected, provider.Name())
 			assert.True(t, slices.IsSortedFunc(selected, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) }), "sorted by id")
 		})
@@ -437,58 +445,46 @@ func ktReadingText(device string, at time.Time) string {
 }
 
 // ktFixture stores decimals under other spellings than their canonical
-// text — "1.50" for 1.5, "2.00" for 2 — in text columns on SQLite and in
-// numeric columns of two scales on PostgreSQL, and two 20-digit keys one
-// apart, which a float64 holds as one. Timestamps are stored as each
-// backend stores them (Dialect.MarshalValue); t1 is t0 and a microsecond.
+// text — "1.50" for 1.5, "2.00" for 2 — as text on SQLite and on the
+// Memory engine, which hold a decimal as SQLite does, and in numeric
+// columns of two scales on PostgreSQL, and two 20-digit keys one apart,
+// which a float64 holds as one. Timestamps are stored as each backend
+// stores them; t1 is t0 and a microsecond.
 func ktFixture(t *testing.T, db *sql.DB, b sqlBackend) {
 	t.Helper()
-	d := b.dialect
 	ktT0, ktT1, ktT2 := ktInstants()
-	price, scaled, at := "TEXT", "TEXT", "TEXT"
-	if b.engine == Postgres {
-		price, scaled, at = "NUMERIC(30,2)", "NUMERIC", "TIMESTAMPTZ"
-	}
-	for _, stmt := range []string{
-		`CREATE TABLE kt_prices (id ` + price + ` PRIMARY KEY, name TEXT NOT NULL)`,
-		`CREATE TABLE kt_notes (id TEXT PRIMARY KEY, price_id ` + scaled + ` NOT NULL)`,
-		`CREATE TABLE kt_tags (id TEXT PRIMARY KEY)`,
-		`CREATE TABLE kt_price_tags (price_id ` + scaled + ` NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (price_id, tag_id))`,
-		`CREATE TABLE kt_allowed_prices (price_id ` + scaled + ` NOT NULL)`,
-		`CREATE TABLE kt_ticks (at ` + at + ` PRIMARY KEY, name TEXT NOT NULL)`,
-		`CREATE TABLE kt_tick_tags (tick_at ` + at + ` NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (tick_at, tag_id))`,
-		`CREATE TABLE kt_readings (device_id TEXT NOT NULL, at ` + at + ` NOT NULL, value BIGINT NOT NULL, PRIMARY KEY (device_id, at))`,
-		`CREATE TABLE kt_alerts (id TEXT PRIMARY KEY, device_id TEXT NOT NULL, at ` + at + ` NOT NULL)`,
-		`CREATE TABLE kt_reading_tags (device_id TEXT NOT NULL, at ` + at + ` NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (device_id, at, tag_id))`,
-		`CREATE TABLE kt_allowed_at (at ` + at + ` NOT NULL)`,
-		`INSERT INTO kt_prices VALUES ('1.50', 'one'), ('2.00', 'two'), ('12345678901234567890', 'big'), ('12345678901234567891', 'bigger')`,
-		`INSERT INTO kt_notes VALUES ('n1', '1.5'), ('n2', '12345678901234567890'), ('n3', '1.500'), ('n4', '12345678901234567891')`,
-		`INSERT INTO kt_tags VALUES ('red'), ('blue'), ('green')`,
-		`INSERT INTO kt_price_tags VALUES ('1.5', 'red'), ('1.50', 'blue'), ('2', 'red'), ('12345678901234567890.0', 'blue'), ('12345678901234567891', 'green')`,
-		`INSERT INTO kt_allowed_prices VALUES ('1.5000'), ('12345678901234567890')`,
-	} {
-		_, err := db.ExecContext(t.Context(), stmt)
-		require.NoError(t, err, stmt)
-	}
-	stamp := func(at time.Time) any {
-		v, err := d.MarshalValue(at, core.TypeInfo{Type: core.FieldTypeTimestamp})
-		require.NoError(t, err)
-		return v
-	}
-	ph := d.Placeholder
-	for _, row := range []struct {
-		stmt string
-		args []any
+	price := column[decimal.Decimal]("id").required().holding(Postgres, "NUMERIC(30,2)")
+	scaled := func(name string) sqlColumn { return column[decimal.Decimal](name).required() }
+	text := func(name string) sqlColumn { return column[string](name).required() }
+	at := func(name string) sqlColumn { return column[time.Time](name).required() }
+	for _, f := range []struct {
+		table sqlTable
+		rows  [][]any
 	}{
-		{`INSERT INTO kt_ticks VALUES (` + ph(1) + `, 'zero'), (` + ph(2) + `, 'one'), (` + ph(3) + `, 'two')`, []any{stamp(ktT0), stamp(ktT1), stamp(ktT2)}},
-		{`INSERT INTO kt_tick_tags VALUES (` + ph(1) + `, 'red'), (` + ph(2) + `, 'blue')`, []any{stamp(ktT0), stamp(ktT1)}},
-		{`INSERT INTO kt_readings VALUES ('d1', ` + ph(1) + `, 1), ('d1', ` + ph(2) + `, 2), ('d2', ` + ph(3) + `, 3)`, []any{stamp(ktT0), stamp(ktT1), stamp(ktT0)}},
-		{`INSERT INTO kt_alerts VALUES ('a1', 'd1', ` + ph(1) + `), ('a2', 'd1', ` + ph(2) + `), ('a3', 'd2', ` + ph(3) + `), ('a4', 'd2', ` + ph(4) + `)`, []any{stamp(ktT0), stamp(ktT1), stamp(ktT0), stamp(ktT1)}},
-		{`INSERT INTO kt_reading_tags VALUES ('d1', ` + ph(1) + `, 'red'), ('d1', ` + ph(2) + `, 'blue'), ('d2', ` + ph(3) + `, 'red')`, []any{stamp(ktT0), stamp(ktT1), stamp(ktT0)}},
-		{`INSERT INTO kt_allowed_at VALUES (` + ph(1) + `)`, []any{stamp(ktT1)}},
+		{sqlTable{name: "kt_prices", key: []string{"id"}, columns: []sqlColumn{price, text("name")}},
+			[][]any{{"1.50", "one"}, {"2.00", "two"}, {"12345678901234567890", "big"}, {"12345678901234567891", "bigger"}}},
+		{sqlTable{name: "kt_notes", key: []string{"id"}, columns: []sqlColumn{text("id"), scaled("price_id")}},
+			[][]any{{"n1", "1.5"}, {"n2", "12345678901234567890"}, {"n3", "1.500"}, {"n4", "12345678901234567891"}}},
+		{sqlTable{name: "kt_tags", key: []string{"id"}, columns: []sqlColumn{text("id")}},
+			[][]any{{"red"}, {"blue"}, {"green"}}},
+		{sqlTable{name: "kt_price_tags", key: []string{"price_id", "tag_id"}, columns: []sqlColumn{scaled("price_id"), text("tag_id")}},
+			[][]any{{"1.5", "red"}, {"1.50", "blue"}, {"2", "red"}, {"12345678901234567890.0", "blue"}, {"12345678901234567891", "green"}}},
+		{sqlTable{name: "kt_allowed_prices", columns: []sqlColumn{scaled("price_id")}},
+			[][]any{{"1.5000"}, {"12345678901234567890"}}},
+		{sqlTable{name: "kt_ticks", key: []string{"at"}, columns: []sqlColumn{at("at"), text("name")}},
+			[][]any{{ktT0, "zero"}, {ktT1, "one"}, {ktT2, "two"}}},
+		{sqlTable{name: "kt_tick_tags", key: []string{"tick_at", "tag_id"}, columns: []sqlColumn{at("tick_at"), text("tag_id")}},
+			[][]any{{ktT0, "red"}, {ktT1, "blue"}}},
+		{sqlTable{name: "kt_readings", key: []string{"device_id", "at"}, columns: []sqlColumn{text("device_id"), at("at"), column[int64]("value").required()}},
+			[][]any{{"d1", ktT0, 1}, {"d1", ktT1, 2}, {"d2", ktT0, 3}}},
+		{sqlTable{name: "kt_alerts", key: []string{"id"}, columns: []sqlColumn{text("id"), text("device_id"), at("at")}},
+			[][]any{{"a1", "d1", ktT0}, {"a2", "d1", ktT1}, {"a3", "d2", ktT0}, {"a4", "d2", ktT1}}},
+		{sqlTable{name: "kt_reading_tags", key: []string{"device_id", "at", "tag_id"}, columns: []sqlColumn{text("device_id"), at("at"), text("tag_id")}},
+			[][]any{{"d1", ktT0, "red"}, {"d1", ktT1, "blue"}, {"d2", ktT0, "red"}}},
+		{sqlTable{name: "kt_allowed_at", columns: []sqlColumn{at("at")}},
+			[][]any{{ktT1}}},
 	} {
-		_, err := db.ExecContext(t.Context(), row.stmt, row.args...)
-		require.NoError(t, err, row.stmt)
+		b.load(t, db, f.table, f.rows)
 	}
 }
 
@@ -497,7 +493,6 @@ func keyTypes(t *testing.T, engine Engine) {
 }
 
 func testKeyTypes(t *testing.T, b sqlBackend) {
-	d := b.dialect
 	ktT0, ktT1, ktT2 := ktInstants()
 	// setup is a fresh fixture database and the resources on its provider.
 	setup := func(t *testing.T) (*sql.DB, ktGraph) {
@@ -538,7 +533,8 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 	})
 
 	t.Run("resolved outside SQL", func(t *testing.T) {
-		store, lookups := resolvedStores(t, db, d, "kt_prices", "kt_notes", "kt_tags", "kt_price_tags",
+		b.sqlOnly(t, "holds lookups answered in memory to the SQL each lookup renders (sqlMembershipLookup)")
+		store, lookups := resolvedStores(t, db, b.dialect, "kt_prices", "kt_notes", "kt_tags", "kt_price_tags",
 			"kt_ticks", "kt_tick_tags", "kt_readings", "kt_alerts", "kt_reading_tags")
 		assertResolvedFilters(t, store, lookups, g.prices,
 			`{"tags":"blue"}`, `{"notes":{"$some":{"id":"n3"}}}`, `{"notes":{"$none":{}}}`)
@@ -656,6 +652,7 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 	// which is the order its keys are chunked in: decimals by value, not by
 	// their text, and timestamps by instant.
 	t.Run("batch lock order", func(t *testing.T) {
+		b.sqlOnly(t, "reads a batch's rows through its Current statement (Resource.BuildUpdateBatch)")
 		db, g := setup(t)
 		rename := func(r parse.Key) parse.RowUpdate {
 			update := parse.RowUpdate{Key: r, Patch: ktPatch(t, g.prices, `{"name":"n"}`)}
@@ -700,7 +697,7 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 		for _, tt := range []struct {
 			name   string
 			update func(t *testing.T, g ktGraph)
-			pairs  string
+			pairs  []string // the pair table, then the columns read
 			want   []string
 		}{
 			{
@@ -709,7 +706,7 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 				update: func(t *testing.T, g ktGraph) {
 					crxUpdate(t, g.tags, `{"prices":["1.50","12345678901234567891"]}`, parse.ByID("red"))
 				},
-				pairs: "SELECT price_id, tag_id FROM kt_price_tags",
+				pairs: []string{"kt_price_tags", "price_id", "tag_id"},
 				want:  []string{"1.5/blue", "1.5/red", "12345678901234567890/blue", "12345678901234567891/green", "12345678901234567891/red"},
 			},
 			{
@@ -717,7 +714,7 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 				update: func(t *testing.T, g ktGraph) {
 					crxUpdatePatch(t, g.prices, `[{"op":"add","path":"/tags","value":["red","green"]}]`, parse.ByKey(parse.Key{"1.5"}))
 				},
-				pairs: "SELECT price_id, tag_id FROM kt_price_tags",
+				pairs: []string{"kt_price_tags", "price_id", "tag_id"},
 				want:  []string{"1.5/blue", "1.5/green", "1.5/red", "2/red", "12345678901234567890/blue", "12345678901234567891/green"},
 			},
 			{
@@ -725,7 +722,7 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 				update: func(t *testing.T, g ktGraph) {
 					crxUpdatePatch(t, g.tags, `[{"op":"remove","path":"/prices","value":["1.5","12345678901234567890"]}]`, parse.ByID("blue"))
 				},
-				pairs: "SELECT price_id, tag_id FROM kt_price_tags",
+				pairs: []string{"kt_price_tags", "price_id", "tag_id"},
 				want:  []string{"1.5/red", "2/red", "12345678901234567891/green"},
 			},
 			{
@@ -733,7 +730,7 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 				update: func(t *testing.T, g ktGraph) {
 					crxUpdate(t, g.tags, `{"readings":[["d1","`+t1Elsewhere+`"],["d2","`+ktText(ktT0)+`"]]}`, parse.ByID("red"))
 				},
-				pairs: "SELECT device_id, at, tag_id FROM kt_reading_tags",
+				pairs: []string{"kt_reading_tags", "device_id", "at", "tag_id"},
 				want:  []string{"d1/" + ktText(ktT1) + "/blue", "d1/" + ktText(ktT1) + "/red", "d2/" + ktText(ktT0) + "/red"},
 			},
 			{
@@ -741,14 +738,14 @@ func testKeyTypes(t *testing.T, b sqlBackend) {
 				update: func(t *testing.T, g ktGraph) {
 					crxUpdatePatch(t, g.ticks, `[{"op":"add","path":"/tags","value":["green"]}]`, parse.ByKey(parse.Key{t1Elsewhere}))
 				},
-				pairs: "SELECT tick_at, tag_id FROM kt_tick_tags",
+				pairs: []string{"kt_tick_tags", "tick_at", "tag_id"},
 				want:  []string{ktText(ktT0) + "/red", ktText(ktT1) + "/blue", ktText(ktT1) + "/green"},
 			},
 		} {
 			t.Run(tt.name, func(t *testing.T) {
 				db, g := setup(t)
 				tt.update(t, g)
-				assert.ElementsMatch(t, tt.want, ktPairs(t, db, tt.pairs))
+				assert.ElementsMatch(t, tt.want, ktPairs(t, b, db, tt.pairs[0], tt.pairs[1:]...))
 			})
 		}
 	})
@@ -804,12 +801,13 @@ func ktBatch[T any](t *testing.T, r *parse.Resource[T], rows []parse.RowUpdate, 
 	return out
 }
 
-// ktPairs reads a pair table's rows, each column read as the key it holds
-// and joined by "/": a decimal by value, a timestamp as its canonical text.
-func ktPairs(t *testing.T, db *sql.DB, query string) []string {
+// ktPairs reads columns of a pair table's rows, each read as the key it
+// holds and joined by "/": a decimal by value, a timestamp as its
+// canonical text.
+func ktPairs(t *testing.T, b sqlBackend, db *sql.DB, table string, columns ...string) []string {
 	t.Helper()
 	var out []string
-	for _, row := range dbtest.QueryRows[[]any](t, db, query) {
+	for _, row := range b.tableRows(t, db, table, columns...) {
 		out = append(out, ktJoin(t, row))
 	}
 	return out

@@ -186,7 +186,7 @@ func trackBase() time.Time {
 // numeric columns place NULLs otherwise by default.
 func keysetWalk(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
-		if b.engine == Postgres {
+		if b.engine != SQLite {
 			runTrackWalks(t, b)
 			return
 		}
@@ -222,6 +222,11 @@ func runTrackWalks(t *testing.T, b sqlBackend) {
 	b.load(t, db, trackTable(), rows)
 	p, err := parse.NewResource[trackItem](prov, "track_items")
 	require.NoError(t, err)
+	if b.engine == Memory {
+		// No statement to page by hand: the resource's lists walk.
+		walkOrders(t, walker[trackItem]{resource: p, id: func(it trackItem) string { return trackSuffix(it.ID) }}, trackOrders())
+		return
+	}
 
 	for sortParam, want := range trackOrders() {
 		t.Run("sort="+sortParam, func(t *testing.T) {
@@ -536,8 +541,8 @@ func renderPage(t *testing.T, db *sql.DB, d filter.Dialect, keys []filter.Cursor
 
 // eventRow is a row of the events whose created_at three rows share.
 type eventRow struct {
-	ID        int64  `db:"id"`
-	CreatedAt string `db:"created_at"`
+	ID        int64  `json:"id"         db:"id"`
+	CreatedAt string `json:"created_at" db:"created_at" parse:"filter,sort" filter_ops:"gt,lt"`
 }
 
 // 5 rows with 3 sharing a created_at boundary value, page size 2; every
@@ -545,7 +550,7 @@ type eventRow struct {
 // breaking the ties.
 func integrationCursorWalkNoLossNoDup(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
-		db := b.db(t)
+		p, db := b.open(t)
 		table := sqlTable{name: "events", key: []string{"id"}, columns: []sqlColumn{column[int64]("id"), column[string]("created_at").required()}}
 		b.load(t, db, table, recordRows(t, table, []eventRow{
 			{1, "2026-01-01T00:00:00Z"},
@@ -569,10 +574,10 @@ func integrationCursorWalkNoLossNoDup(t *testing.T, engine Engine) {
 				"created_at": {Table: "events", Column: "created_at"},
 			},
 		}
-		w := listWalk[eventRow]{
-			lq:    mustListQuery(t, schema, sortSchema, b.dialect),
-			query: func(t *testing.T, res *filter.ListResult) []eventRow { return queryEvents(t, db, res) },
-			id:    func(r eventRow) int64 { return r.ID },
+		id := func(r eventRow) int64 { return r.ID }
+		w := queryWalk(mustListQuery(t, schema, sortSchema, b.dialect), func(t *testing.T, res *filter.ListResult) []eventRow { return queryEvents(t, db, res) }, id)
+		if b.engine == Memory {
+			w = resourceWalk(parse.MustResource[eventRow](p, "events", parse.PageSize(2, 5)), id)
 		}
 		for _, sort := range []string{"-created_at", "created_at"} {
 			t.Run(sort, func(t *testing.T) {
@@ -606,42 +611,69 @@ type walkItem struct {
 
 // walkItemList walks the walk_items rows by lq.
 func walkItemList(db *sql.DB, lq *filter.ListQuery) listWalk[walkItem] {
-	w := listWalk[walkItem]{
-		lq:    lq,
-		query: func(t *testing.T, res *filter.ListResult) []walkItem { return walkItems(t, db, res) },
-		id:    func(it walkItem) int64 { return it.ID },
-	}
+	w := queryWalk(lq, func(t *testing.T, res *filter.ListResult) []walkItem { return walkItems(t, db, res) },
+		func(it walkItem) int64 { return it.ID })
 	return w
+}
+
+// walkItemTable holds walk_items, a name per id.
+func walkItemTable() sqlTable {
+	table := sqlTable{name: "walk_items", key: []string{"id"}, columns: []sqlColumn{column[int64]("id"), column[string]("name").required()}}
+	return table
 }
 
 // Six rows with one name walk as six rows two at a time: the key breaks
 // every tie. A cursor whose key value the key's type cannot hold is E2082
-// before any statement exists.
+// before any statement exists, or on the Memory engine any row is read.
 func listQueryKeyBreaksTies(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
-		db := b.db(t)
-		dbtest.Exec(t, db,
-			`CREATE TABLE walk_items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)`,
-			`INSERT INTO walk_items VALUES (1,'x'), (2,'x'), (3,'x'), (4,'x'), (5,'x'), (6,'x')`)
+		p, db := b.open(t)
+		rows := make([][]any, 6)
+		for i := range rows {
+			rows[i] = []any{int64(i + 1), "x"}
+		}
+		b.load(t, db, walkItemTable(), rows)
 		g := core.NewSchemaGenerator()
 		fs, err := filter.GenerateFilterSchema[walkItem](g)
 		require.NoError(t, err)
 		ss, err := filter.GenerateSortSchema[walkItem](g)
 		require.NoError(t, err)
-		_, err = filter.NewListQuery(fs, ss, b.dialect)
-		require.ErrorContains(t, err, "declares no key", "a generated schema declares no key until its resource does")
-		fs.PrimaryKey = []string{"id"}
-		lq := mustListQuery(t, fs, ss, b.dialect)
 
-		seen, _ := walkItemList(db, lq).walk(t, "name", 2, "", false, 6)
+		var (
+			w     listWalk[walkItem]
+			after func(cursor string) error
+		)
+		if b.engine == Memory {
+			items := parse.MustResource[walkItem](p, "walk_items", parse.PageSize(2, 6))
+			w = resourceWalk(items, func(it walkItem) int64 { return it.ID })
+			after = func(cursor string) error {
+				req, err := items.ParseListInput(parse.ListInput{Sort: "name", Cursor: cursor})
+				if err != nil {
+					return err
+				}
+				_, err = items.List(t.Context(), req, parse.Scope{})
+				return err
+			}
+		} else {
+			_, err = filter.NewListQuery(fs, ss, b.dialect)
+			require.ErrorContains(t, err, "declares no key", "a generated schema declares no key until its resource does")
+			fs.PrimaryKey = []string{"id"}
+			lq := mustListQuery(t, fs, ss, b.dialect)
+			w = walkItemList(db, lq)
+			after = func(cursor string) error {
+				_, err := lq.Build(filter.ListSort("name"), filter.ListCursor(cursor))
+				return err
+			}
+		}
+
+		seen, _ := w.walk(t, "name", 2, "", false, 6)
 		assert.Equal(t, []int64{1, 2, 3, 4, 5, 6}, seen)
 
 		for _, value := range []any{"zzz", true, 1.5, "a\x00b"} {
 			cur := mintCursor(t, false,
 				filter.CursorField{Name: "name", Value: "x", Direction: filter.SortAsc},
 				filter.CursorField{Name: "id", Value: value, Direction: filter.SortAsc})
-			_, err := lq.Build(filter.ListSort("name"), filter.ListCursor(cur))
-			requireParseCode(t, err, filter.ECodeInvalidCursor)
+			requireParseCode(t, after(cur), filter.ECodeInvalidCursor)
 		}
 	})
 }
@@ -659,56 +691,22 @@ type stockItem struct {
 // cursor minted under another key is E2082.
 func listQueryCompositeKeyBreaksTies(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
-		db := b.db(t)
+		p, db := b.open(t)
 		rows := []stockItem{{"w1", "a", 5}, {"w1", "b", 5}, {"w2", "a", 5}, {"w2", "b", 1}, {"w3", "a", 1}}
 		b.load(t, db, stockTable(), recordRows(t, stockTable(), rows))
-		g := core.NewSchemaGenerator()
-		fs, err := filter.GenerateFilterSchema[stockItem](g)
-		require.NoError(t, err)
-		ss, err := filter.GenerateSortSchema[stockItem](g)
-		require.NoError(t, err)
-		fs.PrimaryKey = []string{"warehouse_id", "sku"}
-		lq := mustListQuery(t, fs, ss, b.dialect)
-
-		keyset := func(sort string) []string {
-			res, err := lq.Build(filter.ListSort(sort))
-			require.NoError(t, err)
-			names := make([]string, len(res.Cursor.Keys))
-			for i, k := range res.Cursor.Keys {
-				names[i] = k.Name + " " + string(k.Direction)
-			}
-			return names
+		var page func(sort string, size int, cursor string) (*filter.Page[stockItem], error)
+		if b.engine == Memory {
+			page = stockPages(t, parse.MustResource[stockItem](p, "stock_items", parse.PrimaryKey("warehouse_id", "sku"), parse.PageSize(1, len(rows))))
+		} else {
+			page = stockStatements(t, b, db)
 		}
-		assert.Equal(t, []string{"qty desc", "warehouse_id desc", "sku desc"}, keyset("-qty"))
-		assert.Equal(t, []string{"sku asc", "warehouse_id asc"}, keyset("sku"), "a key column the sort names ends it once")
-
-		fetch := func(res *filter.ListResult) []stockItem {
-			rs, err := db.QueryContext(t.Context(), "SELECT warehouse_id, sku, qty FROM stock_items "+res.Fragment, res.Args...)
+		mustPage := func(sort string, size int, cursor string) *filter.Page[stockItem] {
+			pg, err := page(sort, size, cursor)
 			require.NoError(t, err)
-			defer func() { require.NoError(t, rs.Close()) }()
-			var items []stockItem
-			for rs.Next() {
-				var it stockItem
-				require.NoError(t, rs.Scan(&it.WarehouseID, &it.SKU, &it.Qty))
-				items = append(items, it)
-			}
-			require.NoError(t, rs.Err())
-			return items
-		}
-		build := func(opts ...filter.ListOption) *filter.ListResult {
-			res, err := lq.Build(opts...)
-			require.NoError(t, err)
-			return res
-		}
-		page := func(res *filter.ListResult) *filter.Page[stockItem] {
-			p, err := filter.NewPage(fetch(res), res.Limit, res.Cursor, func(it stockItem, col string) (any, error) {
-				return filter.CursorValueByTag(it, "db", col)
-			})
-			require.NoError(t, err)
-			return p
+			return pg
 		}
 		for _, sort := range []string{"", "qty", "-qty", "sku", "-sku", "warehouse_id", "-warehouse_id", "qty,-sku"} {
-			want := fetch(build(filter.ListSort(sort), filter.ListLimit(len(rows))))
+			want := mustPage(sort, len(rows), "").Items
 			require.Len(t, want, len(rows))
 			for size := 1; size <= len(rows); size++ {
 				t.Run(fmt.Sprintf("sort=%q/size=%d", sort, size), func(t *testing.T) {
@@ -716,11 +714,7 @@ func listQueryCompositeKeyBreaksTies(t *testing.T, engine Engine) {
 					var last *filter.Page[stockItem]
 					cursor := ""
 					for range len(rows) + 1 {
-						opts := []filter.ListOption{filter.ListSort(sort), filter.ListLimit(size)}
-						if cursor != "" {
-							opts = append(opts, filter.ListCursor(cursor))
-						}
-						last = page(build(opts...))
+						last = mustPage(sort, size, cursor)
 						forward = append(forward, last.Items...)
 						if !last.PageInfo.HasNextPage {
 							break
@@ -731,7 +725,7 @@ func listQueryCompositeKeyBreaksTies(t *testing.T, engine Engine) {
 
 					backward := []stockItem{}
 					for cursor = string(last.PageInfo.StartCursor); cursor != ""; {
-						prev := page(build(filter.ListSort(sort), filter.ListLimit(size), filter.ListCursor(cursor)))
+						prev := mustPage(sort, size, cursor)
 						backward = append(slices.Clone(prev.Items), backward...)
 						cursor = ""
 						if prev.PageInfo.HasPrevPage {
@@ -746,9 +740,73 @@ func listQueryCompositeKeyBreaksTies(t *testing.T, engine Engine) {
 		oneColumn := mintCursor(t, false,
 			filter.CursorField{Name: "qty", Value: int64(5), Direction: filter.SortAsc},
 			filter.CursorField{Name: "warehouse_id", Value: "w1", Direction: filter.SortAsc})
-		_, err = lq.Build(filter.ListSort("qty"), filter.ListCursor(oneColumn))
+		_, err := page("qty", len(rows), oneColumn)
 		requireParseCode(t, err, filter.ECodeInvalidCursor)
 	})
+}
+
+// stockStatements pages stock_items on db through the statements ListQuery
+// compiles, after checking the keyset each sort ends with.
+func stockStatements(t *testing.T, b sqlBackend, db *sql.DB) func(sort string, size int, cursor string) (*filter.Page[stockItem], error) {
+	t.Helper()
+	g := core.NewSchemaGenerator()
+	fs, err := filter.GenerateFilterSchema[stockItem](g)
+	require.NoError(t, err)
+	ss, err := filter.GenerateSortSchema[stockItem](g)
+	require.NoError(t, err)
+	fs.PrimaryKey = []string{"warehouse_id", "sku"}
+	lq := mustListQuery(t, fs, ss, b.dialect)
+
+	keyset := func(sort string) []string {
+		res, err := lq.Build(filter.ListSort(sort))
+		require.NoError(t, err)
+		names := make([]string, len(res.Cursor.Keys))
+		for i, k := range res.Cursor.Keys {
+			names[i] = k.Name + " " + string(k.Direction)
+		}
+		return names
+	}
+	assert.Equal(t, []string{"qty desc", "warehouse_id desc", "sku desc"}, keyset("-qty"))
+	assert.Equal(t, []string{"sku asc", "warehouse_id asc"}, keyset("sku"), "a key column the sort names ends it once")
+
+	fetch := func(res *filter.ListResult) []stockItem {
+		rs, err := db.QueryContext(t.Context(), "SELECT warehouse_id, sku, qty FROM stock_items "+res.Fragment, res.Args...)
+		require.NoError(t, err)
+		defer func() { require.NoError(t, rs.Close()) }()
+		var items []stockItem
+		for rs.Next() {
+			var it stockItem
+			require.NoError(t, rs.Scan(&it.WarehouseID, &it.SKU, &it.Qty))
+			items = append(items, it)
+		}
+		require.NoError(t, rs.Err())
+		return items
+	}
+	return func(sort string, size int, cursor string) (*filter.Page[stockItem], error) {
+		opts := []filter.ListOption{filter.ListSort(sort), filter.ListLimit(size)}
+		if cursor != "" {
+			opts = append(opts, filter.ListCursor(cursor))
+		}
+		res, err := lq.Build(opts...)
+		if err != nil {
+			return nil, err
+		}
+		return filter.NewPage(fetch(res), res.Limit, res.Cursor, func(it stockItem, col string) (any, error) {
+			return filter.CursorValueByTag(it, "db", col)
+		})
+	}
+}
+
+// stockPages pages stock_items through items, as its provider lists them.
+func stockPages(t *testing.T, items *parse.Resource[stockItem]) func(sort string, size int, cursor string) (*filter.Page[stockItem], error) {
+	t.Helper()
+	return func(sort string, size int, cursor string) (*filter.Page[stockItem], error) {
+		req, err := items.ParseListInput(parse.ListInput{Sort: sort, PageSize: size, Cursor: cursor})
+		if err != nil {
+			return nil, err
+		}
+		return items.List(t.Context(), req, parse.Scope{})
+	}
 }
 
 // A text key the column declares NOCASE still walks by code point, every

@@ -10,6 +10,7 @@ import (
 	"modernc.org/sqlite"
 
 	"github.com/ashtonian/pkg/gowalker"
+	"github.com/ashtonian/pkg/parse/internal/canonical"
 	"github.com/ashtonian/pkg/parse/internal/decimals"
 	"github.com/ashtonian/pkg/parse/internal/geo"
 )
@@ -22,6 +23,7 @@ const (
 	GeoNearFunc        = geo.SQLiteNearFunc
 	GeoInBoxFunc       = geo.SQLiteInBoxFunc
 	GeoCoveredByFunc   = geo.SQLiteCoveredByFunc
+	CanonicalFunc      = canonical.SQLiteFunc
 )
 
 // Function is one of the SQL functions filter.SQLiteDialect calls: the name
@@ -45,6 +47,7 @@ var functions = [...]Function{
 		return GeoInBox(a[0], a[1], a[2], a[3], a[4], a[5], a[6])
 	}},
 	{GeoCoveredByFunc, 4, func(a []driver.Value) (driver.Value, error) { return GeoCoveredBy(a[0], a[1], a[2], a[3]) }},
+	{CanonicalFunc, 2, func(a []driver.Value) (driver.Value, error) { return Canonical(a[0], a[1]) }},
 }
 
 // Functions returns the table of functions Register installs, for a SQLite
@@ -53,11 +56,11 @@ var functions = [...]Function{
 func Functions() []Function { return slices.Clone(functions[:]) }
 
 // Register registers parse_decimal, parse_decimal_key,
-// parse_decimal_float32, parse_geo_near, parse_geo_in_box and
-// parse_geo_covered_by with modernc.org/sqlite, for every connection the
-// "sqlite" driver opens afterwards; connections already open lack them. It
-// registers once per process: later calls, from any goroutine or package,
-// return the first call's result. When a name is already taken, the
+// parse_decimal_float32, parse_geo_near, parse_geo_in_box,
+// parse_geo_covered_by and parse_canonical with modernc.org/sqlite, for
+// every connection the "sqlite" driver opens afterwards; connections
+// already open lack them. It registers once per process: later calls, from
+// any goroutine or package, return the first call's result. When a name is already taken, the
 // functions before it in [Functions] are registered and the rest are not.
 func Register() error { return register() }
 
@@ -124,6 +127,31 @@ func DecimalFloat32(v driver.Value) (driver.Value, error) {
 		return nil, nil
 	}
 	return text, nil
+}
+
+// Canonical is parse_canonical for one SQLite value of a column compared
+// as kind, a comparison kind's name ("document", "uuid", "array:uuid", …):
+// the form two values of one value share, which the change predicate of a
+// SkipUnchanged update compares (canonical.Value). NULL is nil, and a
+// scalar that holds no value of kind, a BLOB included, is itself. A
+// document or array that holds no JSON value is an error, which fails the
+// statement, and so is a kind that is not text naming a comparison kind.
+// It is exported for a SQLite driver other than modernc.org/sqlite to
+// register under CanonicalFunc.
+func Canonical(v, kind driver.Value) (driver.Value, error) {
+	name, ok := kind.(string)
+	if !ok {
+		return nil, fmt.Errorf("%s: want the comparison kind as text, got %s", CanonicalFunc, gowalker.TypeText(reflect.TypeOf(kind)))
+	}
+	k, ok := canonical.ParseKind(name)
+	if !ok {
+		return nil, fmt.Errorf("%s: no comparison kind %q", CanonicalFunc, name)
+	}
+	form, err := canonical.Value(k, v)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %s: %w", CanonicalFunc, name, err)
+	}
+	return form, nil
 }
 
 // GeoNear is parse_geo_near: 1 when the stored point lies within meters of

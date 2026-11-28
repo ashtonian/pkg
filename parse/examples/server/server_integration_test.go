@@ -518,7 +518,7 @@ func TestServer_RequestBodies(t *testing.T) {
 
 		db := b.open(t)
 		var logs bytes.Buffer
-		h, err := newServer(db, slog.New(slog.NewJSONHandler(&logs, nil)), 5*time.Second, rand.Text)
+		h, err := newServer(db, db.products, slog.New(slog.NewJSONHandler(&logs, nil)), 5*time.Second, rand.Text)
 		require.NoError(t, err)
 		for _, tt := range []struct{ method, path string }{
 			{http.MethodPatch, "/api/products/p03"},
@@ -560,7 +560,7 @@ func TestServer_DeadlinesAndCancellationsAreNoServerFaults(t *testing.T) {
 	eachBackend(t, func(t *testing.T, b backend) {
 		db := b.open(t)
 		var logs bytes.Buffer
-		h, err := newServer(db, slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})), 5*time.Second, rand.Text)
+		h, err := newServer(db, db.products, slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})), 5*time.Second, rand.Text)
 		require.NoError(t, err)
 		expired, cancelExpired := context.WithDeadline(t.Context(), time.Unix(0, 0))
 		t.Cleanup(cancelExpired)

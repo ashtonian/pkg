@@ -1350,9 +1350,9 @@ func TestPolicyServerFields_Memory(t *testing.T) {
 	require.NoError(t, err)
 	var ids []int
 	for _, row := range serverFieldRows() {
-		truth, err := filter.Evaluate(ast.Root, filter.ColumnRow(func(column string) (any, bool) {
-			v, ok := row[column[len("documents."):]]
-			return v, ok
+		truth, err := filter.Evaluate(ast.Root, filter.ColumnRow(func(column filter.ColumnRef) (any, bool) {
+			v, ok := row[column.Column]
+			return v, ok && column.Table == "documents"
 		}))
 		require.NoError(t, err)
 		if truth == filter.True {
@@ -1527,9 +1527,8 @@ func TestElementCasesEvaluate(t *testing.T) {
 			require.NoError(t, err)
 			var got []string
 			for _, r := range parsetest.OrderRows() {
-				row := filter.ColumnRow(func(column string) (any, bool) {
-					_, name, _ := strings.Cut(column, ".")
-					i := slices.Index(parsetest.OrderColumns(), name)
+				row := filter.ColumnRow(func(column filter.ColumnRef) (any, bool) {
+					i := slices.Index(parsetest.OrderColumns(), column.Column)
 					if i < 0 {
 						return nil, false
 					}

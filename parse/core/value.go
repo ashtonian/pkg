@@ -112,11 +112,21 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	switch dt {
 	case FieldTypeInt:
 		if isUnsignedKind(kind) {
-			return NormalizeUint(v, kind)
+			n, err := NormalizeUint(v, kind)
+			return heldInteger(v, n, err)
 		}
-		return NormalizeInt(v, kind)
+		n, err := NormalizeInt(v, kind)
+		return heldInteger(v, n, err)
 	case FieldTypeFloat:
-		return NormalizeFloat(v, kind)
+		f, err := NormalizeFloat(v, kind)
+		if err != nil {
+			return nil, err
+		}
+		held, ok := v.(float64)
+		if ok && math.Float64bits(held) == math.Float64bits(f) {
+			return v, nil // boxing f again would allocate
+		}
+		return f, nil
 	case FieldTypeDecimal:
 		return DecimalText(plainString(v))
 	case FieldTypeBool:
@@ -136,6 +146,20 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 		return v, nil // boxing s again would allocate
 	}
 	return s, nil
+}
+
+// heldInteger is n, v's normalized integer, as v when v already holds it:
+// boxing n again would allocate on every row a list, filter or facet
+// reads.
+func heldInteger[T int64 | uint64](v any, n T, err error) (any, error) {
+	if err != nil {
+		return nil, err
+	}
+	held, ok := v.(T)
+	if ok && held == n {
+		return v, nil
+	}
+	return n, nil
 }
 
 // canonicalText is the canonical text of v, a value of dt, a type whose
@@ -168,6 +192,10 @@ func canonicalText(dt FieldType, v any) (string, error) {
 		}
 		return "", fmt.Errorf("expected civil date string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 	case FieldTypeTimestamp:
+		text, isText := v.(string)
+		if isText && canonicalTimestamp(text) {
+			return text, nil // a stored timestamp is read on every row a list, filter or facet reads; parsing it to format it again was most of a list ordered by it
+		}
 		t, err := timestampOf(v)
 		if err != nil {
 			return "", err
@@ -385,6 +413,56 @@ func toTime(v any) (time.Time, error) {
 }
 
 var errInvalidTimestamp = errors.New("invalid timestamp, expected RFC 3339")
+
+// canonicalTimestamp reports s already in the canonical form
+// (TimestampLayout): UTC with nine fractional digits, a year from 0001 and
+// every field in its range, exactly the text timestampOf reads and
+// FormatTimestamp writes back unchanged.
+func canonicalTimestamp(s string) bool {
+	const shape = "dddd-dd-ddTdd:dd:dd.dddddddddZ"
+	if len(s) != len(shape) {
+		return false
+	}
+	for i := range len(shape) {
+		if shape[i] == 'd' && !isDigit(s[i]) || shape[i] != 'd' && s[i] != shape[i] {
+			return false
+		}
+	}
+	year, month, day := digitsValue(s[0:4]), digitsValue(s[5:7]), digitsValue(s[8:10])
+	if year < minTimestampYear || month < 1 || month > 12 || day < 1 {
+		return false
+	}
+	if day > daysIn(year, month) {
+		return false
+	}
+	hour, minute, second := digitsValue(s[11:13]), digitsValue(s[14:16]), digitsValue(s[17:19])
+	return hour <= 23 && minute <= 59 && second <= 59
+}
+
+// daysIn is the number of days in month (1 to 12) of year in the
+// proleptic Gregorian calendar time.Parse reads; time.Date would cost as
+// much as the rest of canonicalTimestamp.
+func daysIn(year, month int) int {
+	switch month {
+	case 4, 6, 9, 11:
+		return 30
+	case 2:
+		if year%4 == 0 && (year%100 != 0 || year%400 == 0) {
+			return 29
+		}
+		return 28
+	}
+	return 31
+}
+
+// digitsValue is the number s, ASCII decimal digits, spells.
+func digitsValue(s string) int {
+	n := 0
+	for i := range len(s) {
+		n = n*10 + int(s[i]-'0')
+	}
+	return n
+}
 
 // rfc3339Text reports s in RFC 3339's date-time form: YYYY-MM-DDTHH:MM:SS,
 // a fraction of one to nine digits after a dot, then Z or an offset ±HH:MM

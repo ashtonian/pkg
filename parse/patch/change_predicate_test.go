@@ -37,12 +37,27 @@ func TestBuildPatchSQL_ChangePredicateSQL(t *testing.T) {
 		{"a declared json column, postgres", filter.PostgresDialect{}, `[{"op":"replace","path":"/raw","value":{"a":1}}]`,
 			`"raw" = $1, "updated_at" = NOW(), "version" = "version" + 1`,
 			`("raw"::jsonb::text COLLATE "C" IS DISTINCT FROM ($1)::json::jsonb::text)`},
+		{"a document, postgres", filter.PostgresDialect{}, `[{"op":"replace","path":"/doc","value":{"a":1}}]`,
+			`"doc" = $1, "updated_at" = NOW(), "version" = "version" + 1`,
+			`("doc"::jsonb::text COLLATE "C" IS DISTINCT FROM ($1)::json::jsonb::text)`},
+		{"a merge, postgres", filter.PostgresDialect{}, `{"doc":{"a":1}}`,
+			`"doc" = (COALESCE(jsonb_path_query_first("doc"::jsonb, 'strict $ ? (@.type() == "object")'), '{}'::jsonb) || $1::jsonb), "updated_at" = NOW(), "version" = "version" + 1`,
+			`("doc"::jsonb::text COLLATE "C" IS DISTINCT FROM ((COALESCE(jsonb_path_query_first("doc"::jsonb, 'strict $ ? (@.type() == "object")'), '{}'::jsonb) || $1::jsonb))::json::jsonb::text)`},
 		{"an append, postgres", filter.PostgresDialect{}, `[{"op":"array_append","path":"/tags","value":"x"}]`,
 			`"tags" = array_append(COALESCE("tags", '{}'), $1), "updated_at" = NOW(), "version" = "version" + 1`,
 			`("tags" IS DISTINCT FROM array_append(COALESCE("tags", '{}'), $1) OR "tags"::text COLLATE "C" IS DISTINCT FROM (array_append(COALESCE("tags", '{}'), $1))::text)`},
 		{"a merge, sqlite", filter.SQLiteDialect{}, `{"doc":{"a":1}}`,
 			`"doc" = json_patch(COALESCE("doc", '{}'), ?1), "updated_at" = NOW(), "version" = "version" + 1`,
-			`("doc" COLLATE BINARY IS NOT json_patch(COALESCE("doc", '{}'), ?1))`},
+			`(("doc" COLLATE BINARY IS NOT json_patch(COALESCE("doc", '{}'), ?1) AND ` +
+				`parse_canonical("doc", 'document') IS NOT parse_canonical(json_patch(COALESCE("doc", '{}'), ?1), 'document')))`},
+		{"a timestamp and a decimal, sqlite", filter.SQLiteDialect{}, `{"at":"2026-01-01T00:00:00Z","price":"1.50"}`,
+			`"at" = ?1, "price" = ?2, "updated_at" = NOW(), "version" = "version" + 1`,
+			`(("at" COLLATE BINARY IS NOT ?1 AND parse_canonical("at", 'timestamp') IS NOT parse_canonical(?1, 'timestamp')) OR ` +
+				`("price" COLLATE BINARY IS NOT ?2 AND parse_canonical("price", 'decimal') IS NOT parse_canonical(?2, 'decimal')))`},
+		{"a declared json column and an array, sqlite", filter.SQLiteDialect{}, `[{"op":"replace","path":"/raw","value":{"a":1}},{"op":"replace","path":"/tags","value":["x"]}]`,
+			`"raw" = ?1, "tags" = ?2, "updated_at" = NOW(), "version" = "version" + 1`,
+			`(("raw" COLLATE BINARY IS NOT ?1 AND parse_canonical("raw", 'document') IS NOT parse_canonical(?1, 'document')) OR ` +
+				`("tags" COLLATE BINARY IS NOT ?2 AND parse_canonical("tags", 'array:string') IS NOT parse_canonical(?2, 'array:string')))`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res, err := patch.BuildPatchSQL(patchtest.ChangePatch(t, tc.patch), tc.dialect, stamps...)

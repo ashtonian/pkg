@@ -52,7 +52,7 @@ func TestRelation_ServerFaultsAreSentinels(t *testing.T) {
 			return err
 		}, filter.ErrRelationUnresolvable},
 		{"a relation evaluated before it is resolved", func(t *testing.T) error {
-			_, err := filter.Evaluate(parse(t, schema, `{"tags":"red"}`).Root, filter.ColumnRow(func(string) (any, bool) { return nil, true }))
+			_, err := filter.Evaluate(parse(t, schema, `{"tags":"red"}`).Root, filter.ColumnRow(func(filter.ColumnRef) (any, bool) { return nil, true }))
 			return err
 		}, filter.ErrRelationUnresolvable},
 		{"an include resolved without a lookup", func(t *testing.T) error {

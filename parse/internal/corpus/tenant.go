@@ -14,7 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/parsetest"
@@ -28,38 +27,31 @@ func tenantKeyGraph(t *testing.T, engine Engine) {
 }
 
 func runTenantKeyGraph(t *testing.T, b sqlBackend) {
-	uuidType := b.columnType(core.TypeInfo{Type: core.FieldTypeUUID})
-	// setup opens a fresh database running stmts, with its provider.
-	setup := func(t *testing.T, stmts ...string) (*parse.Provider, *sql.DB) {
+	// setup opens a fresh database holding tables, with its provider.
+	setup := func(t *testing.T, tables ...fixtureTable) (*parse.Provider, *sql.DB) {
 		t.Helper()
 		p, db := b.open(t)
-		dbtest.Exec(t, db, stmts...)
+		for _, f := range tables {
+			b.load(t, db, f.table, f.rows)
+		}
 		return p, db
 	}
-	ids := func(t *testing.T, db *sql.DB, r interface {
-		ParseListInput(parse.ListInput) (*parse.ListRequest, error)
-		BuildList(*parse.ListRequest, parse.Scope) (*parse.ListPlan, error)
-	}, filterJSON, tenant string) []int64 {
-		t.Helper()
-		req, err := r.ParseListInput(parse.ListInput{Filter: filterJSON})
-		require.NoError(t, err)
-		plan, err := r.BuildList(req, parse.Scope{Tenant: tenant})
-		require.NoError(t, err)
-		return parsetest.ItemIDs(dbtest.QueryRows[[]any](t, db, plan.Page.SQL, plan.Page.Args...), func(row []any) int64 { return asInt64(t, row[0]) })
-	}
+	id := func(name string) sqlColumn { return column[int64](name).required() }
+	text := func(name string) sqlColumn { return column[string](name).required() }
+	untenanted := func(d parsetest.UntenantedDevice) int { return d.ID }
 
 	t.Run("an owner without a tenant binds a depth-two integer column and its pair tables", func(t *testing.T) {
 		p, db := setup(t,
-			`CREATE TABLE devices (id INTEGER PRIMARY KEY, name TEXT NOT NULL)`,
-			`CREATE TABLE commands (id INTEGER PRIMARY KEY, device_id INTEGER NOT NULL, status TEXT NOT NULL)`,
-			`CREATE TABLE logs (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, command_id INTEGER NOT NULL, level TEXT NOT NULL)`,
-			`CREATE TABLE tags (id INTEGER PRIMARY KEY, label TEXT NOT NULL)`,
-			`CREATE TABLE device_tags (device_id INTEGER NOT NULL, tag_id INTEGER NOT NULL, tenant_id INTEGER NOT NULL, PRIMARY KEY (device_id, tag_id))`,
-			`INSERT INTO devices VALUES (1, 'alpha'), (2, 'beta')`,
-			`INSERT INTO commands VALUES (10, 1, 'sent'), (11, 2, 'sent')`,
-			`INSERT INTO logs VALUES (100, 1, 10, 'error'), (101, 2, 11, 'error'), (102, 2, 10, 'error')`,
-			`INSERT INTO tags VALUES (20, 'red')`,
-			`INSERT INTO device_tags VALUES (1, 20, 1), (2, 20, 2)`,
+			fixtureTable{sqlTable{name: "devices", key: []string{"id"}, columns: []sqlColumn{id("id"), text("name")}},
+				[][]any{{1, "alpha"}, {2, "beta"}}},
+			fixtureTable{sqlTable{name: "commands", key: []string{"id"}, columns: []sqlColumn{id("id"), id("device_id"), text("status")}},
+				[][]any{{10, 1, "sent"}, {11, 2, "sent"}}},
+			fixtureTable{sqlTable{name: "logs", key: []string{"id"}, columns: []sqlColumn{id("id"), id("tenant_id"), id("command_id"), text("level")}},
+				[][]any{{100, 1, 10, "error"}, {101, 2, 11, "error"}, {102, 2, 10, "error"}}},
+			fixtureTable{sqlTable{name: "tags", key: []string{"id"}, columns: []sqlColumn{id("id"), text("label")}},
+				[][]any{{20, "red"}}},
+			fixtureTable{sqlTable{name: "device_tags", key: []string{"device_id", "tag_id"}, columns: []sqlColumn{id("device_id"), id("tag_id"), id("tenant_id")}},
+				[][]any{{1, 20, 1}, {2, 20, 2}}},
 		)
 		devices := parse.MustResource[parsetest.UntenantedDevice](p, "devices")
 		commands := parse.MustResource[parsetest.UntenantedCommand](p, "commands")
@@ -69,23 +61,31 @@ func runTenantKeyGraph(t *testing.T, b sqlBackend) {
 		// Declared last: devices learns its key from a relation of its target.
 		commands.MustRelate("logs", parse.HasMany(parsetest.Tenanted[parsetest.GraphLog[int]](p, "logs"), "command_id", parse.Indexed()))
 
-		assert.Equal(t, []int64{1}, ids(t, db, devices, parsetest.DepthTwoFilter, "1"))
-		assert.Equal(t, []int64{1, 2}, ids(t, db, devices, parsetest.DepthTwoFilter, "2"), "tenant 2's error log on device 1's command is tenant 2's")
-		assert.Equal(t, []int64{1}, ids(t, db, devices, `{"tags":20}`, "1"))
-		assert.Equal(t, []int64{2}, ids(t, db, devices, `{"tags":20}`, "2"))
+		assert.Equal(t, []int{1}, tenantIDs(t, b, db, devices, parsetest.DepthTwoFilter, "1", untenanted))
+		assert.Equal(t, []int{1, 2}, tenantIDs(t, b, db, devices, parsetest.DepthTwoFilter, "2", untenanted), "tenant 2's error log on device 1's command is tenant 2's")
+		assert.Equal(t, []int{1}, tenantIDs(t, b, db, devices, `{"tags":20}`, "1", untenanted))
+		assert.Equal(t, []int{2}, tenantIDs(t, b, db, devices, `{"tags":20}`, "2", untenanted))
 	})
 
 	t.Run("integer columns of different widths bind the tenant both hold", func(t *testing.T) {
 		p, db := setup(t,
-			`CREATE TABLE devices (id INTEGER PRIMARY KEY, tenant_id BIGINT NOT NULL, name TEXT NOT NULL)`,
-			`CREATE TABLE commands (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, device_id INTEGER NOT NULL, status TEXT NOT NULL)`,
-			`INSERT INTO devices VALUES (1, 1, 'alpha'), (2, 1, 'beta'), (3, 2, 'gamma')`,
-			`INSERT INTO commands VALUES (10, 1, 1, 'sent'), (11, 2, 2, 'sent')`,
+			fixtureTable{sqlTable{name: "devices", key: []string{"id"}, columns: []sqlColumn{id("id"), id("tenant_id"), text("name")}},
+				[][]any{{1, 1, "alpha"}, {2, 1, "beta"}, {3, 2, "gamma"}}},
+			fixtureTable{sqlTable{name: "commands", key: []string{"id"}, columns: []sqlColumn{id("id"), column[int32]("tenant_id").required().holding(Postgres, "INTEGER"), id("device_id"), text("status")}},
+				[][]any{{10, 1, 1, "sent"}, {11, 2, 2, "sent"}}},
 		)
 		devices := parsetest.Tenanted[parsetest.GraphDevice[int64]](p, "devices")
 		devices.MustRelate("commands", parse.HasMany(parsetest.Tenanted[parsetest.GraphCommand[int32]](p, "commands"), "device_id", parse.Indexed()))
 
-		assert.Equal(t, []int64{1}, ids(t, db, devices, `{"commands":{"$some":{"status":"sent"}}}`, "1"))
+		graphID := func(d parsetest.GraphDevice[int64]) int { return d.ID }
+		assert.Equal(t, []int{1}, tenantIDs(t, b, db, devices, `{"commands":{"$some":{"status":"sent"}}}`, "1", graphID))
+		if b.engine == Memory {
+			req, err := devices.ParseListInput(parse.ListInput{})
+			require.NoError(t, err)
+			_, err = devices.List(t.Context(), req, parse.Scope{Tenant: "3000000000"})
+			assert.ErrorIs(t, err, parse.ErrTenantInvalid, "commands.tenant_id cannot hold it")
+			return
+		}
 		_, err := devices.BuildList(nil, parse.Scope{Tenant: "3000000000"})
 		assert.ErrorIs(t, err, parse.ErrTenantInvalid, "commands.tenant_id cannot hold it")
 	})
@@ -93,19 +93,41 @@ func runTenantKeyGraph(t *testing.T, b sqlBackend) {
 	t.Run("a string column beside a UUID one holds its canonical text", func(t *testing.T) {
 		const tenant1, tenant2 = "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
 		p, db := setup(t,
-			`CREATE TABLE devices (id INTEGER PRIMARY KEY, tenant_id `+uuidType+` NOT NULL, name TEXT NOT NULL)`,
-			`CREATE TABLE commands (id INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL, device_id INTEGER NOT NULL, status TEXT NOT NULL)`,
-			`INSERT INTO devices VALUES (1, '`+tenant1+`', 'alpha'), (2, '`+tenant1+`', 'beta'), (3, '`+tenant2+`', 'gamma')`,
-			`INSERT INTO commands VALUES (10, '`+tenant1+`', 1, 'sent'), (11, '`+tenant2+`', 2, 'sent')`,
+			fixtureTable{sqlTable{name: "devices", key: []string{"id"}, columns: []sqlColumn{id("id"), column[uuid.UUID]("tenant_id").required(), text("name")}},
+				[][]any{{1, tenant1, "alpha"}, {2, tenant1, "beta"}, {3, tenant2, "gamma"}}},
+			fixtureTable{sqlTable{name: "commands", key: []string{"id"}, columns: []sqlColumn{id("id"), text("tenant_id"), id("device_id"), text("status")}},
+				[][]any{{10, tenant1, 1, "sent"}, {11, tenant2, 2, "sent"}}},
 		)
 		devices := parsetest.Tenanted[parsetest.GraphDevice[uuid.UUID]](p, "devices")
 		devices.MustRelate("commands", parse.HasMany(parsetest.Tenanted[parsetest.GraphCommand[string]](p, "commands"), "device_id", parse.Indexed()))
 
 		upper := strings.ToUpper(tenant1)
-		assert.Equal(t, []int64{1}, ids(t, db, devices, `{"commands":{"$some":{"status":"sent"}}}`, upper))
-		assert.Equal(t, []int64{2}, ids(t, db, devices, `{"commands":{"$none":{"status":"sent"}}}`, upper),
+		graphID := func(d parsetest.GraphDevice[uuid.UUID]) int { return d.ID }
+		assert.Equal(t, []int{1}, tenantIDs(t, b, db, devices, `{"commands":{"$some":{"status":"sent"}}}`, upper, graphID))
+		assert.Equal(t, []int{2}, tenantIDs(t, b, db, devices, `{"commands":{"$none":{"status":"sent"}}}`, upper, graphID),
 			"tenant 2's command on device 2 is not tenant 1's")
 	})
+}
+
+// fixtureTable is a fixture table and the rows it holds.
+type fixtureTable struct {
+	table sqlTable
+	rows  [][]any
+}
+
+// tenantIDs is the ids of the rows r lists for filterJSON in tenant, each
+// read by id: on the Memory engine, its page's items; on a SQL engine, the
+// rows of BuildList's page statement, whose first column is the id.
+func tenantIDs[T any](t *testing.T, b sqlBackend, db *sql.DB, r *parse.Resource[T], filterJSON, tenant string, id func(T) int) []int {
+	t.Helper()
+	req, err := r.ParseListInput(parse.ListInput{Filter: filterJSON})
+	require.NoError(t, err)
+	if b.engine == Memory {
+		return parsetest.ItemIDs(listPage(t, r, req, parse.Scope{Tenant: tenant}).Items, id)
+	}
+	plan, err := r.BuildList(req, parse.Scope{Tenant: tenant})
+	require.NoError(t, err)
+	return parsetest.ItemIDs(dbtest.QueryRows[[]any](t, db, plan.Page.SQL, plan.Page.Args...), func(row []any) int { return int(asInt64(t, row[0])) })
 }
 
 func asInt64(t *testing.T, v any) int64 {
@@ -134,22 +156,22 @@ type intTenantTag struct {
 	Label    string `json:"label" db:"label" parse:"filter"`
 }
 
-// intTenantFixture is tenants 1 and 2 keyed by INTEGER columns. Tenant 2's
-// rows point at tenant 1's devices (a pending command on device 2, a pair of
-// device 1 with tenant 2's tag) so a relation that lost its tenant floor
-// would match them.
-func intTenantFixture() []string {
-	stmts := []string{
-		`CREATE TABLE devices (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, name TEXT NOT NULL)`,
-		`CREATE TABLE commands (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, device_id INTEGER NOT NULL, status TEXT NOT NULL)`,
-		`CREATE TABLE tags (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, label TEXT NOT NULL)`,
-		`CREATE TABLE device_tags (device_id INTEGER NOT NULL, tag_id INTEGER NOT NULL, tenant_id INTEGER NOT NULL, PRIMARY KEY (device_id, tag_id))`,
-		`INSERT INTO devices VALUES (1, 1, 'alpha'), (2, 1, 'beta'), (3, 2, 'gamma')`,
-		`INSERT INTO commands VALUES (10, 1, 1, 'pending'), (11, 1, 2, 'done'), (12, 2, 2, 'pending')`,
-		`INSERT INTO tags VALUES (20, 1, 'red'), (21, 2, 'blue')`,
-		`INSERT INTO device_tags VALUES (1, 20, 1), (1, 21, 2), (3, 21, 2)`,
-	}
-	return stmts
+// loadIntTenants loads tenants 1 and 2 keyed by integer columns into db.
+// Tenant 2's rows point at tenant 1's devices (a pending command on device
+// 2, a pair of device 1 with tenant 2's tag) so a relation that lost its
+// tenant floor would match them.
+func loadIntTenants(t *testing.T, b sqlBackend, db *sql.DB) {
+	t.Helper()
+	id := func(name string) sqlColumn { return column[int32](name).required().holding(Postgres, "INTEGER") }
+	text := func(name string) sqlColumn { return column[string](name).required() }
+	b.load(t, db, sqlTable{name: "devices", key: []string{"id"}, columns: []sqlColumn{id("id"), id("tenant_id"), text("name")}},
+		[][]any{{1, 1, "alpha"}, {2, 1, "beta"}, {3, 2, "gamma"}})
+	b.load(t, db, sqlTable{name: "commands", key: []string{"id"}, columns: []sqlColumn{id("id"), id("tenant_id"), id("device_id"), text("status")}},
+		[][]any{{10, 1, 1, "pending"}, {11, 1, 2, "done"}, {12, 2, 2, "pending"}})
+	b.load(t, db, sqlTable{name: "tags", key: []string{"id"}, columns: []sqlColumn{id("id"), id("tenant_id"), text("label")}},
+		[][]any{{20, 1, "red"}, {21, 2, "blue"}})
+	b.load(t, db, sqlTable{name: "device_tags", key: []string{"device_id", "tag_id"}, columns: []sqlColumn{id("device_id"), id("tag_id"), id("tenant_id")}},
+		[][]any{{1, 20, 1}, {1, 21, 2}, {3, 21, 2}})
 }
 
 // intTenantResources builds the devices, with their relations, on p.
@@ -171,7 +193,7 @@ func integerTenantKeys(t *testing.T, engine Engine) {
 
 func runIntegerTenantKeys(t *testing.T, b sqlBackend) {
 	provider, db := b.open(t)
-	dbtest.Exec(t, db, intTenantFixture()...)
+	loadIntTenants(t, b, db)
 	devices := intTenantResources(t, provider)
 	list := func(tenant string, q url.Values) *filter.Page[intTenantDevice] {
 		t.Helper()
@@ -217,7 +239,12 @@ func runIntegerTenantKeys(t *testing.T, b sqlBackend) {
 		require.NoError(t, err)
 		require.Len(t, res.Unchanged, 1)
 		assert.Equal(t, int64(1), res.RelationRows, "only tenant 1's tag 20 is paired")
-		pairs := normalizeInts(t, dbtest.QueryRows[[]any](t, db, "SELECT device_id, tag_id, tenant_id FROM device_tags WHERE device_id = 2 ORDER BY tag_id"))
+		var pairs [][]any
+		for _, row := range normalizeInts(t, b.tableRows(t, db, "device_tags", "device_id", "tag_id", "tenant_id")) {
+			if row[0] == int64(2) {
+				pairs = append(pairs, row)
+			}
+		}
 		assert.Equal(t, [][]any{{int64(2), int64(20), int64(1)}}, pairs, "tenant 2's tag is not paired")
 	})
 }
@@ -245,18 +272,16 @@ type int32TenantDevice struct {
 func integerTenantKeysPairsHoldTheBoundKey(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		provider, db := b.open(t)
-		pairs := "device_id, command_id, tenant_id"
-		if b.engine == Postgres {
-			pairs = "device_id BIGINT, command_id BIGINT, tenant_id BIGINT"
-		}
-		dbtest.Exec(t, db,
-			`CREATE TABLE devices (id BIGINT PRIMARY KEY, tenant_id BIGINT NOT NULL, name TEXT NOT NULL)`,
-			`CREATE TABLE commands (id BIGINT PRIMARY KEY, tenant_id BIGINT NOT NULL, device_id BIGINT NOT NULL, status TEXT NOT NULL)`,
-			`CREATE TABLE device_commands (`+pairs+`)`,
-			`INSERT INTO devices VALUES (1, 44, 'alpha')`,
-			`INSERT INTO commands VALUES (7, 44, 1, 'sent'), (8, 44, 1, 'sent')`,
-			`INSERT INTO device_commands VALUES (1, 8, 44)`,
-		)
+		id := func(name string) sqlColumn { return column[int64](name).required() }
+		text := func(name string) sqlColumn { return column[string](name).required() }
+		// untyped is a pair column SQLite declares no type for.
+		untyped := func(name string) sqlColumn { return column[int64](name).holding(SQLite, "") }
+		b.load(t, db, sqlTable{name: "devices", key: []string{"id"}, columns: []sqlColumn{id("id"), id("tenant_id"), text("name")}},
+			[][]any{{1, 44, "alpha"}})
+		b.load(t, db, sqlTable{name: "commands", key: []string{"id"}, columns: []sqlColumn{id("id"), id("tenant_id"), id("device_id"), text("status")}},
+			[][]any{{7, 44, 1, "sent"}, {8, 44, 1, "sent"}})
+		b.load(t, db, sqlTable{name: "device_commands", key: []string{"device_id", "command_id", "tenant_id"}, columns: []sqlColumn{untyped("device_id"), untyped("command_id"), untyped("tenant_id")}},
+			[][]any{{1, 8, 44}})
 		junction := parse.Junction{Table: "device_commands", Source: []string{"device_id"}, Target: []string{"command_id"}, Tenant: "tenant_id"}
 		devices := parse.MustResource[int32TenantDevice](provider, "devices", parse.TenantColumn("tenant_id"))
 		devices.MustRelate("commands", parse.ManyToMany(parse.MustResource[parsetest.TenantKeyCommand](provider, "commands", parse.TenantColumn("tenant_id")),
@@ -267,7 +292,7 @@ func integerTenantKeysPairsHoldTheBoundKey(t *testing.T, engine Engine) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(2), res.RelationRows, "the pair to 8 removed, the pair to 7 added")
 		assert.Equal(t, [][]any{{int64(1), int64(7), int64(44)}},
-			normalizeInts(t, dbtest.QueryRows[[]any](t, db, `SELECT device_id, command_id, tenant_id FROM device_commands`)))
+			normalizeInts(t, b.tableRows(t, db, "device_commands", "device_id", "command_id", "tenant_id")))
 		if b.engine == SQLite {
 			assert.Equal(t, []string{"integer"}, dbtest.QueryRows[string](t, db, `SELECT typeof(tenant_id) FROM device_commands`))
 		}

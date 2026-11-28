@@ -35,7 +35,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestCorpus(t *testing.T) {
-	corpus.RunSQL(t, corpus.Engine{Kind: corpus.Postgres, Open: openCorpusDB, CallerTx: callerTx})
+	corpus.Run(t, corpus.Engine{Kind: corpus.Postgres, Open: openCorpusDB, CallerTx: callerTx})
 }
 
 // openCorpusDB opens a fresh schema of the PostgreSQL test server, or of the

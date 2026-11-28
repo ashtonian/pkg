@@ -17,23 +17,16 @@ import (
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
-// serverFieldFixture holds the rows serverFieldRows holds for the memory
-// backend.
-func serverFieldFixture() []string {
-	stmts := []string{
-		`CREATE TABLE documents (id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL, region_code TEXT NOT NULL, title TEXT NOT NULL, folder_id INTEGER NOT NULL)`,
-		`INSERT INTO documents VALUES (1, 7, 'eu', 'alpha', 1), (2, 7, 'us', 'beta', 1), (3, 8, 'eu', 'alpha', 2), (4, 7, 'eu', 'gamma', 2)`,
-	}
-	return stmts
-}
-
 func policyServerFields(t *testing.T, engine Engine) {
 	runOn(t, engine, runPolicyServerFields)
 }
 
 func runPolicyServerFields(t *testing.T, b sqlBackend) {
 	p, db := b.open(t)
-	dbtest.Exec(t, db, serverFieldFixture()...)
+	integer := func(name string) sqlColumn { return column[int64](name).required() }
+	text := func(name string) sqlColumn { return column[string](name).required() }
+	b.load(t, db, sqlTable{name: "documents", key: []string{"id"}, columns: []sqlColumn{integer("id"), integer("owner_id"), text("region_code"), text("title"), integer("folder_id")}},
+		[][]any{{1, 7, "eu", "alpha", 1}, {2, 7, "us", "beta", 1}, {3, 8, "eu", "alpha", 2}, {4, 7, "eu", "gamma", 2}})
 	docs := parsetest.ServerFieldDocuments(t, p)
 	req, err := docs.ParseList(url.Values{filter.ParamIncludeTotal: {"true"}, filter.ParamFacets: {"title"}})
 	require.NoError(t, err)
@@ -123,7 +116,8 @@ func rawPolicy(t *testing.T, engine Engine) {
 }
 
 // runRawPolicy runs every case on a fresh database of b holding
-// loadRawPolicy's rows.
+// loadRawPolicy's rows. The Memory engine evaluates no SQL, so it refuses
+// each of them.
 func runRawPolicy(t *testing.T, b sqlBackend) {
 	t.Helper()
 	noteID := func(n rawPolicyNote) string { return n.ID }
@@ -132,6 +126,24 @@ func runRawPolicy(t *testing.T, b sqlBackend) {
 		parsed, err := r.ParseMergePatch([]byte(`{"title":"changed"}`))
 		require.NoError(t, err)
 		return parsed
+	}
+	if b.engine == Memory {
+		r, _ := loadRawPolicy(t, b)
+		req, err := r.ParseList(url.Values{})
+		require.NoError(t, err)
+		_, err = r.List(t.Context(), req, rawPolicyScope())
+		require.ErrorIs(t, err, parse.ErrUnsupported, "list")
+		_, err = r.Update(t.Context(), rename(t, r), parse.ByID("n2"), rawPolicyScope())
+		require.ErrorIs(t, err, parse.ErrUnsupported, "update")
+		_, err = r.UpdateBatch(t.Context(), []parse.RowUpdate{{Key: parse.Key{"n2"}, Patch: rename(t, r)}}, rawPolicyScope(), parse.UpdateBatchLimits{})
+		require.ErrorIs(t, err, parse.ErrUnsupported, "update batch")
+		related, err := r.ParseList(url.Values{filter.ParamFilter: {`{"labels":{"$some":{}}}`}})
+		require.NoError(t, err)
+		_, err = r.List(t.Context(), related, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
+			"labels": {Constraints: []*filter.PolicyConstraint{{RawSQL: "labels.level = $1", RawArgs: []any{"high"}}}},
+		}})
+		require.ErrorIs(t, err, parse.ErrUnsupported, "a raw related policy")
+		return
 	}
 	renamed := func(t *testing.T, db *sql.DB) []string {
 		t.Helper()

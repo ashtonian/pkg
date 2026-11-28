@@ -4,23 +4,26 @@
 // filters, read from a GET's query string or a POST's JSON body, facets
 // over OPTIONS, JSON Merge Patch updates and schema discovery, on the
 // database its db settings name, which parseprovider opens among the
-// providers the binary links (parsesql, parsepgx): an in-memory SQLite
-// database by default, or PostgreSQL. It is a module of its own, outside
+// providers the binary links (parsesql, parsepgx, parsememory): an
+// in-memory SQLite database by default, PostgreSQL, or the memory provider,
+// which holds the rows in the process. It is a module of its own, outside
 // the repository's Go workspace; from its directory:
 //
 //	GOWORK=off go run . --addr 127.0.0.1:8080
 //	curl '127.0.0.1:8080/api/products?category=books&sort=-price&page_size=2'
 //	curl -H 'Content-Type: application/json' -d '{"filter":{"category":"books"},"sort":"-price","page_size":2}' 127.0.0.1:8080/api/products
 //
-// On PostgreSQL:
+// On PostgreSQL, or on the memory provider:
 //
 //	PARSE_SERVER_DB_PROVIDER=postgres PARSE_SERVER_DB_POSTGRES_DSN='postgres://user:password@127.0.0.1:5432/app' GOWORK=off go run .
+//	PARSE_SERVER_DB_PROVIDER=memory GOWORK=off go run .
 package main
 
 import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -38,7 +41,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/parsememory"
 	"github.com/ashtonian/pkg/parse/parsepgx"
 	"github.com/ashtonian/pkg/parse/parseprovider"
 	"github.com/ashtonian/pkg/parse/parsesql"
@@ -68,9 +73,10 @@ type serverSettings struct {
 // dbSettings name the provider the server runs on, and set up each provider
 // it links; Open uses the named provider's settings alone.
 type dbSettings struct {
-	Provider string          `koanf:"provider" default:"sqlite" validate:"oneof=sqlite postgres" desc:"Database parse runs on: sqlite or postgres"`
-	SQLite   parsesql.Config `koanf:"sqlite"`
-	Postgres parsepgx.Config `koanf:"postgres"`
+	Provider string             `koanf:"provider" default:"sqlite" validate:"oneof=sqlite postgres memory" desc:"Database parse runs on: sqlite, postgres or memory"`
+	SQLite   parsesql.Config    `koanf:"sqlite"`
+	Postgres parsepgx.Config    `koanf:"postgres"`
+	Memory   parsememory.Config `koanf:"memory"`
 }
 
 func main() {
@@ -198,7 +204,7 @@ func run(ctx context.Context, stop context.CancelFunc, args []string, level *slo
 	// has drained the requests that use the database.
 	defer func() { err = errors.Join(err, db.Close()) }()
 	log.InfoContext(ctx, "database opened", slog.String("provider", db.Provider().Name()))
-	handler, err := newServer(db, log, startup.RequestTimeout, rand.Text)
+	handler, err := newServer(db, db.products, log, startup.RequestTimeout, rand.Text)
 	if err != nil {
 		return err
 	}
@@ -246,17 +252,31 @@ func serve(ctx context.Context, stop context.CancelFunc, settings *serverSetting
 	return nil
 }
 
-// openDB opens the database cfg names and seeds its products.
-func openDB(ctx context.Context, cfg dbSettings) (parseprovider.Database, error) {
-	db, err := parseprovider.Open(ctx, cfg.Provider, parsesql.Choice(cfg.SQLite), parsepgx.Choice(cfg.Postgres))
+// store is the database the server runs on and the products resource,
+// built on it once, at startup.
+type store struct {
+	parseprovider.Database
+	products *parse.Resource[Product]
+}
+
+// openDB opens the database cfg names, builds the products resource on it
+// and seeds the products. The resource comes first: on the memory
+// provider it declares the products table the seed writes.
+func openDB(ctx context.Context, cfg dbSettings) (*store, error) {
+	db, err := parseprovider.Open(ctx, cfg.Provider,
+		parsesql.Choice(cfg.SQLite), parsepgx.Choice(cfg.Postgres), parsememory.Choice(cfg.Memory))
 	if err != nil {
 		return nil, err
 	}
-	err = seed(ctx, db)
+	products, err := newProducts(db.Provider())
+	if err == nil {
+		err = seed(ctx, db)
+	}
 	if err != nil {
 		return nil, errors.Join(err, db.Close())
 	}
-	return db, nil
+	opened := &store{Database: db, products: products}
+	return opened, nil
 }
 
 // seedProducts are the demonstration products, p01 onwards, each created
@@ -278,6 +298,12 @@ var seedProducts = []struct {
 }
 
 var seedEpoch = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// seedID is the id of the i-th seed product, and seedCreatedAt its
+// creation time.
+func seedID(i int) string { return fmt.Sprintf("p%02d", i+1) }
+
+func seedCreatedAt(i int) time.Time { return seedEpoch.Add(time.Duration(i) * time.Hour) }
 
 // seedSchema is one provider's statements for the products table, run in
 // order, and the insert of one product, which takes the id, name,
@@ -322,15 +348,37 @@ var (
 
 // seed creates the products table when it is missing and adds the
 // demonstration products it does not hold, so a database that persists
-// keeps the changes made to them across restarts.
+// keeps the changes made to them across restarts. The memory provider's
+// database starts empty on every start, its table declared by the
+// products resource: the seed puts every product.
 func seed(ctx context.Context, db parseprovider.Database) error {
 	switch opened := db.(type) {
 	case *parsesql.Database:
 		return sqliteSeed.run(ctx, sqliteExec(opened.DB()))
 	case *parsepgx.Database:
 		return postgresSeed.run(ctx, poolExec(opened.Pool()))
+	case *parsememory.Database:
+		return memorySeed(ctx, opened)
 	}
 	return fmt.Errorf("seeding products: provider %s: no products schema for it", db.Provider().Name())
+}
+
+// memorySeed puts the products into the memory provider's table, each
+// value as the application would bind it to SQL: the labels as their JSON
+// text, the creation time as a time.Time.
+func memorySeed(ctx context.Context, db *parsememory.Database) error {
+	rows := make([]parsememory.Row, len(seedProducts))
+	for i, p := range seedProducts {
+		rows[i] = parsememory.Row{
+			"id": seedID(i), "name": p.name, "category": p.category, "price": p.price,
+			"labels": json.RawMessage(p.labels), "created_at": seedCreatedAt(i),
+		}
+	}
+	err := db.Put(ctx, "products", rows...)
+	if err != nil {
+		return fmt.Errorf("seeding products: %w", err)
+	}
+	return nil
 }
 
 // execFunc runs one statement.
@@ -359,8 +407,8 @@ func (s seedSchema) run(ctx context.Context, exec execFunc) error {
 		}
 	}
 	for i, p := range seedProducts {
-		id := fmt.Sprintf("p%02d", i+1)
-		err := exec(ctx, s.insert, id, p.name, p.category, p.price, p.labels, s.createdAt(seedEpoch.Add(time.Duration(i)*time.Hour)))
+		id := seedID(i)
+		err := exec(ctx, s.insert, id, p.name, p.category, p.price, p.labels, s.createdAt(seedCreatedAt(i)))
 		if err != nil {
 			return fmt.Errorf("seeding product %s: %w", id, err)
 		}

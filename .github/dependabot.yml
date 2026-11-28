@@ -23,6 +23,7 @@ updates:
       - /parse
       - /parse/client
       - /parse/examples/server
+      - /parse/parsememory
       - /parse/parsepgx
       - /parse/parsesql
       - /process

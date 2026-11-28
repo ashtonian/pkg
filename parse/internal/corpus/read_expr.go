@@ -5,6 +5,7 @@ package corpus
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -21,7 +22,30 @@ import (
 )
 
 func readExpr(t *testing.T, engine Engine) {
-	runOn(t, engine, runReadExpr)
+	runOn(t, engine, func(t *testing.T, b sqlBackend) {
+		if b.engine == Memory {
+			requireComputedRefused(t, b)
+			return
+		}
+		runReadExpr(t, b)
+	})
+}
+
+// requireComputedRefused holds the Memory engine to its refusal of
+// computed columns: it evaluates no SQL expression, so each resource that
+// reads one (ReadExpr) is refused as it is built, with the typed
+// capability error.
+func requireComputedRefused(t *testing.T, b sqlBackend) {
+	t.Helper()
+	p, _ := b.open(t)
+	_, groups := parse.NewResource[parsetest.AccessGroup](p, "access_groups", parse.TenantColumn("tenant_id"), parse.ReadExpr("size", parse.SQL(parsetest.GroupSizeExpr)))
+	_, accounts := parse.NewResource[parsetest.ComputedAccount](p, "accounts", parse.TenantColumn("tenant_id"), parse.ReadExpr("member_count", parse.SQL(parsetest.MemberCountExpr)))
+	for _, err := range []error{groups, accounts} {
+		require.ErrorIs(t, err, parse.ErrUnsupported)
+		unsupported, ok := errors.AsType[*parse.UnsupportedError](err)
+		require.True(t, ok, "%v", err)
+		assert.Equal(t, "computed columns", unsupported.Capability)
+	}
 }
 
 // runReadExpr serves the computed resources on b: SQLite and PostgreSQL
@@ -194,6 +218,10 @@ func keysOf[T any](t *testing.T, db *sql.DB, r *parse.Resource[T], filterJSON st
 // table lacks.
 func readExprRelationIncludesCompileTheTargetsPolicy(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
+		if b.engine == Memory {
+			requireComputedRefused(t, b)
+			return
+		}
 		scope := parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
 			"accounts": {Constraints: []*filter.PolicyConstraint{{Field: "member_count", Operator: filter.OpGte, Value: 1}}},
 		}}
@@ -226,6 +254,10 @@ func readExprRelationIncludesCompileTheTargetsPolicy(t *testing.T, engine Engine
 // application's transaction, whose statements every engine reports.
 func readExprUpdateRereadsAfterRelationChanges(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
+		if b.engine == Memory {
+			requireComputedRefused(t, b)
+			return
+		}
 		provider, db := b.open(t)
 		dbtest.Exec(t, db, parsetest.ComputedAccountFixture()...)
 		_, accounts, _, _ := parsetest.NewComputedResources(provider)
@@ -241,7 +273,7 @@ func readExprUpdateRereadsAfterRelationChanges(t *testing.T, engine Engine) {
 			t.Helper()
 			statements = nil
 			var res parse.UpdateResult[parsetest.ComputedAccount]
-			callerTx(t, b, db, func(tx *parse.Tx, _ func(string) []string) {
+			callerTx(t, b, db, func(tx *parse.Tx, _ inTx) {
 				scoped, err := accounts.In(tx)
 				require.NoError(t, err)
 				p, err := accounts.ParseMergePatch([]byte(body))

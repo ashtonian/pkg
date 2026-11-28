@@ -12,6 +12,7 @@ import (
 	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/jsonvalue"
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/backend"
 	"github.com/ashtonian/pkg/parse/internal/jsonkeys"
 )
 
@@ -104,7 +105,7 @@ func (r *Resource[T]) RowScanner(opts ...ScanOption) (*RowScanner[T], error) {
 // errors without the table, which the failure of the statement whose rows
 // it scans names (StatementError).
 func (r *resourceCore) rowRules(opts ...ScanOption) (rowRules, error) {
-	d := r.dialect
+	d := r.provider.storage
 	var cfg scanConfig
 	for _, opt := range opts {
 		opt(&cfg)
@@ -135,20 +136,14 @@ func (r *resourceCore) rowRules(opts ...ScanOption) (rowRules, error) {
 	return rules, nil
 }
 
-// textStorage is what a row scan asks of a dialect: which values it stores
-// as text the scan decodes (Dialect.StoresAsText).
-type textStorage interface {
-	Name() string
-	StoresAsText(t core.FieldType) bool
-}
-
 // rowDecodeOf is the rule for a field of type t: json when the column holds
 // JSON by declaration or by the result's own type; otherwise the driver's,
-// unless d stores t's values as text (Dialect.StoresAsText) and the driver
-// cannot scan into t. A scan decodes such text for a timestamp, a document
-// and an array alone, and refuses a dialect that stores another type so,
-// rather than hand its text to a driver that cannot read it into t.
-func rowDecodeOf(t reflect.Type, json bool, d textStorage) (rowDecode, error) {
+// unless d, the provider's storage (backend.Storage), stores t's values as
+// text and the driver cannot scan into t. A nil d stores nothing as text.
+// A scan decodes such text for a timestamp, a document and an array alone,
+// and refuses a storage that holds another type so, rather than hand its
+// text to a driver that cannot read it into t.
+func rowDecodeOf(t reflect.Type, json bool, d backend.Storage) (rowDecode, error) {
 	switch {
 	case json:
 		return decodeJSON, nil
@@ -157,14 +152,14 @@ func rowDecodeOf(t reflect.Type, json bool, d textStorage) (rowDecode, error) {
 	}
 	info := core.TypeOf(t)
 	switch {
-	case !d.StoresAsText(info.Type):
+	case d == nil || !d.StoresAsText(info.Type):
 		return decodeDriver, nil
 	case info.Type == core.FieldTypeTimestamp:
 		return decodeTimestamp, nil
 	case core.IsDocument(info.Type) || info.Type == core.FieldTypeArray:
 		return decodeJSON, nil
 	}
-	return 0, fmt.Errorf("dialect %s stores %s values as text, which a row scan decodes only for timestamps, documents and arrays", d.Name(), info.Type)
+	return 0, fmt.Errorf("provider %s stores %s values as text, which a row scan decodes only for timestamps, documents and arrays", d.Name(), info.Type)
 }
 
 // checkScannable refuses a read column no row scan can fill, so that no

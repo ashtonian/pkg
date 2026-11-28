@@ -36,8 +36,17 @@ const SQLiteDSN = ":memory:?_txlock=immediate"
 // do not.
 func Hooked(t testing.TB, d driver.Driver, dsn string) *sql.DB {
 	t.Helper()
+	return HookedPool(t, d, dsn, 1)
+}
+
+// HookedPool is Hooked on up to conns connections, all kept open, for a
+// database file several connections share: a writer beside a reader, two
+// writers contending for the write lock.
+func HookedPool(t testing.TB, d driver.Driver, dsn string, conns int) *sql.DB {
+	t.Helper()
 	db := sql.OpenDB(hookedConnector{driver: d, dsn: dsn})
-	db.SetMaxOpenConns(1)
+	db.SetMaxOpenConns(conns)
+	db.SetMaxIdleConns(conns)
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }

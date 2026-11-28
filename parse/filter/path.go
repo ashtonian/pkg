@@ -247,23 +247,30 @@ func decodeDocument(doc any) (any, error) {
 	return out, nil
 }
 
+// pathMember is document member v read as a path of type t, in the domain
+// Row describes, and false when it holds no value of t. A member already in
+// its canonical form is returned as the value it is, since a filter reads it
+// on every row and boxing it again would allocate there.
 func pathMember(v any, t core.FieldType) (any, bool, error) {
 	switch t {
 	case core.FieldTypeString:
-		s, ok := v.(string)
-		return s, ok, nil
+		_, ok := v.(string)
+		if !ok {
+			return nil, false, nil
+		}
+		return v, true, nil
 	case core.FieldTypeInt, core.FieldTypeFloat:
 		text, ok := decimals.Number(v)
 		if !ok {
 			return nil, false, nil
 		}
-		return json.Number(text), true, nil
+		return heldAs[json.Number](v, text), true, nil
 	case core.FieldTypeDecimal:
 		text, ok := decimals.Member(v)
 		if !ok {
 			return nil, false, nil
 		}
-		return text, true, nil
+		return heldAs[string](v, text), true, nil
 	case core.FieldTypeBool:
 		b, ok := v.(bool)
 		return b, ok, nil
@@ -272,19 +279,29 @@ func pathMember(v any, t core.FieldType) (any, bool, error) {
 		if !ok {
 			return nil, false, nil
 		}
-		return canonicalTimestamp(s)
+		return canonicalTimestamp(v, s)
 	case core.FieldTypeUUID:
 		s, ok := v.(string)
 		if !ok {
 			return nil, false, nil
 		}
-		s = asciiLower(s)
-		if !uuidShape.MatchString(s) {
+		lower := asciiLower(s)
+		if !uuidShape.MatchString(lower) {
 			return nil, false, nil
 		}
-		return s, true, nil
+		return heldAs[string](v, lower), true, nil
 	}
 	return nil, false, fmt.Errorf("path type %s is not supported", t)
+}
+
+// heldAs is v itself when it already holds text as a T, and text as a T
+// otherwise.
+func heldAs[T ~string](v any, text string) any {
+	held, ok := v.(T)
+	if ok && string(held) == text {
+		return v
+	}
+	return T(text)
 }
 
 // memberType is the type a member read as a path of type t reads it
@@ -300,8 +317,13 @@ func memberType(t core.FieldType) core.TypeInfo {
 
 // canonicalTimestamp pads a UTC RFC 3339 member's fraction to nine digits —
 // core.TimestampLayout — so instants compare as text; another shape is
-// absent.
-func canonicalTimestamp(s string) (any, bool, error) {
+// absent. v is the member, s its text: a member with nine fractional
+// digits already is returned as it is.
+func canonicalTimestamp(v any, s string) (any, bool, error) {
+	const canonicalWidth = len("2006-01-02T15:04:05.000000000Z")
+	if len(s) == canonicalWidth && timestampShape.MatchString(s) {
+		return v, true, nil
+	}
 	m := timestampShape.FindStringSubmatch(s)
 	if m == nil {
 		return nil, false, nil
@@ -311,6 +333,9 @@ func canonicalTimestamp(s string) (any, bool, error) {
 
 // asciiLower folds ASCII letters only, as SQLite's lower() does.
 func asciiLower(s string) string {
+	if !strings.ContainsFunc(s, isASCIIUpper) {
+		return s
+	}
 	b := []byte(s)
 	for i, c := range b {
 		if 'A' <= c && c <= 'Z' {
@@ -319,3 +344,5 @@ func asciiLower(s string) string {
 	}
 	return string(b)
 }
+
+func isASCIIUpper(r rune) bool { return 'A' <= r && r <= 'Z' }

@@ -4,7 +4,7 @@ CONFIG_MODULES := config config/kongprovider
 HTTPX_MODULES := httpx httpx/oauth2 httpx/codec/msgpack httpx/codec/proto httpx/compress/brotli
 NATIVE_MODULES := process state onepassword
 # parse and its provider modules, which release together at one version.
-PARSE_MODULES := parse parse/parsepgx parse/parsesql
+PARSE_MODULES := parse parse/parsepgx parse/parsesql parse/parsememory
 # The Go request builder and wire types: standard library only, no SQL suites.
 PARSE_CLIENT_MODULES := parse/client
 TAGGED_MODULES := $(HTTPX_MODULES) $(PARSE_MODULES) $(PARSE_CLIENT_MODULES) $(NATIVE_MODULES)
@@ -32,6 +32,9 @@ STATICCHECK := GOTOOLCHAIN=go1.27.4 go run honnef.co/go/tools/cmd/staticcheck@v0
 GOFIX := GOTOOLCHAIN=go1.27.4 go fix -embedlit=false -omitzero=false -stditerators=false
 GOFMT = $(shell GOTOOLCHAIN=go1.27.4 go env GOROOT)/bin/gofmt
 GOLANGCI_LINT_VERSION := v2.15.0
+# wazero runs the memory provider's tests as a WASI module. It is built for the
+# host: go test's -exec runs it with the GOOS and GOARCH of the test build.
+WAZERO := env -u GOOS -u GOARCH go run github.com/tetratelabs/wazero/cmd/wazero@v1.12.0
 LINT_WORK := .lint.work
 # Empty: golangci-lint reports only the issues on lines changed since the merge
 # base with origin/main (.golangci.yml). 1: every issue.
@@ -80,7 +83,7 @@ LINT_TAGS := unit,integration
 ## test: every published module from the working tree (go.work), race detector on.
 ## The unit targets take UNIT_TEST_COUNT; -count=1 where a test depends on state
 ## the test cache cannot see: processes it starts, the installed git, servers.
-test: test-native-unit test-native-integration test-gitx test-jsonvalue test-gowalker test-config test-httpx-unit test-httpx-integration test-parse-race-all test-parse-integration test-parse-client test-parse-sdk
+test: test-native-unit test-native-integration test-gitx test-jsonvalue test-gowalker test-config test-httpx-unit test-httpx-integration test-parse-race-all test-parse-wasip1 test-parse-integration test-parse-client test-parse-sdk
 
 test-native-unit:
 	$(call scoped,go test $(RACE) $(UNIT_TEST_COUNT),$(NATIVE_MODULES),unit)
@@ -113,7 +116,7 @@ test-httpx-unit:
 test-httpx-integration:
 	$(call scoped,go test $(RACE) -count=1,$(HTTPX_MODULES),integration)
 
-.PHONY: test-parse-race test-parse-race-all lint-cookbook fix
+.PHONY: test-parse-race test-parse-race-all test-parse-wasip1 lint-cookbook fix
 
 ## test-parse-unit: parse unit tests and fuzz seeds, without the race detector.
 test-parse-unit:
@@ -129,6 +132,16 @@ test-parse-race:
 ## test-parse-race-all: every parse unit test and fuzz seed under the race detector.
 test-parse-race-all:
 	$(call scoped,go test $(RACE) $(UNIT_TEST_COUNT),$(PARSE_MODULES),unit)
+
+## test-parse-wasip1: the memory provider's unit tests built for GOOS=wasip1
+## GOARCH=wasm and run under wazero with no directory preopened, so a test that
+## reaches the filesystem fails: the provider needs no filesystem and no driver.
+## wasm has no preemption, so a goroutine that spins hangs the run: go test
+## kills it a minute past -timeout.
+test-parse-wasip1: export GOOS := wasip1
+test-parse-wasip1: export GOARCH := wasm
+test-parse-wasip1:
+	$(call scoped,go test -exec '$(WAZERO) run' $(UNIT_TEST_COUNT) -timeout=5m,parse/parsememory,unit)
 
 # SQLite always runs. Supply PARSE_POSTGRES_DSN and PARSE_POSTGIS_DSN for SQL parity.
 test-parse-integration:

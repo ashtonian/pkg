@@ -1,0 +1,341 @@
+package parsememory
+
+import (
+	"context"
+	"database/sql"
+	"database/sql/driver"
+	"errors"
+	"fmt"
+	"iter"
+	"slices"
+	"time"
+
+	"github.com/ashtonian/pkg/parse"
+	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/backend"
+)
+
+// rows are records served to a sink over a resource's Columns
+// (backend.Rows), each value assigned to its destination as database/sql
+// assigns a driver's (sql.ConvertAssign). A timestamp, held as its
+// canonical text, is handed over as the time.Time it names, as a driver
+// hands over a timestamp column's, so a time.Time, a *time.Time and a
+// scanner of one (sql.NullTime) all read it.
+type rows struct {
+	columns   []string
+	positions []int
+	// stamps reports, by destination, a timestamp column.
+	stamps  []bool
+	records []*record
+	at      int
+}
+
+// newRows serves records of def's table over columns.
+func newRows(def *tableDef, columns []string, records []*record) (*rows, error) {
+	positions := make([]int, len(columns))
+	stamps := make([]bool, len(columns))
+	for i, c := range columns {
+		at, ok := def.index[c]
+		if !ok {
+			return nil, fmt.Errorf("parsememory: table %q has no column %q", def.name, c)
+		}
+		positions[i] = at
+		stamps[i] = def.columns[at].typ.Type == core.FieldTypeTimestamp
+	}
+	r := &rows{columns: columns, positions: positions, stamps: stamps, records: records}
+	return r, nil
+}
+
+func (r *rows) Next() bool {
+	if r.at >= len(r.records) {
+		return false
+	}
+	r.at++
+	return true
+}
+
+func (r *rows) Scan(dest ...any) error {
+	if r.at == 0 || r.at > len(r.records) {
+		return errors.New("parsememory: Scan called without a row")
+	}
+	if len(dest) != len(r.positions) {
+		return fmt.Errorf("parsememory: %d destinations for the %d columns", len(dest), len(r.positions))
+	}
+	rec := r.records[r.at-1]
+	for i, d := range dest {
+		v := rec.value(r.positions[i])
+		text, isText := v.(string)
+		if r.stamps[i] && isText {
+			at, err := time.Parse(core.TimestampLayout, text)
+			if err != nil {
+				return fmt.Errorf("column %s: %w", r.columns[i], err)
+			}
+			v = at
+		}
+		err := sql.ConvertAssign(driver.ScanContext{}, d, v)
+		if err != nil {
+			return fmt.Errorf("column %s: %w", r.columns[i], err)
+		}
+	}
+	return nil
+}
+
+func (r *rows) Err() error { return nil }
+
+// Documents is nil: the store holds documents as JSON text, which the
+// resource's row contract decodes as it decodes SQLite's.
+func (r *rows) Documents() []string { return nil }
+
+// rowReader reads the rows of def's table, one at a time: as a filter
+// reads a row (filter.ColumnRow), by column of this table, and as a lookup
+// condition or a patch does, by bare column. A scan builds one and points
+// it at each row it reads, so no row allocates a reader of its own.
+type rowReader struct {
+	def  *tableDef
+	rec  *record
+	row  filter.ColumnRow
+	bare func(string) (any, bool)
+}
+
+func newRowReader(def *tableDef) *rowReader {
+	r := &rowReader{def: def}
+	r.row = r.ofTable
+	r.bare = r.column
+	return r
+}
+
+// ofTable reads a column of this table, bare or qualified by its name. A
+// row holds no other table's column, and no computed one, which the
+// provider refuses before anything runs.
+func (r *rowReader) ofTable(c filter.ColumnRef) (any, bool) {
+	if c.Expr != "" {
+		return nil, false
+	}
+	if c.Table != "" && c.Table != r.def.name {
+		return nil, false
+	}
+	return r.column(c.Column)
+}
+
+func (r *rowReader) column(name string) (any, bool) {
+	at, ok := r.def.index[name]
+	if !ok {
+		return nil, false
+	}
+	return r.rec.value(at), true
+}
+
+// of is the reader pointed at rec as a filter reads it, valid until it is
+// pointed at another row.
+func (r *rowReader) of(rec *record) filter.ColumnRow {
+	r.rec = rec
+	return r.row
+}
+
+// bareOf is the reader pointed at rec by bare column
+// (filter.MatchLookupRow, patch.ComposedPatch.Apply), valid until it is
+// pointed at another row.
+func (r *rowReader) bareOf(rec *record) func(string) (any, bool) {
+	r.rec = rec
+	return r.bare
+}
+
+// evaluate reports whether ast selects rec: True, as a WHERE clause admits
+// a row.
+func (r *rowReader) evaluate(ast *filter.FilterAST, rec *record) (bool, error) {
+	if ast == nil || ast.Root == nil {
+		return true, nil
+	}
+	truth, err := filter.Evaluate(ast.Root, r.of(rec))
+	if err != nil {
+		return false, err
+	}
+	return truth == filter.True, nil
+}
+
+// errRawSQL is a filter holding a policy constraint of raw SQL
+// (filter.PolicyConstraint.RawSQL), which only a SQL database evaluates.
+func errRawSQL(table string) error {
+	unsupported := &parse.UnsupportedError{Provider: Name, Capability: "raw SQL policy constraints"}
+	return fmt.Errorf("parse: %s: %w", table, unsupported)
+}
+
+// checkEvaluable refuses a filter the store cannot evaluate: one holding
+// raw SQL, which filter.Evaluate would take as unknown.
+func checkEvaluable(table string, n *filter.FilterNode) error {
+	if n == nil {
+		return nil
+	}
+	if n.Op == filter.OpRawSQL {
+		return errRawSQL(table)
+	}
+	for _, c := range n.Children {
+		err := checkEvaluable(table, c)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// noTenant is the tenant a governed list's row without one binds its
+// tenant-scoped relations to: SQL compares their tenant columns with the
+// row's NULL, which no pair matches, so a lookup bound to noTenant selects
+// no row.
+type noTenant struct{}
+
+// lookup answers the lookups of relation and membership predicates,
+// includes and relation facets (filter.RelationLookup,
+// filter.IncludeLookup) from the tables of one view.
+type lookup struct {
+	catalog *catalog
+	view    view
+}
+
+// selected are the rows of l.Table that l.Where and l.Filter select: of
+// the key ranges l.Where holds the table to, or of the whole table
+// (tableDef.lookupRows).
+func (lk lookup) selected(ctx context.Context, l *filter.Lookup) (*tableDef, []*record, error) {
+	def, ok := lk.catalog.table(l.Table)
+	if !ok {
+		return nil, nil, fmt.Errorf("parsememory: lookup of %q: no resource declares the table", l.Table)
+	}
+	var ast *filter.FilterAST
+	if l.Filter != nil {
+		ast = l.Filter.AST()
+	}
+	if ast != nil {
+		err := checkEvaluable(l.Table, ast.Root)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	t := lk.view.rows(l.Table)
+	if t == nil || selectsNone(l.Where) {
+		return def, nil, nil
+	}
+	var out []*record
+	var err error
+	n := 0
+	reader := newRowReader(def)
+	def.lookupRows(t, l.Where, func(rec *record) bool {
+		n++
+		if n%checkEvery == 0 {
+			err = ctx.Err()
+			if err != nil {
+				return false
+			}
+		}
+		var ok bool
+		ok, err = filter.MatchLookupRow(l.Where, reader.bareOf(rec))
+		if err == nil && ok {
+			ok, err = reader.evaluate(ast, rec)
+		}
+		if err != nil {
+			return false
+		}
+		if ok {
+			out = append(out, rec)
+		}
+		return true
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return def, out, nil
+}
+
+// checkEvery is how many rows a scan reads between checks of its context.
+const checkEvery = 1024
+
+// selectsNone reports a condition bound to noTenant under AND, which no row
+// satisfies.
+func selectsNone(cond *filter.LookupCond) bool {
+	if cond == nil {
+		return false
+	}
+	if cond.Op == filter.LookupOpEq {
+		_, none := cond.Value.(noTenant)
+		return none
+	}
+	return slices.ContainsFunc(cond.And, selectsNone)
+}
+
+func (lk lookup) LookupValues(ctx context.Context, l *filter.Lookup) ([]any, error) {
+	def, recs, err := lk.selected(ctx, l)
+	if err != nil {
+		return nil, err
+	}
+	columns := projected(l)
+	out := make([]any, len(recs))
+	for i, rec := range recs {
+		out[i], err = project(def, rec, columns)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (lk lookup) LookupFilteredValues(ctx context.Context, l *filter.Lookup) ([]any, error) {
+	return lk.LookupValues(ctx, l)
+}
+
+func (lk lookup) LookupPairs(ctx context.Context, l *filter.Lookup, owner []string) (iter.Seq2[filter.IncludePair, error], error) {
+	def, recs, err := lk.selected(ctx, l)
+	if err != nil {
+		return nil, err
+	}
+	columns := projected(l)
+	pairs := func(yield func(filter.IncludePair, error) bool) {
+		for _, rec := range recs {
+			o, err := project(def, rec, owner)
+			if err != nil {
+				yield(filter.IncludePair{}, err)
+				return
+			}
+			target, err := project(def, rec, columns)
+			if err != nil {
+				yield(filter.IncludePair{}, err)
+				return
+			}
+			if !yield(filter.IncludePair{Owner: o, Target: target}, nil) {
+				return
+			}
+		}
+	}
+	return pairs, nil
+}
+
+// projected are the columns l projects.
+func projected(l *filter.Lookup) []string {
+	if l.ProjectKey != nil {
+		return l.ProjectKey
+	}
+	columns := []string{l.Project}
+	return columns
+}
+
+// project is rec's value of its one column, or a core.Key of a value per
+// column for several, as a lookup answers a projection.
+func project(def *tableDef, rec *record, columns []string) (any, error) {
+	key := make(core.Key, len(columns))
+	for i, c := range columns {
+		at, ok := def.index[c]
+		if !ok {
+			return nil, fmt.Errorf("parsememory: table %q has no column %q", def.name, c)
+		}
+		key[i] = rec.value(at)
+	}
+	if len(key) == 1 {
+		return key[0], nil
+	}
+	return key, nil
+}
+
+var _ backend.Rows = (*rows)(nil)
+
+var _ filter.IncludeLookup = lookup{}
+
+var _ filter.RelationLookup = lookup{}

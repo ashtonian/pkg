@@ -21,7 +21,6 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/filter/filtertest"
-	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/parsetest"
 	"github.com/ashtonian/pkg/parse/internal/providertest"
 	"github.com/ashtonian/pkg/parse/patch"
@@ -30,12 +29,11 @@ import (
 func civilDateSQL(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, backend sqlBackend) {
 		provider, db := backend.open(t)
-		_, err := db.ExecContext(t.Context(), `CREATE TABLE tasks (id TEXT PRIMARY KEY, due_on DATE)`)
-		require.NoError(t, err)
-		_, err = db.ExecContext(t.Context(), `INSERT INTO tasks VALUES ('leap','2028-02-29'),('today','2026-10-26'),('empty',NULL)`)
-		require.NoError(t, err)
+		backend.load(t, db, sqlTable{name: "tasks", key: []string{"id"}, columns: []sqlColumn{column[string]("id"), column[core.Date]("due_on").holding(SQLite, "DATE")}},
+			[][]any{{"leap", "2028-02-29"}, {"today", "2026-10-26"}, {"empty", nil}})
 		if backend.engine == SQLite {
-			_, err = db.ExecContext(t.Context(), `INSERT INTO tasks VALUES ('legacy','2026-10-26T00:00:00Z')`)
+			// A row an earlier writer stored as a timestamp's text.
+			_, err := db.ExecContext(t.Context(), `INSERT INTO tasks VALUES ('legacy','2026-10-26T00:00:00Z')`)
 			require.NoError(t, err)
 		}
 		resource := parse.MustResource[parsetest.CivilTask](provider, "tasks")
@@ -242,18 +240,27 @@ type contractCrossed struct {
 	Right string `json:"left"`
 }
 
-func rowContractFixture() []string {
-	stmts := []string{
-		`CREATE TABLE "embedded" ("id" TEXT PRIMARY KEY, "created_by" TEXT)`,
-		`INSERT INTO "embedded" VALUES ('value-of-id', 'value-of-created_by')`,
-		`CREATE TABLE "convention" ("id" TEXT PRIMARY KEY, "name" TEXT)`,
-		`INSERT INTO "convention" VALUES ('value-of-id', 'value-of-name')`,
-		`CREATE TABLE "column_tag" ("doc_id" TEXT PRIMARY KEY, "doc_name" TEXT)`,
-		`INSERT INTO "column_tag" VALUES ('value-of-doc_id', 'value-of-doc_name')`,
-		`CREATE TABLE "crossed" ("id" TEXT PRIMARY KEY, "left" TEXT, "right" TEXT)`,
-		`INSERT INTO "crossed" ("id", "left", "right") VALUES ('value-of-id', 'value-of-left', 'value-of-right')`,
+// loadRowContract loads tables whose every column holds its own name, as
+// "value-of-<column>".
+func loadRowContract(t *testing.T, b sqlBackend, db *sql.DB) {
+	t.Helper()
+	for _, table := range []struct {
+		name    string
+		columns []string
+	}{
+		{"embedded", []string{"id", "created_by"}},
+		{"convention", []string{"id", "name"}},
+		{"column_tag", []string{"doc_id", "doc_name"}},
+		{"crossed", []string{"id", "left", "right"}},
+	} {
+		columns := make([]sqlColumn, len(table.columns))
+		row := make([]any, len(table.columns))
+		for i, name := range table.columns {
+			columns[i] = column[string](name)
+			row[i] = "value-of-" + name
+		}
+		b.load(t, db, sqlTable{name: table.name, key: table.columns[:1], columns: columns}, [][]any{row})
 	}
-	return stmts
 }
 
 // Each shape pages on each backend with every field holding the column the
@@ -261,7 +268,7 @@ func rowContractFixture() []string {
 func rowContract(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		p, db := b.open(t)
-		dbtest.Exec(t, db, rowContractFixture()...)
+		loadRowContract(t, b, db)
 		runRowContract(t, p)
 	})
 }
@@ -337,6 +344,9 @@ func sqlTextValuesSQL(t *testing.T, engine Engine) {
 			t.Helper()
 			query, err := resource.ParseList(url.Values{"filter": {filterJSON}, "sort": {sort}})
 			require.NoError(t, err)
+			if b.engine == Memory {
+				return listPage(t, resource, query, parse.Scope{}).Items
+			}
 			plan, err := resource.BuildList(query, parse.Scope{})
 			require.NoError(t, err)
 			return parsetest.ResourceRows(t, resource, plan.Page)
@@ -390,9 +400,16 @@ func sqlTextValuesSQL(t *testing.T, engine Engine) {
 		patch, err := resource.ParseMergePatch([]byte(`{"at":"07:15:00.250000","retention":"PT90M","actor_ip":"::ffff:10.0.0.9",
 			"network":"10.1.0.0/16","device":"0800.2b01.0205","allowed_ips":["2001:0db8:0:0:0:0:0:2"],"spans":["P1W","PT3600S"]}`))
 		require.NoError(t, err)
-		update, err := resource.BuildUpdate(patch, parse.ByID("b"), parse.Scope{})
-		require.NoError(t, err)
-		updated := parsetest.ResourceRows(t, resource, update.Owner)
+		var updated []parsetest.NetworkEvent
+		if b.engine == Memory {
+			res, err := applyUpdate(t, resource, false, patch, parse.ByID("b"), parse.Scope{})
+			require.NoError(t, err)
+			updated = res.Changed
+		} else {
+			update, err := resource.BuildUpdate(patch, parse.ByID("b"), parse.Scope{})
+			require.NoError(t, err)
+			updated = parsetest.ResourceRows(t, resource, update.Owner)
+		}
 		require.Len(t, updated, 1)
 		wire, err = json.Marshal(updated[0])
 		require.NoError(t, err)
@@ -409,7 +426,12 @@ func sqlTextValuesSQL(t *testing.T, engine Engine) {
 // neither UTC nor ISO, which the facet keys must not depend on.
 func timestamps(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
-		if b.engine == Postgres {
+		switch b.engine {
+		case Memory:
+			provider, db := b.open(t)
+			runTimestamps(t, b, provider, db)
+			return
+		case Postgres:
 			provider, db := b.open(t)
 			var zone, style string
 			require.NoError(t, db.QueryRowContext(t.Context(), "SELECT current_setting('TimeZone'), current_setting('DateStyle')").Scan(&zone, &style))
@@ -454,13 +476,14 @@ func runTimestamps(t *testing.T, b sqlBackend, provider *parse.Provider, db *sql
 		assert.Equal(t, map[string]map[string]int64{"at": filtertest.TimestampFacets}, got)
 	})
 
+	selected := b.filterIDs(db, schema)
 	for _, doc := range slices.Sorted(maps.Keys(filtertest.TimestampFilters)) {
 		t.Run("filter "+doc, func(t *testing.T) {
 			f, err := res.ParseFilter(doc)
 			require.NoError(t, err)
-			where, err := filter.NewSQLBuilder(schema, b.dialect).Build(f.AST())
+			ids, err := selected(t, f)
 			require.NoError(t, err)
-			ids := dbtest.QueryRows[string](t, db, "SELECT id FROM "+schema.Name+" WHERE "+where.Where+" ORDER BY id", where.Args...)
+			slices.Sort(ids)
 			assert.Equal(t, filtertest.TimestampFilters[doc], strings.Join(ids, ""))
 		})
 	}
@@ -556,8 +579,10 @@ func runExactIntegers(t *testing.T, b sqlBackend) {
 	setup := func(t *testing.T) (*parse.Resource[numericEntity], *sql.DB) {
 		t.Helper()
 		p, db := b.open(t)
-		dbtest.Exec(t, db, `CREATE TABLE numeric_entities (id BIGINT PRIMARY KEY, small BIGINT, u8 BIGINT, big BIGINT)`,
-			`INSERT INTO numeric_entities (id, big) VALUES (1, 9007199254740992), (2, 9007199254740993), (3, 9007199254740994)`)
+		integer := func(name string) sqlColumn { return column[int64](name).required() }
+		b.load(t, db, sqlTable{name: "numeric_entities", key: []string{"id"}, columns: []sqlColumn{
+			integer("id"), integer("small"), integer("u8"), integer("big"), column[float32]("ratio").required(),
+		}}, [][]any{{1, 0, 0, int64(9007199254740992), 0}, {2, 0, 0, int64(9007199254740993), 0}, {3, 0, 0, int64(9007199254740994), 0}})
 		r, err := parse.NewResource[numericEntity](p, "numeric_entities")
 		require.NoError(t, err)
 		return r, db
@@ -567,14 +592,23 @@ func runExactIntegers(t *testing.T, b sqlBackend) {
 		r, db := setup(t)
 		parsed, err := r.ParseMergePatch([]byte(`{"big": 9007199254740993}`))
 		require.NoError(t, err)
-		res, err := patch.BuildPatchSQL(parsed, b.dialect)
-		require.NoError(t, err)
-		require.Equal(t, []any{int64(9007199254740993)}, res.Args)
-		_, err = db.ExecContext(t.Context(), "UPDATE numeric_entities SET "+res.SetClause+" WHERE id = 1", res.Args...)
-		require.NoError(t, err)
-		var stored int64
-		require.NoError(t, db.QueryRowContext(t.Context(), "SELECT big FROM numeric_entities WHERE id = 1").Scan(&stored))
-		assert.Equal(t, int64(9007199254740993), stored)
+		if b.engine == Memory {
+			res, err := applyUpdate(t, r, false, parsed, parse.ByID(1), parse.Scope{})
+			require.NoError(t, err)
+			require.Len(t, res.Changed, 1)
+			assert.Equal(t, int64(9007199254740993), res.Changed[0].Big)
+		} else {
+			res, err := patch.BuildPatchSQL(parsed, b.dialect)
+			require.NoError(t, err)
+			require.Equal(t, []any{int64(9007199254740993)}, res.Args)
+			_, err = db.ExecContext(t.Context(), "UPDATE numeric_entities SET "+res.SetClause+" WHERE id = 1", res.Args...)
+			require.NoError(t, err)
+		}
+		stored := map[int64]int64{}
+		for _, row := range b.tableRows(t, db, "numeric_entities", "id", "big") {
+			stored[asInt64(t, row[0])] = asInt64(t, row[1])
+		}
+		assert.Equal(t, int64(9007199254740993), stored[1])
 	})
 
 	r, db := setup(t)
@@ -612,9 +646,9 @@ func runExactIntegers(t *testing.T, b sqlBackend) {
 		t.Run("a filter by "+name+" selects the exact row", func(t *testing.T) {
 			ast, err := parseFn()
 			require.NoError(t, err)
-			res, err := filter.NewSQLBuilder(r.FilterSchema(), b.dialect).Build(ast)
+			ids, err := b.filterIDs(db, r.FilterSchema())(t, filter.NewParsedFilter(ast))
 			require.NoError(t, err)
-			assert.Equal(t, []int64{2}, dbtest.QueryRows[int64](t, db, "SELECT id FROM numeric_entities WHERE "+res.Where, res.Args...))
+			assert.Equal(t, []string{"2"}, ids)
 		})
 	}
 }

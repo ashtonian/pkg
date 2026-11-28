@@ -5,9 +5,12 @@ package corpus
 import (
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
+	"fmt"
 	"math"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,18 +18,53 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/internal/parsetest"
 )
 
-// listWalk pages through a list query's rows, which query reads for a
-// built page and id names.
+// listWalk pages through a list's rows: page lists the page of at most
+// limit rows by sort after cursor (from the start without one), and id
+// names a row.
 type listWalk[T any] struct {
-	lq    *filter.ListQuery
-	query func(t *testing.T, res *filter.ListResult) []T
-	id    func(T) int64
+	page func(t *testing.T, sort string, limit int, cursor string) *filter.Page[T]
+	id   func(T) int64
+}
+
+// queryWalk walks the pages lq builds, query reading each built page's rows
+// (filter.NewPage).
+func queryWalk[T any](lq *filter.ListQuery, query func(t *testing.T, res *filter.ListResult) []T, id func(T) int64) listWalk[T] {
+	page := func(t *testing.T, sort string, limit int, cursor string) *filter.Page[T] {
+		t.Helper()
+		opts := []filter.ListOption{filter.ListSort(sort), filter.ListLimit(limit)}
+		if cursor != "" {
+			opts = append(opts, filter.ListCursor(cursor))
+		}
+		res, err := lq.Build(opts...)
+		require.NoError(t, err)
+		p, err := filter.NewPage(query(t, res), res.Limit, res.Cursor, func(r T, column string) (any, error) {
+			return filter.CursorValueByTag(r, "db", column)
+		})
+		require.NoError(t, err, "sort=%s, %d a page", sort, limit)
+		return p
+	}
+	walk := listWalk[T]{page: page, id: id}
+	return walk
+}
+
+// resourceWalk walks the pages res lists, as its provider lists them. res's
+// largest page must hold as many rows as a walk's.
+func resourceWalk[T any](res *parse.Resource[T], id func(T) int64) listWalk[T] {
+	page := func(t *testing.T, sort string, limit int, cursor string) *filter.Page[T] {
+		t.Helper()
+		req, err := res.ParseListInput(parse.ListInput{Sort: sort, PageSize: limit, Cursor: cursor})
+		require.NoError(t, err)
+		return listPage(t, res, req, parse.Scope{})
+	}
+	walk := listWalk[T]{page: page, id: id}
+	return walk
 }
 
 // check walks the list by sort at every page size, forwards from the first
@@ -63,16 +101,7 @@ func (w listWalk[T]) walk(t *testing.T, sort string, limit int, cursor string, b
 	var lastStart string
 	for n := 0; ; n++ {
 		require.LessOrEqual(t, n, rows, "sort=%s, %d a page: the walk does not end, pages %v", sort, limit, pages)
-		opts := []filter.ListOption{filter.ListSort(sort), filter.ListLimit(limit)}
-		if cursor != "" {
-			opts = append(opts, filter.ListCursor(cursor))
-		}
-		res, err := w.lq.Build(opts...)
-		require.NoError(t, err)
-		page, err := filter.NewPage(w.query(t, res), res.Limit, res.Cursor, func(r T, column string) (any, error) {
-			return filter.CursorValueByTag(r, "db", column)
-		})
-		require.NoError(t, err, "sort=%s, %d a page", sort, limit)
+		page := w.page(t, sort, limit, cursor)
 		ids := make([]int64, len(page.Items))
 		for i, r := range page.Items {
 			ids[i] = w.id(r)
@@ -98,13 +127,23 @@ func (w listWalk[T]) walk(t *testing.T, sort string, limit int, cursor string, b
 // declared key orders and pages by code point, as the cursor compares, on
 // every engine.
 func codedWalks(t *testing.T, engine Engine) {
-	runOn(t, engine, func(t *testing.T, b sqlBackend) { runCodedWalks(t, b.db(t), b.dialect) })
+	runOn(t, engine, runCodedWalks)
 }
 
 // sortCode is an application's codec: a struct its column holds as text.
 type sortCode struct{ s string }
 
 func (c sortCode) Value() (driver.Value, error) { return c.s, nil }
+
+// Scan reads the text a column holds, as a resource scans its rows.
+func (c *sortCode) Scan(src any) error {
+	text, ok := src.(string)
+	if !ok {
+		return fmt.Errorf("scanning a sortCode: %T is not text", src)
+	}
+	c.s = text
+	return nil
+}
 
 // codedItem sorts by a codec its storage tag declares a string.
 type codedItem struct {
@@ -116,8 +155,9 @@ type codedItem struct {
 // default collation and walks the list by the declared codec, forwards and
 // backwards at every page size, holding each walk to the order the cursor
 // comparator gives the codes (filter.CompareKeyValues): code points, not
-// the collation the column's own ORDER BY follows.
-func runCodedWalks(t *testing.T, db *sql.DB, d filter.Dialect) {
+// the collation the column's own ORDER BY follows. The Memory engine walks
+// the codec's resource.
+func runCodedWalks(t *testing.T, b sqlBackend) {
 	// Codes whose code-point order (A B a b z é) is not a collation's
 	// (a A b B é z).
 	codedSeeds := []string{"B", "a", "A", "b", "é", "z"}
@@ -126,15 +166,14 @@ func runCodedWalks(t *testing.T, db *sql.DB, d filter.Dialect) {
 	code := sorts.Fields["code"]
 	require.Equal(t, core.FieldTypeString, code.DataType, "the codec sorts as the string it declares")
 	table := code.Table
-	_, err = db.ExecContext(t.Context(), "CREATE TABLE "+table+" (id INTEGER PRIMARY KEY, code TEXT NOT NULL)")
-	require.NoError(t, err)
-	insert := "INSERT INTO " + table + " (id, code) VALUES (" + d.Placeholder(1) + ", " + d.Placeholder(2) + ")"
+	p, db := b.open(t)
 	ids := make([]int64, len(codedSeeds))
+	rows := make([][]any, len(codedSeeds))
 	for i, s := range codedSeeds {
 		ids[i] = int64(i + 1)
-		_, err = db.ExecContext(t.Context(), insert, ids[i], sortCode{s})
-		require.NoError(t, err)
+		rows[i] = []any{ids[i], sortCode{s}}
 	}
+	b.load(t, db, sqlTable{name: table, key: []string{"id"}, columns: []sqlColumn{column[int64]("id"), column[string]("code").required()}}, rows)
 
 	key := filter.CursorKey{Name: "code", DataType: code.DataType}
 	want := slices.Clone(ids)
@@ -151,18 +190,19 @@ func runCodedWalks(t *testing.T, db *sql.DB, d filter.Dialect) {
 		},
 		Fields: map[string]*filter.FieldSchema{},
 	}
-	w := listWalk[codedItem]{
-		lq:    mustListQuery(t, schema, sorts, d),
-		query: func(t *testing.T, res *filter.ListResult) []codedItem { return queryCoded(t, db, table, res) },
-		id:    func(r codedItem) int64 { return r.ID },
+	id := func(r codedItem) int64 { return r.ID }
+	var w listWalk[codedItem]
+	if b.engine == Memory {
+		w = resourceWalk(parse.MustResource[codedItem](p, table, parse.PageSize(1, len(codedSeeds))), id)
+	} else {
+		w = queryWalk(mustListQuery(t, schema, sorts, b.dialect), func(t *testing.T, res *filter.ListResult) []codedItem { return queryCoded(t, db, table, res) }, id)
 	}
 	w.check(t, "code", want)
 	descending := slices.Clone(want)
 	slices.Reverse(descending)
 	w.check(t, "-code", descending)
 
-	_, ok := d.(filter.PostgresDialect)
-	if ok {
+	if b.engine == Postgres {
 		collated := orderedIDs(t, db, "SELECT id FROM "+table+" ORDER BY code, id")
 		assert.NotEqual(t, toInts(want), collated, "the column's own collation orders the codes otherwise")
 	}
@@ -444,11 +484,8 @@ func allIDs(s scoreDB) []int64 {
 func runNonFiniteWalks(t *testing.T, s scoreDB, nullable bool, want []int64) {
 	t.Helper()
 	lq := scoreList(t, s, nullable, want)
-	w := listWalk[scoreRow]{
-		lq:    lq,
-		query: func(t *testing.T, res *filter.ListResult) []scoreRow { return queryScores(t, s.db, res) },
-		id:    func(r scoreRow) int64 { return r.ID },
-	}
+	w := queryWalk(lq, func(t *testing.T, res *filter.ListResult) []scoreRow { return queryScores(t, s.db, res) },
+		func(r scoreRow) int64 { return r.ID })
 	w.check(t, "score", want)
 	descending := slices.Clone(want)
 	slices.Reverse(descending)
@@ -482,7 +519,9 @@ func runNonFiniteFilters(t *testing.T, s scoreDB) {
 		}
 		var evaluated []int64
 		for _, r := range stored {
-			truth, err := filter.Evaluate(node, filter.ColumnRow(func(column string) (any, bool) { return r.Score, column == "scores.score" }))
+			truth, err := filter.Evaluate(node, filter.ColumnRow(func(column filter.ColumnRef) (any, bool) {
+				return r.Score, column == filter.ColumnRef{Table: "scores", Column: "score"}
+			}))
 			require.NoError(t, err, "$%s %v over %d", node.Op, node.Value, r.ID)
 			if truth == filter.True {
 				evaluated = append(evaluated, r.ID)
@@ -607,19 +646,65 @@ func sqliteMeasureOrder() []int64 {
 	return order
 }
 
-// measureDB is a database a document column's float path pages on.
+// measureDB is a database a document column's float path pages on: b's,
+// with p the provider on it.
 type measureDB struct {
+	b       sqlBackend
+	p       *parse.Provider
 	db      *sql.DB
 	dialect filter.Dialect
-	docType string
 }
 
 // measuresOn is a fresh database of b whose measures document column is
 // declared as b declares a document.
 func measuresOn(t *testing.T, b sqlBackend) measureDB {
 	t.Helper()
-	m := measureDB{db: b.db(t), dialect: b.dialect, docType: b.columnType(core.TypeInfo{Type: core.FieldTypeJSON})}
+	p, db := b.open(t)
+	m := measureDB{b: b, p: p, db: db, dialect: b.dialect}
 	return m
+}
+
+// measureItem is a measure as a resource lists it, its doc's paths
+// measureSchema's: the Memory engine, which compiles no list, walks it.
+type measureItem struct {
+	ID  int64           `json:"id"  db:"id"`
+	Doc json.RawMessage `json:"doc" db:"doc" paths:"n:float:filter+sort+facet;ns:[]float:filter+facet"`
+}
+
+// measureWalk walks the stored measures by the float path n, whose sort
+// is named n on a SQL engine and doc.n on the Memory engine's resource.
+func measureWalk(t *testing.T, m measureDB) (w listWalk[parsetest.MeasureRow], n string) {
+	t.Helper()
+	id := func(r parsetest.MeasureRow) int64 { return r.ID }
+	if m.b.engine != Memory {
+		lq := mustListQuery(t, measureSchema(), parsetest.MeasureSorts(), m.dialect)
+		return queryWalk(lq, func(t *testing.T, res *filter.ListResult) []parsetest.MeasureRow { return queryMeasures(t, m.db, res) }, id), "n"
+	}
+	items := resourceWalk(parse.MustResource[measureItem](m.p, "measures", parse.PageSize(1, len(parsetest.MeasureSeeds()))),
+		func(r measureItem) int64 { return r.ID })
+	page := func(t *testing.T, sort string, limit int, cursor string) *filter.Page[parsetest.MeasureRow] {
+		t.Helper()
+		p := items.page(t, sort, limit, cursor)
+		rows := make([]parsetest.MeasureRow, len(p.Items))
+		for i, it := range p.Items {
+			rows[i] = parsetest.MeasureRow{ID: it.ID, Doc: string(it.Doc)}
+		}
+		measured := &filter.Page[parsetest.MeasureRow]{Items: rows, PageInfo: p.PageInfo}
+		return measured
+	}
+	walk := listWalk[parsetest.MeasureRow]{page: page, id: id}
+	return walk, "doc.n"
+}
+
+// storedMeasures are the measures as the database reads them back: the
+// seeds as the Memory engine, which reads nothing back outside a list,
+// was given them.
+func storedMeasures(t *testing.T, m measureDB) []parsetest.MeasureRow {
+	t.Helper()
+	if m.b.engine == Memory {
+		return parsetest.MeasureSeeds()
+	}
+	return queryMeasures(t, m.db, &filter.ListResult{Fragment: "ORDER BY measures.id"})
 }
 
 // runPathNumberWalks pages the seeds by the float path n in both
@@ -629,28 +714,24 @@ func measuresOn(t *testing.T, b sqlBackend) measureDB {
 func runPathNumberWalks(t *testing.T, m measureDB, want []int64) {
 	t.Helper()
 	storeMeasures(t, m)
-	lq := mustListQuery(t, measureSchema(), parsetest.MeasureSorts(), m.dialect)
-	w := listWalk[parsetest.MeasureRow]{
-		lq:    lq,
-		query: func(t *testing.T, res *filter.ListResult) []parsetest.MeasureRow { return queryMeasures(t, m.db, res) },
-		id:    func(r parsetest.MeasureRow) int64 { return r.ID },
-	}
-	w.check(t, "n", want)
+	w, n := measureWalk(t, m)
+	w.check(t, n, want)
 	descending := slices.Clone(want)
 	slices.Reverse(descending)
-	w.check(t, "-n", descending)
+	w.check(t, "-"+n, descending)
 }
 
 // storeMeasures stores the seeds in a measures table.
 func storeMeasures(t *testing.T, m measureDB) {
 	t.Helper()
-	_, err := m.db.ExecContext(t.Context(), "CREATE TABLE measures (id INTEGER PRIMARY KEY, doc "+m.docType+" NOT NULL)")
-	require.NoError(t, err)
-	insert := "INSERT INTO measures (id, doc) VALUES (" + m.dialect.Placeholder(1) + ", " + m.dialect.Placeholder(2) + ")"
-	for _, seed := range parsetest.MeasureSeeds() {
-		_, err = m.db.ExecContext(t.Context(), insert, seed.ID, seed.Doc)
-		require.NoError(t, err)
+	seeds := parsetest.MeasureSeeds()
+	rows := make([][]any, len(seeds))
+	for i, seed := range seeds {
+		rows[i] = []any{seed.ID, seed.Doc}
 	}
+	m.b.load(t, m.db, sqlTable{name: "measures", key: []string{"id"}, columns: []sqlColumn{
+		column[int64]("id"), column[json.RawMessage]("doc").required(),
+	}}, rows)
 }
 
 // measureSchema filters and facets on the float path n and the float array
@@ -687,25 +768,22 @@ func queryMeasures(t *testing.T, db *sql.DB, res *filter.ListResult) []parsetest
 }
 
 // runPathNumberFilters holds filter.Evaluate to the database over the
-// seeds: each filter is True on exactly the rows its statement selects.
+// seeds: each filter is True on exactly the rows its statement selects, or
+// on the Memory engine its list.
 func runPathNumberFilters(t *testing.T, m measureDB, filters []string) {
 	t.Helper()
 	storeMeasures(t, m)
 	schema := measureSchema()
-	lq := mustListQuery(t, schema, parsetest.MeasureSorts(), m.dialect)
-	stored := queryMeasures(t, m.db, &filter.ListResult{Fragment: "ORDER BY measures.id"})
+	stored := storedMeasures(t, m)
 	for _, q := range filters {
 		ast, err := filter.NewFilterParser(schema, nil).Parse(q)
 		require.NoError(t, err, q)
-		res, err := lq.Build(filter.ListFilterAST(ast), filter.ListLimit(len(parsetest.MeasureSeeds())))
-		require.NoError(t, err, q)
-		var selected []int64
-		for _, r := range queryMeasures(t, m.db, res) {
-			selected = append(selected, r.ID)
-		}
+		selected := selectedMeasures(t, m, schema, ast)
 		var evaluated []int64
 		for _, r := range stored {
-			truth, err := filter.Evaluate(ast.Root, filter.ColumnRow(func(column string) (any, bool) { return r.Doc, column == "measures.doc" }))
+			truth, err := filter.Evaluate(ast.Root, filter.ColumnRow(func(column filter.ColumnRef) (any, bool) {
+				return r.Doc, column == filter.ColumnRef{Table: "measures", Column: "doc"}
+			}))
 			require.NoError(t, err, "%s over %d", q, r.ID)
 			if truth == filter.True {
 				evaluated = append(evaluated, r.ID)
@@ -716,22 +794,44 @@ func runPathNumberFilters(t *testing.T, m measureDB, filters []string) {
 	}
 }
 
+// selectedMeasures are the ids of the measures ast selects, in id order.
+func selectedMeasures(t *testing.T, m measureDB, schema *filter.ResourceSchema, ast *filter.FilterAST) []int64 {
+	t.Helper()
+	var selected []int64
+	if m.b.engine == Memory {
+		ids, err := m.b.filterIDs(m.db, schema)(t, filter.NewParsedFilter(ast))
+		require.NoError(t, err)
+		for _, id := range ids {
+			n, err := strconv.ParseInt(id, 10, 64)
+			require.NoError(t, err)
+			selected = append(selected, n)
+		}
+		slices.Sort(selected)
+		return selected
+	}
+	lq := mustListQuery(t, schema, parsetest.MeasureSorts(), m.dialect)
+	res, err := lq.Build(filter.ListFilterAST(ast), filter.ListLimit(len(parsetest.MeasureSeeds())))
+	require.NoError(t, err)
+	for _, r := range queryMeasures(t, m.db, res) {
+		selected = append(selected, r.ID)
+	}
+	return selected
+}
+
 // runPathNumberFacets holds the terms facets of n and ns to the statement's
-// count and to Go's count of the rows the database reads back
-// (filter.FacetKeys, filter.FacetBuckets): a member beyond the bound is in
-// no bucket.
+// count, or the Memory engine's, and to Go's count of the rows the database
+// reads back (filter.FacetKeys, filter.FacetBuckets): a member beyond the
+// bound is in no bucket.
 func runPathNumberFacets(t *testing.T, m measureDB) {
 	t.Helper()
 	storeMeasures(t, m)
 	schema := measureSchema()
-	stored := queryMeasures(t, m.db, &filter.ListResult{Fragment: "ORDER BY measures.id"})
+	stored := storedMeasures(t, m)
 	limit := len(parsetest.MeasureSeeds())
 	for _, name := range []string{"n", "ns"} {
 		t.Run(name, func(t *testing.T) {
 			field := schema.Fields[name]
-			q, err := filter.BuildFacetQuery(schema, m.dialect, "1=1", nil, []filter.FacetRequest{{Field: name, Limit: limit}})
-			require.NoError(t, err)
-			results := queryFacets(t, m.db, q.SQL, q.Args...)
+			results := facetQuery(t, m.db, m.dialect, schema, []filter.FacetRequest{{Field: name, Limit: limit}})
 			require.Len(t, results, 1)
 
 			counts := map[string]int64{}
@@ -800,10 +900,12 @@ func visitTable() sqlTable {
 // runNullableWrappers holds a database and Evaluate to one meaning of a
 // wrapper column: a range compares its value, $null its NULL, a sort orders
 // NULL greatest and a keyset walk visits every row once, and the soft-delete
-// floor admits exactly the rows whose deleted_at is NULL.
+// floor admits exactly the rows whose deleted_at is NULL. A SQL engine runs
+// the list statements ListQuery compiles; the Memory engine lists the
+// visits' resource.
 func runNullableWrappers(t *testing.T, b sqlBackend) {
 	t.Helper()
-	db := b.db(t)
+	p, db := b.open(t)
 	visits := seededVisits()
 	b.load(t, db, visitTable(), recordRows(t, visitTable(), visits))
 
@@ -817,8 +919,8 @@ func runNullableWrappers(t *testing.T, b sqlBackend) {
 	assert.Equal(t, core.FieldTypeTimestamp, fs.Fields["seen_at"].DataType)
 	assert.Equal(t, reflect.Int64, ss.Fields["score"].NumberKind, "a sort key ranges as its value's kind")
 	assert.True(t, ss.Fields["score"].Nullable)
-	lq := mustListQuery(t, fs, ss, b.dialect)
 	floor := filter.ComposeConstraints(filter.RepositoryScope{DeleteColumn: "deleted_at"}, nil, nil)
+	list := visitLists(t, b, p, db, fs, ss, len(visits))
 
 	t.Run("filters", func(t *testing.T) {
 		for _, tt := range []struct {
@@ -837,13 +939,7 @@ func runNullableWrappers(t *testing.T, b sqlBackend) {
 			{"the live rows scoring above", `{"score":{"$gt":3}}`, floor, "af"},
 		} {
 			t.Run(tt.name, func(t *testing.T) {
-				opts := []filter.ListOption{filter.ListFilter(tt.filter), filter.ListSort("id"), filter.ListLimit(len(visits))}
-				if tt.policy != nil {
-					opts = append(opts, filter.ListPolicy(tt.policy))
-				}
-				res, err := lq.Build(opts...)
-				require.NoError(t, err)
-				assert.Equal(t, tt.want, visitIDs(selectVisits(t, db, res)), "SQL")
+				assert.Equal(t, tt.want, visitIDs(list(t, tt.filter, tt.policy, "id", len(visits), "").Items), "the database")
 
 				ast, err := filter.NewFilterParser(fs, nil).Parse(tt.filter)
 				require.NoError(t, err)
@@ -878,16 +974,7 @@ func runNullableWrappers(t *testing.T, b sqlBackend) {
 				var walked []visit
 				cursor := ""
 				for range len(visits) + 1 {
-					opts := []filter.ListOption{filter.ListSort(tt.sort), filter.ListLimit(2)}
-					if cursor != "" {
-						opts = append(opts, filter.ListCursor(cursor))
-					}
-					res, err := lq.Build(opts...)
-					require.NoError(t, err)
-					page, err := filter.NewPage(selectVisits(t, db, res), res.Limit, res.Cursor, func(v visit, column string) (any, error) {
-						return filter.CursorValueByTag(v, "db", column)
-					})
-					require.NoError(t, err)
+					page := list(t, "", nil, tt.sort, 2, cursor)
 					walked = append(walked, page.Items...)
 					if !page.PageInfo.HasNextPage {
 						break
@@ -898,6 +985,44 @@ func runNullableWrappers(t *testing.T, b sqlBackend) {
 			})
 		}
 	})
+}
+
+// visitList lists the visits filter and policy select, by sort, at most
+// limit after cursor (from the start without one).
+type visitList func(t *testing.T, filter string, policy *filter.PolicyConstraints, sort string, limit int, cursor string) *filter.Page[visit]
+
+// visitLists lists the visits on db: through the statements ListQuery
+// compiles of fs and ss on a SQL engine, through a resource of visit on
+// p, at most rows a page, on the Memory engine.
+func visitLists(t *testing.T, b sqlBackend, p *parse.Provider, db *sql.DB, fs *filter.ResourceSchema, ss *filter.SortSchema, rows int) visitList {
+	t.Helper()
+	if b.engine == Memory {
+		visits := parse.MustResource[visit](p, "visits", parse.PageSize(1, rows))
+		return func(t *testing.T, f string, policy *filter.PolicyConstraints, sort string, limit int, cursor string) *filter.Page[visit] {
+			t.Helper()
+			req, err := visits.ParseListInput(parse.ListInput{Filter: f, Sort: sort, PageSize: limit, Cursor: cursor})
+			require.NoError(t, err)
+			return listPage(t, visits, req, parse.Scope{Policy: policy})
+		}
+	}
+	lq := mustListQuery(t, fs, ss, b.dialect)
+	return func(t *testing.T, f string, policy *filter.PolicyConstraints, sort string, limit int, cursor string) *filter.Page[visit] {
+		t.Helper()
+		opts := []filter.ListOption{filter.ListFilter(f), filter.ListSort(sort), filter.ListLimit(limit)}
+		if cursor != "" {
+			opts = append(opts, filter.ListCursor(cursor))
+		}
+		if policy != nil {
+			opts = append(opts, filter.ListPolicy(policy))
+		}
+		res, err := lq.Build(opts...)
+		require.NoError(t, err)
+		page, err := filter.NewPage(selectVisits(t, db, res), res.Limit, res.Cursor, func(v visit, column string) (any, error) {
+			return filter.CursorValueByTag(v, "db", column)
+		})
+		require.NoError(t, err)
+		return page
+	}
 }
 
 // selectVisits runs res over the visits table.
@@ -918,10 +1043,10 @@ func selectVisits(t *testing.T, db *sql.DB, res *filter.ListResult) []visit {
 
 // visitRow is v as an in-memory store holds it: its Go values by column.
 func visitRow(v visit) filter.ColumnRow {
-	columns := map[string]any{"visits.id": v.ID, "visits.score": v.Score, "visits.seen_at": v.SeenAt, "visits.deleted_at": v.DeletedAt}
-	return func(column string) (any, bool) {
-		value, ok := columns[column]
-		return value, ok
+	columns := map[string]any{"id": v.ID, "score": v.Score, "seen_at": v.SeenAt, "deleted_at": v.DeletedAt}
+	return func(column filter.ColumnRef) (any, bool) {
+		value, ok := columns[column.Column]
+		return value, ok && column.Table == "visits"
 	}
 }
 

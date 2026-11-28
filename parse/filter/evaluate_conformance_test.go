@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -200,7 +199,7 @@ func (o ownElements) eval(n *filter.FilterNode, row filter.Row) (filter.Truth, e
 // array's as row reads them.
 func (o ownElements) elements(f *filter.FieldSchema, row filter.Row) ([]any, error) {
 	if f.Elements != nil {
-		column := f.Table + "." + f.Column
+		column := f.ColumnRef()
 		doc, ok := o.stored(column)
 		if !ok {
 			return nil, fmt.Errorf("field %s: no column %s", f.ExternalName, column)
@@ -315,14 +314,10 @@ func structRow(record any) filter.ColumnRow {
 	return byColumn(columns)
 }
 
-// byColumn reads columns by name; generated schemas qualify a column with
-// its table (records.name).
+// byColumn reads columns by name, whatever table qualifies them.
 func byColumn(columns map[string]any) filter.ColumnRow {
-	return func(expr string) (any, bool) {
-		if _, column, qualified := strings.Cut(expr, "."); qualified {
-			expr = column
-		}
-		v, ok := columns[expr]
+	return func(column filter.ColumnRef) (any, bool) {
+		v, ok := columns[column.Column]
 		return v, ok
 	}
 }

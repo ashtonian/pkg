@@ -2,6 +2,7 @@ package filter
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -11,17 +12,30 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
-// defaultTermsLimit caps a terms facet's bucket count when neither
+// DefaultTermsLimit caps a terms facet's bucket count when neither
 // FacetRequest.Limit nor FacetSchema.Limit is set.
-const defaultTermsLimit = 50
+const DefaultTermsLimit = 50
 
 // FacetRequest names a field to facet plus an optional per-request limit.
 //
 // Limit resolution: FacetRequest.Limit > 0 → that. Else FieldSchema.FacetSchema.Limit > 0 → that.
-// Else defaultTermsLimit (50). Range facets ignore Limit (bucket count is fixed by FacetSchema.Ranges).
+// Else DefaultTermsLimit (50). Range facets ignore Limit (bucket count is fixed by FacetSchema.Ranges).
 type FacetRequest struct {
 	Field string
 	Limit int
+}
+
+// TermsLimit is the bucket count a terms or relation facet on a field
+// configured by cfg keeps for r: r's Limit, else cfg's, else
+// DefaultTermsLimit.
+func (r FacetRequest) TermsLimit(cfg *FacetSchema) int {
+	if r.Limit > 0 {
+		return r.Limit
+	}
+	if cfg != nil && cfg.Limit > 0 {
+		return cfg.Limit
+	}
+	return DefaultTermsLimit
 }
 
 // BuildFacetQueryOption configures BuildFacetQuery behavior.
@@ -137,22 +151,17 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 	// on, in first use; each key's columns are projected under its aliases.
 	var ownerKeys [][]string
 	for _, req := range facets {
-		f, ok := schema.Fields[req.Field]
-		if !ok || !f.Facetable {
-			return FacetQuery{}, core.NewError(ECodeUnknownField, fmt.Sprintf("field '%s' is not facetable", req.Field),
-				core.WithField(req.Field))
+		f, fcfg, err := facetField(schema, req)
+		if err != nil {
+			_, coded := errors.AsType[*core.ParseError](err)
+			if coded {
+				return FacetQuery{}, err
+			}
+			return FacetQuery{}, fmt.Errorf("BuildFacetQuery: %w", err)
 		}
 		f = columnExprs(exprs).field(f)
-		fcfg := f.facetConfig()
-		if err := checkFacet(f, fcfg); err != nil {
-			return FacetQuery{}, fmt.Errorf("BuildFacetQuery: facet %q: %w", req.Field, err)
-		}
 		var owner []string
 		if f.Relation != nil {
-			err := f.Relation.Check()
-			if err != nil {
-				return FacetQuery{}, fmt.Errorf("BuildFacetQuery: facet %q: %w", req.Field, err)
-			}
 			key := f.Relation.OwnerColumns()
 			i := slices.IndexFunc(ownerKeys, func(k []string) bool { return slices.Equal(k, key) })
 			if i < 0 {
@@ -287,13 +296,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 		b.WriteString("' AS facet_field, ")
 
 		if m.field.Relation != nil || m.cfg.Type == FacetTerms {
-			limit := m.req.Limit
-			if limit <= 0 {
-				limit = m.cfg.Limit
-			}
-			if limit <= 0 {
-				limit = defaultTermsLimit
-			}
+			limit := m.req.TermsLimit(m.cfg)
 			// The branch's buckets: k, c and, where the key's text does not
 			// order the values, o, which does.
 			var in strings.Builder

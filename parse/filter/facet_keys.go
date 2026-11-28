@@ -26,9 +26,9 @@ func FacetKeys(v any, f *FieldSchema) ([]string, error) {
 		return pathFacetKeys(v, f)
 	}
 	if f.DataType != core.FieldTypeArray {
-		key, ok, err := valueFacetKey(v, f.DataType, f.NumberKind)
+		key, ok, err := columnFacetKey(v, f)
 		if err != nil || !ok {
-			return nil, facetKeyError(f, err)
+			return nil, err
 		}
 		return []string{key}, nil
 	}
@@ -124,6 +124,13 @@ func valueFacetKey(v any, t core.FieldType, kind reflect.Kind) (string, bool, er
 		return "", false, err
 	}
 	return key, true, nil
+}
+
+// columnFacetKey is the facet key of v, the value of f's column of a
+// scalar type, and false for none (NULL, or a non-finite number).
+func columnFacetKey(v any, f *FieldSchema) (string, bool, error) {
+	key, ok, err := valueFacetKey(v, f.DataType, f.NumberKind)
+	return key, ok, facetKeyError(f, err)
 }
 
 func facetKeyError(f *FieldSchema, err error) error {

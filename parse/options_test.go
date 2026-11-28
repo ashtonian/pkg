@@ -783,9 +783,14 @@ func TestColumnStorage_DeclaredJSONControlsDriverValues(t *testing.T) {
 			require.NoError(t, err)
 			plan, err := r.BuildUpdate(p, parse.ByID("one"), parse.Scope{})
 			require.NoError(t, err)
-			if declared {
+			switch {
+			case declared:
 				assert.Contains(t, plan.Owner.Args, `"200"`)
-			} else {
+			case provider == onSQLite:
+				// SQLite binds what the row stores (core.StorageValue): the
+				// Valuer's value, which database/sql would pass on as it is.
+				assert.Contains(t, plan.Owner.Args, "200")
+			default:
 				assert.Contains(t, plan.Owner.Args, columnStorageAmount{Text: "200"})
 			}
 		}

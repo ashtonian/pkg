@@ -4,6 +4,7 @@ package core_test
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -42,6 +43,41 @@ func TestNormalizeScalar_TimestampsAreCanonical(t *testing.T) {
 	}
 }
 
+// Text already in the canonical form is read without being parsed, so
+// each is checked against what parsing and formatting it again gives.
+func TestNormalizeScalar_CanonicalTimestampsNormalizeToThemselves(t *testing.T) {
+	for _, in := range []string{
+		"0001-01-01T00:00:00.000000000Z",
+		"9999-12-31T23:59:59.999999999Z",
+		"2024-02-29T12:30:45.000000001Z", // a leap year
+		"2000-02-29T00:00:00.000000000Z", // a leap year divisible by 400
+		"2026-04-30T23:59:59.500000000Z",
+		"2026-01-31T00:00:00.000000000Z",
+	} {
+		parsed, err := time.Parse(time.RFC3339Nano, in)
+		require.NoError(t, err, in)
+		require.Equal(t, in, core.FormatTimestamp(parsed), in)
+		got, err := core.NormalizeScalar(core.FieldTypeTimestamp, reflect.Invalid, in)
+		require.NoError(t, err, in)
+		assert.Equal(t, in, got)
+	}
+}
+
+// A canonical text's last day of each month agrees with time.Parse's,
+// leap years and their century exceptions included.
+func TestNormalizeScalar_CanonicalTimestampsEndEachMonthAsTimeParseDoes(t *testing.T) {
+	for _, year := range []int{1, 4, 100, 400, 1900, 2000, 2023, 2024, 2100, 9996, 9999} {
+		for month := 1; month <= 12; month++ {
+			for day := 28; day <= 32; day++ {
+				in := fmt.Sprintf("%04d-%02d-%02dT00:00:00.000000000Z", year, month, day)
+				_, parseErr := time.Parse(time.RFC3339Nano, in)
+				_, err := core.NormalizeScalar(core.FieldTypeTimestamp, reflect.Invalid, in)
+				assert.Equal(t, parseErr == nil, err == nil, "%s: time.Parse: %v, NormalizeScalar: %v", in, parseErr, err)
+			}
+		}
+	}
+}
+
 func TestNormalizeScalar_RefusesTimestampsOutsideRFC3339AndTheFourDigitYears(t *testing.T) {
 	inputs := []any{
 		"9999-12-31T23:59:59-01:00",       // UTC year 10000
@@ -55,6 +91,19 @@ func TestNormalizeScalar_RefusesTimestampsOutsideRFC3339AndTheFourDigitYears(t *
 		"2025-01-01T00:00:00.Z",
 		"2025-01-01T00:00:00",
 		"2025-01-01t00:00:00z",
+		"2025-02-29T00:00:00.000000000Z", // the canonical width, a day out of range
+		"2025-01-01T24:00:00.000000000Z", // the canonical width, an hour out of range
+		"0000-01-01T00:00:00.000000000Z", // the canonical width, year zero
+		"2025-00-01T00:00:00.000000000Z", // the canonical width, month zero
+		"2025-13-01T00:00:00.000000000Z", // the canonical width, a month out of range
+		"2025-01-00T00:00:00.000000000Z", // the canonical width, day zero
+		"2025-04-31T00:00:00.000000000Z", // the canonical width, a day April does not have
+		"2100-02-29T00:00:00.000000000Z", // the canonical width, a century that is no leap year
+		"2025-01-01T00:60:00.000000000Z", // the canonical width, a minute out of range
+		"2025-01-01T00:00:60.000000000Z", // the canonical width, a leap second
+		"2025-01-01T00:00:00.00000000aZ", // the canonical width, a letter in the fraction
+		"2025-01-01T00:00:00.000000000z", // the canonical width, a lowercase zone
+		"2025-01-01 00:00:00.000000000Z", // the canonical width, a space for the T
 		time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC),
 		time.Date(0, 12, 31, 23, 0, 0, 0, time.UTC),
 	}

@@ -14,7 +14,8 @@
       "components": [
         "parse",
         "parse/parsepgx",
-        "parse/parsesql"
+        "parse/parsesql",
+        "parse/parsememory"
       ],
       "merge": false
     }
@@ -28,7 +29,8 @@
         "parse/examples/server",
         "parse/client",
         "parse/parsepgx",
-        "parse/parsesql"
+        "parse/parsesql",
+        "parse/parsememory"
       ],
       "extra-files": [
         {
@@ -57,6 +59,19 @@
     },
     "parse/parsesql": {
       "component": "parse/parsesql",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "go.mod"
+        },
+        {
+          "type": "generic",
+          "path": "contract.go"
+        }
+      ]
+    },
+    "parse/parsememory": {
+      "component": "parse/parsememory",
       "extra-files": [
         {
           "type": "generic",

@@ -242,11 +242,88 @@ func cursorTextValue(v encoding.TextMarshaler) (any, error) {
 // by code point, false before true. Direction is not applied. Two values
 // k's type cannot compare are an error, never ordered by their text.
 func CompareKeyValues(k CursorKey, a, b any) (int, error) {
-	c, err := core.CompareCanonical(k.valueType(), a, b)
+	return compareKeyValues(k.Name, k.valueType(), a, b)
+}
+
+func compareKeyValues(name string, t core.TypeInfo, a, b any) (int, error) {
+	c, err := core.CompareCanonical(t, a, b)
 	if err != nil {
-		return 0, fmt.Errorf("comparing values of key %q: %w", k.Name, err)
+		return 0, fmt.Errorf("comparing values of key %q: %w", name, err)
 	}
 	return c, nil
+}
+
+// KeyValueOrder orders the values of one key as CompareKeyValues does,
+// reading each value once: a row's through KeyValue (Read), a cursor's as
+// ValidateCursor left it (ReadCursor). CompareKeyValues reads both values
+// to their type's on every comparison, which for a timestamp, a date or a
+// UUID parses both texts; a value read here is held as its canonical
+// text, which orders by code point as its type's values do
+// (core.TextOrdered), so a walk that compares each row many times reads it
+// once. A number, a boolean and a value of no scalar type are compared as
+// CompareKeyValues compares them.
+type KeyValueOrder struct {
+	key CursorKey
+	// t is the type of the key's values (CursorKey.valueType).
+	t      core.TypeInfo
+	byText bool
+}
+
+// NewKeyValueOrder is the order of k's values.
+func NewKeyValueOrder(k CursorKey) *KeyValueOrder {
+	t := k.valueType()
+	order := &KeyValueOrder{key: k, t: t, byText: core.TextOrdered(t.Type)}
+	return order
+}
+
+// SortValue is one value of a key, read by its KeyValueOrder.
+type SortValue struct {
+	value any
+	// text is value's canonical text when the order compares it by code
+	// point.
+	text   string
+	byText bool
+}
+
+// Value is the key value (KeyValue) v holds.
+func (v SortValue) Value() any { return v.value }
+
+// Null reports NULL: a NULL column, or a path member that is absent.
+func (v SortValue) Null() bool { return v.value == nil }
+
+// Read is raw, a row's value of the key's column, read to the key's value
+// (KeyValue).
+func (o *KeyValueOrder) Read(raw any) (SortValue, error) {
+	v, err := KeyValue(o.key, raw)
+	if err != nil {
+		return SortValue{}, err
+	}
+	return o.held(v), nil
+}
+
+// ReadCursor is v, the value a validated cursor (ValidateCursor) holds for
+// the key, read as Read reads a row's.
+func (o *KeyValueOrder) ReadCursor(v any) (SortValue, error) {
+	held, err := cursorKeyValue(o.key, v)
+	if err != nil {
+		return SortValue{}, fmt.Errorf("cursor value for key %q: %w", o.key.Name, err)
+	}
+	return o.held(held), nil
+}
+
+func (o *KeyValueOrder) held(v any) SortValue {
+	text, isText := v.(string)
+	sv := SortValue{value: v, text: text, byText: o.byText && isText}
+	return sv
+}
+
+// Compare orders a and b, two values o read, as CompareKeyValues orders
+// the values they hold.
+func (o *KeyValueOrder) Compare(a, b SortValue) (int, error) {
+	if a.byText && b.byText {
+		return strings.Compare(a.text, b.text), nil
+	}
+	return compareKeyValues(o.key.Name, o.t, a.value, b.value)
 }
 
 // numberPath reports an int or float path key, whose values are its

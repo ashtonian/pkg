@@ -23,7 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/config"
-	"github.com/ashtonian/pkg/parse/parseprovider"
+	"github.com/ashtonian/pkg/parse/parsememory"
 )
 
 // backend is a database provider the integration tests serve the products
@@ -34,15 +34,19 @@ type backend struct {
 	config func(t *testing.T) dbSettings
 }
 
-// The backends: SQLite in memory, and PostgreSQL on a fresh schema of the
-// server PARSE_POSTGRES_DSN names. Without that variable the PostgreSQL
-// subtests skip, unless PARSE_REQUIRE_PG=1 fails them instead.
+// The backends: SQLite in memory, PostgreSQL on a fresh schema of the
+// server PARSE_POSTGRES_DSN names, and the memory provider. Without that
+// variable the PostgreSQL subtests skip, unless PARSE_REQUIRE_PG=1 fails
+// them instead.
 var backends = []backend{
 	{name: "sqlite", config: func(t *testing.T) dbSettings {
 		return dbSettingsOf(t, map[string]any{})
 	}},
 	{name: "postgres", config: func(t *testing.T) dbSettings {
 		return dbSettingsOf(t, map[string]any{"provider": "postgres", "postgres": map[string]any{"dsn": freshSchema(t)}})
+	}},
+	{name: "memory", config: func(t *testing.T) dbSettings {
+		return dbSettingsOf(t, map[string]any{"provider": "memory"})
 	}},
 }
 
@@ -100,7 +104,7 @@ func freshSchema(t *testing.T) string {
 }
 
 // open opens a fresh, seeded database, closed once the test ends.
-func (b backend) open(t *testing.T) parseprovider.Database {
+func (b backend) open(t *testing.T) *store {
 	t.Helper()
 	return openAt(t, b.config(t))
 }
@@ -113,7 +117,7 @@ func (b backend) server(t *testing.T) *httptest.Server {
 
 // openAt opens the database cfg names, seeded, and closes it once the test
 // ends; closing it sooner is harmless, as Close may be called again.
-func openAt(t *testing.T, cfg dbSettings) parseprovider.Database {
+func openAt(t *testing.T, cfg dbSettings) *store {
 	t.Helper()
 	db, err := openDB(t.Context(), cfg)
 	require.NoError(t, err)
@@ -122,9 +126,9 @@ func openAt(t *testing.T, cfg dbSettings) parseprovider.Database {
 }
 
 // serverOn serves the routes on db, logging nothing.
-func serverOn(t *testing.T, db database) *httptest.Server {
+func serverOn(t *testing.T, db *store) *httptest.Server {
 	t.Helper()
-	h, err := newServer(db, slog.New(slog.DiscardHandler), 5*time.Second, rand.Text)
+	h, err := newServer(db, db.products, slog.New(slog.DiscardHandler), 5*time.Second, rand.Text)
 	require.NoError(t, err)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
@@ -132,12 +136,17 @@ func serverOn(t *testing.T, db database) *httptest.Server {
 }
 
 // The seed keeps what a database already holds: opened again, a database
-// that persists keeps a product's change and holds each product once.
+// that persists keeps a product's change and holds each product once. The
+// memory provider's database is new on every open, seeded afresh.
 func TestOpenDB_SeedKeepsWhatTheDatabaseHolds(t *testing.T) {
 	eachBackend(t, func(t *testing.T, b backend) {
 		cfg := b.config(t)
 		if cfg.Provider == "sqlite" {
 			cfg.SQLite.DSN = filepath.Join(t.TempDir(), "products.db")
+		}
+		price := 1.0
+		if cfg.Provider == parsememory.Name {
+			price = seedProducts[0].price
 		}
 		db := openAt(t, cfg)
 		srv := serverOn(t, db)
@@ -152,7 +161,7 @@ func TestOpenDB_SeedKeepsWhatTheDatabaseHolds(t *testing.T) {
 		var p page
 		require.Equal(t, http.StatusOK, call(t, srv, http.MethodGet, "/api/products?id=p01", "", &p))
 		require.Len(t, p.Items, 1)
-		assert.InDelta(t, 1.0, p.Items[0].Price, 0, "the change is kept")
+		assert.InDelta(t, price, p.Items[0].Price, 0, "the change is kept where the database persists")
 		var all page
 		require.Equal(t, http.StatusOK, call(t, srv, http.MethodGet, "/api/products?include_total=true", "", &all))
 		require.NotNil(t, all.PageInfo.TotalCount)
@@ -166,7 +175,7 @@ func TestServer_ReadinessFollowsTheDatabase(t *testing.T) {
 	eachBackend(t, func(t *testing.T, b backend) {
 		db := b.open(t)
 		var logs strings.Builder
-		h, err := newServer(db, newLogger(&logs, slog.LevelDebug), 5*time.Second, rand.Text)
+		h, err := newServer(db, db.products, newLogger(&logs, slog.LevelDebug), 5*time.Second, rand.Text)
 		require.NoError(t, err)
 		probe := func() (int, map[string]any) {
 			rec := httptest.NewRecorder()
@@ -198,6 +207,8 @@ func TestRun_ServesOnTheConfiguredDatabase(t *testing.T) {
 		cfg := b.config(t)
 		if cfg.Provider != "sqlite" {
 			t.Setenv("PARSE_SERVER_DB_PROVIDER", cfg.Provider)
+		}
+		if cfg.Provider == "postgres" {
 			t.Setenv("PARSE_SERVER_DB_POSTGRES_DSN", cfg.Postgres.DSN)
 		}
 		out, in := io.Pipe()

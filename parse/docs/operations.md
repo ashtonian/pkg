@@ -20,11 +20,12 @@ A cursor is a position, not a permission. Always reapply authorization, soft-del
 
 ### Server errors
 
-Errors the root package returns read `parse: <table>: <operation or field>: <cause>`, naming the package and the table once; a sentinel (`ErrTenantRequired`, `ErrTenantInvalid`, `ErrKeyInvalid`, `ErrNoTarget`, `ErrUpdateScope`, `ErrForeign`, `ErrRegistered`, `ErrUpdateBatchTargets`) carries no prefix of its own, so branch on it with `errors.Is`. These are the server's mistakes, never the request's: none is a `core.ParseError`, and none should reach a client as a 4xx. `ErrNoSuchKey` is the exception, the request's: `ParseKey` (`parsehttp.ItemKey`) read an item route's segment that no key column can hold (`parse: devices: no key of the key columns has this text: key column id: "abc" is not a decimal integer`), so no row has that key; answer it 404.
+Errors the root package returns read `parse: <table>: <operation or field>: <cause>`, naming the package and the table once; a sentinel (`ErrTenantRequired`, `ErrTenantInvalid`, `ErrKeyInvalid`, `ErrNoTarget`, `ErrUpdateScope`, `ErrForeign`, `ErrRegistered`, `ErrUpdateBatchTargets`, `ErrUnsupported`) carries no prefix of its own, so branch on it with `errors.Is`. These are the server's mistakes, never the request's: none is a `core.ParseError`, and none should reach a client as a 4xx. `ErrNoSuchKey` is the exception, the request's: `ParseKey` (`parsehttp.ItemKey`) read an item route's segment that no key column can hold (`parse: devices: no key of the key columns has this text: key column id: "abc" is not a decimal integer`), so no row has that key; answer it 404.
 
 - `ErrCommitUnknown`, `parse: devices: commit: commit outcome unknown: …`: the PostgreSQL provider sent an update's `COMMIT` and the connection failed, or the settle timeout (`parsepgx.SettleTimeout`, `parsepgx.Config`'s `settle_timeout`) ran out, before the database answered. The update may have been applied: read the rows back before retrying a write that is not idempotent. Every other update error means nothing was written. SQLite's commit never leaves its outcome unknown.
 - `*StatementError`, for example `parse: devices: page: context deadline exceeded` or `parse: devices: owner: column name: …`: a statement the database failed, or whose rows did not scan. `Table` and `Statement` name it for a log attribute or a metric label, and the cause is the driver's error: check the request's deadline, the pool, and that the table's columns are the ones the resource reads.
 - `ErrProviderMismatch`, `parse: devices: sqlite transaction for a resource on postgres: …`: `In` was given a transaction of another provider, or `Relate` a target built on another. Build every resource of one database on its one provider.
+- `ErrUnsupported`, for example `parse: devices: the <name> provider does not support search`: the resource's provider lacks the operation (`*UnsupportedError` names the provider and the operation: SQL builders, `Query`, search, computed columns or `StampSQL`). It is refused before anything runs and never approximated. The SQL providers support every operation, so this comes only from a provider that compiles no SQL: serve the operation on a SQL provider, or leave it out of the requests that provider serves.
 - `ErrTenantRequired`, `parse: devices: a tenant-scoped resource needs Scope.Tenant`: a list (without `Scope.Governance` either) or an update of a resource with a tenant column was built without the server's tenant. Check the middleware that sets `Scope.Tenant`.
 - `ErrKeyInvalid`, for example `parse: devices: target key: not a value of the key column's type: expected string, got int`, or `update batch row 2 key: …` from `BuildUpdateBatch`: the key `ByID`, `ByIDs`, `ByKey`, `ByKeys` or a batch row named is not of the key column's Go type, or not a UUID for a UUID key, or a `parse.Key` has another number of values than the resource has key columns (`… 1 values for the 2 key columns (warehouse_id, sku)`). Convert the route parameter to the key's type before building; nothing was sent to the database.
 
@@ -66,11 +67,13 @@ The batch runs in one transaction (a savepoint inside the resource's, under
 `In`): every chunk's `Current` first, each required to hold exactly its
 chunk's keys, then every `Owner` in chunk order. A target that is missing,
 stale, inaccessible or invalid returns `ErrUpdateBatchTargets` and writes
-nothing. PostgreSQL locks the targets in key order; on SQLite the connection
-begins write transactions (`_txlock=immediate`, see
-[SQLite](integrations.md#sqlite)). The returned `UpdateResult` holds the
-owners' changed postimages in `Changed` and, with `SkipUnchanged`, the targets
-they left — which keep their stamps and counters — in `Unchanged`.
+nothing. PostgreSQL locks the targets in key order; on SQLite the batch's
+transaction holds the write lock from its start (`BEGIN IMMEDIATE`; an
+application's own transaction needs `_txlock=immediate`, see
+[SQLite configuration](../parsesql/README.md#sqlite-configuration)). The
+returned `UpdateResult` holds the owners' changed postimages in `Changed` and,
+with `SkipUnchanged`, the targets they left — which keep their stamps and
+counters — in `Unchanged`.
 
 `UpdateBatchPlan.Chunks` holds each chunk's canonical `Keys`, its `Current`
 statement and an optional `Owner` statement: what `UpdateBatch` runs, in that
@@ -109,6 +112,7 @@ Set limits deliberately for your endpoint. [Configuration](schema-configuration.
 - SQLite compares and orders decimals through `parse_decimal_key` ([`parsesql`](../parsesql/README.md#functions)), one Go call per row and expression: equality, `$ne`, `$in` and `$nin` compare the column's key with each operand's, as ranges, sorts and keyset seeks do. One expression index, the key and then the keyset's tiebreaker, serves them all: `CREATE INDEX prices_amount_key ON prices (parse_decimal_key(amount), id)`, if every connection that writes the table has the functions registered, since the index's maintenance calls them. Two keys are equal exactly where the canonical texts `parse_decimal` returns are, for every value a column holds (`TestDecimalKey_EqualExactlyWhereTextIsEqual`). A decimal path's key is `parse_decimal_key(doc -> '$.price')`. Facet terms key decimal and float values through `parse_decimal` (a `float32` field's through `parse_decimal_float32`), one call per row. An int or float path's member is a number only within 1000 digits in plain notation: a literal of at most 1000 characters with no exponent is, without a call, and `parse_decimal` reads any other, one call per such member.
 - Facets and exact counts can scan a much larger population than the returned page. Request them only when needed.
 - Includes cap targets per owner, but the caller still executes and assembles them. Avoid loading an unbounded related object graph.
+- The memory provider has no index to design: a page sorted by the table's key, with no facet and no count of a filter, seeks from its cursor in O(log n + page size); an include reads each owner's pairs by a range of the pair table's key; every other list, count and facet reads every row of the table once ([parsememory costs](../parsememory/README.md#operations)).
 
 Inspect real query plans and benchmark with production-like cardinalities. The package does not choose indexes, cache plans, pool connections, or promise a throughput figure.
 
@@ -122,7 +126,7 @@ go test -tags=integration -race ./...
 go test -tags=unit -run '^$' -bench . ./...
 ```
 
-`./...` stops at the [example server](../examples/server/), a module of its own: `make parse-example-check` from the repository root tests it against this working tree.
+`./...` stops at each provider module ([`parsesql`](../parsesql/), [`parsepgx`](../parsepgx/), [`parsememory`](../parsememory/)) and the [example server](../examples/server/), modules of their own: run the same commands from each provider's directory, or `make test-parse-unit`, `make test-parse-race` and `make test-parse-integration` from the repository root for every parse module; `make parse-example-check` tests the example against this working tree, and `make test-parse-wasip1` runs the memory provider's unit tests under `GOOS=wasip1` on wazero.
 
 `go test` writes a CPU or memory profile for one package at a time. From the repository root, `tools/bench-parse.sh <dir>` runs each package's benchmarks on its own and writes `benchmarks.txt`, `cpu.pprof` and `allocs.pprof` under `<dir>/<package directory>/`, as CI does for main; `BENCH_COUNT` and `BENCH_TIME` set `-count` (default 3) and `-benchtime` (default 1s).
 
@@ -138,9 +142,12 @@ SQLite cases run locally. PostgreSQL and PostGIS tests run against the servers `
 | [parsepgx suite](../parsepgx/parsepgx_integration_test.go) | Page walks with totals, facets and includes; tenancy; every pgx exec mode; snapshots; update rollback; guarded updates |
 | [parsepgx cancellation](../parsepgx/cancel_integration_test.go) | Concurrent relation updates of one owner; lists and updates cancelled or past their deadline mid-statement |
 | [Change predicate cases](../internal/corpus/patch.go) | `SkipUnchanged`'s comparisons per column kind, executed on SQLite and PostgreSQL |
-| [HTTP server](../examples/server/) | SQLite requests, pagination, facets, and patching |
+| [Composed update cases](../internal/corpus/patch_storage.go) | `ComposedPatch.Apply` over a row's stored values against each engine's `UPDATE`: the values written, the change verdict and the refusals, for every operation kind and column type |
+| [parsememory suite](../parsememory/parsememory_test.go) | The memory provider: declarations, writes, `max_rows`, transactions, refusals, key-ordered pages against a full pass, updates, a done context running nothing |
+| [parsememory concurrency](../parsememory/concurrency_test.go) | Under the race detector: one snapshot per list while batches commit, a failed update writing nothing, the writer's wait |
+| [HTTP server](../examples/server/) | Requests on SQLite, the memory provider and PostgreSQL: pagination, facets, and patching |
 | [Filter conformance](../filter/filtertest/) | Shared operator/type behavior for backend implementers |
-| [Database corpus](../internal/corpus/) | Every database-backed case, run by `parsesql`'s and `parsepgx`'s `TestCorpus` on their engine: executor contract, lists, keysets, facets, filters, keys, values, updates, policies, relations, tenancy, reserved identifiers, SQLite query plans, filter's builders on the database, patch SQL, string literals, PostGIS geo measures |
+| [Database corpus](../internal/corpus/) | Every database-backed case, run by `parsesql`'s and `parsepgx`'s `TestCorpus` on their engine, and by `parsememory`'s on its tables but for the cases that need SQL, each skipped naming why: executor contract, lists, keysets, facets, filters, keys, values, updates, policies, relations, tenancy, reserved identifiers, SQLite query plans, filter's builders on the database, patch SQL, string literals, PostGIS geo measures |
 | [SDK fixtures](../testdata/) | Go-to-TypeScript schema/filter/page contracts |
 
 For the SDK, run `make test-parse-sdk` from the repository root, which first checks the pinned pnpm, or run `pnpm install --frozen-lockfile`, `pnpm run check`, `pnpm run check:compat`, `pnpm run lint`, `pnpm test`, and `pnpm run build` from `sdk/ts`. Regenerate shared fixtures only when the contract change is intentional; the [SDK guide](../sdk/ts/README.md#testing) lists the commands.

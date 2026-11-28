@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -109,7 +110,12 @@ func seedRelDB(t *testing.T, b sqlBackend, db *sql.DB) {
 	widgets, tags := relWidgets(), relWidgetTags()
 	b.create(t, db, widgets, tags)
 	for _, s := range relSeeds() {
-		b.insert(t, db, widgets, []any{s.tenant, s.id, s.status})
+		// The Memory engine keys widgets by the resource's key, the id
+		// alone, so it holds tenant A's "shared" only; tenant B's pair
+		// still names it.
+		if b.engine != Memory || s.tenant == "A" {
+			b.insert(t, db, widgets, []any{s.tenant, s.id, s.status})
+		}
 		for _, tag := range s.tags {
 			b.insert(t, db, tags, []any{s.tenant, s.id, tag})
 		}
@@ -123,39 +129,65 @@ func tenantA() *filter.PolicyConstraints {
 func runRelationAlgebra(t *testing.T, b sqlBackend) {
 	t.Helper()
 	provider, db := b.open(t)
-	seedRelDB(t, b, db)
 	p := relParser(t, provider)
+	seedRelDB(t, b, db)
 
-	lq, err := p.ListQuery()
-	require.NoError(t, err)
+	var lq *filter.ListQuery
+	if b.engine != Memory {
+		var err error
+		lq, err = p.ListQuery()
+		require.NoError(t, err)
+	}
+	scope := parse.Scope{Tenant: "A", Policy: tenantA()}
+	// list lists tenant A's widgets doc admits, with their count and
+	// facets: through the resource's lists on the Memory engine, through
+	// the list query's statements on a SQL engine.
+	list := func(t *testing.T, doc string, facets ...string) ([]string, int64, map[string]map[string]int64) {
+		t.Helper()
+		if b.engine == Memory {
+			req, err := p.ParseListInput(parse.ListInput{Filter: doc, PageSize: 50, IncludeTotal: true, Facets: facets})
+			require.NoError(t, err)
+			page := listPage(t, p, req, scope)
+			require.NotNil(t, page.PageInfo.TotalCount)
+			return parsetest.ItemIDs(page.Items, func(w relWidget) string { return w.ID }), *page.PageInfo.TotalCount, pageCounts(page.Facets)
+		}
+		res, err := lq.Build(
+			filter.ListFilter(doc), filter.ListPolicy(tenantA()), filter.ListRelationScope(filter.RelationScope{Tenant: "A"}),
+			filter.ListLimit(100), filter.ListWithCount(true), filter.ListFacets(facets...))
+		require.NoError(t, err)
+		got := dbtest.QueryRows[string](t, db, "SELECT widgets.id FROM widgets "+res.Fragment, res.Args...)
+		var count int64
+		require.NoError(t, db.QueryRowContext(t.Context(), res.CountSQL, res.CountArgs...).Scan(&count))
+		var counts map[string]map[string]int64
+		if res.Facets != nil {
+			counts = bucketCounts(queryFacets(t, db, res.Facets.SQL, res.Facets.Args...))
+		}
+		return got, count, counts
+	}
 	for name, tc := range relCases() {
 		t.Run(name, func(t *testing.T) {
-			res, err := lq.Build(
-				filter.ListFilter(tc.filter), filter.ListPolicy(tenantA()), filter.ListRelationScope(filter.RelationScope{Tenant: "A"}),
-				filter.ListLimit(100), filter.ListWithCount(true))
-			require.NoError(t, err)
-			got := dbtest.QueryRows[string](t, db, "SELECT widgets.id FROM widgets "+res.Fragment, res.Args...)
+			got, count, _ := list(t, tc.filter)
 			slices.Sort(got)
 			assert.Equal(t, tc.want, got)
-
-			var count int64
-			require.NoError(t, db.QueryRowContext(t.Context(), res.CountSQL, res.CountArgs...).Scan(&count))
 			assert.Equal(t, int64(len(tc.want)), count, "count")
 		})
 	}
 
 	t.Run("missing tenant fails closed", func(t *testing.T) {
+		if b.engine == Memory {
+			req, err := p.ParseListInput(parse.ListInput{Filter: `{"tags":"red"}`})
+			require.NoError(t, err)
+			_, err = p.List(t.Context(), req, parse.Scope{Policy: tenantA()})
+			require.ErrorIs(t, err, filter.ErrRelationTenantRequired)
+			return
+		}
 		_, err := lq.Build(filter.ListFilter(`{"tags":"red"}`), filter.ListPolicy(tenantA()))
 		require.Error(t, err)
 	})
 
 	t.Run("facets count owners once", func(t *testing.T) {
 		// w1 matches through two junction rows; it must count once.
-		res, err := lq.Build(
-			filter.ListFilter(`{"tags":{"$in":["red","blue"]}}`), filter.ListPolicy(tenantA()), filter.ListRelationScope(filter.RelationScope{Tenant: "A"}),
-			filter.ListFacets("status", "tags"))
-		require.NoError(t, err)
-		got := bucketCounts(queryFacets(t, db, res.Facets.SQL, res.Facets.Args...))
+		_, _, got := list(t, `{"tags":{"$in":["red","blue"]}}`, "status", "tags")
 		assert.Equal(t, map[string]int64{"active": 2, "inactive": 1}, got["status"])
 		assert.Equal(t, map[string]int64{"red": 2, "blue": 2}, got["tags"], "relation facet stays tenant-scoped")
 	})
@@ -163,15 +195,7 @@ func runRelationAlgebra(t *testing.T, b sqlBackend) {
 	t.Run("includes stay tenant-scoped and capped per owner", func(t *testing.T) {
 		field := p.FilterSchema().Fields["tags"]
 		read := func(opts ...filter.IncludeQueryOption) map[string][]string {
-			q, err := filter.BuildIncludeQuery(field, b.dialect, []core.Key{{"w1"}, {"w2"}, {"shared"}}, append(opts, filter.WithIncludeRelationScope(filter.RelationScope{Tenant: "A"}))...)
-			require.NoError(t, err)
-			rows, err := db.QueryContext(t.Context(), q.SQL, q.Args...)
-			require.NoError(t, err, q.SQL)
-			defer func() { require.NoError(t, rows.Close()) }()
-			got, err := q.Scan(rows)
-			require.NoError(t, err)
-			require.NoError(t, rows.Err(), q.SQL)
-			return got.IDs
+			return b.includeOf(t, db, field, []core.Key{{"w1"}, {"w2"}, {"shared"}}, append(opts, filter.WithIncludeRelationScope(filter.RelationScope{Tenant: "A"}))...).IDs
 		}
 		assert.Equal(t, map[string][]string{"w1": {"blue", "red"}, "w2": {"blue"}}, read(), "B's tag on 'shared' is not A's")
 		assert.Equal(t, map[string][]string{"w1": {"blue"}, "w2": {"blue"}}, read(filter.WithMaxIncludePerRelation(1)))
@@ -225,23 +249,24 @@ func crxResources(t *testing.T, p *parse.Provider) crxGraph {
 	return g
 }
 
-// crxFixture: each key column alone ties across stock rows — warehouse 1
-// holds SKUs a and b, SKU a is in warehouses 1 and 2 — so only the whole
-// key relates a row. Move 13 names stock that does not exist.
-func crxFixture() []string {
-	stmts := []string{
-		`CREATE TABLE crx_bins (id BIGINT PRIMARY KEY, name TEXT NOT NULL)`,
-		`CREATE TABLE crx_stock (warehouse_id BIGINT NOT NULL, sku TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (warehouse_id, sku))`,
-		`CREATE TABLE crx_moves (id BIGINT PRIMARY KEY, warehouse_id BIGINT NOT NULL, sku TEXT NOT NULL, code TEXT NOT NULL)`,
-		`CREATE TABLE crx_tags (id TEXT PRIMARY KEY, label TEXT NOT NULL)`,
-		`CREATE TABLE crx_stock_tags (warehouse_id BIGINT NOT NULL, sku TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (warehouse_id, sku, tag_id))`,
-		`INSERT INTO crx_bins VALUES (1, 'north'), (2, 'south'), (3, 'empty')`,
-		`INSERT INTO crx_stock VALUES (1, 'a', 'bolt'), (1, 'b', 'nut'), (2, 'a', 'washer'), (2, 'b', 'bolt')`,
-		`INSERT INTO crx_moves VALUES (10, 1, 'a', 'in'), (11, 1, 'a', 'out'), (12, 2, 'b', 'in'), (13, 2, 'c', 'in')`,
-		`INSERT INTO crx_tags VALUES ('red', 'Red'), ('blue', 'Blue'), ('green', 'Green')`,
-		`INSERT INTO crx_stock_tags VALUES (1, 'a', 'red'), (1, 'a', 'blue'), (2, 'a', 'red'), (2, 'b', 'blue')`,
-	}
-	return stmts
+// loadCrx loads the fixture into db: each key column alone ties across
+// stock rows — warehouse 1 holds SKUs a and b, SKU a is in warehouses 1
+// and 2 — so only the whole key relates a row. Move 13 names stock that
+// does not exist.
+func loadCrx(t *testing.T, b sqlBackend, db *sql.DB) {
+	t.Helper()
+	id := func(name string) sqlColumn { return column[int64](name).required() }
+	text := func(name string) sqlColumn { return column[string](name).required() }
+	b.load(t, db, sqlTable{name: "crx_bins", key: []string{"id"}, columns: []sqlColumn{id("id"), text("name")}},
+		[][]any{{1, "north"}, {2, "south"}, {3, "empty"}})
+	b.load(t, db, sqlTable{name: "crx_stock", key: []string{"warehouse_id", "sku"}, columns: []sqlColumn{id("warehouse_id"), text("sku"), text("name")}},
+		[][]any{{1, "a", "bolt"}, {1, "b", "nut"}, {2, "a", "washer"}, {2, "b", "bolt"}})
+	b.load(t, db, sqlTable{name: "crx_moves", key: []string{"id"}, columns: []sqlColumn{id("id"), id("warehouse_id"), text("sku"), text("code")}},
+		[][]any{{10, 1, "a", "in"}, {11, 1, "a", "out"}, {12, 2, "b", "in"}, {13, 2, "c", "in"}})
+	b.load(t, db, sqlTable{name: "crx_tags", key: []string{"id"}, columns: []sqlColumn{text("id"), text("label")}},
+		[][]any{{"red", "Red"}, {"blue", "Blue"}, {"green", "Green"}})
+	b.load(t, db, sqlTable{name: "crx_stock_tags", key: []string{"warehouse_id", "sku", "tag_id"}, columns: []sqlColumn{id("warehouse_id"), text("sku"), text("tag_id")}},
+		[][]any{{1, "a", "red"}, {1, "a", "blue"}, {2, "a", "red"}, {2, "b", "blue"}})
 }
 
 func compositeKeyRelations(t *testing.T, engine Engine) {
@@ -253,7 +278,7 @@ func runCompositeKeyRelations(t *testing.T, b sqlBackend) {
 	setup := func(t *testing.T) (*parse.Provider, *sql.DB) {
 		t.Helper()
 		p, db := b.open(t)
-		dbtest.Exec(t, db, crxFixture()...)
+		loadCrx(t, b, db)
 		return p, db
 	}
 	p, db := setup(t)
@@ -287,6 +312,7 @@ func runCompositeKeyRelations(t *testing.T, b sqlBackend) {
 	})
 
 	t.Run("resolved outside SQL", func(t *testing.T) {
+		b.sqlOnly(t, "holds lookups answered in memory to the SQL each lookup renders (sqlMembershipLookup)")
 		store, lookups := resolvedStores(t, db, b.dialect, "crx_bins", "crx_stock", "crx_moves", "crx_tags", "crx_stock_tags")
 		assertResolvedFilters(t, store, lookups, g.stock,
 			`{"moves":{"$some":{"code":"in"}}}`, `{"moves":{"$none":{}}}`, `{"tags":{"$some":{"label":"Blue"}}}`,
@@ -350,9 +376,12 @@ func runCompositeKeyRelations(t *testing.T, b sqlBackend) {
 		assert.Equal(t, map[string][]string{"blue": {`["1","a"]`, `["2","b"]`}, "red": {`["1","a"]`, `["2","a"]`}}, page.Relations["stock"])
 		assert.ElementsMatch(t, []filter.FacetBucket{{Key: `["1","a"]`, Count: 2}, {Key: `["2","a"]`, Count: 1}, {Key: `["2","b"]`, Count: 1}}, page.Facets["stock"])
 
-		store, lookups := resolvedStores(t, db, b.dialect, "crx_tags", "crx_stock_tags")
-		assertResolvedFilters(t, store, lookups, tags, `{"stock":{"$null":false}}`, `{"stock":{"$null":true}}`)
-		assertResolvedIncludes(t, lookups, tags, "stock")
+		t.Run("resolved outside SQL", func(t *testing.T) {
+			b.sqlOnly(t, "holds lookups answered in memory to the SQL each lookup renders (sqlMembershipLookup)")
+			store, lookups := resolvedStores(t, db, b.dialect, "crx_tags", "crx_stock_tags")
+			assertResolvedFilters(t, store, lookups, tags, `{"stock":{"$null":false}}`, `{"stock":{"$null":true}}`)
+			assertResolvedIncludes(t, lookups, tags, "stock")
+		})
 
 		for _, tt := range []struct {
 			name   string
@@ -378,7 +407,7 @@ func runCompositeKeyRelations(t *testing.T, b sqlBackend) {
 			t.Run(tt.name, func(t *testing.T) {
 				p, db := setup(t)
 				tt.update(t, pairTags(p))
-				assert.Equal(t, tt.want, crxPairs(t, db))
+				assert.Equal(t, tt.want, crxPairs(t, b, db))
 			})
 		}
 		_, err := tags.ParseMergePatch([]byte(`{"stock":["1/a"]}`))
@@ -431,19 +460,21 @@ func runCompositeKeyRelations(t *testing.T, b sqlBackend) {
 			t.Run(tt.name, func(t *testing.T) {
 				p, db := setup(t)
 				tt.update(t, crxResources(t, p))
-				assert.Equal(t, tt.want, crxPairs(t, db))
+				assert.Equal(t, tt.want, crxPairs(t, b, db))
 			})
 		}
 	})
 }
 
-// crxPairs are the stock-tag pairs, each warehouse/sku/tag, in that order.
-func crxPairs(t *testing.T, db *sql.DB) []string {
+// crxPairs are the stock-tag pairs, each warehouse/sku/tag, in that order:
+// every warehouse id is one digit, so text order is the key's.
+func crxPairs(t *testing.T, b sqlBackend, db *sql.DB) []string {
 	t.Helper()
 	var pairs []string
-	for _, row := range dbtest.QueryRows[[]any](t, db, `SELECT warehouse_id, sku, tag_id FROM crx_stock_tags ORDER BY warehouse_id, sku, tag_id`) {
+	for _, row := range b.tableRows(t, db, "crx_stock_tags", "warehouse_id", "sku", "tag_id") {
 		pairs = append(pairs, fmt.Sprintf("%v/%v/%v", row[0], row[1], row[2]))
 	}
+	slices.Sort(pairs)
 	return pairs
 }
 
@@ -501,7 +532,7 @@ func crxApply[T any](t *testing.T, r *parse.Resource[T], p *patch.ParsedPatch, t
 func declaredRelations(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		p, db := loadRelations(t, b)
-		runRelationCases(t, parsetest.RelationResources(t, p), db)
+		runRelationCases(t, b, parsetest.RelationResources(t, p), db)
 	})
 }
 
@@ -515,28 +546,28 @@ func declaredRelationsMemberships(t *testing.T, engine Engine) {
 func declaredRelationsIncludes(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		p, db := loadRelations(t, b)
-		runRelationIncludes(t, parsetest.RelationResources(t, p), db)
+		runRelationIncludes(t, b, parsetest.RelationResources(t, p), db)
 	})
 }
 
 func declaredRelationsFacets(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		p, db := loadRelations(t, b)
-		runRelationFacets(t, parsetest.RelationResources(t, p), db)
+		runRelationFacets(t, b, parsetest.RelationResources(t, p), db)
 	})
 }
 
 func declaredRelationsUnknownPolicy(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		p, db := loadRelations(t, b)
-		runRelationUnknownPolicy(t, parsetest.RelationResources(t, p), db)
+		runRelationUnknownPolicy(t, b, parsetest.RelationResources(t, p), db)
 	})
 }
 
 func declaredRelationsWrites(t *testing.T, engine Engine) {
 	runOn(t, engine, func(t *testing.T, b sqlBackend) {
 		p, db := loadRelations(t, b)
-		runRelationWrites(t, parsetest.RelationResources(t, p), db)
+		runRelationWrites(t, b, parsetest.RelationResources(t, p), db)
 	})
 }
 
@@ -545,33 +576,31 @@ func declaredRelationsWrites(t *testing.T, engine Engine) {
 func loadRelations(t *testing.T, b sqlBackend) (*parse.Provider, *sql.DB) {
 	t.Helper()
 	p, db := b.open(t)
-	timestampType := b.columnType(core.TypeInfo{Type: core.FieldTypeTimestamp})
-	const deletedAt = `'2026-01-01T00:00:00Z'`
-	dbtest.Exec(t, db,
-		`CREATE TABLE devices (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT NOT NULL, type_id TEXT, deleted_at `+timestampType+`)`,
-		`CREATE TABLE commands (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, device_id TEXT, status TEXT NOT NULL, attempts INTEGER NOT NULL, deleted_at `+timestampType+`)`,
-		`CREATE TABLE receipts (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, command_id TEXT NOT NULL, ok BOOLEAN NOT NULL)`,
-		`CREATE TABLE device_types (id TEXT PRIMARY KEY, tenant_id TEXT, name TEXT NOT NULL)`,
-		`CREATE TABLE tags (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, label TEXT NOT NULL, deleted_at `+timestampType+`)`,
-		`CREATE TABLE device_tags (device_id TEXT NOT NULL, tag_id TEXT NOT NULL, tenant_id TEXT NOT NULL, PRIMARY KEY (device_id, tag_id, tenant_id))`,
-		`CREATE TABLE assets (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT NOT NULL, parent_id TEXT)`,
-		`CREATE TABLE device_zones (device_id TEXT NOT NULL, zone_id TEXT NOT NULL, tenant_id TEXT NOT NULL)`,
-		`CREATE TABLE device_shared_types (device_id TEXT NOT NULL, type_id TEXT NOT NULL, PRIMARY KEY (device_id, type_id))`,
-		`INSERT INTO device_shared_types VALUES ('d1','pt'), ('d1','t2x'), ('d2','t1x')`,
-		`INSERT INTO device_zones VALUES ('d1','z1','t1'), ('d2','z2','t1'), ('d3','z1','t2')`,
-		// t1: d1 pending/1 + failed/5; d2 pending/3; d3 only a deleted pending/9; d4 nothing.
-		// t2's c9 names t1's d4.
-		`INSERT INTO devices VALUES ('d1','t1','pump','pt',NULL), ('d2','t1','fan','t1x',NULL), ('d3','t1','valve','t2x',NULL),
-			('d4','t1','spare',NULL,NULL), ('e1','t2','other','pt',NULL)`,
-		`INSERT INTO commands VALUES ('c1','t1','d1','pending',1,NULL), ('c2','t1','d1','failed',5,NULL), ('c3','t1','d2','pending',3,NULL),
-			('c4','t1','d3','pending',9,`+deletedAt+`), ('c9','t2','d4','pending',7,NULL)`,
-		`INSERT INTO receipts VALUES ('r1','t1','c1',true), ('r2','t1','c3',false)`,
-		// pt is a platform type, t1x t1's own, t2x t2's.
-		`INSERT INTO device_types VALUES ('pt',NULL,'pump-type'), ('t1x','t1','fan-type'), ('t2x','t2','valve-type')`,
-		`INSERT INTO tags VALUES ('red','t1','red',NULL), ('old','t1','old',`+deletedAt+`), ('t2red','t2','red',NULL)`,
-		`INSERT INTO device_tags VALUES ('d1','red','t1'), ('d2','old','t1'), ('d3','t2red','t1'), ('d4','red','t2')`,
-		`INSERT INTO assets VALUES ('a1','t1','root',NULL), ('a2','t1','leaf','a1'), ('a3','t1','orphan',NULL)`,
-	)
+	text := func(name string) sqlColumn { return column[string](name).required() }
+	nullable := column[string]
+	deletedAt := column[time.Time]("deleted_at")
+	deleted := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	b.load(t, db, sqlTable{name: "device_shared_types", key: []string{"device_id", "type_id"}, columns: []sqlColumn{text("device_id"), text("type_id")}},
+		[][]any{{"d1", "pt"}, {"d1", "t2x"}, {"d2", "t1x"}})
+	b.load(t, db, sqlTable{name: "device_zones", columns: []sqlColumn{text("device_id"), text("zone_id"), text("tenant_id")}},
+		[][]any{{"d1", "z1", "t1"}, {"d2", "z2", "t1"}, {"d3", "z1", "t2"}})
+	b.load(t, db, sqlTable{name: "devices", key: []string{"id"}, columns: []sqlColumn{text("id"), text("tenant_id"), text("name"), nullable("type_id"), deletedAt}},
+		[][]any{{"d1", "t1", "pump", "pt", nil}, {"d2", "t1", "fan", "t1x", nil}, {"d3", "t1", "valve", "t2x", nil}, {"d4", "t1", "spare", nil, nil}, {"e1", "t2", "other", "pt", nil}})
+	// t1: d1 pending/1 + failed/5; d2 pending/3; d3 only a deleted pending/9; d4 nothing.
+	// t2's c9 names t1's d4.
+	b.load(t, db, sqlTable{name: "commands", key: []string{"id"}, columns: []sqlColumn{text("id"), text("tenant_id"), nullable("device_id"), text("status"), column[int64]("attempts").required(), deletedAt}},
+		[][]any{{"c1", "t1", "d1", "pending", 1, nil}, {"c2", "t1", "d1", "failed", 5, nil}, {"c3", "t1", "d2", "pending", 3, nil}, {"c4", "t1", "d3", "pending", 9, deleted}, {"c9", "t2", "d4", "pending", 7, nil}})
+	b.load(t, db, sqlTable{name: "receipts", key: []string{"id"}, columns: []sqlColumn{text("id"), text("tenant_id"), text("command_id"), column[bool]("ok").required()}},
+		[][]any{{"r1", "t1", "c1", true}, {"r2", "t1", "c3", false}})
+	// pt is a platform type, t1x t1's own, t2x t2's.
+	b.load(t, db, sqlTable{name: "device_types", key: []string{"id"}, columns: []sqlColumn{text("id"), nullable("tenant_id"), text("name")}},
+		[][]any{{"pt", nil, "pump-type"}, {"t1x", "t1", "fan-type"}, {"t2x", "t2", "valve-type"}})
+	b.load(t, db, sqlTable{name: "tags", key: []string{"id"}, columns: []sqlColumn{text("id"), text("tenant_id"), text("label"), deletedAt}},
+		[][]any{{"red", "t1", "red", nil}, {"old", "t1", "old", deleted}, {"t2red", "t2", "red", nil}})
+	b.load(t, db, sqlTable{name: "device_tags", key: []string{"device_id", "tag_id", "tenant_id"}, columns: []sqlColumn{text("device_id"), text("tag_id"), text("tenant_id")}},
+		[][]any{{"d1", "red", "t1"}, {"d2", "old", "t1"}, {"d3", "t2red", "t1"}, {"d4", "red", "t2"}})
+	b.load(t, db, sqlTable{name: "assets", key: []string{"id"}, columns: []sqlColumn{text("id"), text("tenant_id"), text("name"), nullable("parent_id")}},
+		[][]any{{"a1", "t1", "root", nil}, {"a2", "t1", "leaf", "a1"}, {"a3", "t1", "orphan", nil}})
 	return p, db
 }
 
@@ -609,29 +638,38 @@ func relationCases() []relationCase {
 	return cases
 }
 
-// runRelationCases lists each case through BuildList on db.
-func runRelationCases(t *testing.T, r parsetest.RelResources, db *sql.DB) {
+// runRelationCases lists each case: through the resource's lists on the
+// Memory engine, through BuildList's statement on a SQL engine.
+func runRelationCases(t *testing.T, b sqlBackend, r parsetest.RelResources, db *sql.DB) {
 	t.Helper()
 	for _, tc := range relationCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			q := url.Values{filter.ParamFilter: {tc.filter}, filter.ParamPageSize: {"50"}}
-			var plan *parse.ListPlan
+			var got []string
 			if tc.assets {
-				req, err := r.Assets.ParseList(q)
-				require.NoError(t, err)
-				plan, err = r.Assets.BuildList(req, parse.Scope{Tenant: "t1"})
-				require.NoError(t, err)
+				got = relationList(t, b, r.Assets, db, q, parse.Scope{Tenant: "t1"}, func(a parsetest.RelAsset) string { return a.ID })
 			} else {
-				req, err := r.Devices.ParseList(q)
-				require.NoError(t, err)
-				plan, err = r.Devices.BuildList(req, parsetest.RelationScopeT1())
-				require.NoError(t, err)
+				got = relationList(t, b, r.Devices, db, q, parsetest.RelationScopeT1(), func(d parsetest.RelDevice) string { return d.ID })
 			}
-			got := rowIDs(t, dbtest.QueryRows[[]any](t, db, plan.Page.SQL, plan.Page.Args...))
 			slices.Sort(got)
-			assert.Equal(t, tc.want, got, plan.Page.SQL)
+			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+// relationList is the ids of the rows r lists for q under s: on the Memory
+// engine, its page's items; on a SQL engine, the rows of BuildList's page
+// statement.
+func relationList[T any](t *testing.T, b sqlBackend, r *parse.Resource[T], db *sql.DB, q url.Values, s parse.Scope, id func(T) string) []string {
+	t.Helper()
+	req, err := r.ParseList(q)
+	require.NoError(t, err)
+	if b.engine == Memory {
+		return parsetest.ItemIDs(listPage(t, r, req, s).Items, id)
+	}
+	plan, err := r.BuildList(req, s)
+	require.NoError(t, err)
+	return rowIDs(t, dbtest.QueryRows[[]any](t, db, plan.Page.SQL, plan.Page.Args...))
 }
 
 // runRelationMemberships answers each case the way a memory backend does:
@@ -798,10 +836,25 @@ func (k keysOnlyLookup) LookupValues(ctx context.Context, lk *filter.Lookup) ([]
 // runRelationIncludes lists t1's devices including their commands, tags and
 // shared types: only related rows the request may see, and none for an
 // owner without them.
-func runRelationIncludes(t *testing.T, r parsetest.RelResources, db *sql.DB) {
+func runRelationIncludes(t *testing.T, b sqlBackend, r parsetest.RelResources, db *sql.DB) {
 	t.Helper()
 	req, err := r.Devices.ParseList(url.Values{filter.ParamInclude: {"commands,tags,shared_types"}, filter.ParamPageSize: {"50"}})
 	require.NoError(t, err)
+	want := map[string]map[string][]string{
+		"commands":     {"d1": {"c1", "c2"}, "d2": {"c3"}}, // d3's is deleted, d4's another tenant's
+		"tags":         {"d1": {"red"}},                    // d2's tag is deleted, d3's another tenant's
+		"shared_types": {"d1": {"pt"}, "d2": {"t1x"}},      // t2x is t2's own type
+	}
+	_, err = r.Devices.ParseList(url.Values{filter.ParamInclude: {"type"}})
+	require.Error(t, err, "a belongs-to is not includable")
+
+	if b.engine == Memory {
+		page := listPage(t, r.Devices, req, parsetest.RelationScopeT1())
+		assert.Equal(t, want, page.Relations)
+		_, err = r.Devices.List(t.Context(), req, parse.Scope{Tenant: "t1"})
+		assert.ErrorIs(t, err, filter.ErrRelatedPolicyRequired, "a policy-scoped include needs the target's policy")
+		return
+	}
 	plan, err := r.Devices.BuildList(req, parsetest.RelationScopeT1())
 	require.NoError(t, err)
 	queries, err := r.Devices.IncludeQueries(plan, []parse.Key{{"d1"}, {"d2"}, {"d3"}, {"d4"}})
@@ -819,14 +872,8 @@ func runRelationIncludes(t *testing.T, r parsetest.RelResources, db *sql.DB) {
 		}
 		got[q.Field] = ids
 	}
-	assert.Equal(t, map[string]map[string][]string{
-		"commands":     {"d1": {"c1", "c2"}, "d2": {"c3"}}, // d3's is deleted, d4's another tenant's
-		"tags":         {"d1": {"red"}},                    // d2's tag is deleted, d3's another tenant's
-		"shared_types": {"d1": {"pt"}, "d2": {"t1x"}},      // t2x is t2's own type
-	}, got)
+	assert.Equal(t, want, got)
 
-	_, err = r.Devices.ParseList(url.Values{filter.ParamInclude: {"type"}})
-	require.Error(t, err, "a belongs-to is not includable")
 	plan, err = r.Devices.BuildList(req, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
 	_, err = r.Devices.IncludeQueries(plan, []parse.Key{{"d1"}})
@@ -834,10 +881,19 @@ func runRelationIncludes(t *testing.T, r parsetest.RelResources, db *sql.DB) {
 }
 
 // runRelationFacets counts t1's devices per visible related key.
-func runRelationFacets(t *testing.T, r parsetest.RelResources, db *sql.DB) {
+func runRelationFacets(t *testing.T, b sqlBackend, r parsetest.RelResources, db *sql.DB) {
 	t.Helper()
 	req, err := r.Devices.ParseList(url.Values{filter.ParamFacets: {"commands,tags,shared_types"}})
 	require.NoError(t, err)
+	want := map[string]map[string]int64{
+		"commands":     {"c1": 1, "c2": 1, "c3": 1},
+		"tags":         {"red": 1},
+		"shared_types": {"pt": 1, "t1x": 1},
+	}
+	if b.engine == Memory {
+		assert.Equal(t, want, pageCounts(listPage(t, r.Devices, req, parsetest.RelationScopeT1()).Facets))
+		return
+	}
 	plan, err := r.Devices.BuildList(req, parsetest.RelationScopeT1())
 	require.NoError(t, err)
 	require.NotNil(t, plan.Facets)
@@ -857,11 +913,19 @@ func runRelationFacets(t *testing.T, r parsetest.RelResources, db *sql.DB) {
 			got[field][key] = int64(n)
 		}
 	}
-	assert.Equal(t, map[string]map[string]int64{
-		"commands":     {"c1": 1, "c2": 1, "c3": 1},
-		"tags":         {"red": 1},
-		"shared_types": {"pt": 1, "t1x": 1},
-	}, got)
+	assert.Equal(t, want, got)
+}
+
+// pageCounts are a page's facets as bucketCounts reads a facet query's.
+func pageCounts(facets map[string][]filter.FacetBucket) map[string]map[string]int64 {
+	got := map[string]map[string]int64{}
+	for field, buckets := range facets {
+		got[field] = map[string]int64{}
+		for _, b := range buckets {
+			got[field][b.Key] = b.Count
+		}
+	}
+	return got
 }
 
 // runRelationUnknownPolicy lists t1's devices under a related policy that
@@ -870,7 +934,7 @@ func runRelationFacets(t *testing.T, r parsetest.RelResources, db *sql.DB) {
 // include or facet holds no related row. That holds where the target is
 // aliased too: in an include and a facet, and in a relation back to the
 // owner's own table. Raw policy SQL is still refused under an alias.
-func runRelationUnknownPolicy(t *testing.T, r parsetest.RelResources, db *sql.DB) {
+func runRelationUnknownPolicy(t *testing.T, b sqlBackend, r parsetest.RelResources, db *sql.DB) {
 	t.Helper()
 	unknown := func(table string) parse.Scope {
 		scope := parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
@@ -894,10 +958,25 @@ func runRelationUnknownPolicy(t *testing.T, r parsetest.RelResources, db *sql.DB
 	}
 
 	t.Run("relation filter", func(t *testing.T) {
+		if b.engine == Memory {
+			assert.Empty(t, relationList(t, b, r.Devices, db, url.Values{filter.ParamFilter: {`{"type":{"$is":{}}}`}}, unknown("device_types"), func(d parsetest.RelDevice) string { return d.ID }))
+			return
+		}
 		plan := list(t, r.Devices, url.Values{filter.ParamFilter: {`{"type":{"$is":{}}}`}}, unknown("device_types"))
 		assert.Empty(t, ids(t, plan.Page.SQL, plan.Page.Args), plan.Page.SQL)
 	})
+	// page is the Memory engine's page of t1's devices for q.
+	page := func(t *testing.T, q url.Values) *filter.Page[parsetest.RelDevice] {
+		t.Helper()
+		req, err := r.Devices.ParseList(q)
+		require.NoError(t, err)
+		return listPage(t, r.Devices, req, unknown("device_types"))
+	}
 	t.Run("include", func(t *testing.T) {
+		if b.engine == Memory {
+			assert.Empty(t, page(t, url.Values{filter.ParamInclude: {"shared_types"}}).Relations["shared_types"])
+			return
+		}
 		plan := list(t, r.Devices, url.Values{filter.ParamInclude: {"shared_types"}}, unknown("device_types"))
 		queries, err := r.Devices.IncludeQueries(plan, []parse.Key{{"d1"}, {"d2"}, {"d3"}, {"d4"}})
 		require.NoError(t, err)
@@ -905,6 +984,10 @@ func runRelationUnknownPolicy(t *testing.T, r parsetest.RelResources, db *sql.DB
 		assert.Empty(t, dbtest.QueryRows[[]any](t, db, queries[0].SQL, queries[0].Args...), queries[0].SQL)
 	})
 	t.Run("facet", func(t *testing.T) {
+		if b.engine == Memory {
+			assert.Empty(t, page(t, url.Values{filter.ParamFacets: {"shared_types"}}).Facets["shared_types"])
+			return
+		}
 		plan := list(t, r.Devices, url.Values{filter.ParamFacets: {"shared_types"}}, unknown("device_types"))
 		require.NotNil(t, plan.Facets)
 		assert.Empty(t, dbtest.QueryRows[[]any](t, db, plan.Facets.SQL, plan.Facets.Args...), plan.Facets.SQL)
@@ -915,6 +998,14 @@ func runRelationUnknownPolicy(t *testing.T, r parsetest.RelResources, db *sql.DB
 	assets := parse.MustResource[parsetest.RelAsset](r.Assets.Provider(), "assets", parse.TenantColumn("tenant_id"))
 	assets.MustRelate("parent", parse.BelongsTo(assets, "parent_id", parse.PolicyScoped()))
 	t.Run("aliased relation filter", func(t *testing.T) {
+		if b.engine == Memory {
+			assetIDs := func(t *testing.T, s parse.Scope) []string {
+				return relationList(t, b, assets, db, url.Values{filter.ParamFilter: {`{"parent":{"$is":{}}}`}}, s, func(a parsetest.RelAsset) string { return a.ID })
+			}
+			assert.Equal(t, []string{"a2"}, assetIDs(t, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{"assets": {}}}), "an empty policy admits every parent")
+			assert.Empty(t, assetIDs(t, unknown("assets")))
+			return
+		}
 		all := list(t, assets, url.Values{filter.ParamFilter: {`{"parent":{"$is":{}}}`}}, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{"assets": {}}})
 		assert.Equal(t, []string{"a2"}, ids(t, all.Page.SQL, all.Page.Args), "an empty policy admits every parent")
 		plan := list(t, assets, url.Values{filter.ParamFilter: {`{"parent":{"$is":{}}}`}}, unknown("assets"))
@@ -923,9 +1014,15 @@ func runRelationUnknownPolicy(t *testing.T, r parsetest.RelResources, db *sql.DB
 	t.Run("raw SQL under an alias", func(t *testing.T) {
 		req, err := assets.ParseList(url.Values{filter.ParamFilter: {`{"parent":{"$is":{}}}`}})
 		require.NoError(t, err)
-		_, err = assets.BuildList(req, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
+		raw := parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
 			"assets": {Constraints: []*filter.PolicyConstraint{{RawSQL: "assets.name = $1", RawArgs: []any{"root"}}}},
-		}})
+		}}
+		if b.engine == Memory {
+			_, err = assets.List(t.Context(), req, raw)
+			assert.ErrorIs(t, err, parse.ErrUnsupported, "raw policy SQL runs on no table of a provider that runs no SQL")
+			return
+		}
+		_, err = assets.BuildList(req, raw)
 		assert.ErrorContains(t, err, "raw SQL cannot be applied to the aliased relation table")
 	})
 }
@@ -934,7 +1031,7 @@ func runRelationUnknownPolicy(t *testing.T, r parsetest.RelResources, db *sql.DB
 // with targets the request may relate (live, in the tenant, or admitted by
 // the target's policy), and a replace or remove reaches only pairs to such
 // targets, so pairs the request cannot see stay.
-func runRelationWrites(t *testing.T, r parsetest.RelResources, db *sql.DB) {
+func runRelationWrites(t *testing.T, b sqlBackend, r parsetest.RelResources, db *sql.DB) {
 	t.Helper()
 	apply := func(id, body string, merge bool) {
 		t.Helper()
@@ -951,7 +1048,14 @@ func runRelationWrites(t *testing.T, r parsetest.RelResources, db *sql.DB) {
 	}
 	pairs := func(table, column, device string) []string {
 		t.Helper()
-		return dbtest.QueryRows[string](t, db, "SELECT "+column+" FROM "+table+" WHERE device_id = '"+device+"' ORDER BY "+column)
+		var targets []string
+		for _, row := range b.tableRows(t, db, table, "device_id", column) {
+			if row[0] == device {
+				targets = append(targets, fmt.Sprint(row[1]))
+			}
+		}
+		slices.Sort(targets)
+		return targets
 	}
 
 	apply("d2", `{"tags":["red","old","t2red","missing"]}`, true)

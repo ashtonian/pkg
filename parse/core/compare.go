@@ -270,10 +270,21 @@ func CanonicalText(t TypeInfo, v any) (string, error) {
 // errors. A terms facet orders its keys by it.
 func CompareCanonicalTexts(t TypeInfo, a, b string) (int, error) {
 	switch {
-	case t.Type == FieldTypeInt || t.Type == FieldTypeFloat || t.Type == FieldTypeDecimal:
-		return CompareCanonical(TypeInfo{Type: FieldTypeDecimal}, a, b)
-	case IsKeyType(t.Type):
+	case TextOrdered(t.Type):
 		return strings.Compare(a, b), nil
+	case IsKeyType(t.Type):
+		return CompareCanonical(TypeInfo{Type: FieldTypeDecimal}, a, b)
 	}
 	return 0, fmt.Errorf("a %s value has no canonical text", t.Type)
+}
+
+// TextOrdered reports whether the canonical texts (CanonicalText) of values
+// of type t order by code point as CompareCanonical orders the values:
+// every key type's but a number's, whose text is a decimal's.
+func TextOrdered(t FieldType) bool {
+	switch t {
+	case FieldTypeInt, FieldTypeFloat, FieldTypeDecimal:
+		return false
+	}
+	return IsKeyType(t)
 }

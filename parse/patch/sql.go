@@ -1,16 +1,13 @@
 package patch
 
 import (
-	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
@@ -171,8 +168,26 @@ func WithChangePredicate() PatchSQLOption {
 	return func(c *patchSQLConfig) { c.changePredicate = true }
 }
 
+// newPatchSQLConfig is the configuration opts make.
+func newPatchSQLConfig(opts []PatchSQLOption) *patchSQLConfig {
+	cfg := &patchSQLConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	return cfg
+}
+
+// now is the time the configuration stamps a row with.
+func (cfg *patchSQLConfig) now() time.Time {
+	if cfg.timeFunc == nil {
+		return time.Now().UTC()
+	}
+	return cfg.timeFunc()
+}
+
 // BuildPatchSQL converts a ParsedPatch into a SQL SET clause and a list
-// of relation patch ops.
+// of relation patch ops: the patch composed (ComposePatch) and rendered for
+// dialect (ComposedPatch.SQL), under every option either takes.
 //
 // Scalar-column operations fold, in order, into ONE assignment per column:
 // replace/add set the column to the value, remove sets it to NULL,
@@ -202,78 +217,48 @@ func WithChangePredicate() PatchSQLOption {
 // Operations SQL cannot express are rejected, never skipped: test (E2068),
 // move/copy, an array element and a member whose name reads as an array
 // index where the document's type does not make its parent an object
-// (E2070). Apply those through the typed document path instead.
+// (E2070). Apply those through the typed document path instead. What the
+// composition refuses is refused before anything is rendered, so a patch
+// every store refuses is refused alike whatever dialect it is rendered for.
 func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOption) (*PatchSQLResult, error) {
-	cfg := &patchSQLConfig{
-		timeFunc: func() time.Time { return time.Now().UTC() },
-	}
-	for _, opt := range opts {
-		opt(cfg)
-	}
-
-	server, err := serverColumns(cfg)
+	cfg := newPatchSQLConfig(opts)
+	c, err := compose(patch, cfg)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkParsed(patch); err != nil {
-		return nil, err
-	}
-	if len(patch.Operations) == 0 {
-		return &PatchSQLResult{Empty: true}, nil
-	}
+	return c.render(dialect, cfg)
+}
 
-	var (
-		columns     []string // first-touched order
-		columnOps   = map[string][]*PatchOperation{}
-		relationOps []RelationPatchOp
-		index       = make(map[*PatchOperation]int, len(patch.Operations))
-	)
-	for i, op := range patch.Operations {
-		index[op] = i
-		if op.Schema != nil && op.Schema.Relation != nil {
-			rop, err := buildRelationPatchOp(op)
-			if err != nil {
-				return nil, err
-			}
-			relationOps = append(relationOps, rop)
-			continue
-		}
-		if err := checkSQLCompilable(op); err != nil {
-			return nil, err
-		}
-		if len(memberTokens(op)) > 0 {
-			err := checkMemberPath(patch.schema, op)
-			if err != nil {
-				return nil, err
-			}
-		}
-		col, err := columnName(op)
-		if err != nil {
-			return nil, err
-		}
-		if server[col] {
-			// The server owns its stamped and counted columns; its value wins.
-			continue
-		}
-		if _, seen := columnOps[col]; !seen {
-			columns = append(columns, col)
-		}
-		columnOps[col] = append(columnOps[col], op)
+// SQL renders the update for d with the rendering options, WithStartParam
+// and WithChangePredicate: BuildPatchSQL's result for the patch and the
+// options it was composed with. The composition options are ComposePatch's,
+// and SQL refuses them.
+func (c *ComposedPatch) SQL(d SQLDialect, opts ...PatchSQLOption) (*PatchSQLResult, error) {
+	cfg := newPatchSQLConfig(opts)
+	if cfg.autoTimestamp != "" || len(cfg.increments) > 0 || cfg.timeFunc != nil {
+		return nil, errors.New("patch: ComposedPatch.SQL takes no composition option; pass WithAutoTimestamp, WithAutoTimestampSQL, WithIncrement and WithTimeFunc to ComposePatch")
 	}
+	return c.render(d, cfg)
+}
 
-	b := &setBuilder{dialect: dialect, next: cfg.startParam + 1, index: index}
+// render is the update's SQL for d, its placeholders after cfg.startParam.
+func (c *ComposedPatch) render(d SQLDialect, cfg *patchSQLConfig) (*PatchSQLResult, error) {
+	if c.Empty() {
+		empty := &PatchSQLResult{Empty: true}
+		return empty, nil
+	}
+	b := &setBuilder{dialect: d, next: cfg.startParam + 1}
 	var changes []string
-	for _, col := range columns {
-		ops := columnOps[col]
-		write, err := b.columnExpr(col, ops)
+	for _, ch := range c.columns {
+		write, err := b.columnExpr(ch)
 		if err != nil {
 			return nil, err
 		}
-		b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: write.expr})
+		b.assignments = append(b.assignments, ColumnAssignment{Column: ch.column, Expression: write.expr})
 		if cfg.changePredicate {
-			changed, err := changedSQL(dialect, dialect.QuoteIdent(col), write)
+			changed, err := changedSQL(d, d.QuoteIdent(ch.column), write)
 			if err != nil {
-				return nil, dialectError("change predicate", fieldPath(ops[0]), err)
+				return nil, dialectError("change predicate", fieldPath(ch.ops[0]), err)
 			}
 			changes = append(changes, changed)
 		}
@@ -282,32 +267,26 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 	if len(changes) > 0 {
 		changePredicate = "(" + strings.Join(changes, " OR ") + ")"
 	}
-	// Columns fold one after another, so the preconditions are put back in
-	// patch order: the first one a row fails is the operation that fails.
-	slices.SortFunc(b.preconditions, func(x, y Precondition) int { return cmp.Compare(x.Op, y.Op) })
-	precondition, _, err := RenderPreconditions(dialect, b.preconditions, b.bind)
+	precondition, _, err := RenderPreconditions(d, c.preconditions, b.bind)
 	if err != nil {
 		return nil, err
 	}
-
-	if len(b.assignments) > 0 {
-		if cfg.autoTimestamp != "" {
-			value := cfg.autoTimestampSQL
-			if value == "" {
-				// Canonical text: SQLite compares it as text, pgx binds it to
-				// timestamptz.
-				value = b.bind(core.FormatTimestamp(cfg.timeFunc()))
-			}
-			b.assignments = append(b.assignments, ColumnAssignment{Column: cfg.autoTimestamp, Expression: value})
+	if c.stamp != "" {
+		value := c.stampSQL
+		if value == "" {
+			// Canonical text: SQLite compares it as text, pgx binds it to
+			// timestamptz.
+			value = b.bind(core.FormatTimestamp(c.stampAt))
 		}
-		for _, col := range cfg.increments {
-			b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: dialect.QuoteIdent(col) + " + 1"})
-		}
+		b.assignments = append(b.assignments, ColumnAssignment{Column: c.stamp, Expression: value})
+	}
+	for _, col := range c.increments {
+		b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: d.QuoteIdent(col) + " + 1"})
 	}
 
 	clauses := make([]string, len(b.assignments))
 	for i, assignment := range b.assignments {
-		clauses[i] = dialect.QuoteIdent(assignment.Column) + " = " + assignment.Expression
+		clauses[i] = d.QuoteIdent(assignment.Column) + " = " + assignment.Expression
 	}
 	return &PatchSQLResult{
 		SetClause:       strings.Join(clauses, ", "),
@@ -316,9 +295,9 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 		ParamCount:      b.next - cfg.startParam - 1,
 		ChangePredicate: changePredicate,
 		Precondition:    precondition,
-		Preconditions:   b.preconditions,
-		Empty:           len(b.assignments) == 0 && len(relationOps) == 0,
-		RelationOps:     relationOps,
+		Preconditions:   slices.Clone(c.preconditions),
+		Empty:           len(b.assignments) == 0 && len(c.relations) == 0,
+		RelationOps:     slices.Clone(c.relations),
 	}, nil
 }
 
@@ -334,7 +313,7 @@ func changedSQL(d SQLDialect, col string, w columnWrite) (string, error) {
 	}
 	var t core.TypeInfo
 	if w.schema != nil {
-		t = core.TypeInfo{Type: w.schema.DataType, SQLType: w.schema.SQLType}
+		t = pathType(w.schema)
 	}
 	return d.ChangedCondition(col, w.expr, t)
 }
@@ -463,10 +442,11 @@ type SQLDialect interface {
 	ChangedDocumentCondition(column, doc string) (string, error)
 
 	// MergePatch merges the RFC 7396 patch object into the JSON document
-	// doc, stored as storage: patch members replace, nested objects merge,
+	// column doc, read as MemberDocument reads it, whatever JSON type, or
+	// text, the column is: patch members replace, nested objects merge,
 	// nulls delete, and a target that is not an object, NULL included,
 	// merges as {} (RFC 7396 §2).
-	MergePatch(doc string, storage core.SQLType, patch map[string]any, bind func(any) string) (string, error)
+	MergePatch(doc string, patch map[string]any, bind func(any) string) (string, error)
 
 	// ArrayAppend appends element to the native array expression array, a
 	// NULL array as an empty one, so the first append to a fresh column
@@ -496,10 +476,6 @@ type setBuilder struct {
 	next        int
 	assignments []ColumnAssignment
 	args        []any
-	// index is each operation's index in the patch; preconditions are the
-	// member operations' the stored rows decide.
-	index         map[*PatchOperation]int
-	preconditions []Precondition
 }
 
 func (b *setBuilder) bind(v any) string {
@@ -522,93 +498,59 @@ type columnWrite struct {
 	members bool
 }
 
-// columnExpr folds one column's ordered operations into a single SQL
-// expression. A merge patch writes a column with one operation, the only kind
-// that merges, so a merge compiles against the stored column. Operations on
-// members of a document fold in documentExpr. Other JSON Patch operations
-// fold: the last whole-value operation (replace/add/remove) sets the base
-// and earlier ones are overwritten and never bound, and appends after it
-// fold onto its value in Go, so one value is bound; appends with no base
-// compile against the stored column.
-func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (columnWrite, error) {
-	last := ops[len(ops)-1].Schema
-	if slices.ContainsFunc(ops, func(op *PatchOperation) bool { return op.Merge }) {
-		if len(ops) != 1 {
-			return columnWrite{}, fmt.Errorf("patch: column %s: a merge shares its column with another operation, which no parser produces", col)
-		}
-		expr, err := mergeSQL(b.dialect, b.dialect.QuoteIdent(col), ops[0].Schema.SQLType, ops[0].Value, b.bind)
+// columnExpr renders one column's change as the SQL expression the SET
+// clause assigns it: a value bound as its path declares it, or NULL; a
+// merge into, appends to or member writes over the stored column.
+func (b *setBuilder) columnExpr(ch *columnChange) (columnWrite, error) {
+	col := b.dialect.QuoteIdent(ch.column)
+	switch ch.kind {
+	case changeMerge:
+		op := ch.ops[0]
+		expr, err := b.dialect.MergePatch(col, ch.merge, b.bind)
 		if err != nil {
-			return columnWrite{}, dialectError(string(ops[0].Op), ops[0].Path, err)
+			return columnWrite{}, dialectError(string(op.Op), op.Path, err)
 		}
-		merged := columnWrite{expr: expr, schema: last}
+		merged := columnWrite{expr: expr, schema: ch.schema}
 		return merged, nil
-	}
-	if slices.ContainsFunc(ops, func(op *PatchOperation) bool { return len(memberTokens(op)) > 0 }) {
-		return b.documentExpr(col, ops)
-	}
-	start := -1
-	for i, op := range slices.Backward(ops) {
-		if op.Op != PatchOpArrayAppend {
-			start = i
-			break
-		}
-	}
-	later := ops[start+1:]
-	for _, op := range later {
-		if op.Schema.DataType != "" && op.Schema.DataType != core.FieldTypeArray {
-			// A JSON-document array (jsonb on PostgreSQL) has no native
-			// array_append; the document path applies it.
-			notNative := core.NewError(ECodeOpNotSQLCompilable, fmt.Sprintf("array_append on %s (a %s field) compiles to SQL only for native array columns — apply via ApplyValidatedPatch", op.Path, op.Schema.DataType),
-				core.WithPath(op.Path))
-			return columnWrite{}, notNative
-		}
-	}
-	if start < 0 {
-		expr := b.dialect.QuoteIdent(col)
-		for _, op := range later {
+	case changeAppend:
+		expr := col
+		for _, op := range ch.appends {
 			var err error
 			expr, err = b.dialect.ArrayAppend(expr, op.Value, b.bind)
 			if err != nil {
 				return columnWrite{}, dialectError(string(op.Op), op.Path, err)
 			}
 		}
-		appended := columnWrite{expr: expr, schema: last}
+		appended := columnWrite{expr: expr, schema: ch.schema}
 		return appended, nil
-	}
-
-	base := ops[start]
-	value, _ := wholeValue(base)
-	for _, op := range later {
-		var elems []any
-		if value != nil {
-			arr, ok := core.AnySlice(value)
-			if !ok {
-				return columnWrite{}, fmt.Errorf("array append for %s: base value is %s, not an array", base.Path, gowalker.TypeText(reflect.TypeOf(value)))
-			}
-			elems = slices.Clone(arr)
+	case changeMembers:
+		doc, err := b.dialect.MemberDocument(col)
+		if err != nil {
+			return columnWrite{}, dialectError("document", fieldPath(ch.ops[0]), err)
 		}
-		value = append(elems, op.Value)
+		for _, e := range ch.edits {
+			if e.op.Op == PatchOpRemove {
+				doc, err = b.dialect.RemoveMember(doc, e.member, b.bind)
+			} else {
+				doc, err = b.dialect.SetMember(doc, e.member, e.value, b.bind)
+			}
+			if err != nil {
+				return columnWrite{}, dialectError(string(e.op.Op), e.op.Path, err)
+			}
+		}
+		members := columnWrite{expr: doc, members: true}
+		return members, nil
 	}
-	if value == nil {
-		cleared := columnWrite{expr: "NULL", schema: last}
+	if ch.value == nil {
+		cleared := columnWrite{expr: "NULL", schema: ch.schema}
 		return cleared, nil
 	}
-	val, err := marshalIfComplex(value, base.Schema, b.dialect)
+	val, err := b.dialect.MarshalValue(ch.value, pathType(ch.base.Schema))
 	if err != nil {
-		return columnWrite{}, fmt.Errorf("marshaling value for %s: %w", base.Path, err)
+		return columnWrite{}, fmt.Errorf("marshaling value for %s: %w", ch.base.Path, err)
 	}
-	bound := columnWrite{expr: b.bind(val), schema: last}
+	bound := columnWrite{expr: b.bind(val), schema: ch.schema}
 	return bound, nil
-}
-
-// mergeSQL merges an RFC 7396 patch object into the JSON document expr,
-// stored as storage (SQLDialect.MergePatch).
-func mergeSQL(d SQLDialect, expr string, storage core.SQLType, patch any, bind func(any) string) (string, error) {
-	obj, ok := patch.(map[string]any)
-	if !ok {
-		return "", fmt.Errorf("merge value is %s, not an object", gowalker.TypeText(reflect.TypeOf(patch)))
-	}
-	return d.MergePatch(expr, storage, obj, bind)
 }
 
 // buildRelationPatchOp turns a parsed relation op into a RelationPatchOp.
@@ -648,15 +590,4 @@ func columnName(op *PatchOperation) (string, error) {
 	}
 	// The request's path text is never a SQL identifier.
 	return "", fmt.Errorf("path %s: %w", op.Path, ErrSQLColumnMissing)
-}
-
-func marshalIfComplex(value any, schema *PathSchema, dialect SQLDialect) (any, error) {
-	if schema == nil || value == nil {
-		return value, nil
-	}
-	t := core.TypeInfo{Type: schema.DataType, SQLType: schema.SQLType}
-	if schema.DataType == core.FieldTypeArray && schema.GoType != nil {
-		t.Elem = core.TypeOf(schema.GoType).Elem
-	}
-	return dialect.MarshalValue(value, t)
 }

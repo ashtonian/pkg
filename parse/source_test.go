@@ -30,6 +30,9 @@ import (
 	_ "github.com/ashtonian/pkg/parse"
 	_ "github.com/ashtonian/pkg/parse/core"
 	_ "github.com/ashtonian/pkg/parse/filter"
+	_ "github.com/ashtonian/pkg/parse/internal/backend"
+	_ "github.com/ashtonian/pkg/parse/internal/sqlexec"
+	_ "github.com/ashtonian/pkg/parse/internal/sqlplan"
 	_ "github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -48,6 +51,73 @@ func TestTransportFreePackages_ImportNoNetHTTP(t *testing.T) {
 		require.Contains(t, deps, pkg, "go list named the package")
 		require.False(t, slices.Contains(deps, "net/http"), "%s imports net/http", pkg)
 	}
+}
+
+// The packages around the provider contract import across it in one
+// direction. internal/backend, the contract every provider runs on, imports
+// filter, patch, core and the standard library alone, and reaches neither
+// the SQL compiler nor the SQL executor, so a provider that runs no SQL
+// links neither. The root package composes requests and compiles the SQL
+// builders' statements through internal/sqlplan, and never reaches the
+// executor; the executor compiles through internal/sqlplan, and neither
+// reaches the root package.
+func TestLayout_PackagesImportAcrossTheContract(t *testing.T) {
+	const (
+		root     = "github.com/ashtonian/pkg/parse"
+		backend  = root + "/internal/backend"
+		sqlplan  = root + "/internal/sqlplan"
+		sqlexec  = root + "/internal/sqlexec"
+		contract = "filter, patch, core and the standard library"
+	)
+	listed := packageImports(t, root, backend, sqlplan, sqlexec)
+
+	for _, imported := range listed[backend].Imports {
+		standard := !strings.Contains(strings.Split(imported, "/")[0], ".")
+		allowed := []string{root + "/filter", root + "/patch", root + "/core"}
+		assert.True(t, standard || slices.Contains(allowed, imported), "internal/backend imports %s; it may import %s only", imported, contract)
+	}
+	for pkg, forbidden := range map[string][]string{
+		backend: {root, sqlplan, sqlexec},
+		root:    {sqlexec},
+		sqlplan: {root, sqlexec},
+		sqlexec: {root},
+	} {
+		for _, f := range forbidden {
+			assert.NotContains(t, listed[pkg].Deps, f, "%s reaches %s", pkg, f)
+		}
+	}
+	assert.Subset(t, listed[root].Imports, []string{backend, sqlplan}, "the root package composes through internal/backend and compiles through internal/sqlplan")
+	assert.Contains(t, listed[sqlexec].Imports, sqlplan, "the SQL executor compiles through internal/sqlplan")
+}
+
+// importedPackage is what go list reports of a package's imports: its
+// direct imports and every package it imports, transitively.
+type importedPackage struct {
+	ImportPath string
+	Imports    []string
+	Deps       []string
+}
+
+// packageImports is what go list reports of pkgs' imports, by import path.
+func packageImports(t *testing.T, pkgs ...string) map[string]importedPackage {
+	t.Helper()
+	out, err := exec.CommandContext(t.Context(), "go", append([]string{"list", "-json"}, pkgs...)...).Output()
+	require.NoError(t, err)
+	listed := make(map[string]importedPackage, len(pkgs))
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for {
+		var p importedPackage
+		err := dec.Decode(&p)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		require.NoError(t, err)
+		listed[p.ImportPath] = p
+	}
+	for _, pkg := range pkgs {
+		require.Contains(t, listed, pkg, "go list named the package")
+	}
+	return listed
 }
 
 // The module's text never formats a type through fmt or reflect.Type's

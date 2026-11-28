@@ -127,7 +127,8 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 		if err != nil {
 			return "", err
 		}
-		if _, err := likeTokens(s); err != nil {
+		err = checkLike(s)
+		if err != nil {
 			return "", err
 		}
 		keyword := " LIKE "

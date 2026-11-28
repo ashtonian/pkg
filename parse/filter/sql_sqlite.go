@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -94,7 +93,8 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 		if err != nil {
 			return "", err
 		}
-		if _, err := likeTokens(s); err != nil {
+		err = checkLike(s)
+		if err != nil {
 			return "", err
 		}
 		return expr + " LIKE " + bind(s) + ` ESCAPE '\'`, nil
@@ -381,71 +381,18 @@ func geoUnsupported(d dialect.Dialect, field *FieldSchema, op FilterOperator, sh
 		core.WithField(field.ExternalName))
 }
 
-// MarshalValue serializes a value for SQLite parameter binding.
-// JSON/Array/Object types are marshaled to JSON strings for TEXT storage.
-// A date and a timestamp, and each element of a list of timestamps, bind
-// as their columns hold them (boundScalar): a Valuer read, a timestamp its
-// canonical text (core.FormatTimestamp), UTC at a fixed width, so text
-// order is time order, where the driver would store a time.Time as its own
-// text in its own offset.
-func (d SQLiteDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
-	switch t.Type {
-	case core.FieldTypeDate, core.FieldTypeTimestamp:
-		return boundScalar(t.Type, value)
-	}
-
-	if _, ok := value.(driver.Valuer); ok && !t.SQLType.IsJSON() {
-		return value, nil // a database value the driver encodes, not a document
-	}
-	switch t.Type {
-	case core.FieldTypeJSON, core.FieldTypeArray, core.FieldTypeObject:
-		if t.Type == core.FieldTypeArray && t.Elem == core.FieldTypeTimestamp {
-			var err error
-			if value, err = timestampTexts(value); err != nil {
-				return nil, err
-			}
-		}
-		b, err := json.Marshal(value)
-		if err != nil {
-			return nil, err
-		}
-		return string(b), nil
-	default:
-		return value, nil
-	}
+// MarshalValue is value as a SQLite column of type t stores it
+// (core.StorageValue), which the driver binds as it is: a timestamp as its
+// canonical text, so text order is time order, and a document or an array
+// as its JSON text.
+func (SQLiteDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
+	return core.StorageValue(t, value)
 }
 
 // StoresAsText reports the values MarshalValue writes as text: a
 // timestamp's canonical text, a document's or an array's JSON.
 func (SQLiteDialect) StoresAsText(t core.FieldType) bool {
 	return t == core.FieldTypeTimestamp || core.IsDocument(t) || t == core.FieldTypeArray
-}
-
-// timestampTexts is a list of timestamps, or a pointer to one, with each
-// element its canonical text: json.Marshal writes a time.Time in its own
-// offset, and an element reads as a timestamp only in UTC (PathExpr). A
-// nil list, or a value that is no list, is unchanged.
-func timestampTexts(value any) (any, error) {
-	list, err := core.Deref(value)
-	if err != nil || list == nil {
-		return value, err
-	}
-	if rv := reflect.ValueOf(list); rv.Kind() == reflect.Slice && rv.IsNil() {
-		return value, nil
-	}
-	items, ok := core.AnySlice(list)
-	if !ok {
-		return value, nil
-	}
-	out := make([]any, len(items))
-	for i, item := range items {
-		text, err := boundScalar(core.FieldTypeTimestamp, item)
-		if err != nil {
-			return nil, fmt.Errorf("timestamp element %d: %w", i, err)
-		}
-		out[i] = text
-	}
-	return out, nil
 }
 
 // CTEMaterializeHint returns "" — SQLite always materializes CTEs.

@@ -8,24 +8,26 @@ parse validates requests, compiles them under the server's scope, and runs them 
 
 | Existing application | Use |
 |---|---|
-| A list or update endpoint | A provider (`parsesql.Open` or `parsepgx.Open`, or `parseprovider.Open` to choose one by configuration), `parse.NewResource[T](provider, table)`, `List`, `Update` |
+| A list or update endpoint | A provider (`parsesql.Open`, `parsepgx.Open` or `parsememory.Open`, or `parseprovider.Open` to choose one by configuration), `parse.NewResource[T](provider, table)`, `List`, `Update` |
 | A typed repository with its own statements | `Resource.Query` with `Columns`, or `ListQuery` / `ListPlan.Fragment` to compose the request into its SQL |
-| Writes of its own that must commit with parse's | `Provider.Begin`, or its own transaction through `parsesql.Tx` / `parsepgx.Tx`, then `Resource.In` ([Transactions](#transactions)) |
+| Writes of its own that must commit with parse's | `Provider.Begin`, or its own transaction through `parsesql.Tx` / `parsepgx.Tx` / `parsememory.Tx`, then `Resource.In` ([Transactions](#transactions)) |
 | An existing SELECT or UPDATE builder | `filter.NewSQLBuilder` and placeholder offsets |
-| A non-SQL store | Parsed filters plus your evaluator; typed patch application where supported |
+| Rows held in the process, with no database | The memory provider (`parsememory.Open`): the resources declare its tables and every request is evaluated in Go ([Memory](#memory)) |
+| A non-SQL store of its own | Parsed filters with `filter.Evaluate` ([evaluating outside SQL](queries.md#evaluating-outside-sql)); typed patch application where supported |
 | A generated API | Generate tags/schemas once, then call the same public parser APIs |
 | A UI that builds filters dynamically | Schema registry plus the TypeScript validator/client |
 | A generated client SDK | Its types and a thin binding over the TypeScript SDK or `parse/client` ([generated SDKs](../sdk/ts/docs/generated-sdks.md)) |
 
 ## Providers
 
-A provider is the database every resource built on it runs on: SQLite or PostgreSQL, one API on either, chosen once at startup. They are alternatives for different runtime requirements — an embedded file or in-memory database, or a server — never layered or run side by side, and nothing moves data between them. Each provider is a module of its own, released with parse at one version, that owns its settings and how it opens: [`parsesql`](../parsesql/README.md) (`parsesql.Config`, `parsesql.Open`) and [`parsepgx`](../parsepgx/README.md) (`parsepgx.Config`, `parsepgx.Open`). An application requires the module of each provider it runs on, so a binary carries only those drivers. One that runs on either, chosen by its configuration, links both and opens the one named through [`parseprovider`](../parseprovider/README.md):
+A provider is the database every resource built on it runs on: SQLite, PostgreSQL or the process's own memory, one API on each, chosen once at startup. They are alternatives for different runtime requirements — an embedded file or in-memory database, a server, or tables that live and die with the process — never layered or run side by side, and nothing moves data between them ([choosing a provider](providers.md)). Each provider is a module of its own, released with parse at one version, that owns its settings and how it opens: [`parsesql`](../parsesql/README.md) (`parsesql.Config`, `parsesql.Open`), [`parsepgx`](../parsepgx/README.md) (`parsepgx.Config`, `parsepgx.Open`) and [`parsememory`](../parsememory/README.md) (`parsememory.Config`, `parsememory.Open`). An application requires the module of each provider it runs on, so a binary carries only those drivers. One that runs on any of them, chosen by its configuration, links each and opens the one named through [`parseprovider`](../parseprovider/README.md):
 
 ```go
 // settings loaded with github.com/ashtonian/pkg/config: the provider's name,
 // and each provider's own settings.
 db, err := parseprovider.Open(ctx, settings.DB.Provider,
-	parsesql.Choice(settings.DB.SQLite), parsepgx.Choice(settings.DB.Postgres))
+	parsesql.Choice(settings.DB.SQLite), parsepgx.Choice(settings.DB.Postgres),
+	parsememory.Choice(settings.DB.Memory))
 defer db.Close()
 devices, err := parse.NewResource[Device](db.Provider(), "devices", parse.TenantColumn("tenant_id"))
 ```
@@ -53,16 +55,22 @@ The plans' arguments are typed slices and scalars, so every pgx `QueryExecMode` 
 
 [`parsesql`](../parsesql/README.md) is the SQLite provider on a `*sql.DB` of `modernc.org/sqlite`. The [example server](../examples/server/) runs on it by default: its [handlers](../examples/server/server.go) demonstrate combined filters, list pages, schema discovery, facets, and merge patches, and its tests execute the requests against SQLite.
 
-SQLite has no row lock, so an update holds its targets only in a write transaction, and `database/sql` begins transactions in the mode the connection string names: `parsesql.Open` opens the database with `_txlock=immediate` and `_busy_timeout`, so a second writer waits for the first rather than failing with `SQLITE_BUSY`. A database opened by hand needs both (`sql.Open("sqlite", "./app.db?_txlock=immediate&_busy_timeout=5000")`), one connection for `:memory:`, which is a database per connection, and `parsesql.Register()` before it opens one: SQLite plans compare decimals, bound an int or float path's number members and decide geo filters through the functions it registers ([`parsesql` functions](../parsesql/README.md#functions)).
+SQLite has no row lock, so an update holds its targets only while it holds the write lock from its read to its write. The provider begins the transactions it settles itself with `BEGIN IMMEDIATE`; `database/sql` begins the application's own in the mode the connection string names, and `parsesql.Open` opens the database with `_txlock=immediate` and a busy timeout, so a second writer waits for the first rather than failing with `SQLITE_BUSY`. A database opened by hand needs both, and a file database WAL mode (`sql.Open("sqlite", "./app.db?_journal_mode=WAL&_txlock=immediate&_busy_timeout=5000")`), one connection for `:memory:`, which is a database per connection, and `parsesql.Register()` before it opens one: SQLite plans compare decimals, bound an int or float path's number members and decide geo filters through the functions it registers ([`parsesql` functions](../parsesql/README.md#functions)). [SQLite configuration](../parsesql/README.md#sqlite-configuration) covers the journal mode, the busy timeout, the transaction mode and backups, each with the test that holds it.
 
-Each provider has its own capabilities as well as its own SQL. Read [backend semantics](queries.md#type-capabilities), especially search, case folding, and geo differences. A custom SQL expression must be appropriate for the provider's database.
+### Memory
+
+[`parsememory`](../parsememory/README.md) is the provider that holds its tables in the process: no database, driver or file, so it runs under `GOOS=wasip1` and in any test without a server. Building a resource on it (`parse.NewResource`) declares the resource's table, its key, every column of its type and the pair table of each many-to-many relation it filters by or patches; the application then writes rows with `db.Put(ctx, table, rows...)` and `db.Delete(ctx, table, keys...)`, or in a transaction of its own (`db.Begin`, bound to its context as a `database/sql` `Tx` is, then `parsememory.Tx(txn)` for `Resource.In`). The [example server](../examples/server/) runs on it with `PARSE_SERVER_DB_PROVIDER=memory`, seeded through `Put`.
+
+Each request is evaluated in Go over one published snapshot of the tables, under the rules the SQL dialects render (`filter.Evaluate`), and each update runs under the one writer, deciding what the SQL providers' statements decide in their order. A list's page, count, facets and includes come from one snapshot, as a REPEATABLE READ transaction would read them. What needs SQL is refused before it runs (`parse.ErrUnsupported`): `Query`, the SQL builders, search, computed columns, `StampSQL` and raw SQL policies. Each table holds at most `max_rows` rows (`parsememory.ErrRowLimit`), and nothing outlives the process. [Its semantics](../parsememory/README.md#semantics) lists where it differs from the SQL providers.
+
+Each provider has its own capabilities as well as its own SQL. Read [choosing a provider](providers.md) and [backend semantics](queries.md#type-capabilities), especially search, case folding, and geo differences. A custom SQL expression must be appropriate for the provider's database.
 
 ## Transactions
 
 A resource runs each `List`, `Facets` and `Query` in its own statements and each `Update` and `UpdateBatch` in a transaction of its own. To commit parse's writes with the application's, run the resource in one transaction:
 
 ```go
-tx, err := db.Provider().Begin(ctx) // or parsesql.Tx(sqlTx), parsepgx.Tx(pgxTx): the application's own
+tx, err := db.Provider().Begin(ctx) // or parsesql.Tx(sqlTx), parsepgx.Tx(pgxTx), parsememory.Tx(txn): the application's own
 defer tx.Rollback(ctx)              // nil once committed
 scoped, err := devices.In(tx)
 res, err := scoped.Update(ctx, patch, parse.ByID(id), scope)
@@ -70,7 +78,7 @@ res, err := scoped.Update(ctx, patch, parse.ByID(id), scope)
 err = tx.Commit(ctx)
 ```
 
-`In` returns a view of the resource for the transaction's life: it parses and builds as the resource does, and declares no relation. An update in it runs under a savepoint, so a failed update leaves the transaction as it was and usable. A transaction another provider began, or a wrapped one of another kind of provider, is `parse.ErrProviderMismatch`; a wrapped transaction of the right kind must be on the provider's database, which its driver cannot tell. `Begin` begins without the context's cancellation, which `database/sql` would answer by rolling back; the transaction lasts until `Commit` or `Rollback`.
+`In` returns a view of the resource for the transaction's life: it parses and builds as the resource does, and declares no relation. An update in it runs under a savepoint, so a failed update leaves the transaction as it was and usable. A transaction another provider began, or a wrapped one of another kind of provider, is `parse.ErrProviderMismatch`; a wrapped transaction of the right kind must be on the provider's database, which a SQL driver cannot tell; the memory provider refuses a `Txn` of another database. `Provider.Begin` waits under the context for what the transaction runs on, so the wait keeps the context's deadline: a pool connection and its `BEGIN` on `parsepgx`; a connection on `parsesql`, which then begins `BEGIN IMMEDIATE` past the context's cancellation, the busy timeout bounding its wait for the write lock ([SQLite configuration](../parsesql/README.md#sqlite-configuration)); the writer on `parsememory`. On every provider the transaction, once begun, is not bound to the context's cancellation: it lasts until `Commit` or `Rollback`, so the handler that settles it decides what it keeps, and each statement in it runs under the context its own call is given. The memory provider's `db.Begin` is the bound alternative: its `Txn` rolls back once its context ends, as `database/sql` rolls back a `BeginTx` transaction.
 
 ## Row contract
 
