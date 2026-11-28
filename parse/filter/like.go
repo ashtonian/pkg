@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Pattern semantics shared by `$like` / `$ilike` on every backend: `%`
@@ -38,26 +39,48 @@ type likeToken struct {
 	r    rune
 }
 
+// likeAt is the token of pattern at byte i and its width in bytes, an
+// escape and the character it makes literal counted together; ok is false
+// for an escape that ends the pattern.
+func likeAt(pattern string, i int) (tok likeToken, width int, ok bool) {
+	r, w := utf8.DecodeRuneInString(pattern[i:])
+	switch {
+	case r == '\\' && i+w == len(pattern):
+		return tok, 0, false
+	case r == '\\':
+		literal, lw := utf8.DecodeRuneInString(pattern[i+w:])
+		tok, w = likeToken{kind: likeLiteral, r: literal}, w+lw
+	case r == '%':
+		tok = likeToken{kind: likeAny}
+	case r == '_':
+		tok = likeToken{kind: likeOne}
+	default:
+		tok = likeToken{kind: likeLiteral, r: r}
+	}
+	return tok, w, true
+}
+
+// checkLike refuses a pattern PostgreSQL would refuse.
+func checkLike(pattern string) error {
+	for i := 0; i < len(pattern); {
+		_, w, ok := likeAt(pattern, i)
+		if !ok {
+			return errLikeTrailingEscape
+		}
+		i += w
+	}
+	return nil
+}
+
 func likeTokens(pattern string) ([]likeToken, error) {
 	toks := make([]likeToken, 0, len(pattern))
-	escaped := false
-	for _, r := range pattern {
-		switch {
-		case escaped:
-			toks = append(toks, likeToken{kind: likeLiteral, r: r})
-			escaped = false
-		case r == '\\':
-			escaped = true
-		case r == '%':
-			toks = append(toks, likeToken{kind: likeAny})
-		case r == '_':
-			toks = append(toks, likeToken{kind: likeOne})
-		default:
-			toks = append(toks, likeToken{kind: likeLiteral, r: r})
+	for i := 0; i < len(pattern); {
+		tok, w, ok := likeAt(pattern, i)
+		if !ok {
+			return nil, errLikeTrailingEscape
 		}
-	}
-	if escaped {
-		return nil, errLikeTrailingEscape
+		toks = append(toks, tok)
+		i += w
 	}
 	return toks, nil
 }
@@ -94,35 +117,46 @@ func likeToGlob(pattern string) (string, error) {
 // character lower-cased when fold is set: PostgreSQL's ILIKE under
 // pg_c_utf8, not Unicode case folding. It is the reference semantics of
 // `$like` / `$ilike`; a malformed pattern matches nothing (the parser
-// rejects it first).
+// rejects it first). It reads the pattern in place, since an evaluator
+// matches one pattern against every row it reads.
 func MatchLike(s, pattern string, fold bool) bool {
-	toks, err := likeTokens(pattern)
-	if err != nil {
+	if checkLike(pattern) != nil {
 		return false
 	}
-	str := []rune(s)
-	si, ti := 0, 0
+	si, pi := 0, 0
+	// After a %, star is the pattern's next token and mark the first
+	// character of s it has not yet absorbed: a mismatch absorbs one more.
 	star, mark := -1, 0
-	for si < len(str) {
-		switch {
-		case ti < len(toks) && toks[ti].kind == likeAny:
-			star, mark = ti, si
-			ti++
-		case ti < len(toks) && (toks[ti].kind == likeOne || runesEqual(toks[ti].r, str[si], fold)):
-			si++
-			ti++
-		case star >= 0:
-			ti = star + 1
-			mark++
-			si = mark
-		default:
+	for si < len(s) {
+		sr, sw := utf8.DecodeRuneInString(s[si:])
+		if pi < len(pattern) {
+			tok, pw, _ := likeAt(pattern, pi)
+			if tok.kind == likeAny {
+				star, mark = pi+pw, si
+				pi += pw
+				continue
+			}
+			if tok.kind == likeOne || runesEqual(tok.r, sr, fold) {
+				si += sw
+				pi += pw
+				continue
+			}
+		}
+		if star < 0 {
 			return false
 		}
+		_, mw := utf8.DecodeRuneInString(s[mark:])
+		mark += mw
+		si, pi = mark, star
 	}
-	for ti < len(toks) && toks[ti].kind == likeAny {
-		ti++
+	for pi < len(pattern) {
+		tok, pw, _ := likeAt(pattern, pi)
+		if tok.kind != likeAny {
+			return false
+		}
+		pi += pw
 	}
-	return ti == len(toks)
+	return true
 }
 
 func runesEqual(a, b rune, fold bool) bool {

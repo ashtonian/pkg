@@ -93,7 +93,8 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 		if err != nil {
 			return "", err
 		}
-		if _, err := likeTokens(s); err != nil {
+		err = checkLike(s)
+		if err != nil {
 			return "", err
 		}
 		return expr + " LIKE " + bind(s) + ` ESCAPE '\'`, nil

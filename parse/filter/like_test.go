@@ -33,6 +33,17 @@ func TestMatchLike(t *testing.T) {
 		{"a_b", `a\_b`, false, true},
 		{"axb", `a\_b`, false, false},
 		{"abc", `abc\`, false, false}, // malformed: matches nothing
+		{"aΩΩb", "a%Ωb", false, true}, // % backtracks over multi-byte characters
+		{"aΩΩc", "a%Ωb", false, false},
+		{"日本語", "日_語", false, true},
+		{"Ω", `\Ω`, false, true}, // an escaped multi-byte character
+		{"50%off", `50\%%`, false, true},
+		{"50off", `50\%%`, false, false},
+		{"abab", "%ab", false, true},
+		{"abc", "%%%", false, true},
+		{"ab", "a%%b%", false, true},
+		{"ΩMEGA", "ω%a", true, true},
+		{"\xff", "_", false, true}, // an invalid byte is one character
 	}
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, MatchLike(tt.s, tt.pattern, tt.fold), "MatchLike(%q, %q, %v)", tt.s, tt.pattern, tt.fold)
