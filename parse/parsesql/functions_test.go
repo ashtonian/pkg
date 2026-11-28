@@ -3,7 +3,6 @@
 package parsesql_test
 
 import (
-	"context"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/hex"
@@ -49,15 +48,9 @@ var constructedDriver = sync.OnceValues(func() (*sqlite.Driver, error) {
 	return d, parsesql.RegisterOn(d)
 })
 
-// connector opens a driver's connections without registering it by name.
-type connector struct{ d driver.Driver }
-
-func (c connector) Connect(context.Context) (driver.Conn, error) { return c.d.Open(":memory:") }
-func (c connector) Driver() driver.Driver                        { return c.d }
-
 func openOn(t *testing.T, d *sqlite.Driver) *sql.DB {
 	t.Helper()
-	db := sql.OpenDB(connector{d})
+	db := sql.OpenDB(connector{driver: d, dsn: ":memory:"})
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 	return db

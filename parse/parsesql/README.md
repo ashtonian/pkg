@@ -29,13 +29,13 @@ _, err = scoped.Update(ctx, patch, parse.ByID(id), scope) // under a savepoint o
 err = tx.Commit()
 ```
 
-`Example_quickStart` (`example_test.go`) is the parse README's complete program, and `Example_updateMembership` a membership update; both run in the unit lane. On a database the application opens itself, register the functions before its first connection, open it with `_txlock=immediate`, and hand it to `New`:
+`Example_quickStart` (`example_test.go`) is the parse README's complete program, and `Example_updateMembership` a membership update; both run in the unit lane. On a database the application opens itself, register the functions before its first connection, open it with the settings [SQLite configuration](#sqlite-configuration) lists, and hand it to `New`:
 
 ```go
 if err := parsesql.Register(); err != nil { // modernc.org/sqlite: parse's SQL functions
 	return err
 }
-sqlDB, err := sql.Open("sqlite", "./app.db?_txlock=immediate&_busy_timeout=5000")
+sqlDB, err := sql.Open("sqlite", "./app.db?_journal_mode=WAL&_txlock=immediate&_busy_timeout=5000")
 p, err := parsesql.New(ctx, sqlDB) // refuses a SQLite older than MinSQLiteVersion
 ```
 
@@ -54,9 +54,9 @@ What runs, in what order, and what the result holds is the SQL executor's, `pars
 
 **Statements.** The statements of one step run one after another on the provider's `*sql.DB` (each on a connection the pool hands out) or on the transaction's connection. A step's failure stops the rest and is reported as that step (`parse.StatementError`).
 
-**Updates.** An update on the provider runs in a transaction of its own, begun on a connection taken under the caller's context, so the wait for one keeps its deadline; the transaction is begun without the context's cancellation, which `database/sql` would answer by rolling back what is already done. On a resource scoped to a transaction (`In`) it runs under a savepoint (`parsesql_update`) of that transaction, released once it succeeds and rolled back to otherwise, so a failed update leaves the caller's transaction as it was and usable. Either way it settles only once every returned row has scanned: an error — a failed statement, a row that fails to scan, a cancellation — means nothing the update wrote is kept. Once every statement has run the update commits (or releases its savepoint) whatever its context does since, and reports success, so an error never hides an applied update. SQLite's commit always answers, so `parse.ErrCommitUnknown` is `parsepgx`'s alone. A panic while the update runs — a type's own `UnmarshalJSON` as a row is read — rolls the transaction or savepoint back on its way to the caller, so no transaction stays open on the connection.
+**Updates.** An update on the provider runs in a transaction of its own, begun on a connection taken under the caller's context, so the wait for one keeps its deadline. The provider begins it (`BEGIN IMMEDIATE`) and settles it (`COMMIT`, `ROLLBACK`) itself, each without the context's cancellation, which could report a statement that took effect as failed. On a resource scoped to a transaction (`In`) it runs under a savepoint (`parsesql_update`) of that transaction, released once it succeeds and rolled back to otherwise, so a failed update leaves the caller's transaction as it was and usable. Either way it settles only once every returned row has scanned: an error — a failed statement, a row that fails to scan, a cancellation — means nothing the update wrote is kept. Once every statement has run the update commits (or releases its savepoint) whatever its context does since, and reports success, so an error never hides an applied update. SQLite's commit always answers, so `parse.ErrCommitUnknown` is `parsepgx`'s alone. A panic while the update runs — a type's own `UnmarshalJSON` as a row is read — rolls the transaction or savepoint back on its way to the caller, so no transaction stays open on the connection. A statement can end the whole transaction itself (a trigger's `RAISE(ROLLBACK)`, `SQLITE_FULL`, an interrupt), leaving nothing to roll back: the update reports that statement's error alone, and its connection goes back to the pool outside any transaction, an in-memory database on it intact. A connection a failed `ROLLBACK` leaves inside a transaction is closed rather than returned holding the write lock. `Provider.Begin` begins and settles its transaction the same way, on a connection it holds until `Commit` or `Rollback`.
 
-**Write transactions.** SQLite has no row lock: an update that reads before it writes (a `SkipUnchanged` plan's `Current`, a batch's preimages) holds its targets only in a write transaction, so no other writer commits between `Current` and `Owner`. `database/sql` begins transactions in the mode the connection string names: `Open` sets `_txlock=immediate`, and a database the application opens for `New` needs it too; a `*sql.Tx` passed to `Tx` is then begun as a write transaction as well.
+**Write transactions.** SQLite has no row lock: an update that reads before it writes (a `SkipUnchanged` plan's `Current`, a batch's preimages) holds its targets only while it holds the write lock from its read to its write, so no other writer commits between `Current` and `Owner`. The transactions the provider begins take the lock as they begin (`BEGIN IMMEDIATE`), whatever the connection string says; a `*sql.Tx` of the application's own takes it only on a connection that begins transactions `IMMEDIATE` ([transaction mode](#sqlite-configuration)).
 
 **Rows.** A statement over a resource reads `Resource.Columns()`, so every row holds `Resource.ColumnNames()` in order, scanned with `rows.Scan`:
 
@@ -89,19 +89,62 @@ parse's SQLite statements need **SQLite 3.47.0** or later (`MinSQLiteVersion`), 
 | `dsn` | string (sensitive) | `:memory:` | The database: a file path (absolute, `./` or `../`, ending `.db`, `.sqlite` or `.sqlite3`), a `file:` URI, or `:memory:`, with any parameter of modernc.org/sqlite but the ones `Open` sets. Refused: a connection string of another database, a `sqlite://` URL (the driver would open it as a file name), an extended-length path (`\\?\`, which the driver splits at its `?`), and the parameters `_txlock`, `_busy_timeout` and `_timeout` |
 | `max_open_conns` | int | `1` | Connections the database holds open, all kept idle and never recycled (an in-memory database lives only while a connection to it is open). An in-memory database without `cache=shared` is a database per connection: `Open` refuses more than 1 for one. A file database in WAL mode reads concurrently on more |
 | `busy_timeout` | duration | `5s` | How long a statement waits for another connection's write lock before failing with `SQLITE_BUSY` (`_busy_timeout`); 0 fails at once, negative is refused |
-| `settle_timeout` | duration | `10s` (`parse.DefaultSettleTimeout`) | Bounds each statement that settles an update in a transaction the resource is scoped to (`RELEASE SAVEPOINT`, `ROLLBACK TO SAVEPOINT`), which runs past the caller's cancellation. `database/sql`'s `Commit` and `Rollback` take no context, so the `COMMIT` or `ROLLBACK` of a transaction an update begins itself runs as the driver runs it; SQLite runs it in process. Must be positive |
+| `settle_timeout` | duration | `10s` (`parse.DefaultSettleTimeout`) | Bounds each statement that settles an update in a transaction the resource is scoped to (`RELEASE SAVEPOINT`, `ROLLBACK TO SAVEPOINT`), which runs past the caller's cancellation. The `COMMIT` or `ROLLBACK` of a transaction the provider begins itself takes no deadline, since an interrupted `COMMIT` could have taken effect; SQLite runs it in process, and its wait for a lock is the busy timeout's. Must be positive |
 
-`Open` begins every transaction `IMMEDIATE` (`_txlock=immediate`), the write transaction an update that reads before it writes needs.
+`Open` puts `_busy_timeout` (from `busy_timeout`) and `_txlock=immediate` in the DSN, so every transaction on its database begins `IMMEDIATE`, the application's own on `DB()` included. The journal mode is the DSN's ([SQLite configuration](#sqlite-configuration)).
 
-`New` takes the settle timeout as an option, `SettleTimeout(d)` (default `parse.DefaultSettleTimeout`; must be positive). The connection, its pool limits and its transaction mode belong to the caller's `*sql.DB`:
+`New` takes the settle timeout as an option, `SettleTimeout(d)` (default `parse.DefaultSettleTimeout`; must be positive). The connection, its pool limits, its journal mode and its transaction mode belong to the caller's `*sql.DB`, set as [SQLite configuration](#sqlite-configuration) lists. The functions take no configuration: they are pure and deterministic.
 
-| Connection setting | Type | Recommended | Why |
-|---|---|---|---|
-| `_txlock` (DSN) | `deferred` \| `immediate` \| `exclusive` | `immediate` | An update that reads before it writes (`SkipUnchanged`, batches) holds its targets only in a write transaction |
-| `_busy_timeout` (DSN) | milliseconds | `5000` | A second writer waits for the first instead of failing with `SQLITE_BUSY` |
-| `SetMaxOpenConns` | int | `1` for `:memory:` | Each connection to `:memory:` is a database of its own; a file database in WAL mode reads concurrently on more |
+## SQLite configuration
 
-`modernc.org/sqlite` and `mattn/go-sqlite3` both read the two DSN parameters. The functions take no configuration: they are pure and deterministic.
+What a SQLite database needs to serve parse, whether `Open` opens it or the application opens it for `New`, and how to back it up. Each setting names the test that holds it: the on-disk tests (`ondisk_integration_test.go`) run in the integration lane on a database file in the test's temporary directory, `Open`'s refusals (`open_test.go`) in the unit lane.
+
+```go
+// Open: the journal mode in the DSN; the busy timeout and IMMEDIATE transactions are Open's.
+db, err := parsesql.Open(ctx, parsesql.Config{DSN: "./app.db?_journal_mode=WAL", MaxOpenConns: 4,
+	BusyTimeout: 5 * time.Second, SettleTimeout: parse.DefaultSettleTimeout})
+
+// New: all three in the DSN of a database the application opens (modernc.org/sqlite and mattn/go-sqlite3 both read them).
+sqlDB, err := sql.Open("sqlite", "./app.db?_journal_mode=WAL&_txlock=immediate&_busy_timeout=5000")
+```
+
+| Setting | Set it to | Default | Without it | Test |
+|---|---|---|---|---|
+| Journal mode: `_journal_mode` in the DSN, or `_pragma=journal_mode(WAL)` | `WAL` on a file database | SQLite's rollback journal (`DELETE`) | A reader's transaction holds a writer's `COMMIT` until the reader ends | `TestOnDisk_AWriterBesideAReader`, `TestOnDisk_AReopenKeepsRowsStoredResultsAndCursors` |
+| Busy timeout: `Open`'s `busy_timeout`, `_busy_timeout` (ms) in the DSN | How long a writer may wait for another's write lock | `Open`: `5s`; modernc.org/sqlite: `0`; mattn/go-sqlite3: `5000` | A writer that finds the lock held fails at once with `SQLITE_BUSY` | `TestOnDisk_AWriterWaitsForTheWriteLockUpToTheBusyTimeout` |
+| Transaction mode: `_txlock` in the DSN | `immediate` | `Open`: `immediate`; both drivers: `deferred` | An update in the application's own `*sql.Tx` that reads before it writes fails with `SQLITE_BUSY_SNAPSHOT` once another writer commits between | `TestOnDisk_UpdatesHoldTheWriteLockFromTheirReadToTheirWrite`, `TestOnDisk_AnUpdateInADeferredTransactionFailsWhenAnotherWriterCommitsBetweenItsReadAndWrite` |
+| Connections: `max_open_conns`, `SetMaxOpenConns` | `1` for `:memory:`; more for a file in WAL mode | `Open`: `1` | Each connection to `:memory:` is a database of its own | `TestOpen_RefusesNamingTheSetting`, `TestOpen_SharedInMemoryOnSeveralConnections` |
+
+**Journal mode.** In SQLite's default rollback-journal mode a writer commits only once no reader holds the database: while a reader's transaction is open, an update's `COMMIT` waits up to the busy timeout and then fails (`parse: devices: commit: database is locked (5)`), keeping nothing, and its connection is left outside any transaction for the next. In WAL mode readers and one writer run at once: a reader's transaction keeps the snapshot its first read took while the writer commits, without waiting. WAL is a property of the database file, set once and kept across a close and reopen. It keeps a `-wal` and a `-shm` file beside the database, and every process that opens the database shares the `-shm` file's memory, so they run on one host, never over a network filesystem. An in-memory database has no WAL. Held by `TestOnDisk_AWriterBesideAReader` (both modes, with a busy timeout of 0, so any wait fails) and `TestOnDisk_AReopenKeepsRowsStoredResultsAndCursors` (the mode kept across a reopen).
+
+**Busy timeout.** SQLite has one write lock per database. A transaction that finds it held waits up to its connection's busy timeout, then fails with `SQLITE_BUSY` (`database is locked (5)`): `parse: devices: begin: database is locked (5)` for an update. `Open` sets it from `busy_timeout`; a database the application opens sets `_busy_timeout`, since modernc.org/sqlite's default, 0, fails at once (mattn/go-sqlite3's is 5000). Keep write transactions short: every other writer waits behind one. Held by `TestOnDisk_AWriterWaitsForTheWriteLockUpToTheBusyTimeout`: with no timeout the update fails at once, having written nothing; with one it writes once the other writer commits.
+
+**Transaction mode.** An update that reads before it writes needs the write lock from its read to its write. The provider begins the transactions it settles itself — an update's own, and `Provider.Begin`'s — with `BEGIN IMMEDIATE`, which takes the lock as the transaction begins, whatever `_txlock` the DSN names. `database/sql` begins the application's own `*sql.Tx`, the one `Tx` wraps, in the DSN's mode: `_txlock=immediate` makes it a write transaction from its start (`Open` sets it). Begun `DEFERRED`, the drivers' default, it holds only a read snapshot once an update in it has read, and when another writer commits before the update writes, the write fails at once, whatever the busy timeout, with `database is locked (517)` (`SQLITE_BUSY_SNAPSHOT`): the update keeps nothing, and the application rolls the transaction back and retries it. An update that writes without reading first (no `SkipUnchanged`, no batch) waits for the lock as any writer does. Held by `TestOnDisk_UpdatesHoldTheWriteLockFromTheirReadToTheirWrite` — an update skipping unchanged rows, a batch, and an update in `Provider.Begin`'s transaction, on a DSN without `_txlock`, and one in the application's transaction begun `IMMEDIATE`: another writer, with no busy timeout, fails at the update's write — and by `TestOnDisk_AnUpdateInADeferredTransactionFailsWhenAnotherWriterCommitsBetweenItsReadAndWrite`.
+
+**Connections.** Each connection to `:memory:` without `cache=shared` is a database of its own, so it takes one connection, and `Open` refuses more. A file database takes several: in WAL mode they read at once, and their writes take turns on the write lock. Every connection stays open (no lifetime or idle timeout): a connection is an in-process handle with nothing to refresh.
+
+**Backup.** Copy a live database with `VACUUM INTO` or SQLite's online backup API, not by copying its file: in WAL mode committed transactions sit in the `-wal` file until a checkpoint moves them into the database file. Either runs beside a writer in WAL mode and copies what is committed: the rows, and index entries that agree with parse's functions. Open the copy as the original was opened, with the functions registered; it resumes the original's keyset cursors.
+
+- `VACUUM INTO 'path'` (on `Database.DB()`, or a database the application opened) writes a compacted copy in rollback-journal mode, rebuilding every index, so an index on parse's functions needs them on the connection that runs it: on a connection without them it fails with `no such function: parse_decimal_key`. Open the copy with `_journal_mode=WAL` to serve it in WAL mode.
+- The online backup API copies the database page by page, WAL mode included, and calls no function. modernc.org/sqlite offers it on its connection, through `sql.Conn.Raw`:
+
+  ```go
+  conn, err := db.DB().Conn(ctx)
+  defer conn.Close()
+  err = conn.Raw(func(driverConn any) error {
+  	source := driverConn.(interface{ NewBackup(string) (*sqlite.Backup, error) })
+  	backup, err := source.NewBackup("/backups/app.db")
+  	if err != nil {
+  		return err
+  	}
+  	_, err = backup.Step(-1) // every page in one step
+  	return errors.Join(err, backup.Finish())
+  })
+  ```
+
+  The copy holds the connection, one of the pool's, while it runs. mattn/go-sqlite3 offers the API on the destination's connection: `(*SQLiteConn).Backup("main", source, "main")`.
+
+Held by `TestOnDisk_ABackupCopiesRowsStoredResultsAndCursors` (each way, beside a writer holding an uncommitted change, the online backup also on a connection without the functions) and `TestOnDisk_VacuumIntoNeedsParsesFunctions`.
 
 ## External Dependencies
 
@@ -220,17 +263,18 @@ From this module's directory (the repository's `go.work` builds it against the w
 
 ```sh
 go test -tags=unit -race ./...           # the version check, Open's settings, the functions, the examples
-go test -tags=integration ./...          # TestCorpus: parse's database corpus on SQLite
+go test -tags=integration ./...          # TestCorpus: parse's database corpus on SQLite; the on-disk tests
 go test -tags=integration -run 'TestCorpus/ExecutorContract' .   # one case
 ```
 
-`make test-parse-unit` and `make test-parse-integration` run them with parse's other modules. `TestCorpus` (`corpus_integration_test.go`) runs parse's database corpus (`internal/corpus`) on SQLite through this package, as `parsepgx`'s runs it on PostgreSQL: the executor contract (changed and unchanged rows, junction counts, rollback, savepoints, batches, pages, transactions), the row contract over every row shape, and the list, filter, patch, key, value, update, policy, relation and tenancy cases, the decimal and geo matrices among them (`TestCorpus/(DecimalMatrix|NumberKeys|GeoMatrix|FilterMatrix)$`). This package's own tests cover `Open`'s settings, the version check, transactions and savepoints, a connection wait under the caller's context, and the functions: `TestDecimalKey_EqualExactlyWhereTextIsEqual` compares every pair of stored forms in SQL (INTEGER, REAL, TEXT in plain and exponent notation, a member's JSON string, either zero, BLOB, NULL and text that is no number), and each with the canonical text a filter binds: two keys are equal exactly where `parse_decimal`'s texts are, and NULL together; `TestCanonical` calls `parse_canonical` in SQL over each kind's stored forms, a BLOB, NULL and the kinds it refuses. `internal/canonical` checks that two stored forms share a form exactly where they are one value, and that a form's form is itself; `TestCorpus/ComposedPatch_ApplyAgreesWithTheDatabase` checks that SQLite's change predicate reaches `Apply`'s verdict over values another writer stored in other forms. `internal/decimals` checks over generated literals that the key orders as `core.CompareDecimals` does; `internal/geo` checks the distance against GeographicLib's test set, and with PostGIS (`PARSE_POSTGIS_DSN`) thousands of seeded distances and points on polygons' vertices and edges against PostGIS.
+`make test-parse-unit` and `make test-parse-integration` run them with parse's other modules. `TestCorpus` (`corpus_integration_test.go`) runs parse's database corpus (`internal/corpus`) on SQLite through this package, as `parsepgx`'s runs it on PostgreSQL: the executor contract (changed and unchanged rows, junction counts, rollback, savepoints, batches, pages, transactions), the row contract over every row shape, and the list, filter, patch, key, value, update, policy, relation and tenancy cases, the decimal and geo matrices among them (`TestCorpus/(DecimalMatrix|NumberKeys|GeoMatrix|FilterMatrix)$`). This package's own tests cover `Open`'s settings, the version check, transactions and savepoints, a connection wait under the caller's context, and the functions. The on-disk tests (`TestOnDisk_*`, `ondisk_integration_test.go`) run on a database file in the test's temporary directory and hold each setting of [SQLite configuration](#sqlite-configuration): a reopen, a reader beside a writer in each journal mode, the busy timeout, the write lock each update path takes, and backups. They coordinate the connections through channels, a statement hook (`HookedFileDB`, `dbtest.OnStatement`) and SQLite's own locks, never sleeps, so they are deterministic under `-race`. Of the functions, `TestDecimalKey_EqualExactlyWhereTextIsEqual` compares every pair of stored forms in SQL (INTEGER, REAL, TEXT in plain and exponent notation, a member's JSON string, either zero, BLOB, NULL and text that is no number), and each with the canonical text a filter binds: two keys are equal exactly where `parse_decimal`'s texts are, and NULL together; `TestCanonical` calls `parse_canonical` in SQL over each kind's stored forms, a BLOB, NULL and the kinds it refuses. `internal/canonical` checks that two stored forms share a form exactly where they are one value, and that a form's form is itself; `TestCorpus/ComposedPatch_ApplyAgreesWithTheDatabase` checks that SQLite's change predicate reaches `Apply`'s verdict over values another writer stored in other forms. `internal/decimals` checks over generated literals that the key orders as `core.CompareDecimals` does; `internal/geo` checks the distance against GeographicLib's test set, and with PostGIS (`PARSE_POSTGIS_DSN`) thousands of seeded distances and points on polygons' vertices and edges against PostGIS.
 
 ## Operations
 
-- *Timeouts*: every statement of a list, and of an update up to its settle, takes the caller's context, as does an update's wait for a connection; give the request a deadline. The settle runs past the caller's cancellation: in a scoped transaction each settling statement is bounded by `SettleTimeout` (default `10s`); the `COMMIT` or `ROLLBACK` of a transaction the update began takes no context in `database/sql`.
+- *Timeouts*: every statement of a list, and of an update up to its settle, takes the caller's context, as does an update's or `Provider.Begin`'s wait for a connection; give the request a deadline. The `BEGIN IMMEDIATE` and the settle run past the caller's cancellation: in a scoped transaction each settling statement is bounded by `SettleTimeout` (default `10s`); the `COMMIT` or `ROLLBACK` of a transaction the provider began takes no deadline, and the busy timeout bounds its wait for a lock.
 - *Transactions*: an update holds a write transaction from `Current` (or `Owner`) to its last relation statement; a batch holds one for every chunk. Keep batches bounded (`parse.UpdateBatchLimits`) so the write lock is short.
 - *Health*: `Database.Ping(ctx)` answers a readiness probe.
+- *Backups*: `VACUUM INTO` or the online backup API, beside the running service in WAL mode ([backup](#sqlite-configuration)); never a copy of the database file alone.
 - *Observability*: the package emits no metrics or logs of its own; instrument the driver, and label failures by `parse.StatementError.Statement`. A missing function registration surfaces as the statement error under [functions](#functions).
 - *Cost*: one Go call per row for each decimal expression a statement evaluates, and for each number a facet keys. An update that skips unchanged rows makes two `parse_canonical` calls per row for each by-value column whose stored text differs from the written one, each decoding and re-encoding a document or array, linear in its text, and none for a row that holds that text. A key is one byte for zero; otherwise the value's significant digits plus three bytes, and one more for a negative, which ends with a terminator. A geo filter is one call per row, which decodes the point's JSON text: a distance then iterates a handful of times (more near the antipode), a polygon test is linear in its points (at most 100).
 - *Indexes*: no index serves a geo filter on SQLite; it reads every row its other predicates leave. SQLite indexes an expression of deterministic functions. `CREATE INDEX … ON t (parse_decimal_key(amount), id)`, the key and then the keyset's tiebreaker, serves decimal equality, sets, ranges, sorts and keyset seeks. An index on them needs the functions on every connection that writes the table, the `sqlite3` shell included, since its maintenance calls them.
@@ -239,7 +283,9 @@ go test -tags=integration -run 'TestCorpus/ExecutorContract' .   # one case
   - `parsesql: SQLite 3.x.y is older than 3.47.0`: the driver links, or with mattn's `libsqlite3` tag loads, an older SQLite. Move to a driver release that bundles a newer one, or upgrade the system library; `SELECT sqlite_version()` shows what it runs.
   - `parsesql: dsn: …`, `parsesql: max_open_conns: …`, `parsesql: busy_timeout: …`, `parsesql: settle_timeout: …`: `Open` refused that setting; the message says why, and never quotes the DSN.
   - `parsesql: reading sqlite_version(): …`: `New` could not reach the database: the DSN names a path the process cannot open, or the driver is not registered under the name `sql.Open` used.
-  - `database is locked` / `SQLITE_BUSY`: another writer held the database past the busy timeout; set `_busy_timeout`, and keep transactions short.
+  - `begin: database is locked (5)` / `SQLITE_BUSY`: another writer held the write lock past the busy timeout. Check the busy timeout (`busy_timeout`; `_busy_timeout` on a database the application opened, which modernc.org/sqlite leaves at 0), then what holds the lock: a long batch, or a transaction the application left open.
+  - `commit: database is locked (5)`: the database is in rollback-journal mode and a reader's transaction held it past the busy timeout. Nothing was kept. Open it in WAL mode (`_journal_mode=WAL`).
+  - `owner: database is locked (517)` (`SQLITE_BUSY_SNAPSHOT`): an update in the application's own transaction, begun `DEFERRED`, read and then lost the race to write to another writer, whatever the busy timeout. Begin the application's transactions `IMMEDIATE` (`_txlock=immediate`, as `Open` does) and retry after a rollback ([transaction mode](#sqlite-configuration)).
   - A call that hangs where it should have panicked (a goroutine dump shows it in `(*sql.Rows).close`): the panic came from inside `rows.Scan` — an `sql.Scanner` field's own `Scan` — where `database/sql` holds the rows' lock without releasing it, so closing the rows as the panic unwinds waits forever and the connection is lost. Fix the scanner. A panic anywhere else, a document's `UnmarshalJSON` included, rolls the update back and frees the connection.
   - `no such savepoint: parsesql_update`: the caller's transaction ended under the update (a `COMMIT` or `ROLLBACK` from another goroutine on the same `*sql.Tx`).
   - `parse.ErrUpdateBatchTargets`: a batch named a key that is missing, deleted, another tenant's, outside the policy or at another revision; nothing was written.
@@ -267,7 +313,7 @@ SQL text comes from the resource's compiled plans, never from request strings, a
 | File | Responsibility |
 |------|----------------|
 | [`open.go`](open.go) | `Config`, `Open`, `Database`, `Choice`: the database opened from configuration, its DSN checked and its connection limits set |
-| [`parsesql.go`](parsesql.go) | `New`, `Tx`, `Name`, `SettleTimeout`; the database and transaction the SQL executor's steps run on (`internal/sqlexec`'s `Conn`, `DB` and `Tx`): statements one after another, the transaction an update begins on a connection taken under the caller's context, the savepoint in a scoped transaction, and their settle |
+| [`parsesql.go`](parsesql.go) | `New`, `Tx`, `Name`, `SettleTimeout`; the database and transactions the SQL executor's steps run on (`internal/sqlexec`'s `Conn`, `DB` and `Tx`): statements one after another, the write transactions the provider begins (`BEGIN IMMEDIATE`) on a connection taken under the caller's context and settles itself, the application's transaction (`Tx`), the savepoint in a scoped transaction, and their settle |
 | [`functions.go`](functions.go) | `Function` and the `Functions` table, `Register`, `RegisterOn`, `Decimal`, `DecimalKey`, `DecimalFloat32`, `GeoNear`, `GeoInBox`, `GeoCoveredBy`, `Canonical` and the function names |
 | [`version.go`](version.go) | `MinSQLiteVersion`, `CheckVersion`, `VersionError`, and the `sqlite_version()` read `New` checks |
 | [`contract.go`](contract.go) | The compile-time check that parse is at this module's release ([versions](#versions)) |
@@ -276,5 +322,7 @@ SQL text comes from the resource's compiled plans, never from request strings, a
 | [`../internal/geo`](../internal/geo/geo.go) | `Distance` (WGS 84 geodesic, ported from GeographicLib), `Geodetic`, `Box`, `CoveredBy`, `Near`, `ReadPoint` / `ReadPointJSON` and `Coordinate` (a stored point, its members read as float8), the polygon WKB, the function names |
 | [`example_test.go`](example_test.go) | The parse README's quick start and a membership update, run with their output checked |
 | [`corpus_integration_test.go`](corpus_integration_test.go) | `TestCorpus`: parse's database corpus on SQLite |
-| [`sqlite_test.go`](sqlite_test.go) | `MemoryDB`, `HookedMemoryDB`: the in-memory databases this module's tests open |
+| [`sqlite_test.go`](sqlite_test.go) | `MemoryDB`, `HookedMemoryDB`, `HookedFileDB`: the in-memory and file databases this module's tests open |
+| [`ondisk_integration_test.go`](ondisk_integration_test.go) | The on-disk tests that hold [SQLite configuration](#sqlite-configuration) |
+| [`connection_integration_test.go`](connection_integration_test.go) | A connection wait under the caller's context, and a connection left usable by a statement that ended its transaction |
 | [`drivers_test.go`](drivers_test.go) | The [supported SQLite](#supported-sqlite) check: the required driver's release and the constructs the minimum is for |

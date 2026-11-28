@@ -651,8 +651,9 @@ func runExecutorContract(t *testing.T, b sqlBackend) {
 
 	// Each statement that settles an update runs under the provider's settle
 	// timeout, from when it is sent; every other statement runs under the
-	// caller's context. Commits and rollbacks of database/sql take no
-	// context, so the savepoint path is the one every provider shows.
+	// caller's context. SQLite's COMMIT and ROLLBACK of a transaction the
+	// provider begins take no deadline, so the savepoint path is the one
+	// every provider shows.
 	t.Run("each statement that settles the update runs under the settle timeout", func(t *testing.T) {
 		b.sqlOnly(t, "times the SQL statements that settle an update (the savepoint's release)")
 		const bound = time.Hour

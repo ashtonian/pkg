@@ -7,6 +7,7 @@ require (
 	// parse and this module release together at one version, which
 	// release-please writes here as it releases them.
 	github.com/ashtonian/pkg/parse v0.18.0 // x-release-please-version
+	github.com/shopspring/decimal v1.6.0
 	github.com/stretchr/testify v1.12.1
 	modernc.org/sqlite v1.62.0
 )
@@ -19,7 +20,6 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/shopspring/decimal v1.6.0 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
