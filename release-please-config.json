@@ -41,6 +41,10 @@
         {
           "type": "generic",
           "path": "internal/backend/release.go"
+        },
+        {
+          "type": "generic",
+          "path": "examples/server/go.mod"
         }
       ]
     },
