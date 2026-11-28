@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import test from 'node:test';
 import { parseConventionalCommits } from 'release-please/build/src/commit.js';
 import { DefaultChangelogNotes } from 'release-please/build/src/changelog-notes/default.js';
@@ -175,8 +177,8 @@ test("GitHub's default merge message counts as the pull request's title", () => 
   assert.ok(kept.every(c => c.sha === 'm1'), 'the branch commit is gone');
 });
 
-// #381 (55aac64): release-please lists nothing for a breaking title under
-// GitHub's subject, so its release listed the branch commits and not the title.
+// release-please lists nothing for a breaking title under GitHub's subject
+// (#381's merge, 55aac64, is one).
 test("a breaking title under GitHub's default merge subject is the merge's entry where its change reaches", async () => {
   const message = 'Merge pull request #381 from a/b\n\nfeat(parse)!: parse/client becomes its own module';
   assert.deepEqual(parseConventionalCommits([{ sha: 'm1', message, files: [] }], quiet), [], "release-please's own parse");
@@ -195,6 +197,31 @@ test("a breaking title under GitHub's default merge subject is the merge's entry
   assert.match(await notes(kept.parse), /BREAKING CHANGES[\s\S]*parse\/client becomes its own module/);
   assert.deepEqual(kept.httpx.map(c => [c.sha, c.type, c.breaking]), [['m1', 'docs', false]], 'the branch decides a complete path');
   assert.deepEqual(kept.gowalker, [], 'a path the change misses lists nothing');
+});
+
+// A path whose only listed commit is the merge, its branch commits older than
+// the path's last release, parses to nothing before the title is read: as
+// does a path with no commits at all.
+test("a breaking title under GitHub's subject is the entry of a path that lists only the merge", async () => {
+  const message = 'Merge pull request #9 from a/b\n\nfeat(parse)!: stream rows';
+  const branch = [['b1', 'fix(parse): close the rows', ['parse/list.go']]];
+  const kept = await runPaths(landedBatch(message, branch), {
+    parse: [{ sha: 'm1', message, files: ['parse/list.go'] }],
+    gowalker: [],
+  });
+
+  assert.deepEqual(kept.parse.map(c => [c.sha, c.type, c.breaking]), [['m1', 'feat', true]]);
+  assert.deepEqual(kept.gowalker, []);
+});
+
+// preconfigure hands release-please a titled merge's title in place of its
+// message, which holds only while the manifest parses each path's commits
+// from the object it passed to preconfigure, after every plugin's.
+test("release-please parses each path's commits after preconfigure, from the object preconfigure got", () => {
+  const source = readFileSync(createRequire(import.meta.url).resolve('release-please/build/src/manifest.js'), 'utf8');
+  const configured = source.indexOf('plugin.preconfigure(strategies, commitsPerPath');
+  const parsedAfter = source.indexOf('parseConventionalCommits)(commitsPerPath[path]', configured);
+  assert.ok(configured > 0 && parsedAfter > configured, 'the manifest no longer parses commitsPerPath after preconfigure');
 });
 
 test("GitHub's default merge subject over a body that is no single conventional title keeps the branch commits", async () => {
