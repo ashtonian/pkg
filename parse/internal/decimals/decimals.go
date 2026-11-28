@@ -44,7 +44,7 @@ func Member(v any) (string, bool) {
 	if len(s) > MaxMemberLength || !plainShape.MatchString(s) {
 		return "", false
 	}
-	text, err := core.DecimalText(s)
+	text, err := core.DecimalText(v) // v, not s: boxing s again would allocate on every row a filter reads
 	return text, err == nil
 }
 
