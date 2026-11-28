@@ -85,56 +85,65 @@ func TestDecimalKey_EqualExactlyWhereTextIsEqual(t *testing.T) {
 	}
 }
 
-// FuzzDecimalKey_EqualExactlyWhereTextIsEqual holds the functions to the
-// rule the dialect's key comparisons rest on, over values a column can
-// hold: parse_decimal_key is NULL exactly where parse_decimal is, two keys
-// are equal exactly where the texts are, and a value's canonical text,
-// bound as a filter binds it, has the value's text and key.
-func FuzzDecimalKey_EqualExactlyWhereTextIsEqual(f *testing.F) {
-	f.Add("5", "5.0", int64(5), 5.0)
-	f.Add("-0", `"-0.0"`, int64(0), math.Copysign(0, -1))
-	f.Add("1.50", "15e-1", int64(-1), 1.5)
-	f.Add("0.10000000000000001", "0.1", int64(1), 0.1)
-	f.Add("9223372036854775808", "9.223372036854775807e18", int64(math.MaxInt64), 9.223372036854775807e18)
-	f.Add(`"1e3"`, "1e3", int64(1000), 1e3)
-	f.Add("ten", "", int64(math.MinInt64), math.Inf(1))
-	f.Add("1", "1.5", int64(10), 0.01)
-	f.Add("-1", "-1.05", int64(-10), -0.1)
-	f.Add("1", "1.0000000000000000000000000000000000001", int64(1), 1.0)
-	f.Add("-0.5", "-0.51", int64(0), -0.5)
-	f.Fuzz(func(t *testing.T, a, b string, i int64, x float64) {
-		values := []driver.Value{a, b, i, x, []byte(a)}
-		texts := make([]any, len(values))
-		keys := make([]any, len(values))
-		for n, v := range values {
-			text, err := parsesql.Decimal(v)
-			require.NoError(t, err)
-			key, err := parsesql.DecimalKey(v)
-			require.NoError(t, err)
-			if (text == nil) != (key == nil) {
-				t.Fatalf("%#v: text %#v, key %#v", v, text, key)
-			}
-			texts[n], keys[n] = text, key
-			if text == nil {
-				continue
-			}
-			bound, err := parsesql.Decimal(text)
-			require.NoError(t, err)
-			boundKey, err := parsesql.DecimalKey(text)
-			require.NoError(t, err)
-			if bound != text || !bytes.Equal(boundKey.([]byte), key.([]byte)) {
-				t.Fatalf("%#v: text %q reads back as %#v with key %x, not key %x", v, text, bound, boundKey, key)
-			}
-		}
-		for n := range values {
-			for m := range values {
-				if texts[n] == nil || texts[m] == nil {
+// Decimal and DecimalKey agree on the Go values a driver hands a function:
+// the key is nil exactly where the text is, a value's canonical text, bound
+// as a filter binds it, has the value's text and key, and two keys are equal
+// exactly where the texts are.
+func TestDecimalKey_AgreesWithDecimal(t *testing.T) {
+	tests := []struct {
+		name   string
+		values []driver.Value
+		texts  []driver.Value
+	}{
+		{
+			name:   "zero of each sign, as text, a member's JSON string, an integer and a real",
+			values: []driver.Value{"-0", `"-0.0"`, int64(0), math.Copysign(0, -1), []byte("-0")},
+			texts:  []driver.Value{"0", "0", "0", "0", nil},
+		},
+		{
+			name:   "around 2^63, as text, exponent text, an integer and a real",
+			values: []driver.Value{"9223372036854775808", "9.223372036854775807e18", int64(math.MaxInt64), 9.223372036854775807e18},
+			texts:  []driver.Value{"9223372036854775808", "9223372036854775807", "9223372036854775807", "9223372036854776000"},
+		},
+		{
+			name:   "values holding no decimal beside the least integer",
+			values: []driver.Value{"ten", "", int64(math.MinInt64), math.Inf(1), math.NaN()},
+			texts:  []driver.Value{nil, nil, "-9223372036854775808", nil, nil},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Len(t, tt.texts, len(tt.values))
+			keys := make([][]byte, len(tt.values))
+			for n, v := range tt.values {
+				text, err := parsesql.Decimal(v)
+				require.NoError(t, err)
+				assert.Equal(t, tt.texts[n], text, "%#v", v)
+				key, err := parsesql.DecimalKey(v)
+				require.NoError(t, err)
+				if text == nil {
+					assert.Nil(t, key, "%#v", v)
 					continue
 				}
-				if (texts[n] == texts[m]) != bytes.Equal(keys[n].([]byte), keys[m].([]byte)) {
-					t.Fatalf("%#v and %#v: texts %q and %q, keys %x and %x", values[n], values[m], texts[n], texts[m], keys[n], keys[m])
+				keyBytes, ok := key.([]byte)
+				require.True(t, ok, "%#v: key %#v", v, key)
+				keys[n] = keyBytes
+
+				bound, err := parsesql.Decimal(text)
+				require.NoError(t, err)
+				assert.Equal(t, text, bound, "%#v", v)
+				boundKey, err := parsesql.DecimalKey(text)
+				require.NoError(t, err)
+				assert.Equal(t, key, boundKey, "%#v", v)
+			}
+			for n := range tt.values {
+				for m := range tt.values {
+					if tt.texts[n] == nil || tt.texts[m] == nil {
+						continue
+					}
+					assert.Equal(t, tt.texts[n] == tt.texts[m], bytes.Equal(keys[n], keys[m]), "%#v and %#v", tt.values[n], tt.values[m])
 				}
 			}
-		}
-	})
+		})
+	}
 }

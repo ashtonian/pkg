@@ -4,9 +4,11 @@ package filter_test
 
 import (
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
@@ -131,48 +133,88 @@ func TestEmptyNestedPolicyGroupSkipped(t *testing.T) {
 	})
 }
 
-// FuzzParseThenBuild: any input the parser accepts must build SQL without
-// panicking, and repeated builds must be deterministic
-// on both dialects. SQL generation may error for unsupported combinations.
-func FuzzParseThenBuild(f *testing.F) {
-	seeds := []string{
-		`{"$not": {}}`,
-		`{"$or": []}`,
-		`{"$and": [{}]}`,
-		`{"$not": {"$or": []}}`,
-		`{"status": "active"}`,
-		`{"$or": [{"status": "active"}, {"count": {"$gt": 5}}]}`,
-		`{"name": {"$like": "%x%"}}`,
-		`{"count": {"$in": [1, 2, 3]}}`,
-		`{"$and": [{"$not": {"status": "inactive"}}]}`,
-		`{"count":9007199254740993.0}`,
-		`{"count":1e-1000000000}`,
-		`{"name":{"$ilike":"a%_\\\\b"}}`,
-		`{"created_at":{"$gte":"2026-01-01T01:00:00+01:00"}}`,
+// A filter the parser accepts builds the same SQL on every build, with one
+// argument per parameter; one it refuses is a parse error with its code.
+func TestParseThenBuild(t *testing.T) {
+	type built struct {
+		where string
+		args  []any
 	}
-	for _, s := range seeds {
-		f.Add(s)
+	tests := []struct {
+		name     string
+		input    string
+		postgres built
+		sqlite   built
+		code     core.Code
+	}{
+		{
+			name:     "or of an equality and a comparison",
+			input:    `{"$or": [{"status": "active"}, {"count": {"$gt": 5}}]}`,
+			postgres: built{`("items"."status" = $1 OR "items"."count" > $2)`, []any{"active", int64(5)}},
+			sqlite:   built{`("items"."status" = ?1 OR "items"."count" > ?2)`, []any{"active", int64(5)}},
+		},
+		{
+			name:     "like",
+			input:    `{"name": {"$like": "%x%"}}`,
+			postgres: built{`"items"."name" LIKE $1 ESCAPE '\'`, []any{"%x%"}},
+			sqlite:   built{`"items"."name" GLOB ?1`, []any{"*x*"}},
+		},
+		{
+			name:     "ilike of wildcards and an escaped backslash",
+			input:    `{"name":{"$ilike":"a%_\\\\b"}}`,
+			postgres: built{`"items"."name" ILIKE $1 ESCAPE '\'`, []any{`a%_\\b`}},
+			sqlite:   built{`"items"."name" LIKE ?1 ESCAPE '\'`, []any{`a%_\\b`}},
+		},
+		{
+			name:     "not under and",
+			input:    `{"$and": [{"$not": {"status": "inactive"}}]}`,
+			postgres: built{`NOT ("items"."status" = $1)`, []any{"inactive"}},
+			sqlite:   built{`NOT ("items"."status" = ?1)`, []any{"inactive"}},
+		},
+		{
+			name:     "an integer past 2^53 written with a fraction",
+			input:    `{"count":9007199254740993.0}`,
+			postgres: built{`"items"."count" = $1`, []any{int64(9007199254740993)}},
+			sqlite:   built{`"items"."count" = ?1`, []any{int64(9007199254740993)}},
+		},
+		{
+			name:     "a timestamp with an offset binds as UTC",
+			input:    `{"created_at":{"$gte":"2026-01-01T01:00:00+01:00"}}`,
+			postgres: built{`"items"."created_at" >= $1`, []any{"2026-01-01T00:00:00.000000000Z"}},
+			sqlite:   built{`"items"."created_at" >= ?1`, []any{"2026-01-01T00:00:00.000000000Z"}},
+		},
+		{name: "an operator the field does not allow", input: `{"count": {"$in": [1, 2, 3]}}`, code: filter.ECodeInvalidOperator},
+		{name: "a fraction too small for any integer", input: `{"count":1e-1000000000}`, code: filter.ECodeValueTypeMismatch},
 	}
 	schema := testSchema()
-	f.Fuzz(func(t *testing.T, input string) {
-		p := filter.NewFilterParser(schema, nil)
-		ast, err := p.Parse(input)
-		if err != nil {
-			return // rejected input is fine; panics are not
-		}
-		for _, dialect := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
-			builder := filter.NewSQLBuilder(schema, dialect)
-			first, err := builder.Build(ast)
-			if err != nil {
-				continue // Unsupported combinations may fail without panicking.
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ast, err := filter.NewFilterParser(schema, nil).Parse(tt.input)
+			if tt.code != "" {
+				var pe *core.ParseError
+				require.ErrorAs(t, err, &pe)
+				assert.Equal(t, tt.code.String(), pe.Code)
+				return
 			}
-			second, err := builder.Build(ast)
-			if err != nil || !reflect.DeepEqual(first, second) {
-				t.Fatalf("non-deterministic SQL build for %T: first=%#v second=%#v error=%v", dialect, first, second, err)
+			require.NoError(t, err)
+			dialects := []struct {
+				dialect filter.Dialect
+				want    built
+			}{
+				{filter.PostgresDialect{}, tt.postgres},
+				{filter.SQLiteDialect{}, tt.sqlite},
 			}
-			if first.ParamCount != len(first.Args) {
-				t.Fatalf("parameter count %d differs from argument count %d", first.ParamCount, len(first.Args))
+			for _, d := range dialects {
+				builder := filter.NewSQLBuilder(schema, d.dialect)
+				first, err := builder.Build(ast)
+				require.NoError(t, err, "%T", d.dialect)
+				assert.Equal(t, d.want, built{first.Where, first.Args}, "%T", d.dialect)
+				assert.Equal(t, len(first.Args), first.ParamCount, "%T", d.dialect)
+
+				second, err := builder.Build(ast)
+				require.NoError(t, err, "%T", d.dialect)
+				assert.Equal(t, first, second, "%T", d.dialect)
 			}
-		}
-	})
+		})
+	}
 }

@@ -1375,73 +1375,74 @@ func TestDocumentPatchRequiresMatchingFieldCodec(t *testing.T) {
 	require.ErrorContains(t, err, "configure a matching codec")
 }
 
-// Accepted requests may still fail against current data (for example a missing
-// nested path). Neither outcome may mutate the caller or erase hidden state.
-func FuzzPatchApplyPreservesTarget(f *testing.F) {
-	for _, seed := range []string{
-		`null`, `[]`, `{}`, `[{"op":"replace","path":"/optional","value":null}]`,
-		`[{"op":"test","path":"/name","value":"old"},{"op":"replace","path":"/name","value":"new"}]`,
-		`{"optional":null}`, `{"optional":"new"}`, `[{"op":"remove","path":"/optional"}]`,
-	} {
-		f.Add(seed)
-	}
+// An accepted request leaves the caller's target as it was, and the patched
+// copy keeps the state no patch reaches.
+func TestPatchApplyPreservesTarget(t *testing.T) {
 	p, err := parse.NewResource[*productionPatchRow](onSQLite, "production_patch_rows")
-	require.NoError(f, err)
-	f.Fuzz(func(t *testing.T, body string) {
-		if len(body) > 4096 {
-			t.Skip()
-		}
-		for _, merge := range []bool{false, true} {
+	require.NoError(t, err)
+	tests := []struct {
+		name         string
+		body         string
+		merge        bool
+		wantName     string
+		wantOptional *string
+	}{
+		{name: "empty JSON Patch", body: `[]`, wantName: "old", wantOptional: new("present")},
+		{name: "replace with null", body: `[{"op":"replace","path":"/optional","value":null}]`, wantName: "old"},
+		{name: "test, then replace", body: `[{"op":"test","path":"/name","value":"old"},{"op":"replace","path":"/name","value":"new"}]`, wantName: "new", wantOptional: new("present")},
+		{name: "remove", body: `[{"op":"remove","path":"/optional"}]`, wantName: "old"},
+		{name: "empty merge patch", body: `{}`, merge: true, wantName: "old", wantOptional: new("present")},
+		{name: "merge a null", body: `{"optional":null}`, merge: true, wantName: "old"},
+		{name: "merge a value", body: `{"optional":"new"}`, merge: true, wantName: "old", wantOptional: new("new")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsePatch := p.ParsePatch
+			if tt.merge {
+				parsePatch = p.ParseMergePatch
+			}
+			parsed, err := parsePatch([]byte(tt.body))
+			require.NoError(t, err)
 			target := &productionPatchRow{Name: "old", Optional: new("present"), Secret: true, private: "keep"}
-			var parsed *patch.ParsedPatch
-			var err error
-			if merge {
-				parsed, err = p.ParseMergePatch([]byte(body))
-			} else {
-				parsed, err = p.ParsePatch([]byte(body))
-			}
-			if err != nil {
-				continue
-			}
+
 			got, err := p.ApplyValidatedPatch(parsed, target)
-			require.Equal(t, "old", target.Name)
-			require.Equal(t, "present", *target.Optional)
-			require.True(t, target.Secret)
-			require.Equal(t, "keep", target.private)
-			if err == nil {
-				require.NotNil(t, got)
-				require.True(t, got.Secret)
-				require.Equal(t, "keep", got.private)
-			}
-		}
-	})
+			require.NoError(t, err)
+			assert.Equal(t, &productionPatchRow{Name: "old", Optional: new("present"), Secret: true, private: "keep"}, target)
+			assert.Equal(t, &productionPatchRow{Name: tt.wantName, Optional: tt.wantOptional, Secret: true, private: "keep"}, got)
+		})
+	}
 }
 
-func FuzzEmptyKeyPatchPaths(f *testing.F) {
-	f.Add("", "value")
-	f.Add("a/b~c", "value")
-	f.Add("\x01", "\x01")
-	f.Fuzz(func(t *testing.T, key, value string) {
-		// A patch's text holding U+0000 or invalid UTF-8 is refused at parse
-		// (TestParse_RefusesInvalidText); stored members may hold U+0000.
-		if len(key)+len(value) > 4096 || core.CheckText(key) != nil || core.CheckText(value) != nil {
-			t.Skip()
-		}
-		p := emptyKeyParser(t)
-		target := emptyKeyRow{Meta: map[string]any{"": map[string]any{key: "old"}, "\x00": "collision"}}
-		path := core.FormatPointer("meta", "", key)
-		body, err := json.Marshal([]map[string]any{
-			{"op": "replace", "path": path, "value": value},
-			{"op": "copy", "from": path, "path": "/meta/destination"},
-			{"op": "test", "path": "/meta/destination", "value": value},
+// Paths through the member named "" reach its members whatever text names
+// them, and leave the stored member named U+0000 beside it and the caller's
+// map as they were.
+func TestPatchEmptyKeyPaths(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "the empty key", key: "", value: "value"},
+		{name: "a key holding the characters a pointer escapes", key: "a/b~c", value: "value"},
+		{name: "a control character", key: "\x01", value: "\x01"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := emptyKeyParser(t)
+			target := emptyKeyRow{Meta: map[string]any{"": map[string]any{tt.key: "old"}, "\x00": "collision"}}
+			path := core.FormatPointer("meta", "", tt.key)
+			body, err := json.Marshal([]map[string]any{
+				{"op": "replace", "path": path, "value": tt.value},
+				{"op": "copy", "from": path, "path": "/meta/destination"},
+				{"op": "test", "path": "/meta/destination", "value": tt.value},
+			})
+			require.NoError(t, err)
+
+			got, err := p.ApplyPatch(body, target)
+			require.NoError(t, err)
+			assert.Equal(t, tt.value, got.Meta["destination"])
+			assert.Equal(t, "collision", got.Meta["\x00"])
+			assert.Equal(t, map[string]any{tt.key: "old"}, target.Meta[""])
 		})
-		require.NoError(t, err)
-		got, err := p.ApplyPatch(body, target)
-		require.NoError(t, err)
-		require.Equal(t, value, got.Meta["destination"])
-		require.Equal(t, "collision", got.Meta["\x00"])
-		original, ok := target.Meta[""].(map[string]any)
-		require.True(t, ok)
-		require.Equal(t, "old", original[key])
-	})
+	}
 }

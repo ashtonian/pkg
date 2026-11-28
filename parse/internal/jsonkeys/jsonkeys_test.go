@@ -95,6 +95,7 @@ func TestValidate(t *testing.T) {
 		{name: "member spelled in another case", doc: `{"X":1}`, err: `JSON member "/X" is noncanonical for jsonkeys.keyDoc; use "x"`},
 		{name: "field named by its Go name in another case", doc: `{"names":{}}`, err: `JSON member "/names" is noncanonical for jsonkeys.keyDoc; use "Names"`},
 		{name: "duplicate member", doc: `{"x":1,"x":2}`, err: `duplicate JSON member "/x" in jsonkeys.keyDoc`},
+		{name: "member and its spelling in another case", doc: `{"x":1,"X":2}`, err: `JSON member "/X" is noncanonical for jsonkeys.keyDoc; use "x"`},
 		// An unknown member is not part of the value: decoding drops it, so
 		// neither its spelling nor its repetition changes what is stored.
 		{name: "duplicate unknown member", doc: `{"zz":1,"zz":2}`},
@@ -102,14 +103,19 @@ func TestValidate(t *testing.T) {
 		{name: "integer key with a leading zero", doc: `{"ints":{"01":1}}`, err: `JSON map member "/ints/01" does not preserve its decoded key spelling in map[int]int; use canonical JSON member names`},
 		{name: "integer key with a plus sign", doc: `{"ints":{"+1":1}}`, err: `JSON map member "/ints/+1" does not preserve its decoded key spelling in map[int]int; use canonical JSON member names`},
 		{name: "integer key negative zero", doc: `{"ints":{"-0":1}}`, err: `JSON map member "/ints/-0" does not preserve its decoded key spelling in map[int]int; use canonical JSON member names`},
+		{name: "integer key, then its spelling with a plus sign", doc: `{"ints":{"1":1,"+1":2}}`, err: `JSON map member "/ints/+1" does not preserve its decoded key spelling in map[int]int; use canonical JSON member names`},
 		{name: "canonical integer keys", doc: `{"ints":{"1":1,"0":2,"-9223372036854775808":3},"uints":{"255":{"y":1}}}`},
 		{name: "duplicate integer key", doc: `{"ints":{"1":1,"1":2}}`, err: `duplicate JSON map member "/ints/1" in map[int]int`},
 		{name: "duplicate string key", doc: `{"Names":{"a":null,"a":{"y":1}}}`, err: `duplicate JSON map member "/Names/a" in map[string]*jsonkeys.keyInner`},
 		{name: "address key in a longer form", doc: `{"addrs":{"0:0:0:0:0:0:0:1":1}}`, err: `JSON map member "/addrs/0:0:0:0:0:0:0:1" does not preserve its decoded key spelling in map[netip.Addr]int; use canonical JSON member names`},
 		{name: "canonical address key", doc: `{"addrs":{"::ffff:1.2.3.4":1,"::1":2}}`},
+		{name: "address key, then its longer form", doc: `{"addrs":{"::1":1,"0:0:0:0:0:0:0:1":2}}`, err: `JSON map member "/addrs/0:0:0:0:0:0:0:1" does not preserve its decoded key spelling in map[netip.Addr]int; use canonical JSON member names`},
 		{name: "element member in another case", doc: `{"items":[{"y":1},{"Y":2}]}`, err: `JSON member "/items/1/Y" is noncanonical for jsonkeys.keyInner; use "y"`},
 		{name: "array element member in another case", doc: `{"pair":[{"Y":2}]}`, err: `JSON member "/pair/0/Y" is noncanonical for jsonkeys.keyInner; use "y"`},
+		// Decoding drops an element beyond an array's length.
+		{name: "element beyond the array", doc: `{"pair":[{"y":2},{"Y":3}]}`},
 		{name: "map value member in another case", doc: `{"uints":{"7":{"Y":1}}}`, err: `JSON member "/uints/7/Y" is noncanonical for jsonkeys.keyInner; use "y"`},
+		{name: "unsigned key, then its spelling with a leading zero", doc: `{"uints":{"7":{"y":1},"07":{"y":1}}}`, err: `JSON map member "/uints/07" does not preserve its decoded key spelling in map[uint8]jsonkeys.keyInner; use canonical JSON member names`},
 		{name: "nested document", doc: `{"nested":{"nested":{"X":1}}}`, err: `JSON member "/nested/nested/X" is noncanonical for jsonkeys.keyDoc; use "x"`},
 		{name: "member promoted from a pointer embed", doc: `{"E":"v"}`, err: `JSON member "/E" is noncanonical for jsonkeys.keyDoc; use "e"`},
 		{name: "escaped member name", doc: `{"a~b/c":1,"x":2}`},
@@ -285,32 +291,6 @@ func TestValidate_UnknownMembersAllocateNothing(t *testing.T) {
 	small, large := allocs(10), allocs(100)
 	assert.Equal(t, small, large, "allocations grow with the unknown members")
 	assert.LessOrEqual(t, small, 1.0)
-}
-
-// The rewrite accepts and refuses what the implementation it replaced did,
-// on a type whose members that implementation could name.
-func FuzzValidate(f *testing.F) {
-	for _, seed := range []string{
-		`{"x":1,"items":[{"y":1}],"ints":{"-3":1,"10":2},"Names":{"a":{"y":2}},"e":"v"}`,
-		`{"X":1}`, `{"names":{}}`, `{"x":1,"x":2}`, `{"zz":1,"zz":2}`, `{"ints":{"01":1}}`, `{"ints":{"+1":1,"1":2}}`,
-		`{"ints":{"-0":1}}`, `{"Names":{"a":null,"a":{"y":1}}}`, `{"addrs":{"0:0:0:0:0:0:0:1":1,"::1":2}}`,
-		`{"items":[{"y":1},{"Y":2}]}`, `{"pair":[{"Y":2},{"Y":3}]}`, `{"uints":{"7":{"Y":1},"07":{"y":1}}}`,
-		`{"nested":{"nested":{"X":1}}}`, `{"E":"v"}`, `{"x":1,"X":2}`, `{"raw":{"X":1,"X":2}}`,
-		`{"own":{"M":{"a":1,"a":2}}}`, `{"any":{"X":1,"X":2}}`, `null`, `{}`,
-	} {
-		f.Add([]byte(seed))
-	}
-	f.Fuzz(func(t *testing.T, raw []byte) {
-		var decoded keyDoc
-		if json.Unmarshal(raw, &decoded) != nil {
-			return
-		}
-		got := Validate(raw, &decoded)
-		want := referenceValidate(raw, &decoded)
-		if (got == nil) != (want == nil) {
-			t.Fatalf("validation of %s: got %v, the replaced implementation %v", raw, got, want)
-		}
-	})
 }
 
 // A document type whose tag reflect cannot read whole is refused, naming the

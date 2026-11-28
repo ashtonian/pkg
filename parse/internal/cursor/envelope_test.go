@@ -109,6 +109,37 @@ func TestEncodedBytesArePinned(t *testing.T) {
 	}
 }
 
+// Each kind of value a sort key holds decodes into the interface-typed value
+// as the type it was encoded from.
+func TestDecodeRoundTripsKeyValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		token pageToken
+	}{
+		{
+			name: "a negative integer and a nil, reverse seek",
+			token: pageToken{
+				Fields:  []pageField{{Name: "n", Value: int64(-1 << 62), Direction: "desc"}, {Name: "id", Value: nil, Direction: "asc"}},
+				Reverse: true,
+			},
+		},
+		{
+			name:  "a float and a bool",
+			token: pageToken{Fields: []pageField{{Name: "x", Value: 1.5, Direction: "asc"}, {Name: "b", Value: true, Direction: "asc"}}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cur, err := cursor.Encode(tt.token, cursor.WithGeneration(3))
+			require.NoError(t, err)
+
+			decoded, err := cursor.Decode[pageToken](cur, cursor.ExpectGeneration(3))
+			require.NoError(t, err)
+			assert.Equal(t, tt.token, decoded)
+		})
+	}
+}
+
 // A map that names a member twice made msgpack decode the second occurrence
 // into the interface the first one filled, which panics. Each shape is
 // ErrInvalidCursor instead.
@@ -180,6 +211,7 @@ func TestDecodeRefusesUndefinedMembers(t *testing.T) {
 		{"envelope as nil", []byte{0xc0}},
 		{"envelope without a payload", cat([]byte{0x81}, fixstr("g"), []byte{0x03})},
 		{"empty envelope", []byte{0x80}},
+		{"empty cursor", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

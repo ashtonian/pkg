@@ -12,8 +12,8 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
-// The implementation Validate replaced, kept as the
-// reference its rewrite is fuzzed against.
+// The implementation Validate replaced, kept as the reference
+// TestValidate_InvalidUTF8MemberNames holds its rewrite to.
 
 func referenceValidate(raw []byte, decoded any) error {
 	if !json.Valid(raw) {

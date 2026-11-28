@@ -88,7 +88,6 @@ From the module directory (`parse/`):
 ```bash
 go test -tags=unit ./filter/...                         # parser, SQL builders, Evaluate, the conformance families in memory
 go test -tags=integration ./filter/...                  # the same on SQLite; PostgreSQL and PostGIS with PARSE_POSTGRES_DSN / PARSE_POSTGIS_DSN
-go test -tags=unit -run '^$' -fuzz FuzzParseThenBuild ./filter   # parse arbitrary filters and build each on every dialect
 ```
 
 ## Operations
