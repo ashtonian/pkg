@@ -360,6 +360,13 @@ each pinned block in `<!-- x-release-please-start-version -->` and
 `<!-- x-release-please-end -->` and lists the README as a `generic` extra file
 of its package, so each release moves the pin; `make release-please-check`
 fails on a pin outside the markers.
+A module that replaces in-repo modules with their working trees, such as
+`parse/examples/server`, builds against what those trees require, so `go mod
+tidy` raises its requirement to theirs. Where a release moves the trees'
+requirement (the provider modules' `parse` line), the replacing module marks
+its own requirement `// x-release-please-version` and is a `generic` extra file
+of that package; `make release-please-check` simulates a release and fails on a
+requirement left below what a replaced tree requires.
 Published modules contain no local replacements. Validate candidate archives
 with `make httpx-release-check`, and verify public-proxy installation after
 release. Release a dependency before raising another module's requirement.
