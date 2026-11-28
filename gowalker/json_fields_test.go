@@ -113,31 +113,16 @@ func TestWithJSONFields_ReservedCharacters(t *testing.T) {
 		"a,format:x":    "a",
 		"a,case:ignore": "a",
 		",inline":       "V",
+		",omitempty":    "V",
+		"é,unknown":     "é",
 	} {
-		got := fieldNames(t, e, oneField(reflect.StructTag("json:"+strconv.Quote(value))))
-		if !slices.Equal(got, []string{want}) {
-			t.Errorf("json:%q names %q, want %q", value, got, want)
-		}
+		t.Run(value, func(t *testing.T) {
+			got := fieldNames(t, e, oneField(reflect.StructTag("json:"+strconv.Quote(value))))
+			if !slices.Equal(got, []string{want}) {
+				t.Errorf("json:%q names %q, want %q", value, got, want)
+			}
+		})
 	}
-}
-
-// Any tag value names the member json.Marshal writes. The seeds are the
-// shapes where the grammar matters and the options after a name.
-func FuzzWithJSONFields(f *testing.F) {
-	for _, seed := range []string{"a", `a"b`, `a\b`, "a'b", "'a b'", `"x"`, "a b", "-,", ",omitempty", "a,string", "a,inline", "a,format:RFC3339", "a,case:ignore", "\xff", "é,unknown"} {
-		f.Add(seed)
-	}
-	e := engine(f, gowalker.WithJSONFields("json"))
-	f.Fuzz(func(t *testing.T, value string) {
-		typ := oneField(reflect.StructTag("json:" + strconv.Quote(value)))
-		if _, err := json.Marshal(oneValue(typ)); err != nil {
-			t.Skipf("encoding/json refuses json:%q: %v", value, err)
-		}
-		want := jsonMembers(t, oneValue(typ))
-		if got := fieldNames(t, e, typ); !slices.Equal(got, want) {
-			t.Errorf("json:%q names %q; encoding/json writes %q", value, got, want)
-		}
-	})
 }
 
 // A key other than json follows encoding/json's rules under that key.

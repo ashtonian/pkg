@@ -17,7 +17,9 @@ export class FirstParentPlugin extends ManifestPlugin {
     super(github, targetBranch, repositoryConfig, logger);
     this.history = history;
     this.rank = typeRanker(sharedChangelogSections(repositoryConfig));
-    this.headerOf = parsedHeaders(history.messageOf);
+    const { headers, titles } = parsedHeaders(history.messageOf);
+    this.headerOf = headers;
+    this.titleOf = titles;
     this.branches = branchSummaries(history);
     this.touching = touchingByPath(history, repositoryConfig);
     this.pathsOf = undefined;
@@ -26,11 +28,17 @@ export class FirstParentPlugin extends ManifestPlugin {
 
   // release-please calls preconfigure with each path's commits, then for each
   // path hands processCommits its own parse of them. processCommits is not
-  // told the path, so the parse identifies it.
+  // told the path, so the parse identifies it. A merge whose title
+  // release-please lists nothing for is handed to it as that title:
+  // release-please parses the same commitsByPath after every preconfigure,
+  // so it lists the title itself, with the merge's files, in each path the
+  // merge reaches, and the plugins after this one see it too.
   async preconfigure(strategiesByPath, commitsByPath) {
     this.pathsOf = new Map();
     for (const [path, commits] of Object.entries(commitsByPath)) {
-      const key = listKey(parseConventionalCommits(commits, quiet));
+      const read = commits.map(commit => (this.titleOf.has(commit.sha) ? { ...commit, message: this.titleOf.get(commit.sha) } : commit));
+      commitsByPath[path] = read;
+      const key = listKey(parseConventionalCommits(read, quiet));
       this.pathsOf.set(key, [...(this.pathsOf.get(key) ?? []), path]);
     }
     return strategiesByPath;
@@ -174,24 +182,42 @@ function sectionsKey(sections) {
 
 // parsedHeaders parses each merge's whole message as release-please does: its
 // subject alone can parse where the message does not, and its entries carry
-// the header as the parser respaces it, adding or removing whitespace.
+// the header as the parser respaces it, adding or removing whitespace. It
+// returns each merge's header, and the titles release-please lists no entry
+// for (see below).
 function parsedHeaders(messageOf) {
   const headers = new Map();
+  const titles = new Map();
   for (const [sha, message] of messageOf) {
     const entries = parseConventionalCommits([{ sha, message, files: [] }], quiet);
-    const firstLine = unspaced(message.split('\n')[0]);
-    let header = entries.find(entry => unspaced(entry.message) === firstLine);
+    const [subject] = message.split('\n');
+    let header = entries.find(entry => unspaced(entry.message) === unspaced(subject));
     if (header === undefined) {
       // GitHub's default merge message, "Merge pull request #9 from a/b"
       // above the pull request's title: that title is the merge's one entry
       // other than its trailers (Co-authored-by and the like).
       const conventional = entries.filter(isConventional);
       if (conventional.length === 1) header = conventional[0];
+      if (conventional.length === 0 && GITHUB_MERGE_SUBJECT.test(subject.trim())) {
+        // release-please starts an entry only at a header without "!", so it
+        // reads a breaking title under GitHub's subject as part of the
+        // subject, and lists nothing for the merge. Read alone, the title
+        // parses; preconfigure hands it to release-please in its place.
+        const title = message.split(/\n[ \t]*\n/)[1]?.trim() ?? '';
+        const read = title.includes('\n') ? [] : parseConventionalCommits([{ sha, message: title, files: [] }], quiet).filter(isConventional);
+        if (read.length === 1) {
+          header = read[0];
+          titles.set(sha, title);
+        }
+      }
     }
     if (header !== undefined) headers.set(sha, header.message);
   }
-  return headers;
+  return { headers, titles };
 }
+
+// The first line of GitHub's default merge message.
+const GITHUB_MERGE_SUBJECT = /^Merge pull request #\d+ from \S+$/;
 
 const unspaced = text => text.replace(/\s+/g, '');
 

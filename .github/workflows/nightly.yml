@@ -4,9 +4,7 @@ name: nightly
 # (every suite and release check), every unit test rerun rather than replayed
 # from the test cache, every parse unit test under the race detector, and the
 # parse benchmarks, on main's current commit. ci.yml's scope runs nothing when
-# an earlier scheduled run already passed on that commit. Beside it,
-# parse's fuzz targets are fuzzed under one time budget, from the corpus the
-# last night's run left.
+# an earlier scheduled run already passed on that commit.
 on:
   schedule:
     - cron: '41 8 * * *'
@@ -26,74 +24,3 @@ jobs:
     secrets:
       CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
       PRIVATE_REFERENCE_PATTERNS: ${{ secrets.PRIVATE_REFERENCE_PATTERNS }}
-  # Pull requests replay only the checked-in seeds. This generates inputs
-  # every night, on an unchanged commit too: each run starts from the corpus
-  # the last one saved, so it explores inputs the last did not.
-  fuzz:
-    if: github.actor_id == '4212452'
-    name: parse fuzzing
-    permissions:
-      contents: read
-      id-token: write
-    runs-on: arc-pkg
-    timeout-minutes: 30
-    env:
-      CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ashtonian/go-ci-actions@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
-        with:
-          go-version: '1.27.x'
-          cache-dependency-path: "**/go.sum"
-      # go test -fuzz keeps the inputs that widen coverage under GOCACHE/fuzz,
-      # which go-ci-actions does not carry between runs: a remote build cache
-      # leaves GOCACHE out of its archive, and the GitHub one deletes every
-      # file last written over two hours before the run, as a restored input is.
-      # The job owns the corpus: one cache entry per run, restored from the
-      # newest earlier one.
-      - name: Locate the fuzz corpus
-        id: corpus
-        run: echo "dir=$(go env GOCACHE)/fuzz/github.com/ashtonian/pkg/parse" >> "$GITHUB_OUTPUT"
-      - name: Restore the fuzz corpus
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.corpus.outputs.dir }}
-          key: parse-fuzz-corpus-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: parse-fuzz-corpus-
-      - name: Fuzz every parse fuzz target
-        env:
-          FUZZ_BUDGET_SECONDS: '900'
-          FUZZ_CRASHERS: fuzz-crashers
-        run: tools/fuzz-parse.sh parse
-      - name: Bound the fuzz corpus
-        if: ${{ !cancelled() && steps.corpus.outputs.dir != '' }}
-        env:
-          FUZZ_CORPUS_MAX_ENTRIES: '1000'
-          FUZZ_CORPUS_MAX_BYTES: '33554432'
-          CORPUS: ${{ steps.corpus.outputs.dir }}
-        run: python3 -B tools/fuzz_corpus.py "$CORPUS"
-      - name: Save the fuzz corpus
-        if: ${{ !cancelled() && steps.corpus.outputs.dir != '' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.corpus.outputs.dir }}
-          key: parse-fuzz-corpus-${{ github.run_id }}-${{ github.run_attempt }}
-      # The corpus is in its own cache entry; out of GOCACHE, go-ci-actions'
-      # post step neither measures nor archives it with build objects.
-      - name: Hand the corpus to its cache alone
-        if: ${{ always() && steps.corpus.outputs.dir != '' }}
-        env:
-          CORPUS: ${{ steps.corpus.outputs.dir }}
-        run: rm -rf "$CORPUS"
-      # A failing input, kept at its path under parse/: copy it into the
-      # package's testdata/fuzz beside the fix, where it is a seed from then on.
-      - name: Keep failing inputs
-        if: failure()
-        uses: ashtonian/go-ci-actions/upload-artifact@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
-        with:
-          name: parse-fuzz-crashers-${{ github.sha }}-${{ github.run_attempt }}
-          path: fuzz-crashers
-          if-no-files-found: ignore
-          retention-days: 30

@@ -118,7 +118,7 @@ test-httpx-integration:
 
 .PHONY: test-parse-race test-parse-race-all test-parse-wasip1 lint-cookbook fix
 
-## test-parse-unit: parse unit tests and fuzz seeds, without the race detector.
+## test-parse-unit: parse unit tests, without the race detector.
 test-parse-unit:
 	$(call scoped,go test $(UNIT_TEST_COUNT),$(PARSE_MODULES),unit)
 
@@ -129,7 +129,7 @@ test-parse-unit:
 test-parse-race:
 	$(call scoped,go test $(RACE) $(UNIT_TEST_COUNT),$(PARSE_MODULES),concurrency)
 
-## test-parse-race-all: every parse unit test and fuzz seed under the race detector.
+## test-parse-race-all: every parse unit test under the race detector.
 test-parse-race-all:
 	$(call scoped,go test $(RACE) $(UNIT_TEST_COUNT),$(PARSE_MODULES),unit)
 

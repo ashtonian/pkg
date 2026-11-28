@@ -113,7 +113,6 @@ jobs:
             .github/**
             Makefile
             tools/ci_release_checks.py
-            tools/fuzz_corpus.py
             tools/make_dry_run.py
             tools/private_references.py
             tools/test_ci_*.py
@@ -232,13 +231,13 @@ jobs:
       # Parse's SQLite integration runs in parse-postgres, beside PostgreSQL.
       # Pull requests race only the parse tests that run code concurrently;
       # the nightly run races every one.
-      - name: Parse unit tests and fuzz seeds
+      - name: Parse unit tests
         if: ${{ !inputs.nightly }}
         run: make test-parse-unit
       - name: Parse concurrency tests with race detection
         if: ${{ !inputs.nightly }}
         run: make test-parse-race
-      - name: Parse unit tests and fuzz seeds with race detection
+      - name: Parse unit tests with race detection
         if: ${{ inputs.nightly }}
         run: make test-parse-race-all
       - name: Parse client tests with race detection

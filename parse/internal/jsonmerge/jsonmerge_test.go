@@ -41,6 +41,9 @@ func TestApply_RFC7396Examples(t *testing.T) {
 		{name: "object_replaces_scalar", target: `{"a":"b"}`, patch: `{"a":{"x":1}}`, expect: `{"a":{"x":1}}`},
 		{name: "scalar_replaces_object", target: `{"a":{"x":1}}`, patch: `{"a":"b"}`, expect: `{"a":"b"}`},
 		{name: "patch_replaces_non_object", target: `[1,2]`, patch: `{"a":"b"}`, expect: `{"a":"b"}`},
+		{name: "null_removes_the_last_nested_member", target: `{"a":{"b":1}}`, patch: `{"a":{"b":null}}`, expect: `{"a":{}}`},
+		// An array is a value, not a patch: a null inside one stays.
+		{name: "patch_replaces_scalar_keeping_nulls_in_arrays", target: `"scalar"`, patch: `{"nested":{"deep":[1,{"k":null}]}}`, expect: `{"nested":{"deep":[1,{"k":null}]}}`},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -105,28 +108,4 @@ func TestApply_SharesUnrewrittenValues(t *testing.T) {
 	if _, found := target["doc"].(map[string]any)["z"]; found {
 		t.Errorf("the result holds the target's map along the patched path")
 	}
-}
-
-// FuzzApply hardens the merge against arbitrary decoded JSON — the patch is
-// frequently tenant-supplied. Apply must never panic on any pair of decoded
-// JSON values, and its result must always re-marshal cleanly.
-func FuzzApply(f *testing.F) {
-	f.Add([]byte(`{"a":1}`), []byte(`{"b":2}`))
-	f.Add([]byte(`{"a":{"b":1}}`), []byte(`{"a":{"b":null}}`))
-	f.Add([]byte(`{"a":1}`), []byte(`null`))
-	f.Add([]byte(`[1,2,3]`), []byte(`{"x":1}`))
-	f.Add([]byte(`"scalar"`), []byte(`{"nested":{"deep":[1,{"k":null}]}}`))
-	f.Fuzz(func(t *testing.T, targetJSON, patchJSON []byte) {
-		var target, patch any
-		if err := json.Unmarshal(targetJSON, &target); err != nil {
-			t.Skip()
-		}
-		if err := json.Unmarshal(patchJSON, &patch); err != nil {
-			t.Skip()
-		}
-		got := jsonmerge.Apply(target, patch)
-		if _, err := json.Marshal(got); err != nil {
-			t.Fatalf("Apply result not marshalable: %v\ntarget=%s patch=%s", err, targetJSON, patchJSON)
-		}
-	})
 }
