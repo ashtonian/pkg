@@ -183,11 +183,11 @@ func TestDecodeRefusesRepeatedMembers(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var err error
-			require.NotPanics(t, func() {
-				_, err = cursor.Decode[pageToken](tt.wire, cursor.ExpectGeneration(3))
-			})
+			_, err := cursor.Decode[pageToken](tt.wire, cursor.ExpectGeneration(3))
 			assert.ErrorIs(t, err, cursor.ErrInvalidCursor)
+			// The structural walk refuses it before msgpack decodes, rather
+			// than the decode's recover catching a panic.
+			assert.ErrorContains(t, err, "twice")
 		})
 	}
 }
