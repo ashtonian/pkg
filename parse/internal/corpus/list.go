@@ -348,12 +348,11 @@ func (m governedMemory) selects(t *testing.T, ast *filter.FilterAST, table strin
 
 // governedRow reads a table's row by its qualified columns (table.column).
 func governedRow(table string, row map[string]any) filter.ColumnRow {
-	return func(column string) (any, bool) {
-		name, ok := strings.CutPrefix(column, table+".")
-		if !ok {
+	return func(column filter.ColumnRef) (any, bool) {
+		if column.Table != table {
 			return nil, false
 		}
-		v, ok := row[name]
+		v, ok := row[column.Column]
 		return v, ok
 	}
 }

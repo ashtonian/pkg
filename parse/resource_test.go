@@ -780,8 +780,8 @@ func TestDeletedColumn_AWrapperRowIsLiveWhileNull(t *testing.T) {
 		{"deleted", sql.NullTime{Time: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), Valid: true}, filter.False},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			truth, err := filter.Evaluate(floor.Root, filter.ColumnRow(func(column string) (any, bool) {
-				return tt.deletedAt, column == "notes.deleted_at"
+			truth, err := filter.Evaluate(floor.Root, filter.ColumnRow(func(column filter.ColumnRef) (any, bool) {
+				return tt.deletedAt, column == filter.ColumnRef{Table: "notes", Column: "deleted_at"}
 			}))
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, truth)

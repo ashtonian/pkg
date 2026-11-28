@@ -201,9 +201,9 @@ An element predicate, on either kind of array, costs 10 (1 when the array is tag
 A backend that holds rows in memory evaluates a parsed filter with `filter.Evaluate(ast.Root, row)`, the reference evaluator: it returns the row's `filter.Truth` (`True`, `False` or `Unknown`) under the rules the SQL dialects render, and the row is selected only on `True`. `filtertest` runs every conformance case on it beside SQLite and PostgreSQL.
 
 ```go
-row := filter.ColumnRow(func(column string) (any, bool) {
-	v, ok := columns[column] // the Go values stored under each column
-	return v, ok
+row := filter.ColumnRow(func(column filter.ColumnRef) (any, bool) {
+	v, ok := columns[column.Column] // the Go values stored under each column of the table
+	return v, ok && column.Table == table
 })
 truth, err := filter.Evaluate(parsed.AST().Root, row)
 if err != nil {
@@ -223,7 +223,7 @@ selected := truth == filter.True
 | Unknown | SQL's unknown (`filter.UnknownConstraint`) is `Unknown` |
 | Not evaluable | a membership or raw-SQL predicate is `Unknown`, so it never admits a row its SQL would refuse; resolve memberships and relation predicates first with `filter.ResolveMemberships`, since an unresolved relation predicate is `filter.ErrRelationUnresolvable` |
 
-A `filter.Row` returns each field's value in the canonical domain filter values normalize to (`filter.Row` documents it). `filter.ColumnRow` reads a row stored as Go values by column — under `table.column` for a field's `Table` and `Column` or a path's document column, and under the expression itself for an `Expr` — converting each with `filter.ColumnValue` (drivers' `Valuer`s, decimals, times and UUIDs as SQL compares them; JSON text decoded) and each path with `filter.PathValue`; a column the row lacks is an error, never NULL. JSON text is decoded on every read, once for each condition on its paths; a store that evaluates many filters over the same rows decodes each document once with `filter.DecodeDocument` and returns the `filter.Document` (or a pointer to it) for its column, which every reader of a document (`PathValue`, `ColumnValue`, `DocumentElements`, `KeyValue`) takes as it takes the text. `filter.RowFunc` adapts any other source. Run `filtertest.Run(t, "memory", backend)`, `filtertest.RunPaths`, `filtertest.RunGeo`, `filtertest.RunMembership` and `filtertest.RunPolicy` (after `ResolveMemberships`) to prove a row adapter.
+A `filter.Row` returns each field's value in the canonical domain filter values normalize to (`filter.Row` documents it). `filter.ColumnRow` reads a row stored as Go values by column — the `filter.ColumnRef` a field reads (`FieldSchema.ColumnRef`): `Column` of `Table`, a path's document column, or `Expr` alone for a computed field, held as the field's own strings so a lookup builds no name per row (`ColumnRef.String` is the `table.column` name, for a row keyed by it) — converting each with `filter.ColumnValue` (drivers' `Valuer`s, decimals, times and UUIDs as SQL compares them; JSON text decoded) and each path with `filter.PathValue`; a column the row lacks is an error, never NULL. JSON text is decoded on every read, once for each condition on its paths; a store that evaluates many filters over the same rows decodes each document once with `filter.DecodeDocument` and returns the `filter.Document` (or a pointer to it) for its column, which every reader of a document (`PathValue`, `ColumnValue`, `DocumentElements`, `KeyValue`) takes as it takes the text. `filter.RowFunc` adapts any other source. Run `filtertest.Run(t, "memory", backend)`, `filtertest.RunPaths`, `filtertest.RunGeo`, `filtertest.RunMembership` and `filtertest.RunPolicy` (after `ResolveMemberships`) to prove a row adapter.
 
 ## Lists and keyset pagination
 

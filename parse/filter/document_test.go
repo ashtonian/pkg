@@ -80,7 +80,7 @@ func BenchmarkEvaluate_PathDocuments(b *testing.B) {
 		out := make([]filter.Row, len(records))
 		for i, r := range records {
 			attrs := doc(r.Attrs)
-			out[i] = filter.ColumnRow(func(string) (any, bool) { return attrs, true })
+			out[i] = filter.ColumnRow(func(filter.ColumnRef) (any, bool) { return attrs, true })
 		}
 		return out
 	}

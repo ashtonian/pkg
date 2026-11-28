@@ -519,7 +519,9 @@ func runNonFiniteFilters(t *testing.T, s scoreDB) {
 		}
 		var evaluated []int64
 		for _, r := range stored {
-			truth, err := filter.Evaluate(node, filter.ColumnRow(func(column string) (any, bool) { return r.Score, column == "scores.score" }))
+			truth, err := filter.Evaluate(node, filter.ColumnRow(func(column filter.ColumnRef) (any, bool) {
+				return r.Score, column == filter.ColumnRef{Table: "scores", Column: "score"}
+			}))
 			require.NoError(t, err, "$%s %v over %d", node.Op, node.Value, r.ID)
 			if truth == filter.True {
 				evaluated = append(evaluated, r.ID)
@@ -779,7 +781,9 @@ func runPathNumberFilters(t *testing.T, m measureDB, filters []string) {
 		selected := selectedMeasures(t, m, schema, ast)
 		var evaluated []int64
 		for _, r := range stored {
-			truth, err := filter.Evaluate(ast.Root, filter.ColumnRow(func(column string) (any, bool) { return r.Doc, column == "measures.doc" }))
+			truth, err := filter.Evaluate(ast.Root, filter.ColumnRow(func(column filter.ColumnRef) (any, bool) {
+				return r.Doc, column == filter.ColumnRef{Table: "measures", Column: "doc"}
+			}))
 			require.NoError(t, err, "%s over %d", q, r.ID)
 			if truth == filter.True {
 				evaluated = append(evaluated, r.ID)
@@ -1039,10 +1043,10 @@ func selectVisits(t *testing.T, db *sql.DB, res *filter.ListResult) []visit {
 
 // visitRow is v as an in-memory store holds it: its Go values by column.
 func visitRow(v visit) filter.ColumnRow {
-	columns := map[string]any{"visits.id": v.ID, "visits.score": v.Score, "visits.seen_at": v.SeenAt, "visits.deleted_at": v.DeletedAt}
-	return func(column string) (any, bool) {
-		value, ok := columns[column]
-		return value, ok
+	columns := map[string]any{"id": v.ID, "score": v.Score, "seen_at": v.SeenAt, "deleted_at": v.DeletedAt}
+	return func(column filter.ColumnRef) (any, bool) {
+		value, ok := columns[column.Column]
+		return value, ok && column.Table == "visits"
 	}
 }
 

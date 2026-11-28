@@ -753,7 +753,9 @@ func runNullOperands(t *testing.T, b sqlBackend) {
 			}}, [][]any{{int64(1), c.held}})
 			field := &filter.FieldSchema{ExternalName: "v", Table: table, Column: "v", DataType: c.field}
 			schema := &filter.ResourceSchema{Name: table, Fields: map[string]*filter.FieldSchema{"v": field}}
-			row := filter.ColumnRow(func(column string) (any, bool) { return c.held, column == table+".v" })
+			row := filter.ColumnRow(func(column filter.ColumnRef) (any, bool) {
+				return c.held, column == filter.ColumnRef{Table: table, Column: "v"}
+			})
 
 			for _, tc := range nullOperandCases(field, c) {
 				n := tc.n

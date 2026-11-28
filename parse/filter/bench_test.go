@@ -95,6 +95,47 @@ func BenchmarkFilterParser_JSONContains(b *testing.B) {
 	benchFilterParse(b, `{"labels":{"$contains":{"env":"prod","tier":{"level":2}}}}`)
 }
 
+// BenchmarkEvaluate evaluates a filter on one row stored by column, as a
+// store holding its own rows reads each row it scans: by column of its
+// table, each value as the store holds it, a document decoded once.
+func BenchmarkEvaluate(b *testing.B) {
+	fs, _ := benchSchemas(b)
+	labels, err := filter.DecodeDocument([]byte(`{"env":"prod","tier":{"level":2}}`))
+	if err != nil {
+		b.Fatal(err)
+	}
+	stored := map[string]any{
+		"id": "a1", "status": "active", "name": "test one", "count": int64(12), "price": 75.0,
+		"labels": labels, "created_at": "2026-06-01T00:00:00.000000000Z",
+	}
+	row := filter.ColumnRow(func(column filter.ColumnRef) (any, bool) {
+		if column.Table != fs.Name {
+			return nil, false
+		}
+		v, ok := stored[column.Column]
+		return v, ok
+	})
+	filters := []struct{ name, input string }{
+		{"eq", `{"status":"active"}`},
+		{"conjunction", `{"status":"active","count":{"$gt":10},"price":{"$gte":50,"$lte":200}}`},
+		{"or", `{"$or":[{"status":"inactive","count":{"$gt":10}},{"status":"suspended","price":{"$lte":100}},{"name":{"$like":"test%"}}]}`},
+		{"timestamp", `{"created_at":{"$gte":"2026-01-01T00:00:00Z"}}`},
+		{"contains", `{"labels":{"$contains":{"env":"prod"}}}`},
+	}
+	for _, f := range filters {
+		ast := benchParse(b, fs, f.input)
+		b.Run(f.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				truth, err := filter.Evaluate(ast.Root, row)
+				if err != nil || truth != filter.True {
+					b.Fatalf("evaluate %s: %s, %v", f.input, truth, err)
+				}
+			}
+		})
+	}
+}
+
 func benchBuild(b *testing.B, d filter.Dialect, input string, wantArgs int) {
 	fs, _ := benchSchemas(b)
 	ast := benchParse(b, fs, input)

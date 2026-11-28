@@ -70,32 +70,58 @@ type RowFunc func(f *FieldSchema) (any, bool, error)
 // Value calls r.
 func (r RowFunc) Value(f *FieldSchema) (any, bool, error) { return r(f) }
 
-// ColumnRow is a Row stored by column: it returns the Go value held under a
-// column, named table.column, unquoted (records.name), from the field's
-// Table and Column — the document's, for a path — or by a computed field's
-// Expr, and false when the row has no such column. A missing column is an error, so a misspelt column cannot read as
-// NULL. Columns read through ColumnValue, paths through PathValue.
-type ColumnRow func(column string) (value any, ok bool)
-
-// rowKey is the name a ColumnRow holds a column under: table.column, or
-// expr for a computed one.
-func rowKey(table, column, expr string) string {
-	switch {
-	case expr != "":
-		return expr
-	case table == "":
-		return column
-	}
-	return table + "." + column
+// ColumnRef is the stored column a field reads, as a ColumnRow looks it
+// up: Column of Table (a path's document column, for a path), or Expr
+// alone for a computed field, whose Table and Column are then empty. It
+// holds the field's own strings, so a lookup builds no name per row.
+type ColumnRef struct {
+	Table  string
+	Column string
+	Expr   string
 }
+
+// ColumnRef is the stored column a ColumnRow reads f from: Column of
+// Table, a path's document column, or Expr for a computed field.
+func (f *FieldSchema) ColumnRef() ColumnRef {
+	p := f.Path
+	if p != nil {
+		return columnOf(p.Table, p.Column, p.Expr)
+	}
+	return columnOf(f.Table, f.Column, f.Expr)
+}
+
+// columnOf is the column a field with these Table, Column and Expr reads.
+func columnOf(table, column, expr string) ColumnRef {
+	ref := ColumnRef{Table: table, Column: column}
+	if expr != "" {
+		ref = ColumnRef{Expr: expr}
+	}
+	return ref
+}
+
+// String is the name a row keyed by name holds c under: table.column,
+// unquoted (records.name), the bare column without a table, or the
+// expression of a computed field.
+func (c ColumnRef) String() string {
+	switch {
+	case c.Expr != "":
+		return c.Expr
+	case c.Table == "":
+		return c.Column
+	}
+	return c.Table + "." + c.Column
+}
+
+// ColumnRow is a Row stored by column: it returns the Go value held under
+// the column a field reads (ColumnRef), and false when the row has no such
+// column. A missing column is an error, so a misspelt column cannot read
+// as NULL. Columns read through ColumnValue, paths through PathValue.
+type ColumnRow func(column ColumnRef) (value any, ok bool)
 
 // Value reads f from the row's columns.
 func (r ColumnRow) Value(f *FieldSchema) (any, bool, error) {
-	column := rowKey(f.Table, f.Column, f.Expr)
-	if p := f.Path; p != nil {
-		column = rowKey(p.Table, p.Column, p.Expr)
-	}
-	if column == "" {
+	column := f.ColumnRef()
+	if column.Column == "" && column.Expr == "" {
 		return nil, false, fmt.Errorf("field %s names no column", f.ExternalName)
 	}
 	v, ok := r(column)

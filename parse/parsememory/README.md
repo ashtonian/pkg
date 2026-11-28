@@ -163,7 +163,7 @@ The tests hold: the configuration's default and range; `Choice` through `parsepr
   |---|---|---|
   | Key lookup (`ByID`, `ByKeys`, a batch's targets, `Put`, `Delete`) | O(log n) per key | `Put` of one row ~2.6 µs, 25 allocations; `Update` by key ~5 µs, 87 allocations |
   | A page in key order, no facet, no count of a filter | O(log n + page size) | ~40 µs for 50 rows, from the start, past a cursor or with the count of no filter |
-  | Any other list, its count and its facets | One pass over the rows: O(n) evaluations of the filter, and O(n log limit) comparisons at most for the page's top-k selection, each row's sort keys read to canonical once | ~11 ms by timestamp, ~10 ms by float, ~12 ms filtered with its count, ~17 ms with a terms facet |
+  | Any other list, its count and its facets | One pass over the rows: O(n) evaluations of the filter, and O(n log limit) comparisons at most for the page's top-k selection, each row's sort keys read to canonical once | ~11 ms by timestamp, ~10 ms by float, ~9 ms filtered with its count, ~17 ms with a terms facet |
   | Page memory | Bounded by the page size plus one | 33–70 KB allocated for a page of 50 rows, whatever n |
   | An include | O(k log n) for a page of k owners: each owner's pairs by a range of the pair table's key | ~0.1 ms for 50 owners over 100,000 pairs |
   | A relation or membership filter | One read of each related table per request | |

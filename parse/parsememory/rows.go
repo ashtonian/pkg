@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"iter"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/ashtonian/pkg/parse"
@@ -89,28 +88,34 @@ func (r *rows) Err() error { return nil }
 func (r *rows) Documents() []string { return nil }
 
 // rowReader reads the rows of def's table, one at a time: as a filter
-// reads a row (filter.ColumnRow), by column, bare or qualified by the
-// table, and as a lookup condition or a patch does, by bare column. A scan
-// builds one and points it at each row it reads, so no row allocates a
-// reader of its own.
+// reads a row (filter.ColumnRow), by column of this table, and as a lookup
+// condition or a patch does, by bare column. A scan builds one and points
+// it at each row it reads, so no row allocates a reader of its own.
 type rowReader struct {
-	def    *tableDef
-	prefix string
-	rec    *record
-	row    filter.ColumnRow
-	bare   func(string) (any, bool)
+	def  *tableDef
+	rec  *record
+	row  filter.ColumnRow
+	bare func(string) (any, bool)
 }
 
 func newRowReader(def *tableDef) *rowReader {
-	r := &rowReader{def: def, prefix: def.name + "."}
-	r.row = r.qualified
+	r := &rowReader{def: def}
+	r.row = r.ofTable
 	r.bare = r.column
 	return r
 }
 
-func (r *rowReader) qualified(column string) (any, bool) {
-	name, _ := strings.CutPrefix(column, r.prefix)
-	return r.column(name)
+// ofTable reads a column of this table, bare or qualified by its name. A
+// row holds no other table's column, and no computed one, which the
+// provider refuses before anything runs.
+func (r *rowReader) ofTable(c filter.ColumnRef) (any, bool) {
+	if c.Expr != "" {
+		return nil, false
+	}
+	if c.Table != "" && c.Table != r.def.name {
+		return nil, false
+	}
+	return r.column(c.Column)
 }
 
 func (r *rowReader) column(name string) (any, bool) {

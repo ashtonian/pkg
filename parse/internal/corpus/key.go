@@ -332,9 +332,8 @@ func runUUIDKeyRanges(t *testing.T, b sqlBackend) {
 
 			var evaluated []uuid.UUID
 			for _, id := range keys {
-				row := filter.ColumnRow(func(column string) (any, bool) {
-					_, name, _ := strings.Cut(column, ".")
-					return id, name == "id"
+				row := filter.ColumnRow(func(column filter.ColumnRef) (any, bool) {
+					return id, column.Column == "id"
 				})
 				truth, err := filter.Evaluate(req.Filter().AST().Root, row)
 				require.NoError(t, err)

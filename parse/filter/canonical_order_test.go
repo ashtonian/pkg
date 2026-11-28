@@ -25,7 +25,9 @@ func TestCanonicalOrder_Readers(t *testing.T) {
 			}
 			for i, x := range c.Values {
 				for _, a := range x.Spellings {
-					row := filter.ColumnRow(func(column string) (any, bool) { return a, column == "t.v" })
+					row := filter.ColumnRow(func(column filter.ColumnRef) (any, bool) {
+						return a, column == filter.ColumnRef{Table: "t", Column: "v"}
+					})
 					for j, y := range c.Values {
 						literal, err := c.Stored(y)
 						require.NoError(t, err)

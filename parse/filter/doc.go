@@ -80,8 +80,9 @@
 //
 // [Evaluate] is the reference evaluator: the three-valued [Truth] SQL gives a
 // filter on one [Row], for backends that hold rows in memory. [ColumnRow]
-// reads a row of Go values by column and [ColumnValue] one value; resolve
-// memberships and relation predicates first with [ResolveMemberships].
+// reads a row of Go values by column ([ColumnRef]) and [ColumnValue] one
+// value; resolve memberships and relation predicates first with
+// [ResolveMemberships].
 //
 // # ListResult Composition
 //
