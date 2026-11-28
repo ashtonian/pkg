@@ -6,7 +6,7 @@ require (
 	github.com/ashtonian/pkg/gowalker v0.10.0
 	// parse and this module release together at one version, which
 	// release-please writes here as it releases them.
-	github.com/ashtonian/pkg/parse v0.18.0 // x-release-please-version
+	github.com/ashtonian/pkg/parse v0.19.0 // x-release-please-version
 	github.com/shopspring/decimal v1.6.0
 	github.com/stretchr/testify v1.12.1
 	modernc.org/sqlite v1.62.0

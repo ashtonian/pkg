@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0](https://github.com/ashtonian/pkg/compare/httpx/v0.5.0...httpx/v0.6.0) (2026-11-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **httpx:** Repeated layer options apply in call order. Callers that depended on replacement should remove the earlier options or override the specific setting. Positional arguments still use the last value provided.
+
+### Bug Fixes
+
+* **httpx:** preserve independent options across repeated layer configuration ([#372](https://github.com/ashtonian/pkg/issues/372)) ([2b9c558](https://github.com/ashtonian/pkg/commit/2b9c558e0f50e362c49d30e2a4ddee42a1636637))
+
 ## [0.5.0](https://github.com/ashtonian/pkg/compare/httpx/v0.4.0...httpx/v0.5.0) (2026-11-23)
 
 

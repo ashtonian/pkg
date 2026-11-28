@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	// parse and this module release together at one version, which
 	// release-please writes here as it releases them.
-	github.com/ashtonian/pkg/parse v0.18.0 // x-release-please-version
+	github.com/ashtonian/pkg/parse v0.19.0 // x-release-please-version
 	github.com/stretchr/testify v1.12.1
 	github.com/tidwall/btree v1.8.2
 )
